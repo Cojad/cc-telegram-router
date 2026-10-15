@@ -19,6 +19,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 // --- fake Bot API ---------------------------------------------------------
 const calls: Array<{ method: string; body: any }> = []
 let updatesServed = false
+const laterUpdates: unknown[] = []
 const now = Math.floor(Date.now() / 1000)
 const UPDATES = [
   { update_id: 1, message: { message_id: 10, date: now, chat: { id: 111, type: 'private' }, from: { id: 111, is_bot: false, first_name: 'O', username: 'owner' }, text: 'hello router' } },
@@ -37,7 +38,7 @@ const api = Bun.serve({
       case 'getUpdates':
         if (!updatesServed) { updatesServed = true; return ok(UPDATES) }
         await sleep(200)
-        return ok([])
+        return ok(laterUpdates.splice(0))
       case 'sendMessage': return ok({ message_id: 900 + calls.length, date: now, chat: { id: Number(body.chat_id) }, text: body.text })
       default: return ok(true)
     }
@@ -131,4 +132,28 @@ test('a plugin for the conversation gets the queued message, and its reply goes 
   await until(() => q("SELECT count(*) n FROM queue WHERE status != 'acked'")[0].n === 0)
   client.close(); g.close()
   expect(q("SELECT count(*) n FROM outbound WHERE method = 'getUpdates'")[0].n).toBe(0)
+}, 15000)
+
+test('a /router command is answered by the router, not forwarded, and the next delivery carries router_log', async () => {
+  const delivered: string[] = []
+  const client = connectRouter({
+    socketPath: join(state, 'router.sock'),
+    hello: { t: 'hello', project_dir: join(dir, 'dm-111'), pid: 3 },
+    onMessage(m) { if (m.t === 'deliver') { delivered.push(m.params.content); client.send({ t: 'ack', qid: m.qid }) } },
+  })
+  await until(() => client.state().kind === 'ready')
+  const from = { id: 111, is_bot: false, first_name: 'O', username: 'owner' }
+  laterUpdates.push({ update_id: 10, message: { message_id: 20, date: now, chat: { id: 111, type: 'private' }, from, text: '/router chat compact 300k', entities: [{ type: 'bot_command', offset: 0, length: 7 }] } })
+  const answer = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('dm-111 autoCompactWindow')))
+  expect(answer.body.text).toBe('dm-111 autoCompactWindow → 300000')
+  await sleep(300)
+  expect(delivered).toEqual([]) // the command itself never reaches the worker
+  laterUpdates.push({ update_id: 11, message: { message_id: 21, date: now, chat: { id: 111, type: 'private' }, from, text: 'after the command' } })
+  await until(() => delivered.length >= 1)
+  expect(delivered[0]).toContain('<router_log>')
+  expect(delivered[0]).toContain('@owner(owner) /router chat compact 300k → dm-111 autoCompactWindow → 300000')
+  expect(delivered[0]).toContain('autoCompactWindow: 300000') // context bumped with the change
+  expect(delivered[0]).toEndWith('\nafter the command')
+  expect(JSON.parse(readFileSync(join(state, 'sessions', 'dm-111.json'), 'utf8')).autoCompactWindow).toBe(300000)
+  client.close()
 }, 15000)
