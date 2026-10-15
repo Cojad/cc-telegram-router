@@ -6,8 +6,8 @@
 // recorded — not just that store.ts itself works (that's store.test.ts).
 
 import { afterEach, expect, test } from 'bun:test'
-import { callTool, type OutboundDeps } from '../outbound'
-import { openStore, type Store } from '../store'
+import { callTool, type OutboundDeps } from '../telegram/outbound'
+import { openStore, type Store } from '../telegram/store'
 
 const stores: Store[] = []
 function harness(): { deps: OutboundDeps; sentTexts: string[]; stickerCalls: Array<{ chat_id: string; sticker: unknown; other: unknown }> } {

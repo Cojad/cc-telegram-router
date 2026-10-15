@@ -6,8 +6,8 @@
 // full text must reconstruct losslessly.
 
 import { expect, test } from 'bun:test'
-import { chunk, formatMessageRow, formatMessageRows } from '../format'
-import type { MessageRecord } from '../store'
+import { chunk, formatMessageRow, formatMessageRows } from '../telegram/format'
+import type { MessageRecord } from '../telegram/store'
 
 function endsWithLoneHighSurrogate(s: string): boolean {
   const code = s.charCodeAt(s.length - 1)

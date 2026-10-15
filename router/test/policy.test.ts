@@ -8,7 +8,7 @@
 
 import { expect, test } from 'bun:test'
 import type { Context } from 'grammy'
-import { defaultAccess, gate, isMentioned, type Access } from '../policy'
+import { defaultAccess, gate, isMentioned, type Access } from '../telegram/policy'
 
 // Minimal duck-typed stand-in for grammY's Context — these functions only
 // ever read ctx.from / ctx.chat / ctx.message, never call grammY methods,

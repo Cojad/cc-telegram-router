@@ -5,7 +5,7 @@
 // guessed — see rich.ts's own header comment for where those were
 // verified.
 import { expect, test } from 'bun:test'
-import { flattenRichBlock, flattenRichMessage } from '../rich'
+import { flattenRichBlock, flattenRichMessage } from '../telegram/rich'
 import type { RichBlock, RichMessage } from '@grammyjs/types'
 
 test('paragraph and inline marks flatten to Markdown', () => {

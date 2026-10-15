@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": { "telegram@claude-plugins-official": true },
+  "autoMemoryDirectory": "{{folder}}/memory",
+  "crossSessionInbound": "accept",
+  "autoCompactWindow": "{{autoCompactWindow}}"
+}

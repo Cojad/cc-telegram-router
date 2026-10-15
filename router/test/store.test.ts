@@ -8,7 +8,7 @@
 import { afterEach, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { unlinkSync } from 'fs'
-import { openStore, type MessageRecord, type Store } from '../store'
+import { openStore, type MessageRecord, type Store } from '../telegram/store'
 
 const stores: Store[] = []
 function freshStore(): Store {

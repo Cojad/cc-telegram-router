@@ -7,9 +7,9 @@
 
 import { expect, test } from 'bun:test'
 import type { Context } from 'grammy'
-import { buildReplyMeta, createHandleInbound, extractAttachmentMeta, type InboundDeps } from '../inbound'
-import { type Access, type GateResult } from '../policy'
-import type { MessageRecord } from '../store'
+import { buildReplyMeta, createHandleInbound, extractAttachmentMeta, type InboundDeps } from '../telegram/inbound'
+import { type Access, type GateResult } from '../telegram/policy'
+import type { MessageRecord } from '../telegram/store'
 
 test('buildReplyMeta: no reply_to_message produces no reply fields', () => {
   expect(buildReplyMeta(undefined)).toEqual({})

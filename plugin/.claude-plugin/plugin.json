@@ -1,0 +1,11 @@
+{
+  "name": "telegram",
+  "description": "Telegram channel for Claude Code, consumer side of cc-telegram-router: one session per Telegram conversation, token and access live in the router.",
+  "version": "0.0.7",
+  "keywords": [
+    "telegram",
+    "messaging",
+    "channel",
+    "mcp"
+  ]
+}

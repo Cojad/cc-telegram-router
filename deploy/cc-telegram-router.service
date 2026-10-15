@@ -1,0 +1,17 @@
+[Unit]
+Description=cc-telegram-router (Telegram -> one Claude Code background session per conversation)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@STATE@/cc-telegram-router
+WorkingDirectory=@STATE@
+Environment=PATH=@HOME@/.local/bin:@HOME@/bin:/usr/local/bin:/usr/bin:/bin
+# Workers are started through `claude --bg`, whose daemon would otherwise sit
+# in this unit's cgroup and be killed on every router restart.
+KillMode=process
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
