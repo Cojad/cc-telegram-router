@@ -42,6 +42,10 @@ const api = Bun.serve({
         await sleep(200)
         return ok(laterUpdates.splice(0))
       case 'sendMessage': return ok({ message_id: 900 + calls.length, date: now, chat: { id: Number(body.chat_id) }, text: body.text })
+      case 'deleteMessage':
+        // like Telegram: the bot is not an admin in groups, so it cannot delete others' messages there
+        if (String(body.chat_id).startsWith('-')) return Response.json({ ok: false, error_code: 400, description: "Bad Request: message can't be deleted" })
+        return ok(true)
       default: return ok(true)
     }
   },
@@ -191,7 +195,8 @@ test('bot rotate (owner DM): the poller moves to the new token, the token messag
   })
   await until(() => client.state().kind === 'ready')
   laterUpdates.push({ update_id: 30, message: { message_id: 40, date: now, chat: { id: 111, type: 'private' }, from, text: `/router bot rotate cc ${NEW}` } })
-  await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('已更換 bot cc')))
+  const done = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('已更換 bot cc')))
+  expect(done.body.text).toBe('已更換 bot cc: @cc_bot\n已刪除含 token 的訊息')
   expect(calls.some(c => c.method === 'deleteMessage' && c.body.message_id === 40)).toBe(true)
   // a message that arrives right after the switch is picked up by the new poller
   laterUpdates.push({ update_id: 31, message: { message_id: 41, date: now, chat: { id: 111, type: 'private' }, from, text: 'after rotate' } })
@@ -204,3 +209,10 @@ test('bot rotate (owner DM): the poller moves to the new token, the token messag
   expect(delivered.join('\n')).toContain('123:…ED00')
   client.close()
 }, 20000)
+
+test('a token posted in a group the bot cannot delete from: the refusal says so and asks for a manual delete', async () => {
+  const from = { id: 111, is_bot: false, first_name: 'O', username: 'owner' }
+  laterUpdates.push({ update_id: 40, message: { message_id: 50, date: now, chat: { id: -100777, type: 'supergroup', title: 'G' }, from, text: '/router bot add x 123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' } })
+  const r = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('⛔ /router bot add')))
+  expect(r.body.text).toBe('⛔ /router bot add 只能在 owner 私訊使用; token 曾出現在群組, 建議 /router bot rotate\n⚠️ 無法刪除含 token 的訊息 (bot 沒有刪除權限), 請手動刪除')
+}, 15000)

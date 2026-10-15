@@ -12,6 +12,8 @@ import { gmt8 } from './context'
 export const ROLES = ['owner', 'admin', 'power', 'user', 'guest'] as const
 
 export type CommandInput = { bot: string; text: string; senderId: string; senderName: string; chatId: string; chatType: string }
+/** deleteMessage: the command message carried a token; the caller deletes it
+ *  and appends whether that worked to the reply. */
 export type CommandOutput = { reply: string; deleteMessage?: boolean; logs: Array<{ conv: string; text: string }>; after?: () => void }
 
 export interface CommandDeps {
@@ -126,7 +128,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       const inOwnerDm = role === 'owner' && input.chatType === 'private' && input.chatId === input.senderId
       if (!inOwnerDm) {
         const leaked = hasToken && input.chatType !== 'private'
-        return deny(`/router bot ${op} 只能在 owner 私訊使用${hasToken ? ', 已刪除這則訊息' : ''}${leaked ? '; token 曾出現在群組, 建議 /router bot rotate' : ''}`, { deleteMessage: hasToken })
+        return deny(`/router bot ${op} 只能在 owner 私訊使用${leaked ? '; token 曾出現在群組, 建議 /router bot rotate' : ''}`, { deleteMessage: hasToken })
       }
       const name = args[2]
       if (!name) return done(`用法: /router bot ${op} <名稱>${op === 'remove' ? '' : ' <token>'}`, { deleteMessage: hasToken })
@@ -138,7 +140,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const token = args[3]
         if (!token) return done(`用法: /router bot ${op} <名稱> <token>`)
         const username = op === 'add' ? await deps.bots.add(name, token) : await deps.bots.rotate(name, token)
-        return done(`${op === 'add' ? '已新增' : '已更換'} bot ${name}: @${username}, 已刪除含 token 的訊息`, { deleteMessage: true })
+        return done(`${op === 'add' ? '已新增' : '已更換'} bot ${name}: @${username}`, { deleteMessage: true })
       } catch (e) {
         return done(`bot ${op} 失敗: ${e instanceof Error ? e.message : e}`, { deleteMessage: hasToken })
       }

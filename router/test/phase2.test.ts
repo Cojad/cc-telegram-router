@@ -79,14 +79,14 @@ test('admin may run commands but may not make anyone owner nor touch an owner', 
 test('bot list for admin; token commands only in the owner DM, and a token message is always deleted', async () => {
   expect((await run('/router bot list', ADMIN))!.reply).toBe('cc: @cc_bot (id 42, 柯柯)')
   const inGroup = (await run('/router bot add x 123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', OWNER, GROUP))!
-  expect(inGroup.reply).toBe('⛔ /router bot add 只能在 owner 私訊使用, 已刪除這則訊息; token 曾出現在群組, 建議 /router bot rotate')
+  expect(inGroup.reply).toBe('⛔ /router bot add 只能在 owner 私訊使用; token 曾出現在群組, 建議 /router bot rotate')
   expect(inGroup.deleteMessage).toBe(true)
   const byAdmin = (await run('/router bot rotate cc 123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', ADMIN))!
   expect(byAdmin.reply).toStartWith('⛔ /router bot rotate 只能在 owner 私訊使用')
   expect(byAdmin.deleteMessage).toBe(true)
   expect(calls).toEqual([])
   const ok = (await run('/router bot rotate cc 123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', OWNER))!
-  expect(ok.reply).toBe('已更換 bot cc: @cc_bot, 已刪除含 token 的訊息')
+  expect(ok.reply).toBe('已更換 bot cc: @cc_bot')
   expect(ok.deleteMessage).toBe(true)
   expect(calls).toEqual(['rotate cc'])
 })

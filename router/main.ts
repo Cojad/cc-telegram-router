@@ -345,9 +345,15 @@ function startBot(bc: BotConfig): BotHandle {
         const out = await runCommand(input, commandDeps)
         if (!out) return
         for (const l of out.logs) db.addLog(l.conv, l.text)
-        if (out.deleteMessage) await bot.api.deleteMessage(chatId, messageId).catch(e => log(`delete command message failed: ${e}`))
+        let reply = out.reply
+        if (out.deleteMessage) {
+          // Say what actually happened: in a group the bot can only delete
+          // other people's messages when it is an admin there.
+          const ok = await bot.api.deleteMessage(chatId, messageId).then(() => true, e => { log(`delete command message failed: ${e}`); return false })
+          reply += ok ? '\n已刪除含 token 的訊息' : '\n⚠️ 無法刪除含 token 的訊息 (bot 沒有刪除權限), 請手動刪除'
+        }
         // Long listings (log, chat) can exceed Telegram's 4096 per message.
-        const parts = chunk(out.reply, 4000, 'newline')
+        const parts = chunk(reply, 4000, 'newline')
         for (let i = 0; i < parts.length; i++) {
           await bot.api.sendMessage(chatId, parts[i]!, i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {}).catch(e => log(`command reply failed: ${e}`))
         }
