@@ -14,6 +14,8 @@ export interface ClientOpts {
   socketPath: string
   /** Set to a reason to never connect (session is not a Telegram worker). */
   disabled?: string
+  /** Resolves when it is safe to say hello (see server.ts); default immediately. */
+  ready?: Promise<void>
   hello: Extract<PluginToRouter, { t: 'hello' }>
   onMessage: (m: RouterToPlugin) => void
   callTimeoutMs?: number
@@ -88,7 +90,7 @@ export function connectRouter(opts: ClientOpts) {
       backoff = Math.min(backoff * 2, opts.maxBackoffMs ?? 10_000)
     }
   }
-  void connect()
+  void (opts.ready ?? Promise.resolve()).then(() => connect())
 
   return {
     state: () => state,

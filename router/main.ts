@@ -125,7 +125,8 @@ for (const bc of cfg.bots) {
   bot.api.config.use(async (prev, method, payload, signal) => {
     try {
       const res = await prev(method, payload, signal)
-      if (method !== 'getUpdates') db.logApiCall(bc.name, method, payload, res, null, callConv.getStore() ?? null)
+      const apiErr = res.ok ? null : `${res.error_code}: ${res.description}`
+      if (method !== 'getUpdates') db.logApiCall(bc.name, method, payload, res, apiErr, callConv.getStore() ?? null)
       return res
     } catch (e) {
       db.logApiCall(bc.name, method, payload, undefined, String(e), callConv.getStore() ?? null)
@@ -171,13 +172,17 @@ for (const bc of cfg.bots) {
 
 // Backlog sweep: anything queued for a conversation whose worker is not
 // connected (missed wake, worker reaped mid-delivery) gets another wake.
-setInterval(() => {
+function sweepBacklog(): void {
   for (const key of db.convsWithBacklog()) {
     if (ipc.isConnected(key)) { ipc.pushQueue(key); continue }
     const c = db.getConversation(key)
     if (c) void supervisor.ensureAwake(c)
   }
-}, 60_000).unref()
+}
+setInterval(sweepBacklog, 60_000).unref()
+// After a router restart, give already-running workers a moment to
+// reconnect before deciding they need waking.
+setTimeout(sweepBacklog, 15_000).unref()
 
 let stopping = false
 async function shutdown(sig: string) {

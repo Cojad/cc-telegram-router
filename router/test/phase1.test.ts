@@ -254,7 +254,7 @@ test('plugin v2 speaks MCP: lists the tools, turns a delivery into a channel not
   const { ipc, calls } = startIpc()
   const transport = new StdioClientTransport({
     command: 'bun', args: [join(import.meta.dir, '..', '..', 'plugin', 'server.ts')],
-    env: { ...process.env, CLAUDE_PROJECT_DIR: conv.folder, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket } as Record<string, string>,
+    env: { ...process.env, CLAUDE_PROJECT_DIR: conv.folder, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket, CC_TELEGRAM_CHANNEL_GRACE_MS: '100' } as Record<string, string>,
   })
   const client = new Client({ name: 'test', version: '0' }, { capabilities: {} })
   const notes: any[] = []

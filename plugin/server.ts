@@ -47,7 +47,17 @@ const mcp = new Server(
 // reconnect does not reach Claude twice.
 const seen = new Set<number>()
 
+// Claude Code drops channel notifications that arrive before it has
+// registered this server as a channel, which happens some time after the
+// MCP handshake. Hold the first hello until the handshake is done plus a
+// grace period, so the router does not deliver into the void.
+const CHANNEL_GRACE_MS = Number(process.env.CC_TELEGRAM_CHANNEL_GRACE_MS ?? 5000)
+const ready = new Promise<void>(resolve => {
+  mcp.oninitialized = () => setTimeout(resolve, CHANNEL_GRACE_MS)
+})
+
 const router = connectRouter({
+  ready,
   disabled: IN_HOME ? undefined : `${PROJECT_DIR} is outside ${HOME}`,
   socketPath: SOCKET,
   hello: { t: 'hello', project_dir: PROJECT_DIR, session_id: process.env.CLAUDE_CODE_SESSION_ID, pid: process.pid },
