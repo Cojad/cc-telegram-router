@@ -13,6 +13,7 @@ import { runCommand, type CommandDeps } from '../commands'
 import { makeAssertAllowedChat } from '../guard'
 import { createElevation } from '../elevation'
 import { requestGrant, decideGrant, type GrantDeps } from '../grants'
+import { approvalPlace, noticePlace, type ApprovalDeps } from '../approvals'
 import { createIpc } from '../ipc'
 import type { Access } from '../telegram/policy'
 
@@ -134,38 +135,70 @@ test('send guard: own chat always; others only with a send grant; owner/admin an
   expect(() => admin(OWNER)).not.toThrow()
 })
 
-test('grants: owner mode DMs the owner with buttons; only owner/admin decide; approval adds a permanent send and tells the worker', async () => {
-  const from = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
-  const asked: Array<{ chat: string; text: string; buttons: string[] }> = []
-  const told: string[] = []
-  const g: GrantDeps = {
-    db, owners: [OWNER],
-    async ask(chat, text, buttons) { asked.push({ chat, text, buttons: buttons.map(b => b.data) }); return true },
-    notify(c, text) { told.push(`${c.key}: ${text}`) },
-    label: id => id, isAdmin: uid => uid === ADMIN,
+function fakeApprovals() {
+  const sent: Array<{ bot: string; chat: string; thread?: number; text: string; buttons: string[]; id: number }> = []
+  const edits: Array<{ chat: string; id: number; text: string }> = []
+  let n = 100
+  const approvals: ApprovalDeps = {
+    db, owners: [OWNER], isAdmin: uid => uid === ADMIN,
+    async send(bot, to, text, buttons) {
+      if (to.chat_id === 'unreachable') return null
+      sent.push({ bot, chat: to.chat_id, thread: to.thread_id, text, buttons: buttons.map(b => b.data), id: ++n }); return n
+    },
+    async edit(_bot, chat, id, text) { edits.push({ chat, id, text }) },
   }
+  return { approvals, sent, edits }
+}
+
+test('approvals place: the owner DM by default; the approvals group topics once set up', () => {
+  expect(approvalPlace(db, [OWNER], 'cc')).toEqual({ chat_id: OWNER })
+  expect(noticePlace(db, [OWNER], 'cc')).toEqual({ chat_id: OWNER })
+  db.updateBotSetup('cc', { approvals_chat: '-100900', approvals_topic: 7, notices_topic: 5 })
+  expect(approvalPlace(db, [OWNER], 'cc')).toEqual({ chat_id: '-100900', thread_id: 7 })
+  expect(noticePlace(db, [OWNER], 'cc')).toEqual({ chat_id: '-100900', thread_id: 5 })
+  expect(approvalPlace(db, [OWNER], 'other')).toEqual({ chat_id: OWNER })
+  expect(approvalPlace(db, [], 'other')).toBeNull()
+})
+
+test('grants: owner mode goes to the approvals place; only owner/admin decide; approval adds a permanent send, every copy shows it, the worker is told', async () => {
+  const from = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  db.updateBotSetup('cc', { approvals_chat: '-100900', approvals_topic: 7, notices_topic: 5 })
+  const { approvals, sent, edits } = fakeApprovals()
+  const told: string[] = []
+  const g: GrantDeps = { db, approvals, notify(c, text) { told.push(`${c.key}: ${text}`) }, label: id => id }
   expect(await requestGrant(g, from, '-100777', 'owner', '回報結果')).toBe('已向 owner 申請 (#1), 決定後會通知你')
-  expect(asked[0]).toMatchObject({ chat: OWNER, buttons: ['grant:1:approve', 'grant:1:deny'] })
-  expect(asked[0]!.text).toContain('理由: 回報結果')
-  expect(decideGrant(g, 'grant:1:approve', '999', OWNER)).toBe('你不能決定這個申請')
-  expect(decideGrant(g, 'grant:1:approve', OWNER, OWNER)).toBe('已允許')
-  expect(decideGrant(g, 'grant:1:deny', OWNER, OWNER)).toBe('這個申請已經允許了')
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toMatchObject({ chat: '-100900', thread: 7, buttons: ['grant:1:approve', 'grant:1:deny'] })
+  expect(sent[0]!.text).toContain('理由: 回報結果')
+  expect(await decideGrant(g, 'grant:1:approve', '999', '-100900')).toBe('你不能決定這個申請')
+  expect(await decideGrant(g, 'grant:1:approve', ADMIN, '-100900')).toBe('已允許')
+  expect(await decideGrant(g, 'grant:1:deny', OWNER, '-100900')).toBe('這個申請已經允許了')
   expect(db.listOverrides(from.key)).toEqual([{ conv: from.key, kind: 'send', value: '-100777' }])
-  expect(told[0]).toContain('跨對話傳訊申請 #1 已被允許')
+  expect(edits).toEqual([{ chat: '-100900', id: sent[0]!.id, text: `${sent[0]!.text}\n\n已允許 (${ADMIN})` }])
+  expect(told[0]).toContain('跨對話傳訊申請 #1 已允許')
   expect(await requestGrant(g, from, '-100777', 'owner', 'x')).toBe('已經可以送往 -100777, 直接送出即可')
 })
 
-test('grants: target mode asks the target chat; anyone there decides; a denial is reported and grants nothing', async () => {
+test('grants: target mode asks the target chat and the owner at once; the first press decides and both copies show it; a denial grants nothing', async () => {
   const from = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
-  const asked: string[] = [], told: string[] = []
-  const g: GrantDeps = { db, owners: [OWNER], async ask(chat) { asked.push(chat); return true }, notify(_c, t) { told.push(t) }, label: id => id, isAdmin: () => false }
-  await requestGrant(g, from, '-100888', 'target', '想分享')
-  expect(asked).toEqual(['-100888'])
-  expect(decideGrant(g, 'grant:1:deny', '42', '-100999')).toBe('你不能決定這個申請') // pressed elsewhere
-  expect(decideGrant(g, 'grant:1:deny', '42', '-100888')).toBe('已拒絕')
+  const { approvals, sent, edits } = fakeApprovals()
+  const told: string[] = []
+  const g: GrantDeps = { db, approvals, notify(_c, t) { told.push(t) }, label: id => id }
+  expect(await requestGrant(g, from, '-100888', 'target', '想分享')).toBe('已在目標對話詢問, 也同步給 owner (#1), 決定後會通知你')
+  expect(sent.map(m => m.chat)).toEqual([OWNER, '-100888'])
+  expect(sent[0]!.text).toContain('也已在目標對話詢問')
+  expect(await decideGrant(g, 'grant:1:deny', '42', '-100999')).toBe('你不能決定這個申請') // a stranger elsewhere
+  expect(await decideGrant(g, 'grant:1:deny', '42', '-100888')).toBe('已拒絕') // anyone in the target chat
+  expect(await decideGrant(g, 'grant:1:approve', OWNER, OWNER)).toBe('這個申請已經拒絕了')
   expect(db.listOverrides(from.key)).toEqual([])
-  expect(told[0]).toContain('已被拒絕')
-  expect(decideGrant(g, 'not-ours', '42', '-100888')).toBeNull()
+  expect(edits.map(e => e.chat)).toEqual([OWNER, '-100888'])
+  expect(told[0]).toContain('已拒絕')
+  expect(await decideGrant(g, 'not-ours', '42', '-100888')).toBeNull()
+  // the owner may decide a target-mode request from the approvals place too
+  await requestGrant(g, from, '-100888', 'target', '再一次')
+  expect(await decideGrant(g, 'grant:2:approve', OWNER, OWNER)).toBe('已允許')
+  // the target chat unreachable: the owner alone decides
+  expect(await requestGrant(g, from, 'unreachable', 'target', 'x')).toBe('無法在 unreachable 詢問 (bot 可能不在那個對話), 已改由 owner 決定 (#3)')
 })
 
 // --- 07 提權 -------------------------------------------------------------------

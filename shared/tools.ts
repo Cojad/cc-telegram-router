@@ -119,6 +119,18 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'save_bot_profile',
+    description: 'First-run setup only (when a <bootstrap> note asks for it, in the owner\'s DM): save the bot\'s name and persona after interviewing the owner. The persona then applies to every conversation of this bot.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'What the owner wants the bot to be called' },
+        persona: { type: 'string', description: 'Second-person settings for the bot itself ("你是..."): personality, speaking style, purpose. Under 300 characters.' },
+      },
+      required: ['name', 'persona'],
+    },
+  },
+  {
     name: 'get_chat_context',
     description: 'Current information about this Telegram conversation: chat id, type, title, your role and what it allows, folder, model, autoCompactWindow. The same data arrives as <chat_context> with messages; call this when unsure.',
     inputSchema: { type: 'object', properties: {} },

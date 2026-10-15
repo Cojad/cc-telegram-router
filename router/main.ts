@@ -28,6 +28,9 @@ import { runCli } from './cli'
 import { createProgress, type ProgressEvent } from './progress'
 import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, type GrantDeps } from './grants'
+import { postNotice, type ApprovalDeps } from './approvals'
+import { createPkgGate, claudeReviewer } from './pkgreview'
+import { newClaimCode, isClaim, initBotSetups, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup } from './setup'
 import { createElevation } from './elevation'
 import { dmLabel } from './commands'
 import { parseRelay, mayRelay, relay, codeBlock, type Exec } from './relay'
@@ -79,6 +82,14 @@ function writeConfig(mutate: (raw: Record<string, unknown>) => void): void {
   renameSync(tmp, configPath)
 }
 
+initBotSetups(db, cfg.bots.map(b => b.name))
+const personaOf = (bot: string) => db.getBotSetup(bot)?.persona ?? null
+const ctxFile = (c: Conversation) => writeContextFile(cfg, c, personaOf(c.bot))
+const ctxOf = (c: Conversation) => buildContext(cfg, c, personaOf(c.bot))
+
+// No owner yet: the first person to DM "/start <code>" to a bot becomes it.
+let claimCode: string | null = cfg.owners.length ? null : newClaimCode()
+
 const settingsVars = (c: Conversation) => ({ folder: c.folder, autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR })
 const settingsFor = (c: Conversation) =>
   writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, settingsVars(c), db.listOverrides(c.key))
@@ -86,7 +97,7 @@ const settingsFor = (c: Conversation) =>
 // Templates may have changed since the last run: rewrite every
 // conversation's settings and context file. Running workers pick settings up
 // on their next resume (live sessions do not reload settings).
-for (const c of db.listConversations()) { settingsFor(c); writeContextFile(cfg, c) }
+for (const c of db.listConversations()) { settingsFor(c); ctxFile(c) }
 
 // Which conversation a Bot API call is made on behalf of, for the outbound log.
 const callConv = new AsyncLocalStorage<string>()
@@ -128,9 +139,22 @@ const ipc = createIpc({
       const text = await callConv.run(conv.key, () => requestGrant(grantDeps, conv, String(args.chat_id ?? ''), args.mode === 'target' ? 'target' : 'owner', String(args.reason ?? '')))
       return { content: [{ type: 'text', text }] }
     }
+    if (tool === 'save_bot_profile') {
+      if (!conv || conv.type !== 'dm' || !cfg.owners.includes(conv.chat_id)) return { content: [{ type: 'text', text: '只有 owner 私訊的對話能設定 bot 人設' }], isError: true }
+      const persona = `名字: ${String(args.name ?? '').trim()}\n${String(args.persona ?? '').trim()}`.slice(0, 2000)
+      db.updateBotSetup(conv.bot, { persona, persona_done: 1 })
+      db.bumpContext(conv.bot)
+      for (const c of db.listConversations()) if (c.bot === conv.bot) ctxFile(c)
+      log(`${conv.bot}: persona saved`)
+      const s = db.getBotSetup(conv.bot)
+      if (!s?.approvals_chat && !s?.group_skipped) {
+        setTimeout(() => void approvalDeps.send(conv.bot, { chat_id: conv.chat_id }, GROUP_GUIDE, [{ text: '略過, 用私訊接收', data: `setup:${conv.bot}:skip` }]), 3000)
+      }
+      return { content: [{ type: 'text', text: '已儲存人設, 這隻 bot 的所有對話都會套用. router 會接著私訊 owner 審核群組的設定步驟, 你不用再說明.' }] }
+    }
     if (tool === 'get_chat_context') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal session: no conversation' }] }
-      return { content: [{ type: 'text', text: JSON.stringify(buildContext(cfg, conv), null, 2) }] }
+      return { content: [{ type: 'text', text: JSON.stringify(ctxOf(conv), null, 2) }] }
     }
     const botName = conv?.bot ?? cfg.bots[0]!.name
     const h = bots.get(botName)
@@ -142,12 +166,16 @@ const ipc = createIpc({
       assertSendable: makeAssertSendable(live, cfg.stateDir),
     }))
   },
-  onHook(peer, ev) {
-    const c = peer.conv
+  async onHook(peer, ev) {
+    const c = peer.conv ? db.getConversation(peer.conv.key) : null
     if (!c) return {}
     // progress events ride along (pre/post/stop/...); subagent events are elevation only
     if (!String(ev.event).startsWith('subagent-')) ipcOnProgress(peer, ev)
-    return elevation.onHook(c.key, ev as Record<string, any>)
+    const d = elevation.onHook(c.key, ev as Record<string, any>)
+    if (d.decision) return d
+    // power may install packages once they pass review (router/pkgreview.ts)
+    if (ev.event === 'pre' && ev.tool_name === 'Bash' && typeof ev.command === 'string' && c.role === 'power') return pkgGate.check(c, ev.command)
+    return d
   },
   onProgress(peer, ev) { ipcOnProgress(peer, ev) },
   async onCli(text) {
@@ -164,11 +192,12 @@ const ipc = createIpc({
     if (!c) return params
     const parts: string[] = []
     const v = c.ctx_v ?? 1
-    if (conn.ctxV !== v) { parts.push(renderContext(buildContext(cfg, c))); conn.ctxV = v }
+    if (conn.ctxV !== v) { parts.push(renderContext(ctxOf(c))); conn.ctxV = v }
     const logs = renderLogs(db.bindLogs(key, qid))
     if (logs) parts.push(logs)
     const elevated = elevation.onDeliver(key, c.role, params.meta.user_id)
     if (elevated) parts.push(elevated)
+    if (c.type === 'dm' && cfg.owners.includes(c.chat_id) && params.meta.user_id === c.chat_id && needsPersona(db.getBotSetup(c.bot))) parts.push(bootstrapNote(c.bot))
     return {
       content: parts.length ? `${parts.join('\n')}\n${params.content}` : params.content,
       meta: { ...params.meta, ctx_v: String(v) },
@@ -194,6 +223,7 @@ const supervisor = createSupervisor({
   isConnected: ipc.isConnected,
   waitConnected: ipc.waitConnected,
   settingsPath: settingsFor,
+  onWakeFail: c => void postNotice(approvalDeps, c.bot, `⚠️ ${c.key}${c.title ? ` (${c.title})` : ''} 的 worker 叫不醒, 訊息還在佇列裡. 可試 /router session restart ${c.chat_id}`),
 })
 
 /** Put a router-originated message in front of a conversation's worker. */
@@ -203,21 +233,52 @@ function notifyConversation(c: Conversation, text: string): void {
   else void supervisor.ensureAwake(c)
 }
 
-const grantDeps: GrantDeps = {
+const approvalDeps: ApprovalDeps = {
   db, owners: cfg.owners,
-  async ask(chatId, text, buttons) {
-    const c = db.listConversations().find(x => x.chat_id === chatId)
-    const api = bots.get(c?.bot ?? cfg.bots[0]!.name)?.bot.api
-    if (!api) return false
-    return api.sendMessage(chatId, text, { reply_markup: { inline_keyboard: [buttons.map(b => ({ text: b.text, callback_data: b.data }))] } }).then(() => true, e => { log(`grant ask ${chatId}: ${e}`); return false })
-  },
-  notify: notifyConversation,
-  label(id) {
-    const c = db.listConversations().find(x => x.chat_id === id)
-    if (c?.type === 'dm' || (!c && !id.startsWith('-'))) return `${dmLabel(db, id)} (${id})`
-    return `${c?.title ?? id} (${id})`
-  },
   isAdmin: uid => roleOf(commandDeps, uid) === 'admin',
+  async send(bot, to, text, buttons) {
+    const api = bots.get(bot)?.bot.api
+    if (!api) return null
+    return api.sendMessage(to.chat_id, text, {
+      ...(to.thread_id ? { message_thread_id: to.thread_id } : {}),
+      ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map(b => ({ text: b.text, callback_data: b.data }))] } } : {}),
+    }).then(m => m.message_id, e => { log(`send to ${to.chat_id}: ${e}`); return null })
+  },
+  async edit(bot, chatId, messageId, text) {
+    await bots.get(bot)?.bot.api.editMessageText(chatId, messageId, text)
+  },
+}
+
+const label = (id: string) => {
+  const c = db.listConversations().find(x => x.chat_id === id)
+  if (c?.type === 'dm' || (!c && !id.startsWith('-'))) return `${dmLabel(db, id)} (${id})`
+  return `${c?.title ?? id} (${id})`
+}
+
+const grantDeps: GrantDeps = { db, approvals: approvalDeps, notify: notifyConversation, label }
+
+const pkgGate = createPkgGate({
+  db, approvals: approvalDeps, notify: notifyConversation, label, log,
+  review: claudeReviewer({ claudeBin: cfg.claudeBin, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
+})
+
+/** Group setup: /router setup group, run in the forum group itself. */
+async function setupGroup(bot: string, chatId: string): Promise<string> {
+  const h = bots.get(bot)
+  if (!h?.info) return 'bot 還沒啟動完成, 稍後再試'
+  const chat = await h.bot.api.getChat(chatId).catch(() => null)
+  if (!chat) return '查不到這個群組'
+  const member = await h.bot.api.getChatMember(chatId, h.info.id).catch(() => null)
+  const check = checkGroup(chat as { type: string; is_forum?: boolean }, member as { status: string; can_manage_topics?: boolean } | null)
+  if (!check.ok) return `⛔ ${check.reason}`
+  const s = db.getBotSetup(bot)
+  const reuse = s?.approvals_chat === chatId && s.notices_topic && s.approvals_topic
+  const notices = reuse ? s!.notices_topic! : (await h.bot.api.createForumTopic(chatId, '🔔 重要通知')).message_thread_id
+  const approvals = reuse ? s!.approvals_topic! : (await h.bot.api.createForumTopic(chatId, '🔐 權限審核')).message_thread_id
+  db.updateBotSetup(bot, { approvals_chat: chatId, notices_topic: notices, approvals_topic: approvals, group_skipped: 0 })
+  await approvalDeps.send(bot, { chat_id: chatId, thread_id: notices }, '這裡會收到重要通知: 新對話, worker 叫不醒等.', [])
+  await approvalDeps.send(bot, { chat_id: chatId, thread_id: approvals }, '這裡會收到權限申請: 跨對話傳訊, 套件安裝. owner 與 admin 可以按允許或拒絕.', [])
+  return `✅ 審核群組設定完成${reuse ? ' (沿用既有話題)' : ''}: 重要通知與權限申請之後都送到這個群組的話題`
 }
 
 /** A message gate() delivered: queue it for its conversation and make sure a worker picks it up. */
@@ -228,12 +289,13 @@ function onChannel(botName: string, params: ChannelParams): void {
   let conv = ensureConversation(cfg, db, botName, chat_id, seen?.type, c => {
     if (seen?.title) c = db.updateConversation(c.key, { title: seen.title })
     settingsFor(c)
-    writeContextFile(cfg, c)
+    ctxFile(c)
     log(`new conversation ${c.key} (${c.role})`)
+    void postNotice(approvalDeps, botName, `🆕 新對話 ${c.key}${seen?.title ? ` (${seen.title})` : ''}, 角色 ${c.role}`)
   })
   if (seen?.title && seen.title !== conv.title) {
     conv = db.updateConversation(conv.key, { title: seen.title })
-    writeContextFile(cfg, conv)
+    ctxFile(conv)
   }
   // Photos are downloaded into the router's inbox, which workers cannot
   // read; move them into the conversation's own attachments folder.
@@ -300,15 +362,21 @@ const commandDeps: CommandDeps = {
   },
   async applySettings(c, opts) {
     settingsFor(c)
-    writeContextFile(cfg, c)
+    ctxFile(c)
     if (await supervisor.liveJob(c)) await supervisor.restart(c, opts)
     else if (opts.dropJob) await supervisor.stop(c, opts)
   },
   applyPermissions(c) {
     settingsFor(c)
-    writeContextFile(cfg, c)
+    ctxFile(c)
     db.setRotate(c.key, true)
     void rotate()
+  },
+  setup: {
+    describe: bot => describeSetup(db.getBotSetup(bot), cfg.owners[0]),
+    skip(bot) { db.updateBotSetup(bot, { group_skipped: 1, approvals_chat: null, approvals_topic: null, notices_topic: null }) },
+    resetPersona(bot) { db.updateBotSetup(bot, { persona_done: 0 }) },
+    group: setupGroup,
   },
   effectiveSettings: c => applyOverrides(renderSettings(TEMPLATES, c.role, settingsVars(c)), db.listOverrides(c.key)),
   async sendTo(botName, chatId, text) {
@@ -395,15 +463,34 @@ function startBot(bc: BotConfig): BotHandle {
       const conv = db.findConversation(bc.name, String(ctx.chat.id))
       if (conv) db.touchConversation(conv.key, ctx.chat.type === 'private' ? null : title)
     }
-    // Approve/deny buttons of cross-conversation send requests.
+    // Buttons: send grants, package reviews, setup. Each settles every copy itself.
     const data = ctx.callbackQuery?.data
-    if (data?.startsWith('grant:') && ctx.from) {
-      const answer = decideGrant(grantDeps, data, String(ctx.from.id), String(ctx.chat?.id ?? ''))
-      await ctx.answerCallbackQuery({ text: answer ?? '' }).catch(() => {})
-      const msg = ctx.callbackQuery!.message
-      if (answer && (answer === '已允許' || answer === '已拒絕') && msg && 'text' in msg) {
-        await ctx.editMessageText(`${msg.text}\n\n${answer} (${ctx.from.username ? '@' + ctx.from.username : ctx.from.first_name})`).catch(() => {})
+    if (data && ctx.from && /^(grant|pkg|setup):/.test(data)) {
+      const uid = String(ctx.from.id)
+      let answer: string | null = null
+      if (data.startsWith('grant:')) answer = await decideGrant(grantDeps, data, uid, String(ctx.chat?.id ?? ''))
+      else if (data.startsWith('pkg:')) answer = await pkgGate.decide(data, uid)
+      else if (data === `setup:${bc.name}:skip`) {
+        if (!cfg.owners.includes(uid)) answer = '只有 owner 能決定'
+        else {
+          commandDeps.setup.skip(bc.name)
+          answer = '已略過, 通知與申請都會私訊給你'
+          await ctx.editMessageText(`${GROUP_GUIDE}\n\n${answer}`).catch(() => {})
+        }
       }
+      await ctx.answerCallbackQuery({ text: answer ?? '' }).catch(() => {})
+      return
+    }
+    // A router without owners: "/start <code>" in a DM claims it (router/setup.ts).
+    if (claimCode && ctx.chat?.type === 'private' && ctx.from && isClaim(ctx.message?.text, claimCode)) {
+      const uid = String(ctx.from.id)
+      claimCode = null
+      writeConfig(r => { r.owners = [uid] })
+      cfg.owners.push(uid)
+      const a = loadAccess()
+      if (!a.allowFrom.includes(uid)) { a.allowFrom.push(uid); saveAccess(a) }
+      log(`owner claimed by ${uid}`)
+      await ctx.reply('✅ 你現在是這個 router 的 owner. 傳任何一句話給我, 我們從 bot 的名字與個性開始設定.').catch(() => {})
       return
     }
     const text = ctx.message?.text
@@ -510,7 +597,7 @@ for (const c of db.listConversations()) {
   const api = bots.get(c.bot)?.bot.api
   if (!api) continue
   void api.getChat(c.chat_id).then(ch => {
-    if ('title' in ch && ch.title) { const u = db.updateConversation(c.key, { title: ch.title }); writeContextFile(cfg, u) }
+    if ('title' in ch && ch.title) { const u = db.updateConversation(c.key, { title: ch.title }); ctxFile(u) }
   }).catch(e => log(`getChat ${c.key}: ${e}`))
 }
 
@@ -568,3 +655,4 @@ process.on('uncaughtException', e => log(`uncaught exception: ${e.stack ?? e.mes
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 process.on('SIGINT', () => void shutdown('SIGINT'))
 log(`router up: config ${configPath}, home ${cfg.home}, ${cfg.bots.length} bot(s)`)
+if (claimCode) log(`沒有 owner: 私訊任一隻 bot「/start ${claimCode}」認領 owner (這個碼只在這次執行有效)`)

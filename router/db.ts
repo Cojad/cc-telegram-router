@@ -32,11 +32,32 @@ export type Conversation = {
 export type Person = { uid: string; name: string | null; username: string | null; photo_file_id: string | null; photo_checked_at: string | null; first_seen: string; last_seen: string; last_chat_id: string | null }
 
 /** /router perm overrides on top of a conversation's role template. */
-export type OverrideKind = 'tool-allow' | 'tool-deny' | 'path-read' | 'path-write' | 'net' | 'mcp' | 'send'
+export type OverrideKind = 'tool-allow' | 'tool-deny' | 'path-read' | 'path-write' | 'net' | 'mcp' | 'send' | 'pkg'
 export type Override = { conv: string; kind: OverrideKind; value: string }
 
 /** Cross-conversation send requests (plan 03 Grants). */
 export type Grant = { id: number; from_conv: string; target: string; mode: 'owner' | 'target'; reason: string | null; status: 'pending' | 'approved' | 'denied'; created_at: string; decided_by: string | null; decided_at: string | null }
+
+/** Per-bot first-run setup (plan 03 初次設定): persona interview, approvals group. */
+export type BotSetup = {
+  bot: string
+  /** The owner finished the persona interview (save_bot_profile). */
+  persona_done: number
+  persona: string | null
+  /** Forum group for notices and approval requests; null = the owner's DM. */
+  approvals_chat: string | null
+  approvals_topic: number | null
+  notices_topic: number | null
+  /** The owner chose DM instead of a group. */
+  group_skipped: number
+}
+
+/** Messages that carry approve/deny buttons, so every copy shows the outcome. */
+export type ApprovalMsg = { kind: string; ref: number; bot: string; chat_id: string; message_id: number; text: string }
+
+/** Package install review (plan 07 power 安裝套件). */
+export type PkgVerdict = { eco: string; name: string; risk: 'low' | 'medium' | 'high'; reason: string; at: string }
+export type PkgRequest = { id: number; conv: string; pkgs: string; reason: string; status: 'pending' | 'approved' | 'denied'; created_at: string; decided_by: string | null }
 
 export type QueueRow = { qid: number; conv: string; params: string; status: 'pending' | 'delivered' | 'acked' }
 export type LogRow = { id: number; conv: string; ts: string; text: string; qid: number | null }
@@ -77,6 +98,18 @@ export interface RouterDb {
   getGrant(id: number): Grant | null
   decideGrant(id: number, status: 'approved' | 'denied', by: string): boolean
   rotatePending(): Conversation[]
+  /** chat_context changed for every conversation of a bot (persona saved). */
+  bumpContext(bot: string): void
+  getBotSetup(bot: string): BotSetup | null
+  /** Create the row if missing, then set the given fields. */
+  updateBotSetup(bot: string, fields: Partial<Omit<BotSetup, 'bot'>>): BotSetup
+  addApprovalMsg(m: ApprovalMsg): void
+  approvalMsgs(kind: string, ref: number): ApprovalMsg[]
+  getPkgVerdict(eco: string, name: string): PkgVerdict | null
+  setPkgVerdict(v: Omit<PkgVerdict, 'at'>): void
+  addPkgRequest(r: Pick<PkgRequest, 'conv' | 'pkgs' | 'reason'>): number
+  getPkgRequest(id: number): PkgRequest | null
+  decidePkgRequest(id: number, status: 'approved' | 'denied', by: string): boolean
   getUserRole(uid: string): string | null
   setUserRole(uid: string, role: string | null): void
   listUsers(): Array<{ uid: string; role: string }>
@@ -132,6 +165,17 @@ export function openRouterDb(path: string): RouterDb {
     CREATE TABLE IF NOT EXISTS grants (
       id INTEGER PRIMARY KEY AUTOINCREMENT, from_conv TEXT NOT NULL, target TEXT NOT NULL, mode TEXT NOT NULL,
       reason TEXT, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_by TEXT, decided_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS bot_setup (
+      bot TEXT PRIMARY KEY, persona_done INTEGER NOT NULL DEFAULT 0, persona TEXT,
+      approvals_chat TEXT, approvals_topic INTEGER, notices_topic INTEGER,
+      group_skipped INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS approval_msgs (kind TEXT NOT NULL, ref INTEGER NOT NULL, bot TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, text TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS pkg_verdicts (eco TEXT NOT NULL, name TEXT NOT NULL, risk TEXT NOT NULL, reason TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (eco, name));
+    CREATE TABLE IF NOT EXISTS pkg_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, conv TEXT NOT NULL, pkgs TEXT NOT NULL, reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_by TEXT, decided_at TEXT
     );
     CREATE TABLE IF NOT EXISTS progress_msgs (key TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (key, message_id));
   `)
@@ -248,6 +292,21 @@ export function openRouterDb(path: string): RouterDb {
     clearOverrides: conv => qOvClear.run(conv).changes,
     setRotate: (key, on) => { qRotSet.run(on ? 1 : 0, key) },
     rotatePending: () => qRotAll.all() as Conversation[],
+    bumpContext: bot => { db.prepare('UPDATE conversations SET ctx_v = ctx_v + 1 WHERE bot = ?').run(bot) },
+    getBotSetup: bot => (db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup | null) ?? null,
+    updateBotSetup(bot, fields) {
+      db.prepare('INSERT OR IGNORE INTO bot_setup (bot, updated_at) VALUES (?, ?)').run(bot, now())
+      const keys = Object.keys(fields).filter(k => ['persona_done', 'persona', 'approvals_chat', 'approvals_topic', 'notices_topic', 'group_skipped'].includes(k))
+      if (keys.length) db.prepare(`UPDATE bot_setup SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE bot = ?`).run(...keys.map(k => ((fields as any)[k] ?? null) as string | number | null), now(), bot)
+      return db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup
+    },
+    addApprovalMsg: m => { db.prepare('INSERT INTO approval_msgs (kind, ref, bot, chat_id, message_id, text) VALUES (?, ?, ?, ?, ?, ?)').run(m.kind, m.ref, m.bot, m.chat_id, m.message_id, m.text) },
+    approvalMsgs: (kind, ref) => db.prepare('SELECT * FROM approval_msgs WHERE kind = ? AND ref = ?').all(kind, ref) as ApprovalMsg[],
+    getPkgVerdict: (eco, name) => (db.prepare('SELECT * FROM pkg_verdicts WHERE eco = ? AND name = ?').get(eco, name) as PkgVerdict | null) ?? null,
+    setPkgVerdict: v => { db.prepare('INSERT OR REPLACE INTO pkg_verdicts (eco, name, risk, reason, at) VALUES (?, ?, ?, ?, ?)').run(v.eco, v.name, v.risk, v.reason, now()) },
+    addPkgRequest: r => Number(db.prepare('INSERT INTO pkg_requests (conv, pkgs, reason, created_at) VALUES (?, ?, ?, ?)').run(r.conv, r.pkgs, r.reason, now()).lastInsertRowid),
+    getPkgRequest: id => (db.prepare('SELECT id, conv, pkgs, reason, status, created_at, decided_by FROM pkg_requests WHERE id = ?').get(id) as PkgRequest | null) ?? null,
+    decidePkgRequest: (id, status, by) => db.prepare("UPDATE pkg_requests SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'").run(status, by, now(), id).changes > 0,
     getUserRole: uid => ((qUserGet.get(uid) as { role: string } | null)?.role) ?? null,
     setUserRole: (uid, role) => { if (role) qUserSet.run(uid, role, now()); else qUserDel.run(uid) },
     listUsers: () => qUsers.all() as Array<{ uid: string; role: string }>,

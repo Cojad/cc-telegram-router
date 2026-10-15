@@ -6,14 +6,16 @@
 // session-start (matcher compact): put the current <chat_context> back from
 //   the conversation's .chat/context.json (plan 06 壓縮後補回).
 // progress <event>: report the event to the router, which owns the
-//   "🤔 思考中…" Telegram message (router/progress.ts) and decides elevation
-//   (router/elevation.ts): for PreToolUse its allow/deny is printed back.
+//   "🤔 思考中…" Telegram message (router/progress.ts), decides elevation
+//   (router/elevation.ts) and reviews package installs (router/pkgreview.ts):
+//   for PreToolUse its allow/deny is printed back.
 
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { renderContext, type ChatContext } from '../router/context'
 import { toolSummary } from '../router/progress'
 import { DEFAULT_SOCKET, encode } from '../shared/protocol'
+import { INSTALL_HINT } from '../router/packages'
 
 const SOCKET = process.env.CC_TELEGRAM_ROUTER_SOCKET ?? DEFAULT_SOCKET
 
@@ -29,6 +31,8 @@ function progressEvent(event: string, input: Record<string, any>): Record<string
         event, summary: toolSummary(name, input.tool_input), tool_name: name, ...agent,
         // what the elevation check needs; the rest of tool_input stays on this machine
         ...(event === 'pre' ? { tool_input: pick(input.tool_input ?? {}, ['dangerouslyDisableSandbox', 'to', 'recipient']) } : {}),
+        // package installs are reviewed by the router (router/pkgreview.ts)
+        ...(event === 'pre' && name === 'Bash' && INSTALL_HINT.test(String(input.tool_input?.command ?? '')) ? { command: String(input.tool_input.command) } : {}),
       }
     }
     case 'compact-pre':
@@ -45,11 +49,11 @@ function pick(o: Record<string, unknown>, keys: string[]): Record<string, unknow
 }
 
 /** Ask the router; resolve its decision, or null when it cannot be reached in time. */
-async function ask(projectDir: string, ev: Record<string, unknown>): Promise<Record<string, any> | null> {
+async function ask(projectDir: string, ev: Record<string, unknown>, waitMs: number): Promise<Record<string, any> | null> {
   return new Promise(resolve => {
     let buf = '', done = false
-    const finish = (v: Record<string, any> | null) => { if (!done) { done = true; resolve(v) } }
-    setTimeout(() => finish(null), 1500)
+    const finish = (v: Record<string, any> | null) => { if (!done) { done = true; clearTimeout(timer); resolve(v) } }
+    const timer = setTimeout(() => finish(null), waitMs)
     Bun.connect({
       unix: SOCKET,
       socket: {
@@ -85,7 +89,8 @@ async function main(): Promise<void> {
   } else if (job === 'progress' && event) {
     const ev = progressEvent(event, input)
     if (!ev) return
-    const d = await ask(dir, ev)
+    // A package review takes seconds; everything else answers at once.
+    const d = await ask(dir, ev, ev.command ? 55_000 : 1500)
     if (event !== 'pre') return
     // The router decides elevation (router/elevation.ts). Unreachable router:
     // nobody leaves the sandbox.

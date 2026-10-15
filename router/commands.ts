@@ -47,6 +47,14 @@ export interface CommandDeps {
   applyPermissions(c: Conversation): void
   /** The effective settings the router would write for this conversation. */
   effectiveSettings(c: Conversation): any
+  /** First-run setup of a bot (router/setup.ts). */
+  setup: {
+    describe(bot: string): string
+    skip(bot: string): void
+    resetPersona(bot: string): void
+    /** Make this chat the approvals group; the reply says what happened or what is missing. */
+    group(bot: string, chatId: string): Promise<string>
+  }
   sendTo(bot: string, chatId: string, text: string): Promise<void>
   recentMessages(chatId: string, n: number): MessageRecord[]
   writeConfig(mutate: (raw: Record<string, unknown>) => void): void
@@ -142,7 +150,8 @@ const HELP = [
   '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off>',
   '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] | group rm <chat_id> | policy <pairing|allowlist|disabled>',
   '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒)',
-  '/router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | reset',
+  '/router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
+  '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
   '/router config (列出全部) | get <key> | set <key> <值>',
   '/router log (所有對話) | log <chat_id> [筆數]',
   '/restart',
@@ -245,7 +254,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const token = args[3]
         if (!token) return done(`用法: /router bot ${op} <名稱> <token>`)
         const username = op === 'add' ? await deps.bots.add(name, token) : await deps.bots.rotate(name, token)
-        return done(`${op === 'add' ? '已新增' : '已更換'} bot ${name}: @${username}`, { deleteMessage: true })
+        return done(`${op === 'add' ? `已新增 bot ${name}: @${username}\n私訊 @${username} 任何一句話, 它會帶你完成初次設定 (名字, 個性, 風格, 用途, 審核群組)` : `已更換 bot ${name}: @${username}`}`, { deleteMessage: true })
       } catch (e) {
         return done(`bot ${op} 失敗: ${e instanceof Error ? e.message : e}`, { deleteMessage: hasToken })
       }
@@ -370,10 +379,12 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         net: { add: { allow: 'net' }, rm: ['net'] },
         mcp: { add: { allow: 'mcp' }, rm: ['mcp'] },
         send: { add: { allow: 'send' }, rm: ['send'] },
+        pkg: { add: { allow: 'pkg' }, rm: ['pkg'] },
       }
       const k = what ? kinds[what] : undefined
-      if (!k || !op || !value) return done('用法: /router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | reset')
+      if (!k || !op || !value) return done('用法: /router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset')
       if (what === 'path' && !value.startsWith('/')) return done('路徑要用絕對路徑, 例如 /x/data/shared')
+      if (what === 'pkg' && !/^(pypi|npm|other):\S+$/.test(value)) return done('套件寫成 pypi:名稱 或 npm:名稱, 例如 pypi:requests')
       if (op === 'rm') {
         const n = db.removeOverride(conv.key, k.rm, value)
         return n ? changed(`移除 ${what} ${value}`) : done(`${conv.key} 沒有 ${what} ${value} 這筆覆寫`)
@@ -477,7 +488,9 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       if (CONFIG_KEYS[key] === 'list') value = raw.split(/[\s,]+/).filter(Boolean)
       if (key === 'owners' && !(value as string[]).includes(input.senderId)) return deny('不能把自己從 owners 移除')
       deps.writeConfig(r => { r[key] = value })
-      ;(cfg as unknown as Record<string, unknown>)[key] = value
+      // owners is shared by reference (elevation, approvals): change it in place
+      if (key === 'owners') cfg.owners.splice(0, cfg.owners.length, ...(value as string[]))
+      else (cfg as unknown as Record<string, unknown>)[key] = value
       return done(`${key}: ${JSON.stringify(cur)} → ${JSON.stringify(value)}`)
     }
 
@@ -493,6 +506,19 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return `[${c.key}${c.title ? ` ${c.title}` : ''}]\n${rows.map(fmt).join('\n') || '(沒有紀錄)'}`
       })
       return done(blocks.join('\n\n'), { private: true })
+    }
+
+    case 'setup': {
+      if (role !== 'owner') return deny('/router setup 只開放 owner')
+      const op = args[1]
+      if (!op || op === 'show') return done(deps.setup.describe(input.bot))
+      if (op === 'skip') { deps.setup.skip(input.bot); return done('已略過審核群組: 重要通知與權限申請都會私訊給 owner') }
+      if (op === 'persona') { deps.setup.resetPersona(input.bot); return done('下次 owner 私訊這隻 bot 時會重新做人設訪談') }
+      if (op === 'group') {
+        if (input.chatType !== 'supergroup' && input.chatType !== 'group') return done('請在要當審核群組的那個群組裡下 /router setup group')
+        return done(await deps.setup.group(input.bot, input.chatId))
+      }
+      return done('用法: /router setup [show] | group | skip | persona')
     }
 
     case 'restart':

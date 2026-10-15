@@ -105,6 +105,8 @@ test('every update is logged; allowlisted messages become conversations, setting
   expect(JSON.parse(readFileSync(join(state, 'sessions', 'dm-111.json'), 'utf8')).permissions.defaultMode).toBe('bypassPermissions')
   const spawned = await until(() => { const l = readFileSync(argLog, 'utf8'); return l.includes('tg-dm-111') && l.includes('tg-group-100777') && l })
   expect(spawned).toContain('--channels plugin:telegram@claude-plugins-official')
+  // each new conversation is an important notice to the owner (no approvals group set)
+  await until(() => calls.filter(c => c.method === 'sendMessage' && String(c.body.chat_id) === '111' && String(c.body.text).startsWith('🆕 新對話')).length === 2)
   // the stranger (333) is in events but never queued
   expect(q("SELECT count(*) n FROM queue WHERE params LIKE '%let me in%'")[0].n).toBe(0)
 })
@@ -125,7 +127,7 @@ test('a plugin for the conversation gets the queued message, and its reply goes 
   const r = await client.call('reply', { chat_id: '111', text: 'pong' })
   expect(r.isError).toBeFalsy()
   expect(calls.some(c => c.method === 'sendMessage' && c.body.text === 'pong')).toBe(true)
-  const out = await until(() => q("SELECT conv, method, payload_json, error FROM outbound WHERE method = 'sendMessage'")[0])
+  const out = await until(() => q("SELECT conv, method, payload_json, error FROM outbound WHERE method = 'sendMessage' AND payload_json LIKE '%pong%'")[0])
   expect(out.conv).toBe('dm-111')
   expect(JSON.parse(out.payload_json)).toMatchObject({ chat_id: '111', text: 'pong' })
   expect(out.error).toBeNull()

@@ -22,6 +22,8 @@ export interface SupervisorDeps {
   settingsPath: (c: Conversation) => string
   log?: (msg: string) => void
   connectTimeoutMs?: number
+  /** The worker did not connect in time (an important notice for the owner). */
+  onWakeFail?: (c: Conversation) => void
 }
 
 export const CHANNEL = 'plugin:telegram@claude-plugins-official'
@@ -104,7 +106,10 @@ export function createSupervisor(deps: SupervisorDeps) {
       await run([cfg.claudeBin, 'stop', live.id], cfg.home)
     }
     await start(c, agents)
-    if (!(await waitConnected(c.key, timeout))) log(`${c.key}: plugin did not connect within ${timeout}ms`)
+    if (!(await waitConnected(c.key, timeout))) {
+      log(`${c.key}: plugin did not connect within ${timeout}ms`)
+      deps.onWakeFail?.(c)
+    }
   }
 
   /** Serialized per conversation: concurrent callers share one wake. */
