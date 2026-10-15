@@ -62,21 +62,20 @@ export function registerTransport(deps: TransportDeps): void {
   bot.command('start', async ctx => {
     if (!dmCommandGate(ctx)) return
     await ctx.reply(
-      `This bot bridges Telegram to a Claude Code session.\n\n` +
-      `To pair:\n` +
-      `1. DM me anything — you'll get a 6-char code\n` +
-      `2. In Claude Code: /telegram:access pair <code>\n\n` +
-      `After that, DMs here reach that session.`
+      `這隻 bot 把 Telegram 對話接到 Claude Code, 每個對話有自己的 session.\n\n` +
+      `配對方式:\n` +
+      `1. 私訊我任何內容, 會拿到 6 碼配對碼\n` +
+      `2. 請 owner 執行 /router access pair <配對碼>\n\n` +
+      `之後在這裡說的話就會送到你的 session.`
     )
   })
 
   bot.command('help', async ctx => {
     if (!dmCommandGate(ctx)) return
     await ctx.reply(
-      `Messages you send here route to a paired Claude Code session. ` +
-      `Text and photos are forwarded; replies and reactions come back.\n\n` +
-      `/start — pairing instructions\n` +
-      `/status — check your pairing state`
+      `在這裡傳的文字與圖片會送到這個對話專屬的 Claude Code session, 回覆與表情會送回來.\n\n` +
+      `/start 配對說明\n` +
+      `/status 查看配對狀態`
     )
   })
 
@@ -87,20 +86,18 @@ export function registerTransport(deps: TransportDeps): void {
 
     if (access.allowFrom.includes(senderId)) {
       const name = ctx.from!.username ? `@${ctx.from!.username}` : senderId
-      await ctx.reply(`Paired as ${name}.`)
+      await ctx.reply(`已配對: ${name}`)
       return
     }
 
     for (const [code, p] of Object.entries(access.pending)) {
       if (p.senderId === senderId) {
-        await ctx.reply(
-          `Pending pairing — run in Claude Code:\n\n/telegram:access pair ${code}`
-        )
+        await ctx.reply(`配對等待中, 請 owner 執行:\n\n/router access pair ${code}`)
         return
       }
     }
 
-    await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
+    await ctx.reply(`尚未配對. 傳一則訊息給我就會拿到配對碼.`)
   })
 
   // Stores full permission details for "See more" expansion keyed by request_id.

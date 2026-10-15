@@ -25,7 +25,10 @@ install_router() {
   mv -f "$STATE/cc-telegram-router.new" "$STATE/cc-telegram-router"
   rm -rf "$STATE/templates"
   cp -r "$REPO/templates" "$STATE/templates"
-  echo "router -> $STATE/cc-telegram-router"
+  mkdir -p "$STATE/hooks"
+  bun build --compile "$REPO/hooks/hook.ts" --outfile "$STATE/hooks/cc-hook.new"
+  mv -f "$STATE/hooks/cc-hook.new" "$STATE/hooks/cc-hook"
+  echo "router -> $STATE/cc-telegram-router, hook -> $STATE/hooks/cc-hook"
 }
 
 install_plugin() {

@@ -1,0 +1,171 @@
+// Phase 2 acceptance (plan 10 Phase 2; 03 「router 設定指令」 指令表, 被拒絕時,
+// bot token 指令的處理, 「Claude Code 怎麼知道發生了什麼」; 06 chat context; 04 hook).
+// Keep in sync with those sections.
+
+import { test, expect, beforeEach, afterEach } from 'bun:test'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import type { Config } from '../config'
+import { openRouterDb, type RouterDb } from '../db'
+import { ensureConversation } from '../conversations'
+import { runCommand, isCommand, type CommandDeps, type CommandInput } from '../commands'
+import { buildContext, renderContext, renderLogs, maskTokens, gmt8 } from '../context'
+import type { Access } from '../telegram/policy'
+
+const OWNER = '137438526', ADMIN = '500', USER = '600'
+let dir: string, cfg: Config, db: RouterDb, access: Access
+let calls: string[]
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'cctr2-'))
+  mkdirSync(join(dir, '.router'))
+  cfg = { path: join(dir, '.router', 'config.json'), bots: [{ name: 'cc', token: '1:x' }], home: dir, stateDir: join(dir, '.router'), socket: join(dir, '.router', 's'), owners: [OWNER], model: 'claude-opus-5-5', autoCompactWindow: 750000, claudeBin: 'claude' }
+  db = openRouterDb(join(dir, '.router', 'router.db'))
+  db.setUserRole(ADMIN, 'admin')
+  access = { dmPolicy: 'allowlist', allowFrom: [OWNER, ADMIN, USER], groups: { '-100555': { requireMention: true, allowFrom: [] } }, pending: { abc123: { senderId: '700', chatId: '700', createdAt: Date.now(), expiresAt: Date.now() + 60000, replies: 1 } } } as Access
+  calls = []
+})
+afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+
+function deps(): CommandDeps {
+  return {
+    cfg, db,
+    loadAccess: () => structuredClone(access),
+    saveAccess: a => { access = a },
+    bots: {
+      async list() { return [{ name: 'cc', id: 42, username: 'cc_bot', first_name: '柯柯' }] },
+      async add(name) { calls.push(`add ${name}`); return 'new_bot' },
+      async rotate(name) { calls.push(`rotate ${name}`); return 'cc_bot' },
+      async remove(name) { calls.push(`remove ${name}`) },
+    },
+    sessions: { isConnected: () => false, async restart(c) { calls.push(`restart ${c.key}`) }, async stop(c) { calls.push(`stop ${c.key}`) } },
+    async applySettings(c, o) { calls.push(`apply ${c.key} dropJob=${o.dropJob}`) },
+    async sendTo(_b, chat, text) { calls.push(`send ${chat} ${text}`) },
+    recentMessages: () => [],
+    writeConfig: m => { const r: Record<string, unknown> = {}; m(r); calls.push(`config ${JSON.stringify(r)}`) },
+    restartRouter: () => { calls.push('restart-router') },
+    startedAt: new Date(),
+  }
+}
+const run = (text: string, senderId: string, chat: { id: string; type: string } = { id: senderId, type: 'private' }) =>
+  runCommand({ bot: 'cc', text, senderId, senderName: `u${senderId}`, chatId: chat.id, chatType: chat.type } as CommandInput, deps())
+const GROUP = { id: '-100555', type: 'supergroup' }
+
+test('only /router and /restart are commands, with or without @bot', () => {
+  expect(isCommand('/router status')).toBe(true)
+  expect(isCommand('/router@cc_bot status')).toBe(true)
+  expect(isCommand('/restart')).toBe(true)
+  expect(isCommand('/routerx')).toBe(false)
+  expect(isCommand('hello /router')).toBe(false)
+})
+
+test('users below admin get an explicit refusal, never silence', async () => {
+  const out = (await run('/router status', USER))!
+  expect(out.reply).toBe('⛔ /router 只開放 owner 與 admin, 你的角色是 user')
+})
+
+test('admin may run commands but may not make anyone owner nor touch an owner', async () => {
+  expect((await run('/router status', ADMIN))!.reply).toStartWith('router 已運作')
+  expect((await run(`/router role user ${USER} owner`, ADMIN))!.reply).toBe('⛔ admin 不能把角色設成 owner')
+  db.setUserRole('800', 'owner')
+  expect((await run('/router role user 800 user', ADMIN))!.reply).toBe('⛔ admin 不能異動 owner 的角色與權限')
+  expect((await run(`/router role user ${OWNER} user`, ADMIN))!.reply).toContain('config 指定的 owner')
+  expect((await run(`/router role user ${USER} power`, ADMIN))!.reply).toBe(`${USER} 的角色: user → power`)
+  expect(db.getUserRole(USER)).toBe('power')
+  expect((await run('/router config set owners 500', ADMIN))!.reply).toBe('⛔ admin 不能異動 owner 的角色與權限')
+})
+
+test('bot list for admin; token commands only in the owner DM, and a token message is always deleted', async () => {
+  expect((await run('/router bot list', ADMIN))!.reply).toBe('cc: @cc_bot (id 42, 柯柯)')
+  const inGroup = (await run('/router bot add x 123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', OWNER, GROUP))!
+  expect(inGroup.reply).toBe('⛔ /router bot add 只能在 owner 私訊使用, 已刪除這則訊息; token 曾出現在群組, 建議 /router bot rotate')
+  expect(inGroup.deleteMessage).toBe(true)
+  const byAdmin = (await run('/router bot rotate cc 123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', ADMIN))!
+  expect(byAdmin.reply).toStartWith('⛔ /router bot rotate 只能在 owner 私訊使用')
+  expect(byAdmin.deleteMessage).toBe(true)
+  expect(calls).toEqual([])
+  const ok = (await run('/router bot rotate cc 123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', OWNER))!
+  expect(ok.reply).toBe('已更換 bot cc: @cc_bot, 已刪除含 token 的訊息')
+  expect(ok.deleteMessage).toBe(true)
+  expect(calls).toEqual(['rotate cc'])
+})
+
+test('access: pair adds the sender, removes the code and greets them; group mention toggles', async () => {
+  const out = (await run('/router access pair abc123', OWNER))!
+  expect(out.reply).toBe('已核可 700')
+  expect(access.allowFrom).toContain('700')
+  expect(access.pending.abc123).toBeUndefined()
+  expect(calls).toEqual(['send 700 配對完成, 可以開始對話了.'])
+  ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  expect((await run('/router chat mention off', OWNER, GROUP))!.reply).toBe('group-100555 不用 mention 也會收到所有訊息')
+  expect(access.groups['-100555']!.requireMention).toBe(false)
+})
+
+test('chat compact/model update the conversation, bump ctx_v and reapply settings; model drops the job', async () => {
+  const c0 = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  expect((await run('/router chat compact 300k', ADMIN, GROUP))!.reply).toBe('group-100555 autoCompactWindow → 300000')
+  expect((await run('/router chat compact 5k', ADMIN, GROUP))!.reply).toContain('100k 到 1m')
+  expect((await run('/router chat -100555 model claude-sonnet-5-5', OWNER))!.reply).toBe('group-100555 模型 → claude-sonnet-5-5, worker 已重啟')
+  const c = db.getConversation('group-100555')!
+  expect(c.compact).toBe(300000)
+  expect(c.model).toBe('claude-sonnet-5-5')
+  expect(c.ctx_v).toBe((c0.ctx_v ?? 1) + 2)
+  expect(calls).toEqual(['apply group-100555 dropJob=false', 'apply group-100555 dropJob=true'])
+})
+
+test('every command run in a conversation leaves a router_log line there; changes to another conversation are logged there too', async () => {
+  ensureConversation(cfg, db, 'cc', OWNER, 'private', () => {})
+  ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  const out = (await run('/router chat -100555 compact 1m', OWNER))!
+  const convs = out.logs.map(l => l.conv).sort()
+  expect(convs).toEqual(['dm-137438526', 'group-100555'])
+  expect(out.logs.find(l => l.conv === 'dm-137438526')!.text).toBe('u137438526(owner) /router chat -100555 compact 1m → group-100555 autoCompactWindow → 1000000')
+  const refused = (await run('/router status', USER, GROUP))!
+  expect(refused.logs).toEqual([{ conv: 'group-100555', text: 'u600(user) /router status → ⛔ /router 只開放 owner 與 admin, 你的角色是 user' }])
+})
+
+test('session restart and /restart act only after the reply is sent', async () => {
+  ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  const out = (await run('/router session restart', ADMIN, GROUP))!
+  expect(calls).toEqual([])
+  out.after!()
+  await Promise.resolve()
+  expect(calls).toEqual(['restart group-100555'])
+  const r = (await run('/restart', ADMIN))!
+  expect(r.reply).toBe('router 重啟中')
+  r.after!()
+  expect(calls).toContain('restart-router')
+})
+
+// --- context / router_log ----------------------------------------------------
+
+test('chat_context block and router_log: GMT+8 times, tokens masked', () => {
+  const c = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  const block = renderContext(buildContext(cfg, db.updateConversation(c.key, { title: 'Example Group' })))
+  expect(block).toStartWith('<chat_context v="2">')
+  expect(block).toContain('conversation: group-100555 (group, Example Group)')
+  expect(block).toContain('role: user (只能讀寫自己的資料夾')
+  expect(maskTokens('bot add x 9000000006:AAH1234567890abcdefghijklmnopqrstuv')).toBe('bot add x 9000000006:…stuv')
+  expect(gmt8('2026-10-15T18:30:00.000Z')).toBe('2026-10-16 02:30')
+  db.addLog(c.key, 'u1(owner) /router bot rotate cc 9000000006:AAH1234567890abcdefghijklmnopqrstuv → 已更換')
+  const q = db.enqueue(c.key, { content: 'x', meta: {} })
+  const logs = db.bindLogs(c.key, q)
+  expect(renderLogs(logs)).toMatch(/^<router_log>\n\[\d{4}-\d\d-\d\d \d\d:\d\d\] u1\(owner\) \/router bot rotate cc 9000000006:…stuv → 已更換\n<\/router_log>$/)
+  // a redelivery of the same item carries the same logs; a later item none
+  expect(db.bindLogs(c.key, q)).toHaveLength(1)
+  expect(db.bindLogs(c.key, q + 1)).toHaveLength(0)
+})
+
+test('SessionStart hook puts the chat_context back after compact', async () => {
+  const c = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  mkdirSync(join(c.folder, '.chat'), { recursive: true })
+  writeFileSync(join(c.folder, '.chat', 'context.json'), JSON.stringify(buildContext(cfg, c)))
+  const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'session-start'], { stdin: new Blob([JSON.stringify({ cwd: c.folder, hook_event_name: 'SessionStart', source: 'compact' })]), stdout: 'pipe' })
+  const out = JSON.parse(await new Response(p.stdout).text())
+  expect(out.hookSpecificOutput.hookEventName).toBe('SessionStart')
+  expect(out.hookSpecificOutput.additionalContext).toStartWith('<chat_context v="1">')
+  // a folder without context prints nothing (never breaks the session)
+  const q = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'session-start'], { stdin: new Blob([JSON.stringify({ cwd: dir })]), stdout: 'pipe' })
+  expect(await new Response(q.stdout).text()).toBe('')
+})

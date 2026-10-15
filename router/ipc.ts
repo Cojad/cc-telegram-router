@@ -11,7 +11,8 @@ import type { Conversation, RouterDb } from './db'
 
 export type Peer = { mode: Mode; conv: Conversation | null; role: string }
 
-type ClientState = { buf: string; out: string; peer: Peer | null }
+/** ctxV: the chat_context version this connection has already been shown. */
+export type ClientState = { buf: string; out: string; peer: Peer | null; ctxV?: number }
 
 export interface IpcDeps {
   cfg: Config
@@ -19,6 +20,8 @@ export interface IpcDeps {
   /** Map a plugin's project dir to who it is; null = reject. */
   identify: (projectDir: string) => Peer | null
   onCall: (peer: Peer, tool: string, args: Record<string, unknown>) => Promise<ToolResult>
+  /** Last-moment additions to a delivery (chat_context, router_log). */
+  decorate?: (key: string, qid: number, params: ChannelParams, conn: ClientState) => ChannelParams
   log?: (msg: string) => void
 }
 
@@ -45,7 +48,9 @@ export function createIpc(deps: IpcDeps) {
     if (!s) return
     for (const row of db.undelivered(key)) {
       if (!includeUnacked && row.status !== 'pending') continue
-      send(s, { t: 'deliver', qid: row.qid, params: JSON.parse(row.params) as ChannelParams })
+      let params = JSON.parse(row.params) as ChannelParams
+      if (deps.decorate) params = deps.decorate(key, row.qid, params, s.data)
+      send(s, { t: 'deliver', qid: row.qid, params })
       db.markDelivered(row.qid)
     }
   }

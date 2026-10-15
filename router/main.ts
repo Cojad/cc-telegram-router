@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // cc-telegram-router entry point (plan 03). Polls every configured bot, logs
-// every update and every Bot API call, queues delivered messages per
-// conversation, wakes the conversation's worker session, and serves the
-// worker plugins over a unix socket.
+// every update and every Bot API call, answers /router commands itself,
+// queues delivered messages per conversation, wakes the conversation's
+// worker session, and serves the worker plugins over a unix socket.
 //
 // The inbound pipeline (transport -> handleInbound -> gate) is the v1 plugin
 // code unchanged; its "MCP server" here is a stand-in whose notification()
@@ -11,9 +11,10 @@
 import { AsyncLocalStorage } from 'async_hooks'
 import { Bot, GrammyError } from 'grammy'
 import { randomBytes } from 'crypto'
-import { mkdirSync, renameSync, writeFileSync, existsSync, copyFileSync, realpathSync } from 'fs'
+import { spawn } from 'child_process'
+import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFileSync, realpathSync } from 'fs'
 import { basename, dirname, join } from 'path'
-import { defaultConfigPath, loadConfig } from './config'
+import { defaultConfigPath, loadConfig, type BotConfig } from './config'
 import { acquireLock } from './lock'
 import { openRouterDb, type Conversation } from './db'
 import { ensureConversation } from './conversations'
@@ -21,6 +22,8 @@ import { writeSessionSettings } from './settings'
 import { createSupervisor, bunRunner } from './supervisor'
 import { createIpc, type Peer } from './ipc'
 import { makeAssertAllowedChat, makeAssertSendable } from './guard'
+import { buildContext, renderContext, renderLogs, writeContextFile } from './context'
+import { isCommand, runCommand, type CommandDeps } from './commands'
 import { openStore } from './telegram/store'
 import { readAccessFile, gate as policyGate, dmCommandGate as policyDmCommandGate, type Access, type InboundContext } from './telegram/policy'
 import { createHandleInbound } from './telegram/inbound'
@@ -29,6 +32,7 @@ import { callTool } from './telegram/outbound'
 import type { ChannelParams } from '../shared/protocol'
 
 const log = (msg: string) => process.stderr.write(`${new Date().toISOString()} ${msg}\n`)
+const startedAt = new Date()
 
 const configPath = defaultConfigPath(process.argv, process.execPath)
 const cfg = loadConfig(configPath)
@@ -39,6 +43,7 @@ mkdirSync(cfg.home, { recursive: true })
 // Templates ship next to the source in dev and next to the binary when deployed.
 const TEMPLATES = [join(import.meta.dir, '..', 'templates'), join(cfg.stateDir, 'templates')].find(d => existsSync(join(d, 'base-settings.json')))
 if (!TEMPLATES) throw new Error('templates/base-settings.json not found')
+const HOOKS_DIR = join(cfg.stateDir, 'hooks')
 
 const DB_FILE = join(cfg.stateDir, 'router.db')
 const db = openRouterDb(DB_FILE)
@@ -52,22 +57,32 @@ function saveAccess(a: Access): void {
   writeFileSync(tmp, JSON.stringify(a, null, 2) + '\n', { mode: 0o600 })
   renameSync(tmp, ACCESS_FILE)
 }
+function writeConfig(mutate: (raw: Record<string, unknown>) => void): void {
+  const raw = JSON.parse(readFileSync(configPath, 'utf8'))
+  mutate(raw)
+  const tmp = configPath + '.tmp'
+  writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 })
+  renameSync(tmp, configPath)
+}
 
 const settingsFor = (c: Conversation) =>
-  writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, { folder: c.folder, autoCompactWindow: cfg.autoCompactWindow })
+  writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, {
+    folder: c.folder, autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR,
+  })
+
+// Templates may have changed since the last run: rewrite every
+// conversation's settings and context file. Running workers pick settings up
+// on their next resume (live sessions do not reload settings).
+for (const c of db.listConversations()) { settingsFor(c); writeContextFile(cfg, c) }
 
 // Which conversation a Bot API call is made on behalf of, for the outbound log.
-// Templates may have changed since the last run: rewrite every
-// conversation's settings. Running workers pick them up on their next
-// resume (live sessions do not reload settings).
-for (const c of db.listConversations()) settingsFor(c)
-
 const callConv = new AsyncLocalStorage<string>()
-// Telegram chat type per chat_id, captured from updates (the channel
-// notification itself only carries chat_id).
-const chatTypes = new Map<string, string>()
+// Telegram chat type and title per chat_id, captured from updates (the
+// channel notification itself only carries chat_id).
+const chats = new Map<string, { type: string; title: string | null }>()
 
-const bots = new Map<string, Bot>()
+type BotHandle = { cfg: BotConfig; bot: Bot; info: { id: number; username: string; first_name: string } | null }
+const bots = new Map<string, BotHandle>()
 
 const ipc = createIpc({
   cfg, db, log,
@@ -80,15 +95,35 @@ const ipc = createIpc({
     return conv ? { mode: 'worker', conv, role: conv.role } : null
   },
   async onCall(peer, tool, args) {
-    const botName = peer.conv?.bot ?? cfg.bots[0]!.name
-    const bot = bots.get(botName)!
-    const token = cfg.bots.find(b => b.name === botName)!.token
-    const inboxDir = peer.conv ? join(peer.conv.folder, 'attachments') : join(cfg.home, '.terminal-attachments')
-    return callConv.run(peer.conv?.key ?? 'terminal', () => callTool(tool, args, {
-      bot, token, inboxDir, loadAccess, store,
-      assertAllowedChat: makeAssertAllowedChat(peer, loadAccess),
-      assertSendable: makeAssertSendable(peer, cfg.stateDir),
+    // Role or settings may have changed since this plugin said hello.
+    const conv = peer.conv ? db.getConversation(peer.conv.key) : null
+    const live: Peer = conv ? { ...peer, conv, role: conv.role } : peer
+    if (tool === 'get_chat_context') {
+      if (!conv) return { content: [{ type: 'text', text: 'terminal session: no conversation' }] }
+      return { content: [{ type: 'text', text: JSON.stringify(buildContext(cfg, conv), null, 2) }] }
+    }
+    const botName = conv?.bot ?? cfg.bots[0]!.name
+    const h = bots.get(botName)
+    if (!h) return { content: [{ type: 'text', text: `bot ${botName} is not running` }], isError: true }
+    const inboxDir = conv ? join(conv.folder, 'attachments') : join(cfg.home, '.terminal-attachments')
+    return callConv.run(conv?.key ?? 'terminal', () => callTool(tool, args, {
+      bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store,
+      assertAllowedChat: makeAssertAllowedChat(live, loadAccess),
+      assertSendable: makeAssertSendable(live, cfg.stateDir),
     }))
+  },
+  decorate(key, qid, params, conn) {
+    const c = db.getConversation(key)
+    if (!c) return params
+    const parts: string[] = []
+    const v = c.ctx_v ?? 1
+    if (conn.ctxV !== v) { parts.push(renderContext(buildContext(cfg, c))); conn.ctxV = v }
+    const logs = renderLogs(db.bindLogs(key, qid))
+    if (logs) parts.push(logs)
+    return {
+      content: parts.length ? `${parts.join('\n')}\n${params.content}` : params.content,
+      meta: { ...params.meta, ctx_v: String(v) },
+    }
   },
 })
 
@@ -103,10 +138,17 @@ const supervisor = createSupervisor({
 function onChannel(botName: string, params: ChannelParams): void {
   const chat_id = params.meta.chat_id
   if (!chat_id) return
-  const conv = ensureConversation(cfg, db, botName, chat_id, chatTypes.get(chat_id), c => {
+  const seen = chats.get(chat_id)
+  let conv = ensureConversation(cfg, db, botName, chat_id, seen?.type, c => {
+    if (seen?.title) c = db.updateConversation(c.key, { title: seen.title })
     settingsFor(c)
+    writeContextFile(cfg, c)
     log(`new conversation ${c.key} (${c.role})`)
   })
+  if (seen?.title && seen.title !== conv.title) {
+    conv = db.updateConversation(conv.key, { title: seen.title })
+    writeContextFile(cfg, conv)
+  }
   // Photos are downloaded into the router's inbox, which workers cannot
   // read; move them into the conversation's own attachments folder.
   if (params.meta.image_path) {
@@ -122,10 +164,74 @@ function onChannel(botName: string, params: ChannelParams): void {
   else void supervisor.ensureAwake(conv)
 }
 
-for (const bc of cfg.bots) {
-  const bot = new Bot(bc.token, cfg.apiRoot ? { client: { apiRoot: cfg.apiRoot } } : undefined)
-  bots.set(bc.name, bot)
-  let username = ''
+function apiOpts() {
+  return cfg.apiRoot ? { client: { apiRoot: cfg.apiRoot } } : undefined
+}
+
+const commandDeps: CommandDeps = {
+  cfg, db, loadAccess, saveAccess, writeConfig, startedAt,
+  bots: {
+    async list() {
+      return [...bots.values()].map(h => ({ name: h.cfg.name, id: h.info?.id ?? 0, username: h.info?.username ?? '?', first_name: h.info?.first_name ?? '?' }))
+    },
+    async add(name, token) {
+      if (bots.has(name)) throw new Error(`已經有名為 ${name} 的 bot`)
+      const me = await new Bot(token, apiOpts()).api.getMe()
+      const bc = { name, token }
+      writeConfig(r => { (r.bots as BotConfig[]).push(bc) })
+      cfg.bots.push(bc)
+      startBot(bc)
+      return me.username
+    },
+    async rotate(name, token) {
+      const old = bots.get(name)
+      if (!old) throw new Error(`沒有名為 ${name} 的 bot`)
+      const me = await new Bot(token, apiOpts()).api.getMe()
+      if (old.info && me.id !== old.info.id) throw new Error(`新 token 屬於另一隻 bot (@${me.username}), rotate 只能換同一隻 bot 的 token`)
+      const bc = { name, token }
+      writeConfig(r => { r.bots = (r.bots as BotConfig[]).map(b => b.name === name ? bc : b) })
+      cfg.bots.splice(cfg.bots.findIndex(b => b.name === name), 1, bc)
+      // Old poller stops first: Telegram allows one getUpdates consumer per bot.
+      await old.bot.stop().catch(() => {})
+      startBot(bc)
+      return me.username
+    },
+    async remove(name) {
+      const h = bots.get(name)
+      if (!h) throw new Error(`沒有名為 ${name} 的 bot`)
+      if (cfg.bots.length === 1) throw new Error('不能移除最後一隻 bot')
+      await h.bot.stop().catch(() => {})
+      bots.delete(name)
+      writeConfig(r => { r.bots = (r.bots as BotConfig[]).filter(b => b.name !== name) })
+      cfg.bots.splice(cfg.bots.findIndex(b => b.name === name), 1)
+    },
+  },
+  sessions: {
+    isConnected: ipc.isConnected,
+    restart: (c, opts) => supervisor.restart(c, opts),
+    stop: c => supervisor.stop(c),
+  },
+  async applySettings(c, opts) {
+    settingsFor(c)
+    writeContextFile(cfg, c)
+    if (await supervisor.liveJob(c)) await supervisor.restart(c, opts)
+    else if (opts.dropJob) await supervisor.stop(c, opts)
+  },
+  async sendTo(botName, chatId, text) {
+    await bots.get(botName)?.bot.api.sendMessage(chatId, text)
+  },
+  recentMessages: (chatId, n) => store.recent(chatId, n),
+  restartRouter() {
+    // Under systemd (Restart=always) exiting is enough; otherwise start a
+    // detached copy of ourselves once the lock is released.
+    setTimeout(() => void shutdown('/restart', !process.env.INVOCATION_ID), 500)
+  },
+}
+
+function startBot(bc: BotConfig): BotHandle {
+  const bot = new Bot(bc.token, apiOpts())
+  const h: BotHandle = { cfg: bc, bot, info: null }
+  bots.set(bc.name, h)
 
   bot.api.config.use(async (prev, method, payload, signal) => {
     try {
@@ -140,7 +246,28 @@ for (const bc of cfg.bots) {
   })
   bot.use(async (ctx, next) => {
     db.logEvent(bc.name, ctx.update)
-    if (ctx.chat) chatTypes.set(String(ctx.chat.id), ctx.chat.type)
+    if (ctx.chat) {
+      const title = ctx.chat.type === 'private'
+        ? [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || null
+        : ('title' in ctx.chat ? ctx.chat.title ?? null : null)
+      chats.set(String(ctx.chat.id), { type: ctx.chat.type, title })
+    }
+    // /router and /restart are the router's own: answered here, never forwarded.
+    const text = ctx.message?.text
+    if (ctx.chat && ctx.from && isCommand(text)) {
+      const out = await runCommand({
+        bot: bc.name, text: text!, senderId: String(ctx.from.id),
+        senderName: ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name,
+        chatId: String(ctx.chat.id), chatType: ctx.chat.type,
+      }, commandDeps)
+      if (out) {
+        for (const l of out.logs) db.addLog(l.conv, l.text)
+        if (out.deleteMessage && ctx.message) await bot.api.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(e => log(`delete command message failed: ${e}`))
+        await bot.api.sendMessage(ctx.chat.id, out.reply, { reply_parameters: { message_id: ctx.message!.message_id, allow_sending_without_reply: true } }).catch(e => log(`command reply failed: ${e}`))
+        out.after?.()
+        return
+      }
+    }
     await next()
   })
 
@@ -150,16 +277,16 @@ for (const bc of cfg.bots) {
     },
     setNotificationHandler() {},
   }
-  const gate = (ctx: InboundContext) => policyGate(ctx, loadAccess(), username, saveAccess, () => randomBytes(3).toString('hex'))
+  const gate = (ctx: InboundContext) => policyGate(ctx, loadAccess(), h.info?.username ?? '', saveAccess, () => randomBytes(3).toString('hex'))
   const dmCommandGate = (ctx: InboundContext) => policyDmCommandGate(ctx, loadAccess(), saveAccess)
   const handleInbound = createHandleInbound({ gate, bot, mcp: fakeMcp as never, store })
   registerTransport({ bot, mcp: fakeMcp as never, dmCommandGate, loadAccess, handleInbound, token: bc.token, inboxDir: INBOX })
   bot.catch(err => log(`${bc.name}: handler error: ${err.error}`))
 
   void (async () => {
-    for (let attempt = 1; ; attempt++) {
+    for (let attempt = 1; bots.get(bc.name) === h; attempt++) {
       try {
-        await bot.start({ onStart: info => { username = info.username; log(`${bc.name}: polling as @${info.username}`) } })
+        await bot.start({ onStart: info => { h.info = info; log(`${bc.name}: polling as @${info.username}`) } })
         return
       } catch (err) {
         if (err instanceof GrammyError && err.error_code === 409) {
@@ -173,7 +300,10 @@ for (const bc of cfg.bots) {
       }
     }
   })()
+  return h
 }
+
+for (const bc of cfg.bots) startBot(bc)
 
 // Backlog sweep: anything queued for a conversation whose worker is not
 // connected (missed wake, worker reaped mid-delivery) gets another wake.
@@ -190,14 +320,15 @@ setInterval(sweepBacklog, 60_000).unref()
 setTimeout(sweepBacklog, 15_000).unref()
 
 let stopping = false
-async function shutdown(sig: string) {
+async function shutdown(sig: string, respawn = false) {
   if (stopping) return
   stopping = true
   log(`shutdown (${sig})`)
-  await Promise.allSettled([...bots.values()].map(b => b.stop()))
+  await Promise.allSettled([...bots.values()].map(h => h.bot.stop()))
   ipc.stop()
   try { db.close(); store.close() } catch {}
   release()
+  if (respawn) spawn(process.execPath, process.argv.slice(1), { detached: true, stdio: 'ignore' }).unref()
   process.exit(0)
 }
 process.on('SIGTERM', () => void shutdown('SIGTERM'))

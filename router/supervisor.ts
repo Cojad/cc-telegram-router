@@ -29,7 +29,8 @@ export const CHANNEL = 'plugin:telegram@claude-plugins-official'
 export function workerArgs(cfg: Config, c: Conversation, settings: string): string[] {
   return [
     '--allow-dangerously-skip-permissions',
-    '--model', cfg.model,
+    '--name', `tg-${c.key}`,
+    '--model', c.model ?? cfg.model,
     '--setting-sources', 'project,local',
     '--settings', settings,
     '--channels', CHANNEL,
@@ -76,7 +77,7 @@ export function createSupervisor(deps: SupervisorDeps) {
       return
     }
     log(`spawn ${c.key}`)
-    const r = await run([cfg.claudeBin, '--bg', '--name', `tg-${c.key}`, ...workerArgs(cfg, c, settings), '--', initPrompt(c)], c.folder)
+    const r = await run([cfg.claudeBin, '--bg', ...workerArgs(cfg, c, settings), '--', initPrompt(c)], c.folder)
     const short = parseShortId(r.stdout)
     if (!short) { log(`spawn ${c.key} failed: ${r.stderr || r.stdout}`); return }
     const entry = (await listAgents()).find(a => a.id === short)
@@ -109,7 +110,33 @@ export function createSupervisor(deps: SupervisorDeps) {
     return p
   }
 
-  return { ensureAwake, listAgents }
+  async function liveJob(c: Conversation): Promise<AgentEntry | undefined> {
+    if (!c.session_id) return undefined
+    return (await listAgents()).find(a => a.sessionId === c.session_id && a.pid && a.state !== 'stopped' && a.state !== 'done')
+  }
+
+  /** Stop the worker; the next message wakes it again. dropJob also forgets
+   *  the daemon's saved options, so the next wake passes fresh flags (e.g. a
+   *  new model) while continuing the same session. */
+  async function stop(c: Conversation, opts: { dropJob?: boolean } = {}): Promise<void> {
+    const job = await liveJob(c)
+    if (job) {
+      log(`stop ${c.key}`)
+      await run([cfg.claudeBin, 'stop', job.id], cfg.home)
+      for (let t = 0; t < 10_000 && isConnected(c.key); t += 200) await new Promise(r => setTimeout(r, 200))
+    }
+    if (opts.dropJob && c.session_id) {
+      const any = (await listAgents()).find(a => a.sessionId === c.session_id)
+      if (any) await run([cfg.claudeBin, 'rm', any.id], cfg.home)
+    }
+  }
+
+  async function restart(c: Conversation, opts: { dropJob?: boolean } = {}): Promise<void> {
+    await stop(c, opts)
+    await ensureAwake(c)
+  }
+
+  return { ensureAwake, listAgents, stop, restart, liveJob }
 }
 
 export const bunRunner: Runner = async (args, cwd) => {

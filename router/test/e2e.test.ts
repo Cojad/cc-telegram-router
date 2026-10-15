@@ -110,7 +110,11 @@ test('a plugin for the conversation gets the queued message, and its reply goes 
     onMessage(m) { if (m.t === 'deliver') { delivered.push(m.params.content); client.send({ t: 'ack', qid: m.qid }) } },
   })
   await until(() => delivered.length >= 1)
-  expect(delivered).toEqual(['hello router'])
+  // first delivery on a connection carries the chat_context (plan 06)
+  expect(delivered).toHaveLength(1)
+  expect(delivered[0]).toStartWith('<chat_context v="')
+  expect(delivered[0]).toContain('role: owner')
+  expect(delivered[0]).toEndWith('\nhello router')
   const r = await client.call('reply', { chat_id: '111', text: 'pong' })
   expect(r.isError).toBeFalsy()
   expect(calls.some(c => c.method === 'sendMessage' && c.body.text === 'pong')).toBe(true)

@@ -2,5 +2,10 @@
   "enabledPlugins": { "telegram@claude-plugins-official": true },
   "autoMemoryDirectory": "{{folder}}/memory",
   "crossSessionInbound": "accept",
-  "autoCompactWindow": "{{autoCompactWindow}}"
+  "autoCompactWindow": "{{autoCompactWindow}}",
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "compact", "hooks": [{ "type": "command", "command": "{{hooksDir}}/cc-hook session-start" }] }
+    ]
+  }
 }

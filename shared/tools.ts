@@ -105,4 +105,9 @@ export const TOOL_DEFINITIONS = [
       required: ['chat_id'],
     },
   },
+  {
+    name: 'get_chat_context',
+    description: 'Current information about this Telegram conversation: chat id, type, title, your role and what it allows, folder, model, autoCompactWindow. The same data arrives as <chat_context> with messages; call this when unsure.',
+    inputSchema: { type: 'object', properties: {} },
+  },
 ] as const

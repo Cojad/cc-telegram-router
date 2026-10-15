@@ -221,9 +221,8 @@ export function createHandleInbound(deps: InboundDeps) {
 
     if (result.action === 'pair') {
       recordSeen(false) // not yet paired — nothing was delivered to Claude
-      const lead = result.isResend ? 'Still pending' : 'Pairing required'
       await ctx.reply(
-        `${lead} — run in Claude Code:\n\n/telegram:access pair ${result.code}`,
+        `${result.isResend ? '配對仍在等待' : '需要配對'}: 請 bot 的 owner 執行\n\n/router access pair ${result.code}`,
       )
       return
     }
