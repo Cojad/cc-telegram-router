@@ -5,9 +5,9 @@ between an inbound Telegram message and the final reply into a live-updating sta
 using four Claude Code hook events plus this plugin's `reply` / `edit_message` behavior
 (via the raw Bot API, since hooks run outside the MCP tool-call context).
 
-Reference scripts live in [`examples/hooks/`](../examples/hooks/); copy them into your own
+Reference scripts live in [`examples/hooks/`](examples/hooks/); copy them into your own
 project's `.claude/hooks/` and wire them up in `.claude/settings.json` as shown in
-[`examples/hooks/settings.json`](../examples/hooks/settings.json).
+[`examples/hooks/settings.json`](examples/hooks/settings.json).
 
 ## Why
 

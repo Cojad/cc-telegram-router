@@ -1,129 +1,54 @@
-# Telegram
+# cc-telegram-router
 
-Connect a Telegram bot to your Claude Code with an MCP server.
+Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram 對話交給一個獨立的 Claude Code 背景 session (`claude --bg`), 各自住在 `/x/cc/<對話>/` 自己的資料夾, 權限依角色分開設定.
 
-The MCP server logs into Telegram as a bot and provides tools to Claude to reply, react, or edit messages. When you message the bot, the server forwards the message to your Claude Code session.
+## 結構
 
-## Prerequisites
+| 目錄 | 內容 |
+|---|---|
+| `router/` | router 本體. `main.ts` 組裝; `config.ts` `lock.ts` `db.ts` `conversations.ts` `settings.ts` `supervisor.ts` `ipc.ts` `guard.ts` |
+| `router/telegram/` | 收發 Telegram 的模組 (沿用 v1 plugin): `transport.ts` `inbound.ts` `policy.ts` `outbound.ts` `store.ts` `format.ts` `rich.ts` |
+| `plugin/` | worker 載入的 Telegram plugin v2 (消費者模式): 不持有 token, 透過 unix socket 跟 router 收發 |
+| `shared/` | router 與 plugin 共用的協定 (`protocol.ts`) 與工具定義 (`tools.ts`) |
+| `templates/` | 各對話 settings 的範本: `base-settings.json` 與 `roles/<角色>.json` |
+| `deploy/` | `install.sh` 與 systemd user unit |
+| `docs/v1/` | v1 (單一 session plugin) 時期的文件, 僅供參考 |
 
-- [Bun](https://bun.sh) — the MCP server runs on Bun. Install with `curl -fsSL https://bun.sh/install | bash`.
+## 運作方式
 
-## Quick Setup
-> Default pairing flow for a single-user DM bot. See [ACCESS.md](./ACCESS.md) for groups and multi-user setups.
+1. router 輪詢 bot (getUpdates), 每個 update 原樣寫進 `router.db` 的 `events`.
+2. 沿用 v1 的 gate (配對, 允許清單, 群組 mention) 決定要不要送進 Claude. 要送的訊息依 (bot, chat_id) 對應到對話, 第一次出現時建立資料夾與 settings.
+3. 訊息進該對話的佇列. worker 不在線就喚醒: 第一次用 `claude --bg` 帶一句 init prompt 開新 session, 之後用 `--resume`.
+4. worker 的 plugin 讀 `CLAUDE_PROJECT_DIR` 知道自己是哪個對話, 連 `router.sock` 報到, 收到佇列裡的訊息後轉成 channel 通知並回 ack.
+5. 模型呼叫 reply 等工具時, plugin 把呼叫轉給 router; router 檢查目標與附件路徑後代為呼叫 Bot API, 每個呼叫寫進 `outbound`.
 
-**1. Create a bot with BotFather.**
+## 部署
 
-Open a chat with [@BotFather](https://t.me/BotFather) on Telegram and send `/newbot`. BotFather asks for two things:
-
-- **Name** — the display name shown in chat headers (anything, can contain spaces)
-- **Username** — a unique handle ending in `bot` (e.g. `my_assistant_bot`). This becomes your bot's link: `t.me/my_assistant_bot`.
-
-BotFather replies with a token that looks like `123456789:AAHfiqksKZ8...` — that's the whole token, copy it including the leading number and colon.
-
-**2. Install the plugin.**
-
-These are Claude Code commands — run `claude` to start a session first.
-
-Install the plugin:
-```
-/plugin install telegram@claude-plugins-official
-```
-
-**3. Give the server the token.**
-
-```
-/telegram:configure 123456789:AAHfiqksKZ8...
+```bash
+deploy/install.sh router   # 編譯到 /x/cc/.router/cc-telegram-router, 複製 templates
+deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容)
+deploy/install.sh unit     # 安裝 systemd user unit
+systemctl --user enable --now cc-telegram-router
 ```
 
-Writes `TELEGRAM_BOT_TOKEN=...` to `~/.claude/channels/telegram/.env`. You can also write that file by hand, or set the variable in your shell environment — shell takes precedence.
+`/x/cc/.router/config.json` (權限 600) 與 `access.json` 要手動建立一次:
 
-> To run multiple bots on one machine (different tokens, separate allowlists), point `TELEGRAM_STATE_DIR` at a different directory per instance.
-
-**4. Relaunch with the channel flag.**
-
-The server won't connect without this — exit your session and start a new one:
-
-```sh
-claude --channels plugin:telegram@claude-plugins-official
+```json
+{
+  "bots": [{ "name": "cc", "token": "<bot token>" }],
+  "home": "/x/cc",
+  "stateDir": "/x/cc/.router",
+  "owners": ["<owner telegram uid>"],
+  "model": "claude-opus-5-5",
+  "autoCompactWindow": 750000,
+  "claudeBin": "/home/<user>/.local/bin/claude"
+}
 ```
 
-**5. Pair.**
+## 測試
 
-With Claude Code running from the previous step, DM your bot on Telegram — it replies with a 6-character pairing code. If the bot doesn't respond, make sure your session is running with `--channels`. In your Claude Code session:
-
-```
-/telegram:access pair <code>
+```bash
+bun test router/test
 ```
 
-Your next DM reaches the assistant.
-
-> Unlike Discord, there's no server invite step — Telegram bots accept DMs immediately. Pairing handles the user-ID lookup so you never touch numeric IDs.
-
-**6. Lock it down.**
-
-Pairing is for capturing IDs. Once you're in, switch to `allowlist` so strangers don't get pairing-code replies. Ask Claude to do it, or `/telegram:access policy allowlist` directly.
-
-## Access control
-
-See **[ACCESS.md](./ACCESS.md)** for DM policies, groups, mention detection, delivery config, skill commands, and the `access.json` schema.
-
-Quick reference: IDs are **numeric user IDs** (get yours from [@userinfobot](https://t.me/userinfobot)). Default policy is `pairing`. `ackReaction` only accepts Telegram's fixed emoji whitelist.
-
-## Tools exposed to the assistant
-
-| Tool | Purpose |
-| --- | --- |
-| `reply` | Send to a chat. Takes `chat_id` + `text`, optionally `reply_to` (message ID) for native threading and `files` (absolute paths) for attachments. Images (`.jpg`/`.png`/`.gif`/`.webp`) send as photos with inline preview; other types send as documents. Max 50MB each. Auto-chunks text; files send as separate messages after the text. Returns the sent message ID(s). |
-| `react` | Add an emoji reaction to a message by ID. **Only Telegram's fixed whitelist** is accepted (👍 👎 ❤ 🔥 👀 etc). |
-| `edit_message` | Edit a message the bot previously sent. Useful for "working…" → result progress updates. Only works on the bot's own messages. |
-| `send_sticker` | Send a sticker. Either `file_id` (already on Telegram servers) or `file` (absolute path to a local `.webp`/`.tgs`/`.webm` to upload directly), optionally `reply_to`. |
-
-Inbound messages trigger a typing indicator automatically — Telegram shows
-"botname is typing…" while the assistant works on a response.
-
-## Photos
-
-Inbound photos that get delivered (see "Access control" above) are downloaded
-eagerly to `~/.claude/channels/telegram/inbox/`, and the local path is
-included in the `<channel>` notification so the assistant can `Read` it
-immediately, no extra tool call needed. Telegram compresses photos — if you
-need the original file, send it as a document instead (long-press → Send as
-File).
-
-The photo's `file_id` is also recorded regardless of whether the message gets
-delivered (2026-09-16 — previously it wasn't, unlike every other attachment
-type below), so `download_attachment` can still fetch an undelivered photo
-later once `lookup_message` surfaces its `file_id`.
-
-## No history or search
-
-Telegram's Bot API exposes **neither** message history nor search. The bot
-only sees messages as they arrive — no `fetch_messages` tool exists. If the
-assistant needs earlier context, it will ask you to paste or summarize.
-
-`download_attachment` (see "Tools exposed to the assistant" above) only ever
-fetches a `file_id` this plugin already recorded via `store.ts` — it cannot
-reach a message from before this plugin was running, or from a chat it was
-never a member of. `lookup_message` is how the assistant finds that `file_id`
-for a message it didn't have delivered at the time.
-
-## Seeing messages from other bots
-
-Telegram's Bot API deliberately never delivers messages sent by one bot to another bot by default —
-this is platform-level, permanent, and unrelated to privacy mode or admin rights (see the
-[Bots FAQ](https://core.telegram.org/bots/faq)). To let this bot see another bot's messages in a
-group, enable **Bot-to-Bot Communication Mode** for both bots via [@BotFather](https://t.me/BotFather)
-— an account-level Telegram setting, not something this plugin's code does.
-
-(This repo carried a second, independent MTProto listener — via GramJS — from 2026-09-15 as an
-alternative path for the same problem, removed 2026-09-16 once Bot-to-Bot Communication Mode made
-it redundant. It also couldn't decode Bot API 10.x Rich Messages at all, and its empty arrivals for
-those actively raced and masked the Bot API path's correctly-flattened content — see git history if
-a second transport is ever needed again for something Bot-to-Bot Mode doesn't cover.)
-
-## Live progress via hooks (companion pattern)
-
-A "thinking…" placeholder that updates line by line as the assistant works, then deletes
-itself a few seconds after the final answer — built from four Claude Code hook events, not
-plugin code. See **[docs/tg-live-progress-hooks.md](./docs/tg-live-progress-hooks.md)** for how
-it works and [examples/hooks/](./examples/hooks/) for ready-to-copy scripts.
+`router/test/phase1.test.ts` 對應規劃的 03, 04, 05, 07 與 Phase 1 驗收; `router/test/e2e.test.ts` 用假的 Bot API 與假的 claude CLI 跑真的 router 程序, 驗證收訊, 排隊, 喚醒, 送出, 紀錄整條路徑.

@@ -24,6 +24,8 @@ export type Config = {
   autoCompactWindow: number
   /** claude CLI to spawn workers with. */
   claudeBin: string
+  /** Bot API base URL; only tests point this elsewhere. */
+  apiRoot?: string
 }
 
 export function defaultConfigPath(argv: string[], execPath: string): string {
@@ -51,5 +53,6 @@ export function loadConfig(path: string): Config {
     model: raw.model ?? 'claude-opus-5-5',
     autoCompactWindow: raw.autoCompactWindow ?? 750000,
     claudeBin: raw.claudeBin ?? 'claude',
+    apiRoot: raw.apiRoot,
   }
 }

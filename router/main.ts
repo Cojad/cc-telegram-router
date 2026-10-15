@@ -123,7 +123,7 @@ function onChannel(botName: string, params: ChannelParams): void {
 }
 
 for (const bc of cfg.bots) {
-  const bot = new Bot(bc.token)
+  const bot = new Bot(bc.token, cfg.apiRoot ? { client: { apiRoot: cfg.apiRoot } } : undefined)
   bots.set(bc.name, bot)
   let username = ''
 
