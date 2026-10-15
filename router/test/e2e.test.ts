@@ -169,7 +169,7 @@ test('terminal CLI runs the same commands as owner through the router socket', a
   const out = await new Response(p.stdout).text()
   expect(await p.exited).toBe(0)
   expect(out).toStartWith('router 已運作')
-  expect(out).toContain(' 💤😀🥇: @owner:O - ')
+  expect(out).toMatch(/ 💤😀🥇 +\d+m前: @owner:O/)
   const q2 = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cli', 'role', 'user', '222', 'admin'], { stdout: 'pipe' })
   expect((await new Response(q2.stdout).text()).trim()).toBe('U(@user) (222) 的角色: user → admin') // name from the people table
 }, 15000)

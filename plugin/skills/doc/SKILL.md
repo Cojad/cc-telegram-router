@@ -37,7 +37,7 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 
 | 指令 | 作用 |
 |---|---|
-| `/router status` | 每隻 bot 各列最近有訊息的對話 (新到舊, 每隻最多 10 個, 總行數超過 30 行時每隻 5 個, 最多 5 隻 bot), 每行 `狀態類型角色: 名稱 - 多久前`. 🛜待命中 = worker 正在執行且連上 router, 訊息立刻送達; 💤已休眠 = worker 沒在執行, 訊息先排隊, 下一則訊息自動叫醒. 😀DM 💬群組 📣頻道; 🥇owner 🥈admin 🏅power 🥉user 🥷guest |
+| `/router status` | 每隻 bot 各列最近有訊息的對話 (新到舊, 每隻最多 10 個, 總行數超過 30 行時每隻 5 個, 最多 5 隻 bot), 每行 `狀態類型角色 多久前: 名稱`. 🛜待命中 = worker 正在執行且連上 router, 訊息立刻送達; 💤已休眠 = worker 沒在執行, 訊息先排隊, 下一則訊息自動叫醒. 😀DM 💬群組 📣頻道; 🥇owner 🥈admin 🥉power 🚻user 🥷guest |
 | `/router chat` | 列出所有對話的角色, 模型, compact, mention, 待命中/已休眠, 最後活動 |
 | `/router chat [chat_id] compact <750k\|1m\|auto>` | 調整自動壓縮門檻 (worker 會重啟) |
 | `/router chat [chat_id] model <模型>` | 換模型 (worker 會重啟) |

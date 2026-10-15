@@ -72,12 +72,10 @@ export function resolveUser(db: RouterDb, arg: string | undefined): string | nul
   return null
 }
 
-/** "3m5s", "2h22m", "3d4h" */
+/** "0m", "25m", "1h22m", "3d4h" (minutes are the finest unit). */
 export function ago(ms: number): string {
-  const sec = Math.max(0, Math.floor(ms / 1000))
-  if (sec < 60) return `${sec}s`
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}m${sec % 60}s`
+  const min = Math.max(0, Math.floor(ms / 60000))
+  if (min < 60) return `${min}m`
   const h = Math.floor(min / 60)
   if (h < 24) return `${h}h${min % 60}m`
   return `${Math.floor(h / 24)}d${h % 24}h`
@@ -93,7 +91,7 @@ export function dmLabel(db: RouterDb, uid: string): string {
 
 const STATE_ICON = { on: '🛜', off: '💤' }
 const TYPE_ICON: Record<string, string> = { dm: '😀', group: '💬', channel: '📣' }
-const ROLE_ICON: Record<string, string> = { owner: '🥇', admin: '🥈', power: '🏅', user: '🥉', guest: '🥷' }
+const ROLE_ICON: Record<string, string> = { owner: '🥇', admin: '🥈', power: '🥉', user: '🚻', guest: '🥷' }
 const MAX_BOTS = 5
 
 /** /router status: per bot, its conversations newest first (10 each, or 5
@@ -112,16 +110,19 @@ export function renderStatus(
   let groups = per(10)
   if (lineCount(groups) > 30) groups = per(5)
   const out = [`router 已運作 ${ago(now - startedAt.getTime())}`]
+  // "ago" is right-aligned in a column at least 6 wide ("12h34m").
+  const width = Math.max(6, ...groups.flatMap(g => g.list.map(c => ago(now - lastAt(c)).length)))
   for (const { b, list } of groups) {
     out.push('', `${b.first_name}(@${b.username})`)
     if (!list.length) out.push(' (還沒有對話)')
     for (const c of list) {
       const extra = [o.backlog(c) ? `待送 ${o.backlog(c)}` : '', c.rotate_pending ? '待輪替' : ''].filter(Boolean)
-      out.push(` ${o.isConnected(c.key) ? STATE_ICON.on : STATE_ICON.off}${TYPE_ICON[c.type] ?? '❔'}${ROLE_ICON[c.role] ?? '❔'}: ${o.label(c)} - ${ago(now - lastAt(c))}前${extra.length ? ` (${extra.join(', ')})` : ''}`)
+      const icons = `${o.isConnected(c.key) ? STATE_ICON.on : STATE_ICON.off}${TYPE_ICON[c.type] ?? '❔'}${ROLE_ICON[c.role] ?? '❔'}`
+      out.push(` ${icons} ${ago(now - lastAt(c)).padStart(width)}前: ${o.label(c)}${extra.length ? ` (${extra.join(', ')})` : ''}`)
     }
   }
   if (bots.length > MAX_BOTS) out.push('', `(另有 ${bots.length - MAX_BOTS} 隻 bot 未列出)`)
-  out.push('', '說明:', ' 🛜待命中 💤已休眠', ' 😀DM 💬群組 📣頻道', ' 🥇owner 🥈admin 🏅power 🥉user 🥷guest')
+  out.push('', '說明:', ' 🛜待命中 💤已休眠', ' 😀DM 💬群組 📣頻道', ' 🥇owner 🥈admin 🥉power 🚻user 🥷guest')
   return out.join('\n')
 }
 

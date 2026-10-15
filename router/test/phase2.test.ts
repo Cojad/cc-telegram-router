@@ -377,7 +377,7 @@ test('role targets: uid, @username, or the replied-to person; "user" keyword opt
   expect(viaReply.reply).toBe('Example User(@example_user) (900000001) 的角色: power → admin')
   expect((await run('/router role @nobody admin', OWNER))!.reply).toStartWith('找不到 @nobody')
   const list = (await run('/router role list', OWNER))!
-  expect(list.reply).toBe(`柯姊(@Cojad) ${OWNER} owner (config)\nExample User(@example_user) 900000001 admin\n${ADMIN} admin`)
+  expect(list.reply).toBe(`柯姊(@Cojad) ${OWNER} owner (config)\n${ADMIN} admin\nExample User(@example_user) 900000001 admin`) // sorted by uid as text
   expect(list.private).toBe(true)
 })
 
@@ -419,7 +419,7 @@ test('/router session rotate marks one or all workers (admin skips owner ones) a
   expect(all.reply).toContain('略過 dm-137438526: admin 不能異動 owner 的角色與權限')
   expect(db.rotatePending().map(c => c.key)).toEqual(['group-100555'])
   expect((await run('/router session rotate all', OWNER))!.reply).toStartWith('已標記 2 個 worker')
-  expect((await run('/router status', OWNER))!.reply).toMatch(/ 💤💬🥉: -100555 - \d+s前 \(待輪替\)/) // a group without a title shows its chat id
+  expect((await run('/router status', OWNER))!.reply).toMatch(/ 💤💬🚻 +\d+m前: -100555 \(待輪替\)/) // a group without a title shows its chat id
 })
 
 test('rotation: idle workers are stopped and unmarked, busy ones wait, stopped ones are just unmarked; a backlog is woken', async () => {
@@ -446,7 +446,7 @@ test('rotation: idle workers are stopped and unmarked, busy ones wait, stopped o
 
 import { renderStatus, ago } from '../commands'
 
-test('status: per bot newest first with state/type/role icons and "ago", 10 each or 5 when past 30 lines, max 5 bots, legend', () => {
+test('status: per bot newest first, icons, right-aligned "ago" in minutes, 10 each or 5 when past 30 lines, max 5 bots, legend', () => {
   const now = Date.parse('2026-10-16T05:00:00Z')
   const conv = (bot: string, i: number, type: 'dm' | 'group', role: string, secAgo: number) => ({
     key: `${type}-${bot}-${i}`, bot, chat_id: String(i), type, folder: '', role, session_id: null,
@@ -459,9 +459,9 @@ test('status: per bot newest first with state/type/role icons and "ago", 10 each
   })
   expect(out).toBe([
     'router 已運作 3h45m', '',
-    '柯柯(@example_bot)', ' 🛜😀🥇: @Cojad:🦅 柯姊❤️ Cojad - 1m30s前', ' 💤💬🥈: T2 - 2h22m前', '',
-    '虎虎(@tigerbot)', ' 💤💬🥉: T3 - 3m5s前', '',
-    '說明:', ' 🛜待命中 💤已休眠', ' 😀DM 💬群組 📣頻道', ' 🥇owner 🥈admin 🏅power 🥉user 🥷guest',
+    '柯柯(@example_bot)', ' 🛜😀🥇     1m前: @Cojad:🦅 柯姊❤️ Cojad', ' 💤💬🥈  2h22m前: T2', '',
+    '虎虎(@tigerbot)', ' 💤💬🚻     3m前: T3', '',
+    '說明:', ' 🛜待命中 💤已休眠', ' 😀DM 💬群組 📣頻道', ' 🥇owner 🥈admin 🥉power 🚻user 🥷guest',
   ].join('\n'))
   // limits: 12 conversations on one bot -> 10 shown; 3 bots x 10 -> past 30 lines -> 5 each; 6 bots -> 5 listed
   const many = (bot: string, n: number) => Array.from({ length: n }, (_, i) => conv(bot, i + 100, 'group', 'user', i * 10))
@@ -474,7 +474,7 @@ test('status: per bot newest first with state/type/role icons and "ago", 10 each
   const six = renderStatus(now, new Date(now), b6, [], { isConnected: () => false, label: c => c.title, backlog: () => 0 })
   expect(six).toContain('(另有 1 隻 bot 未列出)')
   expect(six).not.toContain('f(@f)')
-  expect([ago(5000), ago(185000), ago(8520000), ago(3 * 86400000 + 4 * 3600000)]).toEqual(['5s', '3m5s', '2h22m', '3d4h'])
+  expect([ago(5000), ago(185000), ago(8520000), ago(3 * 86400000 + 4 * 3600000)]).toEqual(['0m', '3m', '2h22m', '3d4h'])
 })
 
 test('people are backfilled from the event log for anyone not yet in the table, newest name winning', () => {
