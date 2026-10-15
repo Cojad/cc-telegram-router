@@ -10,7 +10,7 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 | `router/telegram/` | 收發 Telegram 的模組 (沿用 v1 plugin): `transport.ts` `inbound.ts` `policy.ts` `outbound.ts` `store.ts` `format.ts` `rich.ts` |
 | `plugin/` | worker 載入的 Telegram plugin v2 (消費者模式): 不持有 token, 透過 unix socket 跟 router 收發 |
 | `shared/` | router 與 plugin 共用的協定 (`protocol.ts`) 與工具定義 (`tools.ts`) |
-| `templates/` | 各對話 settings 的範本: `base-settings.json` 與 `roles/<角色>.json` |
+| `templates/` | 各對話 settings 的範本 (`base-settings.json`, `roles/<角色>.json`), 共用 CLAUDE.md 範例 (`CLAUDE.md.example`) |
 | `deploy/` | `install.sh` 與 systemd user unit |
 | `docs/v1/` | v1 (單一 session plugin) 時期的文件, 僅供參考 |
 
@@ -30,6 +30,8 @@ deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第
 deploy/install.sh unit     # 安裝 systemd user unit
 systemctl --user enable --now cc-telegram-router
 ```
+
+共用的 `/x/cc/CLAUDE.md` 可以從範例開始: `cp templates/CLAUDE.md.example /x/cc/CLAUDE.md`, 再把 `<...>` 的欄位換成自己的內容. worker 端的使用說明在 plugin 的 `/telegram:doc` skill (`plugin/skills/doc/SKILL.md`).
 
 `/x/cc/.router/config.json` (權限 600) 與 `access.json` 要手動建立一次:
 

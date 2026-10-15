@@ -302,6 +302,18 @@ async function handleRelay(botName: string, chatId: string, chatType: string, se
   }
 }
 
+/** Keep the people table current; refresh the profile photo at most daily. */
+function notePerson(bot: Bot, from: { id: number; first_name: string; last_name?: string; username?: string }, chatId: string | null): void {
+  const uid = String(from.id)
+  const p = db.seePerson({ uid, name: [from.first_name, from.last_name].filter(Boolean).join(' ') || null, username: from.username ?? null, chat_id: chatId })
+  if (p.photo_checked_at && Date.now() - Date.parse(p.photo_checked_at) < 86_400_000) return
+  db.setPersonPhoto(uid, p.photo_file_id) // mark checked now, whatever happens next
+  void bot.api.getUserProfilePhotos(from.id, { limit: 1 }).then(r => {
+    const sizes = r.photos[0]
+    db.setPersonPhoto(uid, sizes?.length ? sizes[sizes.length - 1]!.file_id : null)
+  }).catch(() => {})
+}
+
 function startBot(bc: BotConfig): BotHandle {
   const bot = new Bot(bc.token, apiOpts())
   const h: BotHandle = { cfg: bc, bot, info: null }
@@ -320,11 +332,14 @@ function startBot(bc: BotConfig): BotHandle {
   })
   bot.use(async (ctx, next) => {
     db.logEvent(bc.name, ctx.update)
+    if (ctx.from && !ctx.from.is_bot) notePerson(bot, ctx.from, ctx.chat ? String(ctx.chat.id) : null)
     if (ctx.chat) {
       const title = ctx.chat.type === 'private'
         ? [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || null
         : ('title' in ctx.chat ? ctx.chat.title ?? null : null)
       chats.set(String(ctx.chat.id), { type: ctx.chat.type, title })
+      const conv = db.findConversation(bc.name, String(ctx.chat.id))
+      if (conv) db.touchConversation(conv.key, ctx.chat.type === 'private' ? null : title)
     }
     const text = ctx.message?.text
     // 「cc /xxx」: type a slash command into this conversation's worker.
@@ -338,10 +353,13 @@ function startBot(bc: BotConfig): BotHandle {
     // new token, ...) never holds up other chats' messages.
     if (ctx.chat && ctx.from && isCommand(text)) {
       const chatId = ctx.chat.id, messageId = ctx.message!.message_id
+      const replied = ctx.message!.reply_to_message
+      const senderId = String(ctx.from.id)
       const input = {
-        bot: bc.name, text: text!, senderId: String(ctx.from.id),
+        bot: bc.name, text: text!, senderId,
         senderName: ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name,
-        chatId: String(chatId), chatType: ctx.chat.type,
+        chatId: String(chatId), chatType: ctx.chat.type, messageId,
+        ...(replied?.from ? { reply: { uid: String(replied.from.id), messageId: replied.message_id } } : {}),
       }
       void (async () => {
         const out = await runCommand(input, commandDeps)
@@ -354,10 +372,19 @@ function startBot(bc: BotConfig): BotHandle {
           const ok = await bot.api.deleteMessage(chatId, messageId).then(() => true, e => { log(`delete command message failed: ${e}`); return false })
           reply += ok ? '\n已刪除含 token 的訊息' : '\n⚠️ 無法刪除含 token 的訊息 (bot 沒有刪除權限), 請手動刪除'
         }
+        // Listings name other conversations and people: in a group they go to
+        // the sender's DM, the group only hears that they were sent.
+        const toDm = out.private && input.chatType !== 'private'
+        const target = toDm ? senderId : String(chatId)
         // Long listings (log, chat) can exceed Telegram's 4096 per message.
-        const parts = chunk(reply, 4000, 'newline')
-        for (let i = 0; i < parts.length; i++) {
-          await bot.api.sendMessage(chatId, parts[i]!, i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {}).catch(e => log(`command reply failed: ${e}`))
+        const parts = chunk(toDm ? `(${input.text.trim()} 的結果, 來自群組 ${chats.get(String(chatId))?.title ?? chatId})\n${reply}` : reply, 4000, 'newline')
+        let sent = true
+        for (let i = 0; i < parts.length && sent; i++) {
+          sent = await bot.api.sendMessage(target, parts[i]!, !toDm && i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {})
+            .then(() => true, e => { log(`command reply failed: ${e}`); return false })
+        }
+        if (toDm) {
+          await bot.api.sendMessage(chatId, sent ? '已私訊給你' : '⛔ 這個指令的結果只會私訊給你, 但我私訊不到你. 請先私訊我一次 (例如 /start) 再試', { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } }).catch(e => log(`command reply failed: ${e}`))
         }
         out.after?.()
       })().catch(e => log(`command failed: ${e}`))
@@ -399,6 +426,17 @@ function startBot(bc: BotConfig): BotHandle {
 }
 
 for (const bc of cfg.bots) startBot(bc)
+
+// Conversations created before titles were tracked (or quiet since): ask
+// Telegram once for the group's title.
+for (const c of db.listConversations()) {
+  if (c.title || c.type === 'dm') continue
+  const api = bots.get(c.bot)?.bot.api
+  if (!api) continue
+  void api.getChat(c.chat_id).then(ch => {
+    if ('title' in ch && ch.title) { const u = db.updateConversation(c.key, { title: ch.title }); writeContextFile(cfg, u) }
+  }).catch(e => log(`getChat ${c.key}: ${e}`))
+}
 
 // A restart (deploy, /restart, crash) drops in-flight progress messages on
 // the floor; remove the ones the previous process left in the chats.

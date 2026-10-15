@@ -41,7 +41,7 @@ install_plugin() {
   local tmp
   tmp="$(mktemp -d)"
   bun build "$REPO/plugin/server.ts" --target=bun --outfile "$tmp/server.js" >/dev/null
-  cp -r "$REPO/plugin/.claude-plugin" "$REPO/plugin/.mcp.json" "$REPO/plugin/package.json" "$tmp/"
+  cp -r "$REPO/plugin/.claude-plugin" "$REPO/plugin/.mcp.json" "$REPO/plugin/package.json" "$REPO/plugin/skills" "$tmp/"
   # Keep Claude Code's own marker files; replace everything else.
   find "$PLUGIN_CACHE" -mindepth 1 -maxdepth 1 ! -name '.in_use' -exec rm -rf {} +
   cp -a "$tmp/." "$PLUGIN_CACHE/"

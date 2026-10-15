@@ -9,7 +9,7 @@
 // (every update / payload in the db: e2e.test.ts)
 
 import { test, expect, afterAll } from 'bun:test'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -52,7 +52,7 @@ const router = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--conf
 })
 
 afterAll(async () => {
-  try { for (const j of Object.values(JSON.parse(readFileSync(FAKE, 'utf8'))) as Array<{ pid: number | null }>) if (j.pid) try { process.kill(j.pid) } catch {} } catch {}
+  try { for (const j of jobs()) if (j.pid) try { process.kill(j.pid) } catch {} } catch {}
   router.kill('SIGTERM'); await router.exited
   api.stop(true)
   rmSync(dir, { recursive: true, force: true })
@@ -67,8 +67,12 @@ async function until<T>(fn: () => T | undefined | false, ms = 15000): Promise<T>
   for (let t = 0; t < ms; t += 100) { const v = fn(); if (v) return v; await sleep(100) }
   throw new Error('timed out')
 }
+function jobs(): Array<{ id: string; cwd: string; pid: number | null }> {
+  const d = FAKE + '.jobs'
+  return existsSync(d) ? readdirSync(d).map(f => JSON.parse(readFileSync(join(d, f), 'utf8'))) : []
+}
 function jobFor(key: string): { id: string; pid: number | null } {
-  return (Object.values(JSON.parse(readFileSync(FAKE, 'utf8'))) as Array<{ id: string; cwd: string; pid: number | null }>).find(j => j.cwd.endsWith('/' + key))!
+  return jobs().find(j => j.cwd.endsWith('/' + key))!
 }
 
 test('DM and group each get their own worker, and each worker only receives its own conversation', async () => {

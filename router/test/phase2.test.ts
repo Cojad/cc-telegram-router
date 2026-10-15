@@ -365,3 +365,41 @@ test('progress messages are tracked while live, so a restart can remove the ones
   await sleepMs(40)
   expect(tracked.size).toBe(0)
 })
+
+// --- people, /id, role targets, private listings ----------------------------
+
+test('role targets: uid, @username, or the replied-to person; "user" keyword optional; list shows name(@username)', async () => {
+  db.seePerson({ uid: '900000001', name: 'Example User', username: 'example_user', chat_id: '-100555' })
+  db.seePerson({ uid: OWNER, name: '柯姊', username: 'Cojad', chat_id: OWNER })
+  expect((await run('/router role @example_user admin', OWNER))!.reply).toBe('Example User(@example_user) (900000001) 的角色: user → admin')
+  expect((await run('/router role user 900000001 power', OWNER))!.reply).toBe('Example User(@example_user) (900000001) 的角色: admin → power')
+  const viaReply = (await runCommand({ bot: 'cc', text: '/router role admin', senderId: OWNER, senderName: 'o', chatId: '-100555', chatType: 'supergroup', reply: { uid: '900000001', messageId: 9 } }, deps()))!
+  expect(viaReply.reply).toBe('Example User(@example_user) (900000001) 的角色: power → admin')
+  expect((await run('/router role @nobody admin', OWNER))!.reply).toStartWith('找不到 @nobody')
+  const list = (await run('/router role list', OWNER))!
+  expect(list.reply).toBe(`柯姊(@Cojad) ${OWNER} owner (config)\nExample User(@example_user) 900000001 admin\n${ADMIN} admin`)
+  expect(list.private).toBe(true)
+})
+
+test('/id and /info: you and this chat, @username, or the replied message; silent for non-admins', async () => {
+  db.seePerson({ uid: '900000001', name: 'Example User', username: 'example_user', chat_id: '-100555' })
+  ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  db.updateConversation('group-100555', { title: 'Example Group' })
+  const mine = (await runCommand({ bot: 'cc', text: '/id', senderId: ADMIN, senderName: 'a', chatId: '-100555', chatType: 'supergroup', messageId: 77 }, deps()))!
+  expect(mine.reply).toBe(`你: ${ADMIN} uid ${ADMIN}\n這個對話: -100555 (group-100555, Example Group)\n這則訊息: 77`)
+  expect((await run('/info @example_user', ADMIN))!.reply).toMatch(/^Example User\(@example_user\) uid 900000001\n最後出現: \d{4}-\d\d-\d\d \d\d:\d\d 在 -100555$/)
+  const replied = (await runCommand({ bot: 'cc', text: '/id', senderId: OWNER, senderName: 'o', chatId: '-100555', chatType: 'supergroup', reply: { uid: '900000001', messageId: 9 } }, deps()))!
+  expect(replied.reply).toBe('訊息 9\n發送者: Example User(@example_user) uid 900000001\n對話: -100555 (group-100555, Example Group)')
+  expect(await run('/id', USER, GROUP)).toBeNull() // may be another bot's command
+  expect((await run('/router status', USER, GROUP))!.reply).toStartWith('⛔') // /router still refuses
+})
+
+test('listings are marked private (sent to DM when run in a group); actions are not', async () => {
+  ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  for (const c of ['/router status', '/router chat', '/router chat -100555', '/router log', '/router role list', '/router access show', '/router config', '/router config get model', '/router bot list']) {
+    expect([c, (await run(c, OWNER, GROUP))!.private]).toEqual([c, true])
+  }
+  for (const c of ['/router help', '/router chat mention on', '/router access allow 9', '/id']) {
+    expect([c, (await run(c, OWNER, GROUP))!.private ?? false]).toEqual([c, false])
+  }
+})

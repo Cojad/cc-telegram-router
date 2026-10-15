@@ -11,10 +11,17 @@ import { gmt8 } from './context'
 
 export const ROLES = ['owner', 'admin', 'power', 'user', 'guest'] as const
 
-export type CommandInput = { bot: string; text: string; senderId: string; senderName: string; chatId: string; chatType: string }
+export type CommandInput = {
+  bot: string; text: string; senderId: string; senderName: string; chatId: string; chatType: string
+  messageId?: number
+  /** The message this command replies to, if any (target for /id and role). */
+  reply?: { uid: string; messageId: number }
+}
 /** deleteMessage: the command message carried a token; the caller deletes it
  *  and appends whether that worked to the reply. */
-export type CommandOutput = { reply: string; deleteMessage?: boolean; logs: Array<{ conv: string; text: string }>; after?: () => void }
+/** private: the reply lists other conversations or people; in a group it
+ *  goes to the sender's DM instead. */
+export type CommandOutput = { reply: string; private?: boolean; deleteMessage?: boolean; logs: Array<{ conv: string; text: string }>; after?: () => void }
 
 export interface CommandDeps {
   cfg: Config
@@ -41,10 +48,26 @@ export interface CommandDeps {
   startedAt: Date
 }
 
-const COMMAND_RE = /^\/(router|restart)(?:@\w+)?(?:\s+([\s\S]*))?$/
+const COMMAND_RE = /^\/(router|restart|id|info)(?:@\w+)?(?:\s+([\s\S]*))?$/
 
 export function isCommand(text: string | undefined): boolean {
   return !!text && COMMAND_RE.test(text.trim())
+}
+
+/** "柯姊(@Cojad)", "柯姊", "@Cojad" or the bare uid. */
+export function personLabel(db: RouterDb, uid: string): string {
+  const p = db.getPerson(uid)
+  if (!p) return uid
+  if (p.name && p.username) return `${p.name}(@${p.username})`
+  return p.name ?? (p.username ? `@${p.username}` : uid)
+}
+
+/** A uid from "123", "@username" (someone the bot has seen) or null. */
+export function resolveUser(db: RouterDb, arg: string | undefined): string | null {
+  if (!arg) return null
+  if (/^\d+$/.test(arg)) return arg
+  if (arg.startsWith('@')) return db.findPersonByUsername(arg)?.uid ?? null
+  return null
 }
 
 export function roleOf(deps: Pick<CommandDeps, 'cfg' | 'db'>, uid: string): string {
@@ -55,13 +78,14 @@ export function roleOf(deps: Pick<CommandDeps, 'cfg' | 'db'>, uid: string): stri
 const HELP = [
   '/router status',
   '/router bot list | add <名稱> <token> | rotate <名稱> <token> | remove <名稱>',
-  '/router role user <uid> <角色|none> | role list',
+  '/router role <uid|@username> <角色|none> (回覆某人的訊息時可省略對象) | role list',
   '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off>',
   '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] | group rm <chat_id> | policy <pairing|allowlist|disabled>',
   '/router session restart|stop [chat_id]',
   '/router config (列出全部) | get <key> | set <key> <值>',
   '/router log (所有對話) | log <chat_id> [筆數]',
   '/restart',
+  '/id [@username] (回覆某則訊息時查那則): uid, 訊息編號, 對話 id',
 ].join('\n')
 
 const CONFIG_KEYS: Record<string, 'string' | 'number' | 'list'> = { model: 'string', autoCompactWindow: 'number', claudeBin: 'string', owners: 'list' }
@@ -90,12 +114,17 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
   }
   const deny = (reason: string, extra: Partial<CommandOutput> = {}) => done(`⛔ ${reason}`, extra)
 
-  const args = (m[1] === 'restart' ? ['restart'] : (m[2] ?? '').trim().split(/\s+/).filter(Boolean))
+  const args = m[1] === 'restart' ? ['restart']
+    : m[1] === 'id' || m[1] === 'info' ? ['id', ...(m[2] ?? '').trim().split(/\s+/).filter(Boolean)]
+    : (m[2] ?? '').trim().split(/\s+/).filter(Boolean)
   const sub = args[0] ?? 'help'
   const hasToken = sub === 'bot' && (args[1] === 'add' || args[1] === 'rotate') && args.length >= 4
 
+  // /id and /info are common names; in a group they may be meant for another
+  // bot, so only owner and admin get an answer (the /router refusal stays).
+  if ((m[1] === 'id' || m[1] === 'info') && role !== 'owner' && role !== 'admin') return null
   if (role !== 'owner' && role !== 'admin') {
-    return deny(`/router 只開放 owner 與 admin, 你的角色是 ${role}`, { deleteMessage: hasToken })
+    return deny(`/${m[1] === 'restart' ? 'router' : m[1]} 只開放 owner 與 admin, 你的角色是 ${role}`, { deleteMessage: hasToken })
   }
 
   /** Optional leading chat id; defaults to the current chat. */
@@ -115,14 +144,29 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const backlog = db.undelivered(c.key).length
         lines.push(`${c.key} ${c.title ? `(${c.title}) ` : ''}${c.role} ${deps.sessions.isConnected(c.key) ? '在線' : '離線'}${backlog ? `, 待送 ${backlog}` : ''}`)
       }
-      return done(lines.join('\n'))
+      return done(lines.join('\n'), { private: true })
+    }
+
+    case 'id': {
+      // /id: you and this chat; /id @username: that person; as a reply: that message.
+      const convHere = here ? ` (${here.key}${here.title ? `, ${here.title}` : ''})` : ''
+      if (input.reply) {
+        return done([`訊息 ${input.reply.messageId}`, `發送者: ${personLabel(db, input.reply.uid)} uid ${input.reply.uid}`, `對話: ${input.chatId}${convHere}`].join('\n'))
+      }
+      if (args[1]) {
+        const uid = resolveUser(db, args[1])
+        if (!uid) return done(`找不到 ${args[1]}: bot 還沒收過這個人的訊息, 或 username 打錯了`)
+        const p = db.getPerson(uid)
+        return done([`${personLabel(db, uid)} uid ${uid}`, ...(p ? [`最後出現: ${gmt8(p.last_seen)}${p.last_chat_id ? ` 在 ${p.last_chat_id}` : ''}`] : [])].join('\n'))
+      }
+      return done([`你: ${personLabel(db, input.senderId)} uid ${input.senderId}`, `這個對話: ${input.chatId}${convHere}`, ...(input.messageId ? [`這則訊息: ${input.messageId}`] : [])].join('\n'))
     }
 
     case 'bot': {
       const op = args[1]
       if (op === 'list') {
         const bots = await deps.bots.list()
-        return done(bots.map(b => `${b.name}: @${b.username} (id ${b.id}, ${b.first_name})`).join('\n') || '沒有 bot')
+        return done(bots.map(b => `${b.name}: @${b.username} (id ${b.id}, ${b.first_name})`).join('\n') || '沒有 bot', { private: true })
       }
       if (op !== 'add' && op !== 'rotate' && op !== 'remove') return done('用法: /router bot list | add <名稱> <token> | rotate <名稱> <token> | remove <名稱>')
       const inOwnerDm = role === 'owner' && input.chatType === 'private' && input.chatId === input.senderId
@@ -148,33 +192,46 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
 
     case 'role': {
       if (args[1] === 'list') {
-        const lines = [...cfg.owners.map(u => `${u} owner (config)`), ...db.listUsers().filter(u => !cfg.owners.includes(u.uid)).map(u => `${u.uid} ${u.role}`)]
-        return done(lines.join('\n') || '沒有設定任何角色')
+        const seen = new Set<string>()
+        const lines: string[] = []
+        for (const u of cfg.owners) { seen.add(u); lines.push(`${personLabel(db, u) === u ? u : `${personLabel(db, u)} ${u}`} owner (config)`) }
+        const who = (u: string) => personLabel(db, u) === u ? u : `${personLabel(db, u)} ${u}`
+        for (const u of db.listUsers()) if (!seen.has(u.uid)) lines.push(`${who(u.uid)} ${u.role}`)
+        return done(lines.join('\n') || '沒有設定任何角色', { private: true })
       }
-      if (args[1] !== 'user' || !args[2] || !args[3]) return done('用法: /router role user <uid> <角色|none> | role list')
-      const uid = args[2]!
-      const newRole = args[3] === 'none' ? null : args[3]!
+      // /router role [user] <uid|@username> <角色|none>, or as a reply: /router role [user] <角色|none>
+      const rest = args.slice(1)
+      if (rest[0] === 'user') rest.shift()
+      let who: string | undefined, newRoleArg: string | undefined
+      if (rest.length >= 2) [who, newRoleArg] = rest
+      else if (rest.length === 1 && input.reply) { who = input.reply.uid; newRoleArg = rest[0] }
+      if (!who || !newRoleArg) return done('用法: /router role <uid|@username> <角色|none>, 或回覆某人的訊息打 /router role <角色> | role list')
+      const uid = resolveUser(db, who)
+      if (!uid) return done(`找不到 ${who}: bot 還沒收過這個人的訊息, 或 username 打錯了. 也可以回覆他的訊息再下指令`)
+      const newRole = newRoleArg === 'none' ? null : newRoleArg
       if (newRole && !(ROLES as readonly string[]).includes(newRole)) return done(`角色只能是 ${ROLES.join(', ')} 或 none`)
-      if (cfg.owners.includes(uid)) return deny(`${uid} 是 config 指定的 owner, 要改請用 /router config set owners`)
+      if (cfg.owners.includes(uid)) return deny(`${personLabel(db, uid)} 是 config 指定的 owner, 要改請用 /router config set owners`)
       const current = db.getUserRole(uid)
       if (role === 'admin') {
         if (newRole === 'owner') return deny('admin 不能把角色設成 owner')
         if (current === 'owner') return deny('admin 不能異動 owner 的角色與權限')
       }
       db.setUserRole(uid, newRole)
-      return done(`${uid} 的角色: ${current ?? 'user'} → ${newRole ?? 'user'}`)
+      const label = personLabel(db, uid)
+      return done(`${label === uid ? uid : `${label} (${uid})`} 的角色: ${current ?? 'user'} → ${newRole ?? 'user'}`)
     }
 
     case 'chat': {
       const describe = (c: Conversation) => {
         const a = deps.loadAccess()
         const mention = c.type === 'group' ? (a.groups[c.chat_id]?.requireMention === false ? 'off' : 'on') : '-'
-        return `${c.key}${c.title ? ` (${c.title})` : ''}\n  chat_id ${c.chat_id}, role ${c.role}, model ${c.model ?? `${cfg.model} (預設)`}, compact ${c.compact ?? `${cfg.autoCompactWindow} (預設)`}, mention ${mention}, ${deps.sessions.isConnected(c.key) ? '在線' : '離線'}`
+        const title = c.type === 'dm' ? personLabel(db, c.chat_id) : c.title
+        return `${c.key}${title && title !== c.chat_id ? ` (${title})` : ''}\n  chat_id ${c.chat_id}, role ${c.role}, model ${c.model ?? `${cfg.model} (預設)`}, compact ${c.compact ?? `${cfg.autoCompactWindow} (預設)`}, mention ${mention}, ${deps.sessions.isConnected(c.key) ? '在線' : '離線'}${c.last_seen ? `, 最後活動 ${gmt8(c.last_seen)}` : ''}`
       }
-      if (args.length === 1) return done(db.listConversations().map(describe).join('\n') || '還沒有任何對話')
+      if (args.length === 1) return done(db.listConversations().map(describe).join('\n') || '還沒有任何對話', { private: true })
       if (args.length === 2 && /^-?\d+$/.test(args[1]!)) {
         const c = db.findConversation(input.bot, args[1]!)
-        return done(c ? describe(c) : '找不到這個對話')
+        return done(c ? describe(c) : '找不到這個對話', { private: true })
       }
       const { conv, rest } = target(1)
       if (!conv) return done('找不到這個對話 (它還沒有任何訊息進來過)')
@@ -210,7 +267,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       const op = args[1]
       if (!op || op === 'show') {
         const pend = Object.entries(a.pending).map(([code, p]) => `${code} ← ${p.senderId}`)
-        return done([`dmPolicy: ${a.dmPolicy}`, `allowFrom: ${a.allowFrom.join(', ') || '(空)'}`, `groups: ${Object.entries(a.groups).map(([g, p]) => `${g}${p.requireMention ? '' : ' (不需 mention)'}`).join(', ') || '(空)'}`, `pending: ${pend.join(', ') || '(無)'}`].join('\n'))
+        return done([`dmPolicy: ${a.dmPolicy}`, `allowFrom: ${a.allowFrom.map(u => personLabel(db, u) === u ? u : `${personLabel(db, u)} ${u}`).join(', ') || '(空)'}`, `groups: ${Object.entries(a.groups).map(([g, p]) => `${g}${p.requireMention ? '' : ' (不需 mention)'}`).join(', ') || '(空)'}`, `pending: ${pend.join(', ') || '(無)'}`].join('\n'), { private: true })
       }
       if (op === 'pair' || op === 'deny') {
         const code = args[2]
@@ -274,11 +331,11 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
           `socket: ${cfg.socket}`,
           `config: ${cfg.path}`,
         ]
-        return done(lines.join('\n'))
+        return done(lines.join('\n'), { private: true })
       }
       if (!key || !(key in CONFIG_KEYS)) return done(`可用的 key: ${Object.keys(CONFIG_KEYS).join(', ')} (bot token 請用 /router bot)`)
       const cur = (cfg as unknown as Record<string, unknown>)[key]
-      if (op === 'get') return done(`${key} = ${JSON.stringify(cur)}`)
+      if (op === 'get') return done(`${key} = ${JSON.stringify(cur)}`, { private: true })
       if (op !== 'set' || args.length < 4) return done('用法: /router config get <key> | set <key> <值>')
       if (key === 'owners' && role !== 'owner') return deny('admin 不能異動 owner 的角色與權限')
       const raw = args.slice(3).join(' ')
@@ -302,7 +359,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const rows = deps.recentMessages(c.chat_id, n).reverse()
         return `[${c.key}${c.title ? ` ${c.title}` : ''}]\n${rows.map(fmt).join('\n') || '(沒有紀錄)'}`
       })
-      return done(blocks.join('\n\n'))
+      return done(blocks.join('\n\n'), { private: true })
     }
 
     case 'restart':

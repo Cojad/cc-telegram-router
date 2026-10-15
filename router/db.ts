@@ -23,7 +23,11 @@ export type Conversation = {
   model?: string | null
   /** chat_context version, bumped on every change (plan 06). */
   ctx_v?: number
+  last_seen?: string | null
 }
+
+/** Everyone the bot has seen (plan 03 資料表 people). */
+export type Person = { uid: string; name: string | null; username: string | null; photo_file_id: string | null; photo_checked_at: string | null; first_seen: string; last_seen: string; last_chat_id: string | null }
 
 export type QueueRow = { qid: number; conv: string; params: string; status: 'pending' | 'delivered' | 'acked' }
 export type LogRow = { id: number; conv: string; ts: string; text: string; qid: number | null }
@@ -46,6 +50,13 @@ export interface RouterDb {
   undelivered(conv: string): QueueRow[]
   /** Conversations with anything not yet acked. */
   convsWithBacklog(): string[]
+  /** Upsert from an update: name, @username, last seen, where. */
+  seePerson(p: { uid: string; name: string | null; username: string | null; chat_id: string | null }): Person
+  setPersonPhoto(uid: string, file_id: string | null): void
+  getPerson(uid: string): Person | null
+  findPersonByUsername(username: string): Person | null
+  /** Conversations: refresh title and last activity. */
+  touchConversation(key: string, title: string | null): void
   getUserRole(uid: string): string | null
   setUserRole(uid: string, role: string | null): void
   listUsers(): Array<{ uid: string; role: string }>
@@ -92,11 +103,16 @@ export function openRouterDb(path: string): RouterDb {
       conv TEXT NOT NULL, ts TEXT NOT NULL, text TEXT NOT NULL, qid INTEGER
     );
     CREATE INDEX IF NOT EXISTS router_log_conv ON router_log (conv, qid);
+    CREATE TABLE IF NOT EXISTS people (
+      uid TEXT PRIMARY KEY, name TEXT, username TEXT, photo_file_id TEXT, photo_checked_at TEXT,
+      first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, last_chat_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS people_username ON people (lower(username));
     CREATE TABLE IF NOT EXISTS progress_msgs (key TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (key, message_id));
   `)
   // Columns added after Phase 1.
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
-  for (const [name, type] of [['title', 'TEXT'], ['compact', 'INTEGER'], ['model', 'TEXT'], ['ctx_v', 'INTEGER NOT NULL DEFAULT 1']]) {
+  for (const [name, type] of [['title', 'TEXT'], ['compact', 'INTEGER'], ['model', 'TEXT'], ['ctx_v', 'INTEGER NOT NULL DEFAULT 1'], ['last_seen', 'TEXT']]) {
     if (!cols.has(name)) db.exec(`ALTER TABLE conversations ADD COLUMN ${name} ${type}`)
   }
 
@@ -128,6 +144,12 @@ export function openRouterDb(path: string): RouterDb {
   const qPAdd = db.prepare('INSERT OR REPLACE INTO progress_msgs (key, chat_id, message_id) VALUES (?, ?, ?)')
   const qPDel = db.prepare('DELETE FROM progress_msgs WHERE key = ? AND message_id = ?')
   const qPAll = db.prepare('SELECT key, chat_id, message_id FROM progress_msgs')
+  const qPeopleUp = db.prepare(`INSERT INTO people (uid, name, username, first_seen, last_seen, last_chat_id) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(uid) DO UPDATE SET name = excluded.name, username = excluded.username, last_seen = excluded.last_seen, last_chat_id = coalesce(excluded.last_chat_id, last_chat_id)`)
+  const qPeopleGet = db.prepare('SELECT * FROM people WHERE uid = ?')
+  const qPeopleByName = db.prepare('SELECT * FROM people WHERE lower(username) = lower(?) ORDER BY last_seen DESC LIMIT 1')
+  const qPeoplePhoto = db.prepare('UPDATE people SET photo_file_id = ?, photo_checked_at = ? WHERE uid = ?')
+  const qConvTouch = db.prepare('UPDATE conversations SET last_seen = ?, title = coalesce(?, title) WHERE key = ?')
   const get = (key: string) => (qGet.get(key) as Conversation | null) ?? null
   return {
     logEvent: (bot, update) => { qEvent.run(now(), bot, json(update)) },
@@ -156,6 +178,15 @@ export function openRouterDb(path: string): RouterDb {
     ack: qid => { qAck.run(now(), qid) },
     undelivered: conv => qUnd.all(conv) as QueueRow[],
     convsWithBacklog: () => (qBack.all() as Array<{ conv: string }>).map(r => r.conv),
+    seePerson(p) {
+      const t = now()
+      qPeopleUp.run(p.uid, p.name, p.username, t, t, p.chat_id)
+      return qPeopleGet.get(p.uid) as Person
+    },
+    setPersonPhoto: (uid, file_id) => { qPeoplePhoto.run(file_id, now(), uid) },
+    getPerson: uid => (qPeopleGet.get(uid) as Person | null) ?? null,
+    findPersonByUsername: u => (qPeopleByName.get(u.replace(/^@/, '')) as Person | null) ?? null,
+    touchConversation: (key, title) => { qConvTouch.run(now(), title, key) },
     getUserRole: uid => ((qUserGet.get(uid) as { role: string } | null)?.role) ?? null,
     setUserRole: (uid, role) => { if (role) qUserSet.run(uid, role, now()); else qUserDel.run(uid) },
     listUsers: () => qUsers.all() as Array<{ uid: string; role: string }>,

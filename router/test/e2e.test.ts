@@ -171,7 +171,7 @@ test('terminal CLI runs the same commands as owner through the router socket', a
   expect(out).toStartWith('router 已運作')
   expect(out).toContain('dm-111')
   const q2 = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cli', 'role', 'user', '222', 'admin'], { stdout: 'pipe' })
-  expect((await new Response(q2.stdout).text()).trim()).toBe('222 的角色: user → admin')
+  expect((await new Response(q2.stdout).text()).trim()).toBe('U(@user) (222) 的角色: user → admin') // name from the people table
 }, 15000)
 
 test('a plugin or hook reporting a subfolder of a conversation is still that conversation', async () => {
@@ -215,4 +215,18 @@ test('a token posted in a group the bot cannot delete from: the refusal says so 
   laterUpdates.push({ update_id: 40, message: { message_id: 50, date: now, chat: { id: -100777, type: 'supergroup', title: 'G' }, from, text: '/router bot add x 123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' } })
   const r = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('⛔ /router bot add')))
   expect(r.body.text).toBe('⛔ /router bot add 只能在 owner 私訊使用; token 曾出現在群組, 建議 /router bot rotate\n⚠️ 無法刪除含 token 的訊息 (bot 沒有刪除權限), 請手動刪除')
+}, 15000)
+
+test('a listing in a group goes to the sender\'s DM; the group only hears it was sent; people and titles are tracked', async () => {
+  const from = { id: 111, is_bot: false, first_name: 'O', username: 'owner' }
+  laterUpdates.push({ update_id: 60, message: { message_id: 70, date: now, chat: { id: -100777, type: 'supergroup', title: 'G' }, from, text: '/router chat' } })
+  const dm = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.chat_id) === '111' && String(c.body.text).startsWith('(/router chat 的結果')))
+  expect(dm.body.text).toContain('group-100777 (G)')
+  expect(dm.body.text).toContain('dm-111 (O(@owner))')
+  const ack = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.chat_id) === '-100777' && c.body.text === '已私訊給你'))
+  expect(ack.body.reply_parameters.message_id).toBe(70)
+  // nothing of the listing was posted in the group
+  expect(calls.some(c => c.method === 'sendMessage' && String(c.body.chat_id) === '-100777' && String(c.body.text).includes('dm-111'))).toBe(false)
+  const people = q("SELECT uid, name, username FROM people WHERE uid = '111'")
+  expect(people).toEqual([{ uid: '111', name: 'O', username: 'owner' }])
 }, 15000)
