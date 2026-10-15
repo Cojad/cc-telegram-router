@@ -59,7 +59,7 @@ export function createProgress(api: ProgressApi, opts: { throttleMs?: number; de
         if (s) await finish(key, s)
         if (!ev.telegram) return
         const st: State = { chatId, messageId: null, lines: [], head: '🤔 思考中…', timer: null, dirty: false, starting: null }
-        st.starting = api.send(chatId, st.head).then(id => { st.messageId = id; st.starting = null })
+        st.starting = api.send(chatId, st.head).then(id => { st.messageId = id }, () => { st.messageId = null }).finally(() => { st.starting = null })
         states.set(key, st)
         return
       }

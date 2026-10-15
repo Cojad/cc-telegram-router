@@ -26,6 +26,12 @@ export interface SupervisorDeps {
 
 export const CHANNEL = 'plugin:telegram@claude-plugins-official'
 
+/** Running = the daemon reports a live process. `state` is not it: "done"
+ *  only means the last turn finished while the process stays up. */
+export function isRunning(a: AgentEntry): boolean {
+  return a.pid != null && a.status != null
+}
+
 export function workerArgs(cfg: Config, c: Conversation, settings: string): string[] {
   return [
     '--allow-dangerously-skip-permissions',
@@ -90,7 +96,7 @@ export function createSupervisor(deps: SupervisorDeps) {
   async function wake(c: Conversation): Promise<void> {
     if (isConnected(c.key)) return
     const agents = await listAgents()
-    const live = agents.find(a => (c.session_id && a.sessionId === c.session_id) && a.pid && a.state !== 'stopped' && a.state !== 'done')
+    const live = agents.find(a => c.session_id && a.sessionId === c.session_id && isRunning(a))
     if (live) {
       // Running but plugin not connected: still starting, or wedged.
       if (await waitConnected(c.key, 20_000)) return
@@ -112,7 +118,7 @@ export function createSupervisor(deps: SupervisorDeps) {
 
   async function liveJob(c: Conversation): Promise<AgentEntry | undefined> {
     if (!c.session_id) return undefined
-    return (await listAgents()).find(a => a.sessionId === c.session_id && a.pid && a.state !== 'stopped' && a.state !== 'done')
+    return (await listAgents()).find(a => a.sessionId === c.session_id && isRunning(a))
   }
 
   /** Stop the worker; the next message wakes it again. dropJob also forgets

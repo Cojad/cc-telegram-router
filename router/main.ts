@@ -405,6 +405,10 @@ async function shutdown(sig: string, respawn = false) {
   if (respawn) spawn(process.execPath, process.argv.slice(1), { detached: true, stdio: 'ignore' }).unref()
   process.exit(0)
 }
+// One failed Bot API call or a bad message must never take the router (and
+// with it every conversation's delivery) down.
+process.on('unhandledRejection', e => log(`unhandled rejection: ${e instanceof Error ? e.stack ?? e.message : e}`))
+process.on('uncaughtException', e => log(`uncaught exception: ${e.stack ?? e.message}`))
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 process.on('SIGINT', () => void shutdown('SIGINT'))
 log(`router up: config ${configPath}, home ${cfg.home}, ${cfg.bots.length} bot(s)`)

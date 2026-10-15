@@ -286,3 +286,26 @@ test('cc-hook progress reports events to the router socket for its conversation;
   ])
   ipc.stop()
 }, 20000)
+
+import { isRunning } from '../supervisor'
+
+test('a worker whose last turn is "done" is still running; only a live pid with a status counts', () => {
+  expect(isRunning({ id: 'a', pid: 1, status: 'idle', state: 'done' })).toBe(true)
+  expect(isRunning({ id: 'a', pid: 1, status: 'idle', state: 'blocked' })).toBe(true)
+  expect(isRunning({ id: 'a', state: 'stopped' })).toBe(false)
+  expect(isRunning({ id: 'a', state: 'done' })).toBe(false)
+})
+
+test('progress: a failed send (e.g. chat not found) neither throws nor leaves edits pending', async () => {
+  const ops: string[] = []
+  const p = createProgress({
+    async send() { throw new Error('400: chat not found') },
+    async edit() { ops.push('edit') },
+    async remove() { ops.push('remove') },
+  }, { throttleMs: 10, deleteAfterMs: 10 })
+  await p.handle('x', '1', { event: 'prompt', telegram: true })
+  await p.handle('x', '1', { event: 'pre', summary: 'Bash: ls' })
+  await p.handle('x', '1', { event: 'stop' })
+  await sleepMs(40)
+  expect(ops).toEqual([])
+})
