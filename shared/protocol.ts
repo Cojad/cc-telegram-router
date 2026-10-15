@@ -7,7 +7,13 @@ export const DEFAULT_SOCKET = '/x/cc/.router/router.sock'
 /** What the plugin turns into a notifications/claude/channel notification. */
 export type ChannelParams = { content: string; meta: Record<string, string> }
 
-export type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean }
+export type ToolResult = {
+  content: Array<{ type: 'text'; text: string }>
+  isError?: boolean
+  /** Set by the plugin's client when the call never got an answer from the
+   *  router (offline, connection lost mid-call, timeout). Not on the wire. */
+  offline?: 'not-sent' | 'maybe-sent'
+}
 
 export type PluginToRouter =
   | { t: 'hello'; project_dir: string; session_id?: string; pid: number }

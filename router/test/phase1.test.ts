@@ -294,3 +294,35 @@ test('plugin v2 outside the router home: tools say it is not a Telegram worker',
   expect(r.content[0].text).toMatch(/not a Telegram worker/)
   await client.close()
 }, 20000)
+
+test('router offline: tools say the message was not sent; on reconnect the plugin tells Claude what to resend', async () => {
+  const conv = ensureConversation(cfg, db, 'main', '-100555', 'supergroup', () => {})
+  const transport = new StdioClientTransport({
+    command: 'bun', args: [join(import.meta.dir, '..', '..', 'plugin', 'server.ts')],
+    env: { ...process.env, CLAUDE_PROJECT_DIR: conv.folder, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket, CC_TELEGRAM_CHANNEL_GRACE_MS: '50' } as Record<string, string>,
+  })
+  const client = new Client({ name: 'test', version: '0' }, { capabilities: {} })
+  const notes: any[] = []
+  client.setNotificationHandler(z.object({ method: z.literal('notifications/claude/channel'), params: z.any() }), n => { notes.push(n.params) })
+  await client.connect(transport)
+  // no router yet
+  const r: any = await client.callTool({ name: 'reply', arguments: { chat_id: '-100555', text: '晚點見' } })
+  expect(r.isError).toBe(true)
+  expect(r.content[0].text).toStartWith('router 目前離線, 這個動作沒有送出')
+  const look: any = await client.callTool({ name: 'lookup_message', arguments: { chat_id: '-100555' } })
+  expect(look.isError).toBe(true)
+  // router comes up; the plugin reconnects on its own and reports the missed reply (not the read)
+  const { ipc } = startIpc()
+  for (let i = 0; i < 200 && notes.length < 1; i++) await sleep(50)
+  expect(notes).toHaveLength(1)
+  expect(notes[0].meta).toMatchObject({ chat_id: '-100555', user: 'router' })
+  expect(notes[0].content).toStartWith('<router_status>\nrouter 已恢復連線. 離線期間有 1 個動作沒有確定送出:')
+  expect(notes[0].content).toMatch(/- \d\d:\d\d reply: 晚點見\n/)
+  expect(notes[0].content).not.toContain('lookup_message: ')
+  // once reported, it is not reported again on the next reconnect
+  ipc.stop()
+  const again = startIpc()
+  await sleep(2500)
+  expect(notes).toHaveLength(1)
+  await client.close(); again.ipc.stop()
+}, 30000)

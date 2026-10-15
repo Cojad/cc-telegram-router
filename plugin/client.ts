@@ -43,7 +43,8 @@ export function connectRouter(opts: ClientOpts) {
   }
 
   function failPending(reason: string): void {
-    for (const [, resolve] of pending) resolve({ content: [{ type: 'text', text: reason }], isError: true })
+    // The router may or may not have acted on these before the line dropped.
+    for (const [, resolve] of pending) resolve({ content: [{ type: 'text', text: reason }], isError: true, offline: 'maybe-sent' })
     pending.clear()
   }
 
@@ -101,7 +102,7 @@ export function connectRouter(opts: ClientOpts) {
         pending.set(id, resolve)
         send({ t: 'call', id, tool, args })
         setTimeout(() => {
-          if (pending.delete(id)) resolve({ content: [{ type: 'text', text: `${tool}: router did not answer in ${timeout / 1000}s` }], isError: true })
+          if (pending.delete(id)) resolve({ content: [{ type: 'text', text: `${tool}: router did not answer in ${timeout / 1000}s` }], isError: true, offline: 'maybe-sent' })
         }, timeout)
       })
     },

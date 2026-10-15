@@ -68,6 +68,8 @@ const router = connectRouter({
         () => { seen.add(m.qid); router.send({ t: 'ack', qid: m.qid }) },
         e => process.stderr.write(`telegram: notification failed: ${e}\n`),
       )
+    } else if (m.t === 'welcome') {
+      notifyRecovered(m.chat_id)
     } else if (m.t === 'reject') {
       process.stderr.write(`telegram: router rejected this session: ${m.reason}\n`)
     }
@@ -77,10 +79,49 @@ const router = connectRouter({
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS as unknown as object[] }))
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const st = router.state()
+  const name = req.params.name
+  const args = (req.params.arguments ?? {}) as Record<string, unknown>
   if (st.kind === 'rejected') return err(`not a Telegram worker: ${st.reason}`)
-  if (st.kind !== 'ready') return err('router not connected')
-  return router.call(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>)
+  if (st.kind !== 'ready') return offline(name, args, 'not-sent')
+  const r = await router.call(name, args)
+  return r.offline ? offline(name, args, r.offline) : r
 })
+
+// While the router is unreachable nothing can reach Telegram. Say so plainly,
+// remember what did not go out, and when the router is back, tell Claude
+// which calls to redo against the situation as it is by then.
+type Missed = { tool: string; what: string; at: Date; how: 'not-sent' | 'maybe-sent' }
+const missed: Missed[] = []
+const hhmm = (d: Date) => d.toLocaleTimeString('sv-SE', { timeZone: 'Asia/Taipei', hour12: false }).slice(0, 5)
+
+function describe(tool: string, args: Record<string, unknown>): string {
+  const text = typeof args.text === 'string' ? `: ${args.text.replace(/\s+/g, ' ').slice(0, 80)}${args.text.length > 80 ? '…' : ''}` : ''
+  const emoji = typeof args.emoji === 'string' ? ` ${args.emoji}` : ''
+  return `${tool}${emoji}${text}`
+}
+
+function offline(tool: string, args: Record<string, unknown>, how: Missed['how']) {
+  // Reads have nothing to redo; only things meant to reach Telegram are kept.
+  if (tool !== 'lookup_message' && tool !== 'get_chat_context') missed.push({ tool, what: describe(tool, args), at: new Date(), how })
+  return err(how === 'not-sent'
+    ? 'router 目前離線, 這個動作沒有送出, Telegram 那邊收不到. router 恢復連線時會主動通知你, 屆時請依當下最新狀況重新送出. 現在不要重試.'
+    : 'router 在處理這個動作時斷線, 無法確定是否已送達. router 恢復連線時會主動通知你, 屆時先用 lookup_message 確認, 沒送到再依當下最新狀況重新送出.')
+}
+
+function notifyRecovered(chatId: string | undefined): void {
+  if (!missed.length) return
+  const items = missed.splice(0)
+  const lines = items.map(m => `- ${hhmm(m.at)} ${m.what}${m.how === 'maybe-sent' ? ' (送出途中斷線, 可能已送達)' : ''}`)
+  const content = [
+    '<router_status>',
+    `router 已恢復連線. 離線期間有 ${items.length} 個動作沒有確定送出:`,
+    ...lines,
+    '請依目前最新狀況決定要不要重新送出: 可以原樣重送, 也可以視情況更新內容或合併成一則. 標示「可能已送達」的先用 lookup_message 確認, 避免重複.',
+    '</router_status>',
+  ].join('\n')
+  mcp.notification({ method: 'notifications/claude/channel', params: { content, meta: { ...(chatId ? { chat_id: chatId } : {}), user: 'router', ts: new Date().toISOString() } } })
+    .catch(e => process.stderr.write(`telegram: recovery notification failed: ${e}\n`))
+}
 
 await mcp.connect(new StdioServerTransport())
 
