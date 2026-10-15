@@ -90,7 +90,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
 // While the router is unreachable nothing can reach Telegram. Say so plainly,
 // remember what did not go out, and when the router is back, tell Claude
 // which calls to redo against the situation as it is by then.
-type Missed = { tool: string; what: string; at: Date; how: 'not-sent' | 'maybe-sent' }
+type Missed = { tool: string; what: string; at: Date; how: 'not-sent' | 'maybe-sent' | 'not-read' }
+const READS = new Set(['lookup_message', 'get_chat_context', 'download_attachment'])
 const missed: Missed[] = []
 const hhmm = (d: Date) => d.toLocaleTimeString('sv-SE', { timeZone: 'Asia/Taipei', hour12: false }).slice(0, 5)
 
@@ -101,8 +102,13 @@ function describe(tool: string, args: Record<string, unknown>): string {
 }
 
 function offline(tool: string, args: Record<string, unknown>, how: Missed['how']) {
-  // Reads have nothing to redo; only things meant to reach Telegram are kept.
-  if (tool !== 'lookup_message' && tool !== 'get_chat_context') missed.push({ tool, what: describe(tool, args), at: new Date(), how })
+  if (READS.has(tool)) {
+    // Nothing was changed, but Claude may be waiting on this data: say what
+    // is missing and let it choose; the recovery notice will cover it too.
+    missed.push({ tool, what: describe(tool, args), at: new Date(), how: 'not-read' })
+    return err(`router 目前離線, ${tool} 取不到資料, 沒有任何東西被送出或修改. 你可以先繼續不需要這份資料的工作, 也可以暫停等候; router 恢復連線時會主動通知你, 屆時需要的話再查一次.`)
+  }
+  missed.push({ tool, what: describe(tool, args), at: new Date(), how })
   return err(how === 'not-sent'
     ? 'router 目前離線, 這個動作沒有送出, Telegram 那邊收不到. router 恢復連線時會主動通知你, 屆時請依當下最新狀況重新送出. 現在不要重試.'
     : 'router 在處理這個動作時斷線, 無法確定是否已送達. router 恢復連線時會主動通知你, 屆時先用 lookup_message 確認, 沒送到再依當下最新狀況重新送出.')
@@ -111,12 +117,20 @@ function offline(tool: string, args: Record<string, unknown>, how: Missed['how']
 function notifyRecovered(chatId: string | undefined): void {
   if (!missed.length) return
   const items = missed.splice(0)
-  const lines = items.map(m => `- ${hhmm(m.at)} ${m.what}${m.how === 'maybe-sent' ? ' (送出途中斷線, 可能已送達)' : ''}`)
+  const sends = items.filter(m => m.how !== 'not-read')
+  const reads = items.filter(m => m.how === 'not-read')
+  const line = (m: Missed) => `- ${hhmm(m.at)} ${m.what}${m.how === 'maybe-sent' ? ' (送出途中斷線, 可能已送達)' : ''}`
   const content = [
     '<router_status>',
-    `router 已恢復連線. 離線期間有 ${items.length} 個動作沒有確定送出:`,
-    ...lines,
-    '請依目前最新狀況決定要不要重新送出: 可以原樣重送, 也可以視情況更新內容或合併成一則. 標示「可能已送達」的先用 lookup_message 確認, 避免重複.',
+    'router 已恢復連線, Telegram 的收發都恢復正常.',
+    ...(sends.length ? [
+      `離線期間有 ${sends.length} 個動作沒有確定送出:`, ...sends.map(line),
+      '請依目前最新狀況決定要不要重新送出: 可以原樣重送, 也可以視情況更新內容或合併成一則. 標示「可能已送達」的先用 lookup_message 確認, 避免重複.',
+    ] : []),
+    ...(reads.length ? [
+      `離線期間有 ${reads.length} 次查詢沒有取到資料:`, ...reads.map(line),
+      '如果還需要這些資料, 現在可以重新查詢; 若先前因此暫停了工作, 可以接著做.',
+    ] : []),
     '</router_status>',
   ].join('\n')
   mcp.notification({ method: 'notifications/claude/channel', params: { content, meta: { ...(chatId ? { chat_id: chatId } : {}), user: 'router', ts: new Date().toISOString() } } })
