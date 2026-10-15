@@ -207,3 +207,82 @@ test('relay drives a hidden tmux on the router socket dir and always cleans up',
   expect(gen).toBe('❯\nModel: opus')
   expect(seen.some(s => s.args[1] === 'send-keys' && s.args.includes('/model opus'))).toBe(true)
 }, 15000)
+
+// --- listing commands -------------------------------------------------------
+
+test('/router config, /router chat and /router log with no arguments list everything', async () => {
+  const cfgOut = (await run('/router config', OWNER))!.reply
+  for (const k of ['bots: cc', `owners: ${OWNER}`, 'model: claude-opus-5-5', 'autoCompactWindow: 750000', 'claudeBin: claude', `home: ${dir}`]) expect(cfgOut).toContain(k)
+  expect(cfgOut).not.toContain('1:x') // no token
+  expect((await run('/router config show', ADMIN))!.reply).toBe(cfgOut)
+  ensureConversation(cfg, db, 'cc', OWNER, 'private', () => {})
+  ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  db.updateConversation('group-100555', { title: 'Example Group', compact: 300000 })
+  const chats = (await run('/router chat', OWNER))!.reply
+  expect(chats).toContain('dm-137438526\n  chat_id 137438526, role owner, model claude-opus-5-5 (預設), compact 750000 (預設), mention -, 離線')
+  expect(chats).toContain('group-100555 (Example Group)\n  chat_id -100555, role user, model claude-opus-5-5 (預設), compact 300000, mention on, 離線')
+  expect((await run('/router chat -100555', OWNER))!.reply).toStartWith('group-100555 (Example Group)')
+  const logs = (await run('/router log', OWNER))!.reply
+  expect(logs).toContain('[dm-137438526]')
+  expect(logs).toContain('[group-100555 Example Group]')
+})
+
+// --- live progress (docs/v1/tg-live-progress-hooks.md, v2 port) ------------
+
+import { createProgress, toolSummary } from '../progress'
+
+test('progress: a Telegram-triggered turn gets one message, tool lines flip ▶→✅ in place, Stop finishes and deletes', async () => {
+  const ops: string[] = []
+  const p = createProgress({
+    async send(chat, text) { ops.push(`send ${chat} ${text}`); return 77 },
+    async edit(chat, id, text) { ops.push(`edit ${id} ${text}`) },
+    async remove(chat, id) { ops.push(`remove ${id}`) },
+  }, { throttleMs: 20, deleteAfterMs: 20 })
+  await p.handle('g', '-1', { event: 'prompt', telegram: false })
+  await p.handle('g', '-1', { event: 'pre', summary: 'Bash: ls' })
+  expect(ops).toEqual([]) // not a Telegram turn: nothing at all
+  await p.handle('g', '-1', { event: 'prompt', telegram: true })
+  await p.handle('g', '-1', { event: 'pre', summary: 'Bash: ls' })
+  await p.handle('g', '-1', { event: 'post', summary: 'Bash: ls' })
+  await p.handle('g', '-1', { event: 'pre', summary: 'Read: a.md' })
+  await sleepMs(60)
+  await p.handle('g', '-1', { event: 'compact-pre', trigger: 'auto' })
+  await p.handle('g', '-1', { event: 'compact-post', trigger: 'auto' })
+  await p.handle('g', '-1', { event: 'stop' })
+  await sleepMs(60)
+  expect(ops[0]).toBe('send -1 🤔 思考中…')
+  expect(ops[1]).toBe('edit 77 🤔 思考中…\n\n✅ Bash: ls\n▶ Read: a.md') // three events, one throttled edit
+  expect(ops).toContain('edit 77 ✅ 完成\n\n✅ Bash: ls\n▶ Read: a.md\n✅ 壓縮完成, 繼續處理')
+  expect(ops.at(-1)).toBe('remove 77')
+  expect(p.active('g')).toBe(false)
+  expect(toolSummary('Bash', { command: 'ls -la\nx', description: 'List files' })).toBe('Bash: List files')
+  expect(toolSummary('Grep', { pattern: 'foo' })).toBe('Grep: foo')
+})
+const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+import { createIpc } from '../ipc'
+
+test('cc-hook progress reports events to the router socket for its conversation; telegram plugin tools are skipped', async () => {
+  const c = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  const got: Array<{ key?: string; ev: Record<string, unknown> }> = []
+  const ipc = createIpc({
+    cfg, db,
+    identify: d => { const x = db.getConversation(d.slice(dir.length + 1)); return x ? { mode: 'worker', conv: x, role: x.role } : null },
+    onCall: async () => ({ content: [] }),
+    onProgress: (peer, ev) => got.push({ key: peer.conv?.key, ev }),
+  })
+  const hook = (event: string, input: object) => Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', event], {
+    stdin: new Blob([JSON.stringify({ cwd: c.folder, ...input })]), env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket },
+  }).exited
+  await hook('prompt', { prompt: '<channel source="plugin:telegram:telegram" chat_id="-100555">hi</channel>' })
+  await hook('pre', { tool_name: 'Bash', tool_input: { command: 'ls', description: 'List' } })
+  await hook('pre', { tool_name: 'mcp__plugin_telegram_telegram__reply', tool_input: {} })
+  await hook('stop', {})
+  for (let i = 0; i < 40 && got.length < 3; i++) await sleepMs(25)
+  expect(got).toEqual([
+    { key: 'group-100555', ev: { event: 'prompt', telegram: true } },
+    { key: 'group-100555', ev: { event: 'pre', summary: 'Bash: List' } },
+    { key: 'group-100555', ev: { event: 'stop' } },
+  ])
+  ipc.stop()
+}, 20000)

@@ -1,11 +1,89 @@
 {
-  "enabledPlugins": { "telegram@claude-plugins-official": true },
+  "enabledPlugins": {
+    "telegram@claude-plugins-official": true
+  },
   "autoMemoryDirectory": "{{folder}}/memory",
   "crossSessionInbound": "accept",
   "autoCompactWindow": "{{autoCompactWindow}}",
   "hooks": {
     "SessionStart": [
-      { "matcher": "compact", "hooks": [{ "type": "command", "command": "{{hooksDir}}/cc-hook session-start" }] }
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{hooksDir}}/cc-hook session-start"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{hooksDir}}/cc-hook progress prompt",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{hooksDir}}/cc-hook progress pre",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{hooksDir}}/cc-hook progress post",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{hooksDir}}/cc-hook progress compact-pre",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{hooksDir}}/cc-hook progress compact-post",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{hooksDir}}/cc-hook progress stop",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

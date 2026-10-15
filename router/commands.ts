@@ -54,11 +54,11 @@ const HELP = [
   '/router status',
   '/router bot list | add <名稱> <token> | rotate <名稱> <token> | remove <名稱>',
   '/router role user <uid> <角色|none> | role list',
-  '/router chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off>',
+  '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off>',
   '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] | group rm <chat_id> | policy <pairing|allowlist|disabled>',
   '/router session restart|stop [chat_id]',
-  '/router config get <key> | set <key> <值>',
-  '/router log [chat_id] [筆數]',
+  '/router config (列出全部) | get <key> | set <key> <值>',
+  '/router log (所有對話) | log <chat_id> [筆數]',
   '/restart',
 ].join('\n')
 
@@ -164,6 +164,16 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     }
 
     case 'chat': {
+      const describe = (c: Conversation) => {
+        const a = deps.loadAccess()
+        const mention = c.type === 'group' ? (a.groups[c.chat_id]?.requireMention === false ? 'off' : 'on') : '-'
+        return `${c.key}${c.title ? ` (${c.title})` : ''}\n  chat_id ${c.chat_id}, role ${c.role}, model ${c.model ?? `${cfg.model} (預設)`}, compact ${c.compact ?? `${cfg.autoCompactWindow} (預設)`}, mention ${mention}, ${deps.sessions.isConnected(c.key) ? '在線' : '離線'}`
+      }
+      if (args.length === 1) return done(db.listConversations().map(describe).join('\n') || '還沒有任何對話')
+      if (args.length === 2 && /^-?\d+$/.test(args[1]!)) {
+        const c = db.findConversation(input.bot, args[1]!)
+        return done(c ? describe(c) : '找不到這個對話')
+      }
       const { conv, rest } = target(1)
       if (!conv) return done('找不到這個對話 (它還沒有任何訊息進來過)')
       if (role === 'admin' && conv.role === 'owner') return deny('admin 不能異動 owner 的角色與權限')
@@ -251,6 +261,20 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
 
     case 'config': {
       const op = args[1], key = args[2]
+      if (!op || op === 'show') {
+        const lines = [
+          `bots: ${cfg.bots.map(b => b.name).join(', ')} (token 請用 /router bot list)`,
+          `owners: ${cfg.owners.join(', ')}`,
+          `model: ${cfg.model}`,
+          `autoCompactWindow: ${cfg.autoCompactWindow}`,
+          `claudeBin: ${cfg.claudeBin}`,
+          `home: ${cfg.home}`,
+          `stateDir: ${cfg.stateDir}`,
+          `socket: ${cfg.socket}`,
+          `config: ${cfg.path}`,
+        ]
+        return done(lines.join('\n'))
+      }
       if (!key || !(key in CONFIG_KEYS)) return done(`可用的 key: ${Object.keys(CONFIG_KEYS).join(', ')} (bot token 請用 /router bot)`)
       const cur = (cfg as unknown as Record<string, unknown>)[key]
       if (op === 'get') return done(`${key} = ${JSON.stringify(cur)}`)
@@ -267,12 +291,17 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     }
 
     case 'log': {
-      const { conv, rest } = target(1)
-      if (!conv) return done('找不到這個對話')
-      const n = Math.min(Math.max(Number(rest[0]) || 10, 1), 50)
-      const rows = deps.recentMessages(conv.chat_id, n).reverse()
-      const lines = rows.map(r => `${gmt8(r.ts).slice(5)} ${r.direction === 'in' ? `← ${r.user_id ?? '?'}` : '→'} ${(r.content ?? '').replace(/\s+/g, ' ').slice(0, 80)}${r.delivered ? '' : ' (未送進 worker)'}`)
-      return done(lines.join('\n') || '沒有紀錄')
+      // /router log [chat_id] [筆數]: without a chat id, every conversation.
+      const explicit = args[1] && /^-?\d+$/.test(args[1]) && Math.abs(Number(args[1])) > 1000
+      const convs = explicit ? [db.findConversation(input.bot, args[1]!)].filter(Boolean) as Conversation[] : db.listConversations()
+      if (!convs.length) return done(explicit ? '找不到這個對話' : '還沒有任何對話')
+      const n = Math.min(Math.max(Number(explicit ? args[2] : args[1]) || (explicit ? 10 : 5), 1), 50)
+      const fmt = (r: MessageRecord) => `${gmt8(r.ts).slice(5)} ${r.direction === 'in' ? `← ${r.user_id ?? '?'}` : '→'} ${(r.content ?? '').replace(/\s+/g, ' ').slice(0, 80)}${r.delivered ? '' : ' (未送進 worker)'}`
+      const blocks = convs.map(c => {
+        const rows = deps.recentMessages(c.chat_id, n).reverse()
+        return `[${c.key}${c.title ? ` ${c.title}` : ''}]\n${rows.map(fmt).join('\n') || '(沒有紀錄)'}`
+      })
+      return done(blocks.join('\n\n'))
     }
 
     case 'restart':

@@ -25,6 +25,7 @@ import { makeAssertAllowedChat, makeAssertSendable } from './guard'
 import { buildContext, renderContext, renderLogs, writeContextFile } from './context'
 import { isCommand, runCommand, roleOf, type CommandDeps } from './commands'
 import { runCli } from './cli'
+import { createProgress, type ProgressEvent } from './progress'
 import { parseRelay, mayRelay, relay, codeBlock, type Exec } from './relay'
 import { homedir } from 'os'
 import { openStore } from './telegram/store'
@@ -120,6 +121,11 @@ const ipc = createIpc({
       assertSendable: makeAssertSendable(live, cfg.stateDir),
     }))
   },
+  onProgress(peer, ev) {
+    const c = peer.conv
+    if (!c) return
+    void callConv.run(c.key, () => progress.handle(c.key, c.chat_id, ev as ProgressEvent)).catch(e => log(`progress ${c.key}: ${e}`))
+  },
   async onCli(text) {
     const owner = cfg.owners[0]
     if (!owner) return 'config 沒有 owners'
@@ -142,6 +148,17 @@ const ipc = createIpc({
       meta: { ...params.meta, ctx_v: String(v) },
     }
   },
+})
+
+// Live "🤔 思考中…" message per Telegram-triggered turn (v1 hooks, now router-owned).
+const progressBot = (chatId: string) => {
+  const c = db.listConversations().find(x => x.chat_id === chatId)
+  return bots.get(c?.bot ?? cfg.bots[0]!.name)?.bot.api
+}
+const progress = createProgress({
+  async send(chatId, text) { return (await progressBot(chatId)?.sendMessage(chatId, text))?.message_id ?? null },
+  async edit(chatId, id, text) { await progressBot(chatId)?.editMessageText(chatId, id, text) },
+  async remove(chatId, id) { await progressBot(chatId)?.deleteMessage(chatId, id) },
 })
 
 const supervisor = createSupervisor({

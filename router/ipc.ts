@@ -20,6 +20,8 @@ export interface IpcDeps {
   /** Map a plugin's project dir to who it is; null = reject. */
   identify: (projectDir: string) => Peer | null
   onCall: (peer: Peer, tool: string, args: Record<string, unknown>) => Promise<ToolResult>
+  /** Worker hook progress event, identified by project dir like a hello. */
+  onProgress?: (peer: Peer, ev: Record<string, unknown>) => void
   /** Terminal CLI: run a /router command as owner and return the reply. */
   onCli?: (text: string) => Promise<string>
   /** Last-moment additions to a delivery (chat_context, router_log). */
@@ -88,6 +90,11 @@ export function createIpc(deps: IpcDeps) {
         const key = s.data.peer?.conv?.key
         if (key && workers.get(key) === s) workers.delete(key)
         log(`worker ${key ?? '(terminal)'} said bye`)
+        return
+      }
+      case 'progress': {
+        const peer = identify(m.project_dir)
+        if (peer && deps.onProgress) deps.onProgress(peer, m.ev)
         return
       }
       case 'cli': {
