@@ -128,7 +128,7 @@ test('persona interview: owner DMs carry <bootstrap> until save_bot_profile; the
   client.close(); other.close()
 }, 20000)
 
-test('approvals group: refused until it is a supergroup with topics and the bot may manage them; then three topics are made and notices go there', async () => {
+test('approvals group: refused until it is a supergroup with topics and the bot may manage them; then four topics are made and notices go there', async () => {
   inGroup('/router setup group')
   await until(() => sentTo(-100900, '⛔ 審核群組必須是 supergroup').length === 1)
   forum = { type: 'supergroup', is_forum: false }
@@ -143,8 +143,8 @@ test('approvals group: refused until it is a supergroup with topics and the bot 
   member = { status: 'administrator', can_manage_topics: true }
   inGroup('/router setup group')
   await until(() => sentTo(-100900, '✅ 審核群組設定完成').length === 1)
-  expect(calls.filter(c => c.method === 'createForumTopic').map(c => c.body.name)).toEqual(['🔔 重要通知', '🔐 權限審核', '📜 提權紀錄'])
-  expect(q("SELECT approvals_chat, notices_topic, approvals_topic, elevlog_topic, group_skipped FROM bot_setup WHERE bot = 'new'")[0]).toEqual({ approvals_chat: '-100900', notices_topic: 41, approvals_topic: 42, elevlog_topic: 43, group_skipped: 0 })
+  expect(calls.filter(c => c.method === 'createForumTopic').map(c => c.body.name)).toEqual(['🔔 重要通知', '🔐 權限審核', '📜 提權紀錄', '🧾 執行授權'])
+  expect(q("SELECT approvals_chat, notices_topic, approvals_topic, elevlog_topic, authuse_topic, group_skipped FROM bot_setup WHERE bot = 'new'")[0]).toEqual({ approvals_chat: '-100900', notices_topic: 41, approvals_topic: 42, elevlog_topic: 43, authuse_topic: 44, group_skipped: 0 })
   // a new conversation is now announced in the notices topic
   const access = JSON.parse(readFileSync(join(state, 'access.json'), 'utf8'))
   access.allowFrom.push('777')
@@ -155,7 +155,7 @@ test('approvals group: refused until it is a supergroup with topics and the bot 
   // running it again reuses the topics
   inGroup('/router setup group')
   await until(() => sentTo(-100900, '✅ 審核群組設定完成 (沿用既有話題)').length === 1)
-  expect(calls.filter(c => c.method === 'createForumTopic')).toHaveLength(3)
+  expect(calls.filter(c => c.method === 'createForumTopic')).toHaveLength(4)
 }, 20000)
 
 test('skip: only the owner may press it; afterwards everything goes to the owner DM; /router setup shows the state', async () => {

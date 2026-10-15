@@ -15,6 +15,7 @@ import { makeAssertAllowedChat } from '../guard'
 import { createElevation } from '../elevation'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from '../grants'
 import { approvalPlace, noticePlace, type ApprovalDeps } from '../approvals'
+import { createAuthz } from '../authz'
 import { createIpc } from '../ipc'
 import type { Access } from '../telegram/policy'
 
@@ -139,6 +140,7 @@ test('send guard: own chat always; others only with a send grant; owner/admin an
 function fakeApprovals() {
   const sent: Array<{ bot: string; chat: string; thread?: number; text: string; buttons: string[]; id: number }> = []
   const edits: Array<{ chat: string; id: number; text: string }> = []
+  const editButtons: string[][] = []
   let n = 100
   const approvals: ApprovalDeps = {
     db, owners: [OWNER], isAdmin: uid => uid === ADMIN,
@@ -146,9 +148,9 @@ function fakeApprovals() {
       if (to.chat_id === 'unreachable') return null
       sent.push({ bot, chat: to.chat_id, thread: to.thread_id, text, buttons: buttons.map(b => b.data), id: ++n }); return n
     },
-    async edit(_bot, chat, id, text) { edits.push({ chat, id, text }) },
+    async edit(_bot, chat, id, text, buttons) { edits.push({ chat, id, text }); editButtons.push((buttons ?? []).map(b => b.data)) },
   }
-  return { approvals, sent, edits }
+  return { approvals, sent, edits, editButtons }
 }
 
 test('approvals place: the owner DM by default; the approvals group topics once set up', () => {
@@ -245,18 +247,20 @@ test('permcheck: each role template allows what it lists and blocks the rest, wi
 
 // --- 07 提權 -------------------------------------------------------------------
 
-function elevHarness(opts: { askTimeoutMs?: number } = {}) {
+function elevHarness(opts: { askTimeoutMs?: number; authz?: boolean } = {}) {
   const conv = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
-  const { approvals, sent, edits } = fakeApprovals()
+  const { approvals, sent, edits, editButtons } = fakeApprovals()
   const told: string[] = [], applied: string[] = []
   db.setUserRole('42', 'user')
-  const e = createElevation({
-    db, approvals, notify: (_c, t) => told.push(t), label: u => `u${u}`, applyPermissions: c => applied.push(c.key),
+  let e!: ReturnType<typeof createElevation>
+  const authz = opts.authz ? createAuthz({ db, approvals, notify: (_c, t) => told.push(t), label: u => `u${u}`, applyPermissions: c => applied.push(c.key), dropElevation: ref => e.drop(ref) }) : undefined
+  e = createElevation({
+    db, approvals, notify: (_c, t) => told.push(t), label: u => `u${u}`, applyPermissions: c => applied.push(c.key), authz,
     roleOf: uid => uid === OWNER ? 'owner' : db.getUserRole(uid) ?? 'user',
-    settingsAs: (c, role) => applyOverrides(renderSettings(TEMPLATES, role, vars(c.folder)), db.listOverrides(c.key)),
+    settingsAs: (c, role, keep) => applyOverrides(renderSettings(TEMPLATES, role, vars(c.folder)), db.listOverrides(c.key).filter(o => !keep || keep(o))),
     askTimeoutMs: opts.askTimeoutMs ?? 60_000,
   })
-  return { conv, e, sent, edits, told, applied }
+  return { conv, e, sent, edits, editButtons, told, applied, authz, approvals }
 }
 const escape = { event: 'pre', tool_name: 'Bash', tool_input: { command: 'ls /x', description: '列出 /x', dangerouslyDisableSandbox: true } }
 
@@ -389,6 +393,77 @@ test('cc-hook asks the router and prints its PreToolUse decision; unreachable ro
   ipc.stop(); e.stop()
   expect(await hook('pre', esc, join(dir, 'nowhere.sock'))).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: 'router unreachable: no unsandboxed commands' })
 }, 30000)
+
+// --- 撤銷與執行授權 (柯姊 2026-10-16) -----------------------------------------------
+
+test('authz: an approved elevation keeps a 🚫 撤銷 button; each tool call of its subagent is a use, posted to 執行授權 with the call and a revoke button; revoking unbinds it', async () => {
+  const { conv, e, sent, edits, editButtons, told } = elevHarness({ authz: true })
+  db.updateBotSetup('cc', { approvals_chat: OWNER, approvals_topic: null, notices_topic: null, elevlog_topic: null, authuse_topic: 77 })
+  e.onDeliver(conv, OWNER)
+  await e.onHook(conv, escape)
+  const req = sent.find(m => m.buttons[0] === 'elev:1:once')!
+  expect(await e.decide('elev:1:once', OWNER)).toBe('已提權一次')
+  // the in-chat copy is not at the approvals place: no revoke there; a copy at the approvals place would keep it
+  expect(edits.at(-1)!.id).toBe(req.id)
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'A' })
+  await e.onHook(conv, { ...escape, agent_id: 'A' })
+  const use = sent.at(-1)!
+  expect(use).toMatchObject({ chat: OWNER, thread: 77, buttons: ['elev:1:revoke'] })
+  expect(use.text).toStartWith('🧾 提權授權 (審核 #1) 使用於 group-100555')
+  expect(use.text).toContain('subagent A 以 owner 角色: Bash {"command":"ls /x"')
+  expect(db.authUses(db.approvalGrantsFor('elev', 1)[0]!.id)).toHaveLength(1)
+  told.length = 0
+  const authz = createAuthz({ db, approvals: fakeApprovals().approvals, notify: (_c, t) => told.push(t), label: u => `u${u}`, applyPermissions() {}, dropElevation: ref => e.drop(ref) })
+  expect(await authz.revoke('elev:1:revoke', '42')).toBe('只有 owner 或 admin 能撤銷')
+  expect(await authz.revoke('elev:1:revoke', OWNER)).toBe('已撤銷')
+  expect(await authz.revoke('elev:1:revoke', OWNER)).toBe('這個授權已經撤銷了')
+  expect(told[0]).toContain('提權授權 (審核 #1) 已被 u137438526 撤銷')
+  expect((await e.onHook(conv, { ...escape, agent_id: 'A' })).decision).toBe('deny') // unbound
+  void editButtons
+  e.stop()
+})
+
+test('authz: 永久允許 overrides are revocable; calls that pass only because of them are uses; revoking removes them and rewrites settings', async () => {
+  const { conv, e, sent, told, applied, authz } = elevHarness({ authz: true })
+  db.updateBotSetup('cc', { authuse_topic: 77, approvals_chat: OWNER })
+  e.onDeliver(conv, OWNER)
+  const py = { event: 'pre', tool_name: 'Bash', tool_input: { command: 'python3 run.py' } }
+  await e.onHook(conv, py)
+  await e.decide('elev:1:always', OWNER)
+  const before = sent.length
+  expect(await e.onHook(conv, py)).toEqual({})
+  expect(sent.length).toBe(before + 1)
+  expect(sent.at(-1)!.text).toContain('Bash {"command":"python3 run.py"}')
+  // a call allowed by the role itself is not a use
+  expect(await e.onHook(conv, { event: 'pre', tool_name: 'Bash', tool_input: { command: 'ls' } })).toEqual({})
+  expect(sent.length).toBe(before + 1)
+  applied.length = 0
+  expect(await authz!.revoke('elev:1:revoke', OWNER)).toBe('已撤銷')
+  expect(db.listOverrides(conv.key)).toEqual([])
+  expect(applied).toEqual([conv.key])
+  expect(told.at(-1)).toContain('移除 tool-allow Bash(python3 *)')
+  e.stop()
+})
+
+test('authz: send grants and package approvals settle with a revoke button at the approvals place; their uses are logged; revoke takes the override back', async () => {
+  const from = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  db.updateBotSetup('cc', { approvals_chat: '-100900', approvals_topic: 7, authuse_topic: 77 })
+  const { approvals, sent, edits, editButtons } = fakeApprovals()
+  const told: string[] = []
+  const authz = createAuthz({ db, approvals, notify: (_c, t) => told.push(t), label: u => u, applyPermissions() {} })
+  const g: GrantDeps = { db, approvals, notify() {}, label: id => id, authz }
+  await requestGrant(g, from, '-100888', 'target', 'x')
+  await decideGrant(g, 'grant:1:once', OWNER, '-100900')
+  const at = edits.findIndex(x => x.chat === '-100900')
+  expect(editButtons[at]).toEqual(['grant:1:revoke'])
+  expect(editButtons[edits.findIndex(x => x.chat === '-100888')]).toEqual([]) // not in the target chat
+  const [grant] = authz.covering(from, o => o.some(x => x.value === '-100888'))
+  await authz.use(from, grant!, 'reply → -100888: hi')
+  expect(sent.at(-1)).toMatchObject({ chat: '-100900', thread: 77, buttons: ['grant:1:revoke'] })
+  expect(await authz.revoke('grant:1:revoke', ADMIN)).toBe('已撤銷')
+  expect(db.listOverrides(from.key)).toEqual([])
+  expect(edits.at(-1)!.text).toEndWith(`✅ 已允許一次 (${OWNER})\n🚫 已撤銷 (${ADMIN})`)
+})
 
 // --- 05 目錄: bot 資料夾 ---------------------------------------------------------
 

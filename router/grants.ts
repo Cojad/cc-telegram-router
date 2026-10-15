@@ -13,6 +13,7 @@
 
 import type { Conversation, RouterDb } from './db'
 import { postApproval, settleApproval, mayDecide, parseChoice, CHOICE_WORD, type ApprovalDeps } from './approvals'
+import type { Authz } from './authz'
 
 /** The send overrides allow chat_id: listed, or send * and the bot is in it. */
 export function sendGranted(sends: string[], chatId: string, allowlisted: (id: string) => boolean): boolean {
@@ -25,6 +26,8 @@ export interface GrantDeps {
   /** Tell the requesting worker (queued like a message, wakes it if needed). */
   notify(conv: Conversation, text: string): void
   label(chatOrUid: string): string
+  /** Remembers what an approval granted (revoke, 執行授權). */
+  authz?: Authz
 }
 
 export async function requestGrant(deps: GrantDeps, from: Conversation, target: string, mode: 'owner' | 'target', reason: string): Promise<string> {
@@ -65,9 +68,12 @@ export async function decideGrant(deps: GrantDeps, data: string, uid: string, ch
   const status = p.choice === 'deny' ? 'denied' : 'approved'
   if (!deps.db.decideGrant(g.id, status, uid)) return '這個申請已經處理過了'
   const from = deps.db.getConversation(g.from_conv)
-  if (p.choice !== 'deny') deps.db.addOverride({ conv: g.from_conv, kind: 'send', value: p.choice === 'always' ? '*' : g.target })
+  const value = p.choice === 'always' ? '*' : g.target
+  if (p.choice !== 'deny') deps.db.addOverride({ conv: g.from_conv, kind: 'send', value })
   const word = CHOICE_WORD[p.choice]
-  await settleApproval(deps.approvals, 'grant', g.id, `${word} (${deps.label(uid)})`)
+  const outcome = `${word} (${deps.label(uid)})`
+  if (p.choice !== 'deny' && from) deps.authz?.record('grant', g.id, from, p.choice, [{ kind: 'send', value }], outcome)
+  await settleApproval(deps.approvals, 'grant', g.id, outcome, p.choice !== 'deny')
   const scope = p.choice === 'always' ? ', 之後送往 bot 所在的任何對話都不用再申請' : p.choice === 'once' ? `, 現在可以送往 ${deps.label(g.target)}` : ''
   if (from) deps.notify(from, `<router_status>\n跨對話傳訊申請 #${g.id} ${word} (${deps.label(uid)})${scope}.\n</router_status>`)
   return word

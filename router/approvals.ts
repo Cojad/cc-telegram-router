@@ -28,6 +28,8 @@ export function parseChoice(kind: string, data: string): { ref: number; choice: 
   return m ? { ref: Number(m[1]), choice: m[2] === 'approve' ? 'once' : m[2] as Choice } : null
 }
 
+export const revokeButton = (kind: string, ref: number): Button => ({ text: '🚫 撤銷', data: `${kind}:${ref}:revoke` })
+
 export const CHOICE_WORD: Record<Choice, string> = { once: '✅ 已允許一次', always: '♾️ 已永久允許', deny: '❌ 已拒絕' }
 
 export interface ApprovalDeps {
@@ -36,7 +38,8 @@ export interface ApprovalDeps {
   isAdmin(uid: string): boolean
   /** Send with one row of inline buttons (none for a notice); the message id, or null when it failed. */
   send(bot: string, to: Place, text: string, buttons: Button[]): Promise<number | null>
-  edit(bot: string, chat_id: string, message_id: number, text: string): Promise<void>
+  /** Replace a message's text; buttons replace its keyboard (none = removed). */
+  edit(bot: string, chat_id: string, message_id: number, text: string, buttons?: Button[]): Promise<void>
 }
 
 export function approvalPlace(db: RouterDb, owners: string[], bot: string): Place | null {
@@ -72,11 +75,19 @@ export async function postApproval(deps: ApprovalDeps, bot: string, kind: string
   return reached
 }
 
-/** Write the outcome under every copy of the request (buttons go away). */
-export async function settleApproval(deps: ApprovalDeps, kind: string, ref: number, outcome: string): Promise<void> {
+/** Write the outcome under every copy of the request. revocable: the copy at
+ *  the approvals place (where owner/admin decide) keeps a 🚫 撤銷 button. */
+export async function settleApproval(deps: ApprovalDeps, kind: string, ref: number, outcome: string, revocable = false): Promise<void> {
   for (const m of deps.db.approvalMsgs(kind, ref)) {
-    await deps.edit(m.bot, m.chat_id, m.message_id, `${m.text}\n\n${outcome}`).catch(() => {})
+    const atApprovals = m.chat_id === approvalPlace(deps.db, deps.owners, m.bot)?.chat_id
+    await deps.edit(m.bot, m.chat_id, m.message_id, `${m.text}\n\n${outcome}`, revocable && atApprovals ? [revokeButton(kind, ref)] : []).catch(() => {})
   }
+}
+
+/** Each use of an approved authorization (執行授權) goes to its own topic of the approvals group; without a group it stays in router.db. */
+export function usePlace(db: RouterDb, bot: string): Place | null {
+  const s = db.getBotSetup(bot)
+  return s?.approvals_chat && s.authuse_topic ? { chat_id: s.approvals_chat, thread_id: s.authuse_topic } : null
 }
 
 export async function postNotice(deps: ApprovalDeps, bot: string, text: string): Promise<boolean> {

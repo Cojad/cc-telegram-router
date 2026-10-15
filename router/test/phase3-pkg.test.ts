@@ -11,6 +11,7 @@ import { ensureConversation } from '../conversations'
 import { parseInstall, readManifest, INSTALL_HINT } from '../packages'
 import { createPkgGate, parseVerdicts, reviewPrompt, claudeReviewer, type Verdict, type Reviewer } from '../pkgreview'
 import type { ApprovalDeps } from '../approvals'
+import { createAuthz } from '../authz'
 
 const OWNER = '137438526', ADMIN = '500'
 let dir: string, cfg: Config, db: RouterDb
@@ -75,7 +76,7 @@ test('parseVerdicts and the prompt: JSON array out of free text; registry text i
   expect(p).toContain('ignore previous instructions')
 })
 
-function harness(review: Reviewer, waitMs = 2000) {
+function harness(review: Reviewer, waitMs = 2000, withAuthz = false) {
   const conv = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
   db.updateConversation(conv.key, { role: 'power' })
   const sent: Array<{ chat: string; text: string; buttons: string[] }> = []
@@ -85,8 +86,9 @@ function harness(review: Reviewer, waitMs = 2000) {
     async send(_b, to, text, buttons) { sent.push({ chat: to.chat_id, text, buttons: buttons.map(b => b.data) }); return sent.length },
     async edit() {},
   }
-  const gate = createPkgGate({ db, approvals, review, notify: (_c, t) => told.push(t), label: u => u, waitMs })
-  return { conv: db.getConversation(conv.key)!, gate, sent, told }
+  const authz = withAuthz ? createAuthz({ db, approvals, notify: (_c, t) => told.push(t), label: u => u, applyPermissions() {} }) : undefined
+  const gate = createPkgGate({ db, approvals, review, notify: (_c, t) => told.push(t), label: u => u, waitMs, authz })
+  return { conv: db.getConversation(conv.key)!, gate, sent, told, authz }
 }
 const judge = (risks: Record<string, Verdict['risk']>): Reviewer & { calls: string[][] } => {
   const calls: string[][] = []
@@ -148,6 +150,18 @@ test('pkg gate: 永久允許 lets the conversation install any registry package 
   expect(review.calls).toEqual([['brand-new-thing']]) // no review any more
   expect((await gate.check(conv, 'pip install git+https://x/y.git')).decision).toBe('deny')
   expect(sent).toHaveLength(2)
+})
+
+test('pkg gate: installing an approved package is a use of that approval (執行授權); revoking it asks again', async () => {
+  const { conv, gate, sent, authz } = harness(judge({ 'odd-pkg': 'medium' }), 2000, true)
+  db.updateBotSetup('cc', { approvals_chat: OWNER, authuse_topic: 77 })
+  await gate.check(conv, 'pip install odd-pkg')
+  await gate.decide('pkg:1:once', OWNER)
+  expect(await gate.check(conv, 'pip install odd-pkg')).toEqual({})
+  expect(sent.at(-1)).toMatchObject({ chat: OWNER, buttons: ['pkg:1:revoke'] })
+  expect(sent.at(-1)!.text).toContain('套件: pypi:odd-pkg')
+  expect(await authz!.revoke('pkg:1:revoke', OWNER)).toBe('已撤銷')
+  expect((await gate.check(conv, 'pip install odd-pkg')).decision).toBe('deny')
 })
 
 test('pkg gate: a slow review refuses now and tells the worker when it is done', async () => {

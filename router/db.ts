@@ -50,6 +50,8 @@ export type BotSetup = {
   notices_topic: number | null
   /** Topic for the elevation log (提權紀錄). */
   elevlog_topic: number | null
+  /** Topic for each use of an approved authorization (執行授權). */
+  authuse_topic: number | null
   /** The owner chose DM instead of a group. */
   group_skipped: number
 }
@@ -66,6 +68,9 @@ export type Elevation = {
   id: number; conv: string; kind: 'passive' | 'active'; sender: string | null; action: string; reason: string
   status: 'pending' | 'approved' | 'denied' | 'expired'; decided_by: string | null; decided_role: string | null; created_at: string
 }
+/** What an approved request granted (router/authz.ts), so it can be revoked. */
+export type ApprovalGrant = { id: number; kind: string; ref: number; conv: string; choice: string; overrides: string; status: 'active' | 'revoked'; revoked_by: string | null }
+
 export type ElevLogKind = 'blocked' | 'request' | 'approved' | 'denied' | 'expired'
 
 export type QueueRow = { qid: number; conv: string; params: string; status: 'pending' | 'delivered' | 'acked' }
@@ -116,6 +121,12 @@ export interface RouterDb {
   pendingElevation(conv: string): Elevation | null
   decideElevation(id: number, status: 'approved' | 'denied' | 'expired', by: string | null, role: string | null): boolean
   addElevLog(conv: string, kind: ElevLogKind, text: string, ref: number | null): void
+  addApprovalGrant(g: Pick<ApprovalGrant, 'kind' | 'ref' | 'conv' | 'choice' | 'overrides'>): number
+  approvalGrantsFor(kind: string, ref: number): ApprovalGrant[]
+  activeApprovalGrants(conv: string): ApprovalGrant[]
+  revokeApprovalGrant(id: number, by: string): boolean
+  addAuthUse(grant: number, conv: string, text: string): void
+  authUses(grant: number): Array<{ ts: string; text: string }>
   elevLog(conv: string | null, limit: number): Array<{ ts: string; conv: string; kind: ElevLogKind; text: string; ref: number | null }>
   getBotSetup(bot: string): BotSetup | null
   /** Create the row if missing, then set the given fields. */
@@ -192,6 +203,11 @@ export function openRouterDb(path: string): RouterDb {
       id INTEGER PRIMARY KEY AUTOINCREMENT, conv TEXT NOT NULL, kind TEXT NOT NULL, sender TEXT, action TEXT NOT NULL, reason TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending', decided_by TEXT, decided_role TEXT, created_at TEXT NOT NULL, decided_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS approval_grants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, ref INTEGER NOT NULL, conv TEXT NOT NULL, choice TEXT NOT NULL,
+      overrides TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS auth_uses (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, grant_id INTEGER NOT NULL, conv TEXT NOT NULL, text TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS elev_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, conv TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, ref INTEGER);
     CREATE TABLE IF NOT EXISTS approval_msgs (kind TEXT NOT NULL, ref INTEGER NOT NULL, bot TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, text TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS pkg_verdicts (eco TEXT NOT NULL, name TEXT NOT NULL, risk TEXT NOT NULL, reason TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (eco, name));
@@ -205,6 +221,7 @@ export function openRouterDb(path: string): RouterDb {
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
   const setupCols = new Set((db.query('PRAGMA table_info(bot_setup)').all() as Array<{ name: string }>).map(c => c.name))
   if (!setupCols.has('elevlog_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN elevlog_topic INTEGER')
+  if (!setupCols.has('authuse_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN authuse_topic INTEGER')
   for (const [name, type] of [['title', 'TEXT'], ['compact', 'INTEGER'], ['model', 'TEXT'], ['ctx_v', 'INTEGER NOT NULL DEFAULT 1'], ['last_seen', 'TEXT'], ['rotate_pending', 'INTEGER NOT NULL DEFAULT 0']]) {
     if (!cols.has(name)) db.exec(`ALTER TABLE conversations ADD COLUMN ${name} ${type}`)
   }
@@ -317,6 +334,12 @@ export function openRouterDb(path: string): RouterDb {
     clearOverrides: conv => qOvClear.run(conv).changes,
     setRotate: (key, on) => { qRotSet.run(on ? 1 : 0, key) },
     rotatePending: () => qRotAll.all() as Conversation[],
+    addApprovalGrant: g => Number(db.prepare('INSERT INTO approval_grants (kind, ref, conv, choice, overrides, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(g.kind, g.ref, g.conv, g.choice, g.overrides, now()).lastInsertRowid),
+    approvalGrantsFor: (kind, ref) => db.prepare('SELECT id, kind, ref, conv, choice, overrides, status, revoked_by FROM approval_grants WHERE kind = ? AND ref = ? ORDER BY id').all(kind, ref) as ApprovalGrant[],
+    activeApprovalGrants: conv => db.prepare("SELECT id, kind, ref, conv, choice, overrides, status, revoked_by FROM approval_grants WHERE conv = ? AND status = 'active' ORDER BY id").all(conv) as ApprovalGrant[],
+    revokeApprovalGrant: (id, by) => db.prepare("UPDATE approval_grants SET status = 'revoked', revoked_by = ?, revoked_at = ? WHERE id = ? AND status = 'active'").run(by, now(), id).changes > 0,
+    addAuthUse: (grant, conv, text) => { db.prepare('INSERT INTO auth_uses (ts, grant_id, conv, text) VALUES (?, ?, ?, ?)').run(now(), grant, conv, text) },
+    authUses: grant => db.prepare('SELECT ts, text FROM auth_uses WHERE grant_id = ? ORDER BY id').all(grant) as Array<{ ts: string; text: string }>,
     addElevation: e => Number(db.prepare('INSERT INTO elevations (conv, kind, sender, action, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(e.conv, e.kind, e.sender, e.action, e.reason, now()).lastInsertRowid),
     getElevation: id => (db.prepare('SELECT id, conv, kind, sender, action, reason, status, decided_by, decided_role, created_at FROM elevations WHERE id = ?').get(id) as Elevation | null) ?? null,
     pendingElevation: conv => (db.prepare("SELECT id, conv, kind, sender, action, reason, status, decided_by, decided_role, created_at FROM elevations WHERE conv = ? AND status = 'pending' ORDER BY id DESC LIMIT 1").get(conv) as Elevation | null) ?? null,
@@ -326,12 +349,12 @@ export function openRouterDb(path: string): RouterDb {
       ? db.prepare('SELECT ts, conv, kind, text, ref FROM elev_log WHERE conv = ? ORDER BY id DESC LIMIT ?').all(conv, limit)
       : db.prepare('SELECT ts, conv, kind, text, ref FROM elev_log ORDER BY id DESC LIMIT ?').all(limit)) as any,
     bumpContext: bot => { db.prepare('UPDATE conversations SET ctx_v = ctx_v + 1 WHERE bot = ?').run(bot) },
-    getBotSetup: bot => (db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup | null) ?? null,
+    getBotSetup: bot => (db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup | null) ?? null,
     updateBotSetup(bot, fields) {
       db.prepare('INSERT OR IGNORE INTO bot_setup (bot, updated_at) VALUES (?, ?)').run(bot, now())
-      const keys = Object.keys(fields).filter(k => ['persona_done', 'persona', 'approvals_chat', 'approvals_topic', 'notices_topic', 'elevlog_topic', 'group_skipped'].includes(k))
+      const keys = Object.keys(fields).filter(k => ['persona_done', 'persona', 'approvals_chat', 'approvals_topic', 'notices_topic', 'elevlog_topic', 'authuse_topic', 'group_skipped'].includes(k))
       if (keys.length) db.prepare(`UPDATE bot_setup SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE bot = ?`).run(...keys.map(k => ((fields as any)[k] ?? null) as string | number | null), now(), bot)
-      return db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup
+      return db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup
     },
     addApprovalMsg: m => { db.prepare('INSERT INTO approval_msgs (kind, ref, bot, chat_id, message_id, text) VALUES (?, ?, ?, ?, ?, ?)').run(m.kind, m.ref, m.bot, m.chat_id, m.message_id, m.text) },
     approvalMsgs: (kind, ref) => db.prepare('SELECT * FROM approval_msgs WHERE kind = ? AND ref = ?').all(kind, ref) as ApprovalMsg[],

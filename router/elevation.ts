@@ -25,18 +25,27 @@ import type { Conversation, RouterDb, ElevLogKind } from './db'
 import { checkCall, describeCall, rank, permanentRule, type Call, type Rule } from './permcheck'
 import { postApproval, settleApproval, logPlace, messageLink, buttons, parseChoice, CHOICE_WORD, type ApprovalDeps } from './approvals'
 import { applyOverrides } from './settings'
+import type { Authz } from './authz'
 
 export type HookDecision = { decision?: 'allow' | 'deny'; reason?: string }
+
+/** A tool call in full for the 執行授權 log (only the fields the hook forwards). */
+export function callDetail(call: Call): string {
+  return `${call.tool_name} ${JSON.stringify(call.tool_input ?? {})}`.slice(0, 1500)
+}
 
 export interface ElevationDeps {
   db: RouterDb
   approvals: ApprovalDeps
   roleOf(uid: string): string
-  /** Effective settings this conversation would have under another role. */
-  settingsAs(conv: Conversation, role: string): any
+  /** Effective settings this conversation would have under another role
+   *  (keep: which of its overrides to lay on; default all). */
+  settingsAs(conv: Conversation, role: string, keep?: (o: { kind: string; value: string }) => boolean): any
   notify(conv: Conversation, text: string): void
   /** Overrides changed: rewrite settings, rotate the worker. */
   applyPermissions(conv: Conversation): void
+  /** Remembers what an approval granted, logs each use (revoke, 執行授權). */
+  authz?: Authz
   label(uid: string): string
   log?(msg: string): void
   askTimeoutMs?: number
@@ -116,7 +125,8 @@ export function createElevation(deps: ElevationDeps) {
     const conv = db.getConversation(e.conv)
     clearTimeout(timers.get(id)); timers.delete(id)
     const word = status === 'approved' ? `${permanent ? CHOICE_WORD.always : CHOICE_WORD.once} (${who(uid)}, 以 ${role} 角色執行)` : status === 'denied' ? `${CHOICE_WORD.deny} (${who(uid)})` : '⌛ 逾時, 預設拒絕'
-    await settleApproval(deps.approvals, 'elev', id, word)
+    if (status === 'approved' && conv) deps.authz?.record('elev', id, conv, permanent ? 'always' : 'once', permanent?.overrides ?? [], word)
+    await settleApproval(deps.approvals, 'elev', id, word, status === 'approved')
     if (!conv) return
     await record(conv, status, `${status === 'approved' ? `✅ 提權成功${permanent ? ' (永久允許)' : ''}` : status === 'denied' ? '❌ 提權被拒' : '⌛ 提權逾時'} #${id} ${conv.key}${status === 'approved' ? `: 由 ${who(uid)} 核准, 以 ${role} 角色執行` : ''}${permanent ? `\n永久允許: ${permanent.desc} (權限覆寫 ${permanent.overrides.map(o => `${o.kind} ${o.value}`).join(', ')})` : ''}\n原始請求: ${linkOf(id)}`, id)
     if (status === 'approved') {
@@ -176,14 +186,31 @@ export function createElevation(deps: ElevationDeps) {
           const b = agent ? bound.get(agent) : undefined
           if (b && b.conv === conv.key) {
             const c = checkCall(deps.settingsAs(conv, b.role), call, conv.folder, b.role)
-            return c.ok ? { decision: 'allow', reason: `提權 #${b.id}, 以 ${b.role} 角色執行` } : blocked(conv, call, `即使提權為 ${b.role} 也不允許: ${c.why}`, agent)
+            if (!c.ok) return blocked(conv, call, `即使提權為 ${b.role} 也不允許: ${c.why}`, agent)
+            const g = db.approvalGrantsFor('elev', b.id).find(x => x.status === 'active')
+            if (g) await deps.authz?.use(conv, g, `subagent ${agent} 以 ${b.role} 角色: ${callDetail(call)}`)
+            return { decision: 'allow', reason: `提權 #${b.id}, 以 ${b.role} 角色執行` }
           }
           if (call.tool_name === 'SendMessage' && !elevatedSender(conv)) {
             const to = String(call.tool_input.to ?? call.tool_input.recipient ?? '')
             if ([...bound.keys()].some(id => to.includes(id))) return { decision: 'deny', reason: '非提權的一輪不能指揮已提權的 subagent' }
           }
           const c = checkCall(deps.settingsAs(conv, conv.role), call, conv.folder, conv.role)
-          return c.ok ? {} : blocked(conv, call, c.why, agent)
+          if (!c.ok) return blocked(conv, call, c.why, agent)
+          // passes only thanks to an approved override (永久允許 earlier): a use of it
+          if (deps.authz) {
+            const approved = deps.authz.approvedOverrides(conv)
+            if (approved.size) {
+              const base = deps.settingsAs(conv, conv.role, o => !approved.has(`${o.kind}\u0000${o.value}`))
+              if (!checkCall(base, call, conv.folder).ok) {
+                const lay = (o: Rule['overrides']) => applyOverrides(base, o.map(x => ({ conv: conv.key, ...x })))
+                for (const g of deps.authz.covering(conv, o => checkCall(lay(o as Rule['overrides']), call, conv.folder).ok)) {
+                  await deps.authz.use(conv, g, callDetail(call))
+                }
+              }
+            }
+          }
+          return {}
         }
       }
       return {}
@@ -228,6 +255,12 @@ export function createElevation(deps: ElevationDeps) {
       }
       await finish(e.id, status, uid, role, permanent)
       return status === 'approved' ? (permanent ? '已永久允許並提權' : '已提權一次') : '已拒絕'
+    },
+
+    /** An elevation was revoked: drop its pending grant and unbind its subagent. */
+    drop(id: number): void {
+      for (const [k, g] of granted) if (g.id === id) granted.delete(k)
+      for (const [a, b] of bound) if (b.id === id) bound.delete(a)
     },
 
     /** Something refused elsewhere (package review) still belongs in the log. */

@@ -16,6 +16,7 @@ import type { Conversation, RouterDb } from './db'
 import { parseInstall, readManifest, type Pkg } from './packages'
 import { postApproval, settleApproval, mayDecide, parseChoice, CHOICE_WORD, type ApprovalDeps } from './approvals'
 import type { HookDecision } from './elevation'
+import type { Authz } from './authz'
 
 export type Risk = 'low' | 'medium' | 'high'
 export type Verdict = { eco: string; name: string; risk: Risk; reason: string }
@@ -34,6 +35,8 @@ export interface PkgDeps {
   log?(msg: string): void
   /** How long the hook may be held waiting for a review. */
   waitMs?: number
+  /** Remembers what an approval granted (revoke, 執行授權). */
+  authz?: Authz
 }
 
 export function createPkgGate(deps: PkgDeps) {
@@ -99,6 +102,13 @@ export function createPkgGate(deps: PkgDeps) {
     const approved = new Set(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value))
     const need = approved.has('*') ? [] : pkgs.filter(p => !approved.has(key(p)))
     const odd = unusual.filter(u => !approved.has(`other:${u}`))
+    // installs that pass because of an approval are uses of it (執行授權)
+    const usedKeys = new Set([...pkgs.filter(p => !need.includes(p)).map(p => key(p)), ...unusual.filter(u => !odd.includes(u)).map(u => `other:${u}`)])
+    if (usedKeys.size && deps.authz) {
+      for (const g of deps.authz.covering(conv, o => o.some(x => x.kind === 'pkg' && (x.value === '*' || usedKeys.has(x.value))))) {
+        await deps.authz.use(conv, g, `指令: ${command.slice(0, 300)}\n套件: ${[...usedKeys].join(', ')}`)
+      }
+    }
     if (!need.length && !odd.length) return {}
     const all = verdicts(need)
     const timer = new Promise<null>(r => setTimeout(() => r(null), deps.waitMs ?? 45_000))
@@ -130,11 +140,13 @@ export function createPkgGate(deps: PkgDeps) {
     const status = p.choice === 'deny' ? 'denied' : 'approved'
     if (!db.decidePkgRequest(r.id, status, uid)) return '這個申請已經處理過了'
     const items = JSON.parse(r.pkgs) as string[]
-    if (status === 'approved') for (const v of items) db.addOverride({ conv: r.conv, kind: 'pkg', value: v })
-    if (p.choice === 'always') db.addOverride({ conv: r.conv, kind: 'pkg', value: '*' })
+    const added = status === 'approved' ? [...items, ...(p.choice === 'always' ? ['*'] : [])] : []
+    for (const v of added) db.addOverride({ conv: r.conv, kind: 'pkg', value: v })
     const word = CHOICE_WORD[p.choice]
-    await settleApproval(deps.approvals, 'pkg', r.id, `${word} (${deps.label(uid)})`)
+    const outcome = `${word} (${deps.label(uid)})`
     const conv = db.getConversation(r.conv)
+    if (added.length && conv) deps.authz?.record('pkg', r.id, conv, p.choice, added.map(value => ({ kind: 'pkg' as const, value })), outcome)
+    await settleApproval(deps.approvals, 'pkg', r.id, outcome, added.length > 0)
     const scope = p.choice === 'always' ? ', 之後安裝 PyPI 與 npm 的套件都不用審核, 現在可以重新安裝了' : p.choice === 'once' ? ', 現在可以重新安裝了' : ''
     if (conv) deps.notify(conv, `<router_status>\n套件安裝審核 #${r.id} ${word} (${deps.label(uid)}): ${items.join(', ')}${scope}.\n</router_status>`)
     return word

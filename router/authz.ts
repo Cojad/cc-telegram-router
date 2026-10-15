@@ -1,0 +1,98 @@
+// What approvals granted, each use of it, and revoking it (柯姊 2026-10-16).
+//   record: an approved request (send grant, package review, elevation)
+//           remembers the overrides it added, so it can be taken back.
+//   use:    every time a worker relies on one of those authorizations (a
+//           tool call of an elevated subagent, a call that passes only
+//           because of an approved override, a send to a granted chat, an
+//           approved package) it is logged with the call's content, in
+//           router.db and the approvals group's 執行授權 topic, with a
+//           🚫 撤銷 button.
+//   revoke: owner or admin presses 🚫 撤銷 (on the settled request or on a
+//           use): the overrides go away, the worker's settings are
+//           rewritten, a still-pending elevation is dropped, and the worker
+//           is told.
+
+import type { Conversation, RouterDb, OverrideKind, ApprovalGrant } from './db'
+import { usePlace, mayDecide, revokeButton, type ApprovalDeps } from './approvals'
+
+export type Granted = Array<{ kind: OverrideKind; value: string }>
+type Stored = { o: Granted; outcome: string }
+
+export interface AuthzDeps {
+  db: RouterDb
+  approvals: ApprovalDeps
+  applyPermissions(conv: Conversation): void
+  notify(conv: Conversation, text: string): void
+  label(uid: string): string
+  /** An elevation request was revoked: forget its pending or bound subagent. */
+  dropElevation?(ref: number): void
+  log?(msg: string): void
+}
+
+export const KIND_NAME: Record<string, string> = { grant: '跨對話傳訊', pkg: '套件安裝', elev: '提權' }
+
+export function overridesOf(g: ApprovalGrant): Granted {
+  try { return (JSON.parse(g.overrides) as Stored).o ?? [] } catch { return [] }
+}
+function outcomeOf(g: ApprovalGrant): string {
+  try { return (JSON.parse(g.overrides) as Stored).outcome ?? '' } catch { return '' }
+}
+
+export function createAuthz(deps: AuthzDeps) {
+  const { db } = deps
+
+  return {
+    /** An approved request: remember what it added (and the outcome line shown under it). */
+    record(kind: string, ref: number, conv: Conversation, choice: string, overrides: Granted, outcome: string): number {
+      return db.addApprovalGrant({ kind, ref, conv: conv.key, choice, overrides: JSON.stringify({ o: overrides, outcome } satisfies Stored) })
+    },
+
+    /** Active authorizations of this conversation whose overrides pass the test. */
+    covering(conv: Conversation, test: (o: Granted, g: ApprovalGrant) => boolean): ApprovalGrant[] {
+      return db.activeApprovalGrants(conv.key).filter(g => test(overridesOf(g), g))
+    },
+
+    /** Overrides that came from approvals (to tell them apart from /router perm ones). */
+    approvedOverrides(conv: Conversation): Set<string> {
+      return new Set(db.activeApprovalGrants(conv.key).flatMap(g => overridesOf(g).map(o => `${o.kind}\u0000${o.value}`)))
+    },
+
+    /** One use of an authorization: logged, and posted to 執行授權 with a revoke button. */
+    async use(conv: Conversation, g: ApprovalGrant, text: string): Promise<void> {
+      const line = `🧾 ${KIND_NAME[g.kind] ?? g.kind}授權 (審核 #${g.ref}) 使用於 ${conv.key}${conv.title ? ` (${conv.title})` : ''}\n${text}`
+      db.addAuthUse(g.id, conv.key, line)
+      const place = usePlace(db, conv.bot)
+      if (place) await deps.approvals.send(conv.bot, place, line, [revokeButton(g.kind, g.ref)]).catch(() => null)
+    },
+
+    /** A 🚫 撤銷 press "<kind>:<ref>:revoke". */
+    async revoke(data: string, uid: string): Promise<string | null> {
+      const m = /^(grant|pkg|elev):(\d+):revoke$/.exec(data)
+      if (!m) return null
+      if (!mayDecide(deps.approvals, uid)) return '只有 owner 或 admin 能撤銷'
+      const [kind, ref] = [m[1]!, Number(m[2])]
+      const active = db.approvalGrantsFor(kind, ref).filter(g => g.status === 'active')
+      if (!active.length) return '這個授權已經撤銷了'
+      const who = deps.label(uid)
+      for (const g of active) {
+        db.revokeApprovalGrant(g.id, uid)
+        const conv = db.getConversation(g.conv)
+        const o = overridesOf(g)
+        for (const x of o) db.removeOverride(g.conv, [x.kind], x.value)
+        if (kind === 'elev') deps.dropElevation?.(ref)
+        if (conv) {
+          if (o.length) deps.applyPermissions(conv)
+          deps.notify(conv, `<router_status>\n${KIND_NAME[kind]}授權 (審核 #${ref}) 已被 ${who} 撤銷${o.length ? `: 移除 ${o.map(x => `${x.kind} ${x.value}`).join(', ')}` : ''}. 之後這類動作會再被擋下, 需要的話重新申請.\n</router_status>`)
+        }
+        deps.log?.(`revoked ${kind} #${ref} (${g.conv}) by ${uid}`)
+        // the settled request: keep its outcome, add the revocation, drop the button
+        for (const msg of db.approvalMsgs(kind, ref)) {
+          await deps.approvals.edit(msg.bot, msg.chat_id, msg.message_id, `${msg.text}\n\n${outcomeOf(g)}\n🚫 已撤銷 (${who})`, []).catch(() => {})
+        }
+      }
+      return '已撤銷'
+    },
+  }
+}
+
+export type Authz = ReturnType<typeof createAuthz>

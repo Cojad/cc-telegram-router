@@ -28,6 +28,7 @@ import { runCli } from './cli'
 import { importV1Messages } from './importv1'
 import { refuseUse, botApiCall, DEFAULT_CRED_ROLES } from './credentials'
 import { installSkill } from './skills'
+import { createAuthz } from './authz'
 import { createProgress, type ProgressEvent } from './progress'
 import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
@@ -233,6 +234,13 @@ const ipc = createIpc({
     const h = bots.get(botName)
     if (!h) return { content: [{ type: 'text', text: `bot ${botName} is not running` }], isError: true }
     const inboxDir = conv ? join(conv.folder, 'attachments') : join(cfg.home, '.terminal-attachments')
+    // sending to another chat on a send grant is a use of it (執行授權)
+    const target = String(args.chat_id ?? '')
+    if (conv && target && target !== conv.chat_id && conv.role !== 'owner' && conv.role !== 'admin') {
+      for (const g of authz.covering(conv, o => o.some(x => x.kind === 'send' && (x.value === target || x.value === '*')))) {
+        await authz.use(conv, g, `${tool} → ${label(target)}: ${String(args.text ?? args.emoji ?? args.file_id ?? '').replace(/\s+/g, ' ').slice(0, 300)}`)
+      }
+    }
     return callConv.run(conv?.key ?? 'terminal', () => callTool(tool, args, {
       bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store,
       assertAllowedChat: makeAssertAllowedChat(live, loadAccess, chatId => !!conv && sendGranted(db.listOverrides(conv.key).filter(o => o.kind === 'send').map(o => o.value), chatId, id => { const a = loadAccess(); return a.allowFrom.includes(id) || id in a.groups })),
@@ -320,8 +328,8 @@ const approvalDeps: ApprovalDeps = {
       ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map(b => ({ text: b.text, callback_data: b.data }))] } } : {}),
     }).then(m => m.message_id, e => { log(`send to ${to.chat_id}: ${e}`); return null })
   },
-  async edit(bot, chatId, messageId, text) {
-    await bots.get(bot)?.bot.api.editMessageText(chatId, messageId, text)
+  async edit(bot, chatId, messageId, text, buttons) {
+    await bots.get(bot)?.bot.api.editMessageText(chatId, messageId, text, { reply_markup: { inline_keyboard: buttons?.length ? [buttons.map(b => ({ text: b.text, callback_data: b.data }))] : [] } })
   },
 }
 
@@ -331,17 +339,23 @@ const label = (id: string) => {
   return `${c?.title ?? id} (${id})`
 }
 
-const grantDeps: GrantDeps = { db, approvals: approvalDeps, notify: notifyConversation, label }
-
-const elevation = createElevation({
+const authz = createAuthz({
   db, approvals: approvalDeps, notify: notifyConversation, label, log,
   applyPermissions: c => commandDeps.applyPermissions(c),
+  dropElevation: ref => elevation.drop(ref),
+})
+
+const grantDeps: GrantDeps = { db, approvals: approvalDeps, notify: notifyConversation, label, authz }
+
+const elevation = createElevation({
+  db, approvals: approvalDeps, notify: notifyConversation, label, log, authz,
+  applyPermissions: c => commandDeps.applyPermissions(c),
   roleOf: uid => roleOf(commandDeps, uid),
-  settingsAs: (c, role) => applyOverrides(renderSettings(TEMPLATES, role, settingsVars(c)), db.listOverrides(c.key)),
+  settingsAs: (c, role, keep) => applyOverrides(renderSettings(TEMPLATES, role, settingsVars(c)), db.listOverrides(c.key).filter(o => !keep || keep(o))),
 })
 
 const pkgGate = createPkgGate({
-  db, approvals: approvalDeps, notify: notifyConversation, label, log,
+  db, approvals: approvalDeps, notify: notifyConversation, label, log, authz,
   review: claudeReviewer({ claudeBin: cfg.claudeBin, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
 })
 
@@ -356,12 +370,15 @@ async function setupGroup(bot: string, chatId: string): Promise<string> {
   if (!check.ok) return `⛔ ${check.reason}`
   const s = db.getBotSetup(bot)
   const same = s?.approvals_chat === chatId
-  const reuse = same && !!s.notices_topic && !!s.approvals_topic && !!s.elevlog_topic
+  const reuse = same && !!s.notices_topic && !!s.approvals_topic && !!s.elevlog_topic && !!s.authuse_topic
   const topic = async (have: number | null | undefined, name: string) => (same && have) ? have : (await h.bot.api.createForumTopic(chatId, name)).message_thread_id
   const notices = await topic(s?.notices_topic, '🔔 重要通知')
   const approvals = await topic(s?.approvals_topic, '🔐 權限審核')
   const elevlog = await topic(s?.elevlog_topic, '📜 提權紀錄')
-  db.updateBotSetup(bot, { approvals_chat: chatId, notices_topic: notices, approvals_topic: approvals, elevlog_topic: elevlog, group_skipped: 0 })
+  const authuse = await topic(s?.authuse_topic, '🧾 執行授權')
+  const fresh = (have: number | null | undefined) => !(same && have)
+  db.updateBotSetup(bot, { approvals_chat: chatId, notices_topic: notices, approvals_topic: approvals, elevlog_topic: elevlog, authuse_topic: authuse, group_skipped: 0 })
+  if (fresh(s?.authuse_topic)) await approvalDeps.send(bot, { chat_id: chatId, thread_id: authuse }, '執行授權: 每一次動用已核准的權限 (提權的 subagent, 永久允許的動作, 跨對話傳訊, 已核准的套件) 都會記在這裡, 附工具呼叫內容與 🚫 撤銷 按鈕.', [])
   if (!reuse) {
     await approvalDeps.send(bot, { chat_id: chatId, thread_id: notices }, '這裡會收到重要通知: 新對話, worker 叫不醒等.', [])
     await approvalDeps.send(bot, { chat_id: chatId, thread_id: approvals }, '這裡會收到權限申請: 跨對話傳訊, 套件安裝, 向 owner 的提權申請. owner 與 admin 可以按允許或拒絕.', [])
@@ -588,7 +605,8 @@ function startBot(bc: BotConfig): BotHandle {
     if (data && ctx.from && /^(grant|pkg|elev|setup):/.test(data)) {
       const uid = String(ctx.from.id)
       let answer: string | null = null
-      if (data.startsWith('grant:')) answer = await decideGrant(grantDeps, data, uid, String(ctx.chat?.id ?? ''))
+      if (data.endsWith(':revoke')) answer = await authz.revoke(data, uid)
+      else if (data.startsWith('grant:')) answer = await decideGrant(grantDeps, data, uid, String(ctx.chat?.id ?? ''))
       else if (data.startsWith('pkg:')) answer = await pkgGate.decide(data, uid)
       else if (data.startsWith('elev:')) answer = await elevation.decide(data, uid)
       else if (data === `setup:${bc.name}:skip`) {
