@@ -6,7 +6,7 @@
 // persona) / <type>-<chat>/CLAUDE.md (one conversation). Claude Code reads
 // CLAUDE.md from the working directory upwards, so all three apply.
 
-import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, realpathSync } from 'fs'
+import { mkdirSync, writeFileSync, existsSync, renameSync, readdirSync, realpathSync, rmdirSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { Config } from './config'
@@ -70,6 +70,7 @@ export function migrateConversation(cfg: Pick<Config, 'home' | 'bots'>, db: Rout
   if (existsSync(from)) {
     mkdirSync(to, { recursive: true })
     for (const f of readdirSync(from)) if (!existsSync(join(to, f))) renameSync(join(from, f), join(to, f))
+    if (!readdirSync(from).length) rmdirSync(from)
   }
   return db.setFolder(c.key, target)
 }

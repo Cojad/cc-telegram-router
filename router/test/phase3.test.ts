@@ -2,7 +2,7 @@
 // 權限與隔離 and 提權, 00 跨對話傳訊). Keep in sync with those sections.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { Config } from '../config'
@@ -381,6 +381,7 @@ test('bot folders: <home>/bot<id>/<type>-<chat>; an old <home>/<key> conversatio
   expect(moved.folder).toBe(join(dir, 'bot1234567890', 'dm-7'))
   expect(await Bun.file(join(moved.folder, 'memory', 'm.md')).text()).toBe('remember')
   expect(await Bun.file(join(projectStore(moved.folder, projects), 's1.jsonl')).text()).toBe('{}')
+  expect(existsSync(projectStore(old, projects))).toBe(false) // the emptied old store is removed
   expect(projectStore(moved.folder, projects)).toBe(join(projects, `${dir.replace(/[/.]/g, '-')}-bot1234567890-dm-7`))
   expect(moved.session_id).toBe('s1') // resumed from the new folder
   expect(migrateConversation(cfg, db, moved, projects)).toBeNull() // already there

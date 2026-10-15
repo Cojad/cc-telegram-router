@@ -44,3 +44,25 @@ test('import-v1: copies the v1 messages into router.db, skips ones already there
     ])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }, 30000)
+
+test('three-tier CLAUDE.md example: FORCED / GENERAL / Default suggestions, with the permission, elevation, package and format rules', async () => {
+  const md = await Bun.file(join(import.meta.dir, '..', '..', 'templates', 'CLAUDE.md.example')).text()
+  const at = (h: string) => md.indexOf(h)
+  expect(at('# FORCED RULES')).toBeGreaterThan(0)
+  expect(at('# GENERAL RULES')).toBeGreaterThan(at('# FORCED RULES'))
+  expect(at('# Default suggestions')).toBeGreaterThan(at('# GENERAL RULES'))
+  const forced = md.slice(at('# FORCED RULES'), at('# GENERAL RULES'))
+  for (const s of ['## 權限與提權', 'request_elevation', 'elevated="true"', 'dangerouslyDisableSandbox', '## 套件安裝', '<bootstrap>', 'reply 工具']) expect(forced).toContain(s)
+  expect(md).toContain('bot<id>/CLAUDE.md') // the persona lives in the bot folder
+  expect(md).toContain('/telegram:format')
+  expect(md).not.toMatch(/Cojad|柯姊|\/x\/cc/) // generic: no owner-specific content
+})
+
+test('plugin skills: /telegram:doc covers the Phase 3 features, /telegram:format holds the formatting rules', async () => {
+  const skill = (n: string) => Bun.file(join(import.meta.dir, '..', '..', 'plugin', 'skills', n, 'SKILL.md')).text()
+  const doc = await skill('doc'), fmt = await skill('format')
+  expect(doc).toStartWith('---\nname: doc\n')
+  for (const s of ['## 權限不足與提權', '## 套件安裝審核', '## 跨對話傳訊', '## 審核群組與新 bot 初次設定', '/router perm', '/router setup']) expect(doc).toContain(s)
+  expect(fmt).toStartWith('---\nname: format\n')
+  for (const s of ['## MarkdownV2 跳脫', '_ * [ ] ( ) ~', '4096']) expect(fmt).toContain(s)
+})
