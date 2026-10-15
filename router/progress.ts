@@ -15,6 +15,10 @@ export interface ProgressApi {
   send(chatId: string, text: string): Promise<number | null>
   edit(chatId: string, messageId: number, text: string): Promise<void>
   remove(chatId: string, messageId: number): Promise<void>
+  /** Remember / forget a live progress message outside this process, so one
+   *  left behind by a router restart can be removed on the next start. */
+  track?(key: string, chatId: string, messageId: number): void
+  untrack?(key: string, messageId: number): void
 }
 
 type State = { chatId: string; messageId: number | null; lines: string[]; head: string; timer: ReturnType<typeof setTimeout> | null; dirty: boolean; starting: Promise<void> | null }
@@ -49,7 +53,7 @@ export function createProgress(api: ProgressApi, opts: { throttleMs?: number; de
     s.dirty = true
     await flush(s)
     const id = s.messageId
-    setTimeout(() => void api.remove(s.chatId, id).catch(() => {}), deleteAfter)
+    setTimeout(() => void api.remove(s.chatId, id).catch(() => {}).finally(() => api.untrack?.(key, id)), deleteAfter)
   }
 
   return {
@@ -59,7 +63,7 @@ export function createProgress(api: ProgressApi, opts: { throttleMs?: number; de
         if (s) await finish(key, s)
         if (!ev.telegram) return
         const st: State = { chatId, messageId: null, lines: [], head: '🤔 思考中…', timer: null, dirty: false, starting: null }
-        st.starting = api.send(chatId, st.head).then(id => { st.messageId = id }, () => { st.messageId = null }).finally(() => { st.starting = null })
+        st.starting = api.send(chatId, st.head).then(id => { st.messageId = id; if (id != null) api.track?.(key, chatId, id) }, () => { st.messageId = null }).finally(() => { st.starting = null })
         states.set(key, st)
         return
       }
@@ -80,6 +84,13 @@ export function createProgress(api: ProgressApi, opts: { throttleMs?: number; de
       schedule(s)
     },
     active: (key: string) => states.has(key),
+    /** Delete progress messages a previous router process left behind. */
+    async cleanup(orphans: Array<{ key: string; chat_id: string; message_id: number }>): Promise<void> {
+      for (const o of orphans) {
+        await api.remove(o.chat_id, o.message_id).catch(() => {})
+        api.untrack?.(o.key, o.message_id)
+      }
+    },
   }
 }
 

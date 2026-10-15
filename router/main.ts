@@ -163,6 +163,8 @@ const progress = createProgress({
   async send(chatId, text) { return (await progressBot(chatId)?.sendMessage(chatId, text))?.message_id ?? null },
   async edit(chatId, id, text) { await progressBot(chatId)?.editMessageText(chatId, id, text) },
   async remove(chatId, id) { await progressBot(chatId)?.deleteMessage(chatId, id) },
+  track: (key, chatId, id) => db.trackProgress(key, chatId, id),
+  untrack: (key, id) => db.untrackProgress(key, id),
 })
 
 const supervisor = createSupervisor({
@@ -397,6 +399,16 @@ function startBot(bc: BotConfig): BotHandle {
 }
 
 for (const bc of cfg.bots) startBot(bc)
+
+// A restart (deploy, /restart, crash) drops in-flight progress messages on
+// the floor; remove the ones the previous process left in the chats.
+{
+  const orphans = db.orphanProgress()
+  if (orphans.length) {
+    log(`removing ${orphans.length} progress message(s) left by the previous run`)
+    void progress.cleanup(orphans)
+  }
+}
 
 // Backlog sweep: anything queued for a conversation whose worker is not
 // connected (missed wake, worker reaped mid-delivery) gets another wake.

@@ -339,3 +339,29 @@ test('progress: parallel tool calls each get their own ▶ line ticked in place'
   await sleepMs(40)
   expect(ops.at(-1)).toBe('🤔 思考中…\n\n✅ Bash: a\n✅ Read: b')
 })
+
+test('progress messages are tracked while live, so a restart can remove the ones left behind', async () => {
+  const tracked = new Map<string, { chat: string; id: number }>()
+  const removed: number[] = []
+  const api = {
+    async send() { return 42 },
+    async edit() {},
+    async remove(_c: string, id: number) { removed.push(id) },
+    track: (k: string, chat: string, id: number) => { tracked.set(`${k}:${id}`, { chat, id }) },
+    untrack: (k: string, id: number) => { tracked.delete(`${k}:${id}`) },
+  }
+  const first = createProgress(api, { throttleMs: 10, deleteAfterMs: 10 })
+  await first.handle('k', '1', { event: 'prompt', telegram: true })
+  await sleepMs(20)
+  expect([...tracked.values()]).toEqual([{ chat: '1', id: 42 }])
+  // the router dies here; a new process cleans up what is still tracked
+  const second = createProgress(api, { throttleMs: 10, deleteAfterMs: 10 })
+  await second.cleanup([...tracked.entries()].map(([k, v]) => ({ key: k.split(':')[0]!, chat_id: v.chat, message_id: v.id })))
+  expect(removed).toEqual([42])
+  expect(tracked.size).toBe(0)
+  // and a normal finish untracks after deleting
+  await second.handle('k', '1', { event: 'prompt', telegram: true })
+  await second.handle('k', '1', { event: 'stop' })
+  await sleepMs(40)
+  expect(tracked.size).toBe(0)
+})

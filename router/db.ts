@@ -53,6 +53,10 @@ export interface RouterDb {
   addLog(conv: string, text: string): void
   /** Logs to attach to queue item qid: ones already bound to it, plus any not yet bound. */
   bindLogs(conv: string, qid: number): LogRow[]
+  /** Live progress messages, so ones orphaned by a router restart get cleaned up. */
+  trackProgress(key: string, chat_id: string, message_id: number): void
+  untrackProgress(key: string, message_id: number): void
+  orphanProgress(): Array<{ key: string; chat_id: string; message_id: number }>
   close(): void
 }
 
@@ -88,6 +92,7 @@ export function openRouterDb(path: string): RouterDb {
       conv TEXT NOT NULL, ts TEXT NOT NULL, text TEXT NOT NULL, qid INTEGER
     );
     CREATE INDEX IF NOT EXISTS router_log_conv ON router_log (conv, qid);
+    CREATE TABLE IF NOT EXISTS progress_msgs (key TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (key, message_id));
   `)
   // Columns added after Phase 1.
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
@@ -120,6 +125,9 @@ export function openRouterDb(path: string): RouterDb {
   const qLogBind = db.prepare('UPDATE router_log SET qid = ? WHERE conv = ? AND qid IS NULL')
   const qLogFor = db.prepare('SELECT * FROM router_log WHERE conv = ? AND qid = ? ORDER BY id')
 
+  const qPAdd = db.prepare('INSERT OR REPLACE INTO progress_msgs (key, chat_id, message_id) VALUES (?, ?, ?)')
+  const qPDel = db.prepare('DELETE FROM progress_msgs WHERE key = ? AND message_id = ?')
+  const qPAll = db.prepare('SELECT key, chat_id, message_id FROM progress_msgs')
   const get = (key: string) => (qGet.get(key) as Conversation | null) ?? null
   return {
     logEvent: (bot, update) => { qEvent.run(now(), bot, json(update)) },
@@ -156,6 +164,9 @@ export function openRouterDb(path: string): RouterDb {
       qLogBind.run(qid, conv)
       return qLogFor.all(conv, qid) as LogRow[]
     },
+    trackProgress: (key, chat_id, id) => { qPAdd.run(key, chat_id, id) },
+    untrackProgress: (key, id) => { qPDel.run(key, id) },
+    orphanProgress: () => qPAll.all() as Array<{ key: string; chat_id: string; message_id: number }>,
     close: () => db.close(),
   }
 }
