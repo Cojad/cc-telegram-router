@@ -25,6 +25,7 @@ import { makeAssertAllowedChat, makeAssertSendable } from './guard'
 import { buildContext, renderContext, renderLogs, writeContextFile } from './context'
 import { isCommand, runCommand, roleOf, type CommandDeps } from './commands'
 import { runCli } from './cli'
+import { importV1Messages } from './importv1'
 import { createProgress, type ProgressEvent } from './progress'
 import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, type GrantDeps } from './grants'
@@ -52,6 +53,17 @@ const cfg = loadConfig(configPath)
 // `cc-telegram-router [--config x] cli <子指令...>`: talk to the running router.
 const cliAt = process.argv.indexOf('cli')
 if (cliAt > 0) process.exit(await runCli(cfg.socket, process.argv.slice(cliAt + 1)))
+
+// `cc-telegram-router [--config x] import-v1 <messages.db>`: copy the v1 message log in.
+const importAt = process.argv.indexOf('import-v1')
+if (importAt > 0) {
+  const src = process.argv[importAt + 1]
+  if (!src) { console.error('用法: cc-telegram-router import-v1 <messages.db>'); process.exit(2) }
+  openStore(join(cfg.stateDir, 'router.db')).close() // make sure the messages table exists
+  const r = importV1Messages(join(cfg.stateDir, 'router.db'), src)
+  console.log(`匯入 ${r.imported} 則, 略過已存在的 ${r.skipped} 則`)
+  process.exit(0)
+}
 
 const release = acquireLock(configPath + '.lock')
 mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 })
