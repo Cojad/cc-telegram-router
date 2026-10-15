@@ -10,7 +10,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { z } from 'zod'
 import type { Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
-import { convKey, convType, defaultRole, ensureConversation } from '../conversations'
+import { convKey, convType, defaultRole, ensureConversation, findByFolder } from '../conversations'
 import { renderSettings } from '../settings'
 import { makeAssertAllowedChat, makeAssertSendable } from '../guard'
 import { acquireLock } from '../lock'
@@ -148,7 +148,7 @@ function startIpc() {
     cfg, db,
     identify(projectDir) {
       if (projectDir === cfg.home) return { mode: 'terminal', conv: null, role: 'owner' }
-      const c = db.getConversation(projectDir.slice(cfg.home.length + 1))
+      const c = findByFolder(db, projectDir)
       return c ? { mode: 'worker', conv: c, role: c.role } : null
     },
     async onCall(peer, tool) {

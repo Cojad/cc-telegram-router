@@ -173,7 +173,7 @@ test('/router perm pkg allow|rm takes eco:name', async () => {
   expect((await run('/router perm -100555 pkg rm pypi:requests'))!.reply).toContain('移除 pkg pypi:requests')
 })
 
-test('cc-hook forwards install commands (only those) and prints the review decision', async () => {
+test('cc-hook marks install commands for review (only those) and prints the review decision', async () => {
   const { createIpc } = await import('../ipc')
   const { conv, gate } = harness(judge({ reqeusts: 'high', rich: 'low' }))
   const seen: Array<Record<string, unknown>> = []
@@ -181,7 +181,7 @@ test('cc-hook forwards install commands (only those) and prints the review decis
   const ipc = createIpc({
     cfg, db, onCall: async () => ({ content: [] }),
     identify: () => ({ mode: 'worker', conv, role: 'power' }),
-    onHook: async (_p, ev) => { seen.push(ev); return ev.command ? gate.check(conv, String(ev.command)) : {} },
+    onHook: async (_p, ev: any) => { seen.push(ev); return ev.install ? gate.check(conv, String(ev.tool_input.command)) : {} },
   })
   const hook = async (command: string) => {
     const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', 'pre'], {
@@ -194,6 +194,7 @@ test('cc-hook forwards install commands (only those) and prints the review decis
   expect(await hook('pip install reqeusts')).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: '已送 owner 審核 (#1): pypi:reqeusts. 決定後會通知你, 到時再重新安裝' })
   expect(await hook('pip install rich')).toBeNull()
   expect(await hook('python3 secret_stuff.py --token abc')).toBeNull()
-  expect(seen.map(e => e.command ?? null)).toEqual(['pip install reqeusts', 'pip install rich', null])
+  // only install-looking commands get the long review wait
+  expect(seen.map((e: any) => e.install ?? false)).toEqual([true, true, false])
   ipc.stop()
 }, 30000)

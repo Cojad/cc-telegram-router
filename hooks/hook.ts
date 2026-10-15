@@ -30,9 +30,10 @@ function progressEvent(event: string, input: Record<string, any>): Record<string
       return {
         event, summary: toolSummary(name, input.tool_input), tool_name: name, ...agent,
         // what the elevation check needs; the rest of tool_input stays on this machine
-        ...(event === 'pre' ? { tool_input: pick(input.tool_input ?? {}, ['dangerouslyDisableSandbox', 'to', 'recipient']) } : {}),
-        // package installs are reviewed by the router (router/pkgreview.ts)
-        ...(event === 'pre' && name === 'Bash' && INSTALL_HINT.test(String(input.tool_input?.command ?? '')) ? { command: String(input.tool_input.command) } : {}),
+        // what the permission check needs (router/permcheck.ts); file contents stay here
+        ...(event === 'pre' ? { tool_input: pick(input.tool_input ?? {}, ['command', 'description', 'dangerouslyDisableSandbox', 'file_path', 'notebook_path', 'path', 'pattern', 'url', 'query', 'to', 'recipient']) } : {}),
+        // package installs are reviewed by the router (router/pkgreview.ts): wait longer
+        ...(event === 'pre' && name === 'Bash' && INSTALL_HINT.test(String(input.tool_input?.command ?? '')) ? { install: true } : {}),
       }
     }
     case 'compact-pre':
@@ -90,10 +91,11 @@ async function main(): Promise<void> {
     const ev = progressEvent(event, input)
     if (!ev) return
     // A package review takes seconds; everything else answers at once.
-    const d = await ask(dir, ev, ev.command ? 55_000 : 1500)
+    const d = await ask(dir, ev, ev.install ? 55_000 : 5000)
     if (event !== 'pre') return
-    // The router decides elevation (router/elevation.ts). Unreachable router:
-    // nobody leaves the sandbox.
+    // The router checks permissions and elevation (router/elevation.ts).
+    // Unreachable router: nobody leaves the sandbox; the rest is up to the
+    // worker's own settings.
     const decision = d?.decision ?? (input.tool_input?.dangerouslyDisableSandbox ? 'deny' : undefined)
     if (decision) {
       process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision, permissionDecisionReason: d?.reason ?? 'router unreachable: no unsandboxed commands' } }))

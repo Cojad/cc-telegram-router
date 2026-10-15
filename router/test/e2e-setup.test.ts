@@ -2,8 +2,8 @@
 // against a fake Bot API, starting with no owner. Keep in sync with those
 // sections and README 「新 bot 初次設定」.
 //   claim code -> owner; persona interview (<bootstrap>, save_bot_profile)
-//   -> persona in every chat_context; approvals group checks and topics;
-//   skip button.
+//   -> <home>/bot<id>/CLAUDE.md, read by every conversation of the bot;
+//   approvals group checks and topics; skip button.
 
 import { test, expect, afterAll } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'fs'
@@ -20,7 +20,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const calls: Array<{ method: string; body: any }> = []
 const updates: unknown[] = []
 const now = Math.floor(Date.now() / 1000)
-let forum = { type: 'supergroup', is_forum: false }
+let forum = { type: 'group', is_forum: false }
 let member: Record<string, unknown> = { status: 'member' }
 let topic = 40
 const api = Bun.serve({
@@ -93,12 +93,12 @@ test('no owner: the log shows a claim code; only "/start <code>" in a DM makes t
   expect(sentTo(555, '✅ 你現在是')).toHaveLength(1)
 })
 
-test('persona interview: owner DMs carry <bootstrap> until save_bot_profile; then the persona is in chat_context and the group guide follows', async () => {
+test('persona interview: owner DMs carry <bootstrap> until save_bot_profile; the persona goes to the bot folder CLAUDE.md, the other workers rotate, the group guide follows', async () => {
   const delivered: string[] = []
   dm(OWNER, '嗨')
   await until(() => q("SELECT key FROM conversations WHERE key = 'dm-555'")[0])
   const client = connectRouter({
-    socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'dm-555'), pid: 1 },
+    socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-555'), pid: 1 },
     onMessage(m) { if (m.t === 'deliver') { delivered.push(m.params.content); client.send({ t: 'ack', qid: m.qid }) } },
   })
   const first = await until(() => delivered.find(d => d.endsWith('\n嗨')))
@@ -108,23 +108,30 @@ test('persona interview: owner DMs carry <bootstrap> until save_bot_profile; the
   // only the owner's DM may save it
   dm({ id: 666, is_bot: false, first_name: 'U', username: 'u' }, 'hello')
   await until(() => q("SELECT key FROM conversations WHERE key = 'dm-666'")[0])
-  const other = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'dm-666'), pid: 2 }, onMessage(m) { if (m.t === 'deliver') other.send({ t: 'ack', qid: m.qid }) } })
+  const other = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-666'), pid: 2 }, onMessage(m) { if (m.t === 'deliver') other.send({ t: 'ack', qid: m.qid }) } })
   await until(() => other.state().kind === 'ready')
   expect((await other.call('save_bot_profile', { name: 'x', persona: 'y' })).isError).toBe(true)
   const r = await client.call('save_bot_profile', { name: '小鯨', persona: '你是小鯨, 沉穩簡潔, 用台灣中文.' })
   expect(r.isError).toBeFalsy()
-  expect(q("SELECT persona_done, persona FROM bot_setup WHERE bot = 'new'")[0]).toEqual({ persona_done: 1, persona: '名字: 小鯨\n你是小鯨, 沉穩簡潔, 用台灣中文.' })
+  expect(q("SELECT persona_done FROM bot_setup WHERE bot = 'new'")[0]).toEqual({ persona_done: 1 })
+  const md = readFileSync(join(dir, 'bot123', 'CLAUDE.md'), 'utf8')
+  expect(md).toStartWith('# 小鯨 的人設')
+  expect(md).toContain('你是小鯨, 沉穩簡潔, 用台灣中文.')
+  // conversation folders sit under the bot folder, so Claude Code reads it there
+  expect(q("SELECT folder FROM conversations WHERE key = 'dm-666'")[0].folder).toBe(join(dir, 'bot123', 'dm-666'))
+  await until(() => stderr.includes(`persona saved to ${join(dir, 'bot123')}/CLAUDE.md, 1 other worker(s) marked for rotation`))
   const guide = await until(() => sentTo(555, '最後一步: 設定審核群組')[0])
   expect(guide.body.reply_markup.inline_keyboard[0][0].callback_data).toBe('setup:new:skip')
   dm(OWNER, '好了嗎')
-  const after = await until(() => delivered.slice(before).find(d => d.endsWith('\n好了嗎')))
-  expect(after).not.toContain('<bootstrap>')
-  expect(after).toContain('bot 人設 (owner 設定, 這隻 bot 的所有對話共用):\n名字: 小鯨')
-  expect(JSON.parse(readFileSync(join(dir, 'dm-666', '.chat', 'context.json'), 'utf8')).persona).toContain('小鯨')
+  // nothing in front of it any more: no <bootstrap>, and the persona is CLAUDE.md, not chat_context
+  await until(() => delivered.slice(before).includes('好了嗎'))
   client.close(); other.close()
 }, 20000)
 
-test('approvals group: refused until the group has topics and the bot may manage them; then two topics are made and notices go there', async () => {
+test('approvals group: refused until it is a supergroup with topics and the bot may manage them; then three topics are made and notices go there', async () => {
+  inGroup('/router setup group')
+  await until(() => sentTo(-100900, '⛔ 審核群組必須是 supergroup').length === 1)
+  forum = { type: 'supergroup', is_forum: false }
   inGroup('/router setup group')
   await until(() => sentTo(-100900, '⛔ 這個群組還沒打開「話題」').length === 1)
   forum = { type: 'supergroup', is_forum: true }
@@ -136,8 +143,8 @@ test('approvals group: refused until the group has topics and the bot may manage
   member = { status: 'administrator', can_manage_topics: true }
   inGroup('/router setup group')
   await until(() => sentTo(-100900, '✅ 審核群組設定完成').length === 1)
-  expect(calls.filter(c => c.method === 'createForumTopic').map(c => c.body.name)).toEqual(['🔔 重要通知', '🔐 權限審核'])
-  expect(q("SELECT approvals_chat, notices_topic, approvals_topic, group_skipped FROM bot_setup WHERE bot = 'new'")[0]).toEqual({ approvals_chat: '-100900', notices_topic: 41, approvals_topic: 42, group_skipped: 0 })
+  expect(calls.filter(c => c.method === 'createForumTopic').map(c => c.body.name)).toEqual(['🔔 重要通知', '🔐 權限審核', '📜 提權紀錄'])
+  expect(q("SELECT approvals_chat, notices_topic, approvals_topic, elevlog_topic, group_skipped FROM bot_setup WHERE bot = 'new'")[0]).toEqual({ approvals_chat: '-100900', notices_topic: 41, approvals_topic: 42, elevlog_topic: 43, group_skipped: 0 })
   // a new conversation is now announced in the notices topic
   const access = JSON.parse(readFileSync(join(state, 'access.json'), 'utf8'))
   access.allowFrom.push('777')
@@ -148,7 +155,7 @@ test('approvals group: refused until the group has topics and the bot may manage
   // running it again reuses the topics
   inGroup('/router setup group')
   await until(() => sentTo(-100900, '✅ 審核群組設定完成 (沿用既有話題)').length === 1)
-  expect(calls.filter(c => c.method === 'createForumTopic')).toHaveLength(2)
+  expect(calls.filter(c => c.method === 'createForumTopic')).toHaveLength(3)
 }, 20000)
 
 test('skip: only the owner may press it; afterwards everything goes to the owner DM; /router setup shows the state', async () => {

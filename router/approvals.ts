@@ -63,3 +63,14 @@ export async function postNotice(deps: ApprovalDeps, bot: string, text: string):
   const place = noticePlace(deps.db, deps.owners, bot)
   return !!place && (await deps.send(bot, place, text, [])) != null
 }
+
+/** The elevation log (提權紀錄) lives only in an approvals group; without one it stays in router.db. */
+export function logPlace(db: RouterDb, bot: string): Place | null {
+  const s = db.getBotSetup(bot)
+  return s?.approvals_chat && s.elevlog_topic ? { chat_id: s.approvals_chat, thread_id: s.elevlog_topic } : null
+}
+
+/** https://t.me/c/<id>/<msg> for supergroups and channels; null for DMs and basic groups. */
+export function messageLink(chatId: string, messageId: number): string | null {
+  return chatId.startsWith('-100') ? `https://t.me/c/${chatId.slice(4)}/${messageId}` : null
+}

@@ -27,11 +27,9 @@ export type ChatContext = {
   folder: string
   model: string
   autoCompactWindow: number
-  /** The bot's persona from its first-run interview (router/setup.ts). */
-  persona?: string | null
 }
 
-export function buildContext(cfg: Config, c: Conversation, persona?: string | null): ChatContext {
+export function buildContext(cfg: Config, c: Conversation): ChatContext {
   return {
     v: c.ctx_v ?? 1,
     conversation: c.key,
@@ -44,7 +42,6 @@ export function buildContext(cfg: Config, c: Conversation, persona?: string | nu
     folder: c.folder,
     model: c.model ?? cfg.model,
     autoCompactWindow: c.compact ?? cfg.autoCompactWindow,
-    ...(persona ? { persona } : {}),
   }
 }
 
@@ -56,14 +53,13 @@ export function renderContext(ctx: ChatContext): string {
     `folder: ${ctx.folder}`,
     `model: ${ctx.model}, autoCompactWindow: ${ctx.autoCompactWindow}`,
     '這個 session 只服務這一個 Telegram 對話.',
-    ...(ctx.persona ? ['', `bot 人設 (owner 設定, 這隻 bot 的所有對話共用):`, ctx.persona] : []),
   ]
   return `<chat_context v="${ctx.v}">\n${lines.join('\n')}\n</chat_context>`
 }
 
-export function writeContextFile(cfg: Config, c: Conversation, persona?: string | null): void {
+export function writeContextFile(cfg: Config, c: Conversation): void {
   mkdirSync(join(c.folder, '.chat'), { recursive: true })
-  writeFileSync(join(c.folder, '.chat', 'context.json'), JSON.stringify(buildContext(cfg, c, persona), null, 2) + '\n')
+  writeFileSync(join(c.folder, '.chat', 'context.json'), JSON.stringify(buildContext(cfg, c), null, 2) + '\n')
 }
 
 /** 2026-10-16 03:05 (GMT+8) */

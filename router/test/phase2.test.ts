@@ -8,7 +8,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import type { Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
-import { ensureConversation } from '../conversations'
+import { ensureConversation, findByFolder } from '../conversations'
 import { runCommand, isCommand, type CommandDeps, type CommandInput } from '../commands'
 import { buildContext, renderContext, renderLogs, maskTokens, gmt8 } from '../context'
 import type { Access } from '../telegram/policy'
@@ -273,7 +273,7 @@ test('cc-hook progress reports events to the router socket for its conversation;
   const got: Array<{ key?: string; ev: Record<string, unknown> }> = []
   const ipc = createIpc({
     cfg, db,
-    identify: d => { const x = db.getConversation(d.slice(dir.length + 1)); return x ? { mode: 'worker', conv: x, role: x.role } : null },
+    identify: d => { const x = findByFolder(db, d); return x ? { mode: 'worker', conv: x, role: x.role } : null },
     onCall: async () => ({ content: [] }),
     onHook: (peer, ev) => { got.push({ key: peer.conv?.key, ev }); return {} },
   })
@@ -290,7 +290,8 @@ test('cc-hook progress reports events to the router socket for its conversation;
   for (let i = 0; i < 40 && got.length < 3; i++) await sleepMs(25)
   expect(got).toEqual([
     { key: 'group-100555', ev: { event: 'prompt', telegram: true } },
-    { key: 'group-100555', ev: { event: 'pre', summary: 'Bash: List', tool_name: 'Bash', tool_input: {} } },
+    // the fields the permission check needs travel with it (router/permcheck.ts)
+    { key: 'group-100555', ev: { event: 'pre', summary: 'Bash: List', tool_name: 'Bash', tool_input: { command: 'ls', description: 'List' } } },
     { key: 'group-100555', ev: { event: 'stop' } },
   ])
   ipc.stop()

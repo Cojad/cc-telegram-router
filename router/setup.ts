@@ -58,7 +58,7 @@ export const GROUP_GUIDE = [
   '1. 建立一個新群組, 在群組設定裡打開「話題」(Topics)',
   '2. 把我加進群組並設為管理員, 權限勾選「管理話題」',
   '3. 在群組裡傳 /router setup group',
-  '我會建立「🔔 重要通知」與「🔐 權限審核」兩個話題.',
+  '我會建立「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」三個話題.',
   '不想另開群組也可以略過, 之後這些訊息都直接私訊給你 (隨時可以再用 /router setup group 設定).',
 ].join('\n')
 
@@ -68,7 +68,8 @@ export type GroupCheck =
 
 /** Is this chat usable as the approvals group? (forum supergroup, bot may manage topics) */
 export function checkGroup(chat: { type: string; is_forum?: boolean }, member: { status: string; can_manage_topics?: boolean } | null): GroupCheck {
-  if (chat.type !== 'supergroup' || !chat.is_forum) return { ok: false, reason: '這個群組還沒打開「話題」: 群組設定 → 話題 (Topics) 打開後再試' }
+  if (chat.type !== 'supergroup') return { ok: false, reason: '審核群組必須是 supergroup: 群組設定裡打開「話題」會自動升級成 supergroup, 之後再試' }
+  if (!chat.is_forum) return { ok: false, reason: '這個群組還沒打開「話題」: 群組設定 → 話題 (Topics) 打開後再試' }
   if (!member || member.status !== 'administrator') return { ok: false, reason: '我還不是這個群組的管理員: 把我設為管理員並勾選「管理話題」後再試' }
   if (!member.can_manage_topics) return { ok: false, reason: '我是管理員但沒有「管理話題」權限: 在管理員權限裡勾選後再試' }
   return { ok: true }
@@ -76,7 +77,7 @@ export function checkGroup(chat: { type: string; is_forum?: boolean }, member: {
 
 export function describeSetup(s: BotSetup | null, ownerDm: string | undefined): string {
   const place = s?.approvals_chat
-    ? `群組 ${s.approvals_chat} (重要通知話題 ${s.notices_topic ?? '?'}, 權限審核話題 ${s.approvals_topic ?? '?'})`
+    ? `群組 ${s.approvals_chat} (重要通知話題 ${s.notices_topic ?? '?'}, 權限審核話題 ${s.approvals_topic ?? '?'}, 提權紀錄話題 ${s.elevlog_topic ?? '?'})`
     : `owner 私訊 ${ownerDm ?? '(沒有 owner)'}${s?.group_skipped ? ' (已略過群組設定)' : ' (群組尚未設定)'}`
   return [`人設: ${needsPersona(s) ? '尚未完成 (owner 下次私訊時會開始訪談)' : '已完成'}`, `審核與通知: ${place}`].join('\n')
 }

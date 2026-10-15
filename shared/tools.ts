@@ -119,6 +119,18 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'request_elevation',
+    description: 'Ask for permission above this conversation\'s role, after a tool call was refused for lack of permission and the person agreed to ask. If the person who started this turn has a higher role, they are asked right in the chat; otherwise the bot owner is asked. You get a <router_status> message with the outcome; when approved it tells you how to run the work.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', description: 'What needs to be done that was refused, e.g. the command or the path' },
+        reason: { type: 'string', description: 'One line: why it is needed, shown to whoever decides' },
+      },
+      required: ['action', 'reason'],
+    },
+  },
+  {
     name: 'save_bot_profile',
     description: 'First-run setup only (when a <bootstrap> note asks for it, in the owner\'s DM): save the bot\'s name and persona after interviewing the owner. The persona then applies to every conversation of this bot.',
     inputSchema: {

@@ -98,7 +98,7 @@ test('every update is logged; allowlisted messages become conversations, setting
   const convs = q('SELECT key, role FROM conversations ORDER BY key')
   expect(convs).toEqual([{ key: 'dm-111', role: 'owner' }, { key: 'group-100777', role: 'user' }])
   for (const k of ['dm-111', 'group-100777']) {
-    expect(existsSync(join(dir, k, 'CLAUDE.md'))).toBe(true)
+    expect(existsSync(join(dir, 'bot123', k, 'CLAUDE.md'))).toBe(true)
     expect(existsSync(join(state, 'sessions', `${k}.json`))).toBe(true)
   }
   expect(JSON.parse(readFileSync(join(state, 'sessions', 'group-100777.json'), 'utf8')).permissions.defaultMode).toBe('dontAsk')
@@ -115,7 +115,7 @@ test('a plugin for the conversation gets the queued message, and its reply goes 
   const delivered: string[] = []
   const client = connectRouter({
     socketPath: join(state, 'router.sock'),
-    hello: { t: 'hello', project_dir: join(dir, 'dm-111'), pid: 1 },
+    hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-111'), pid: 1 },
     onMessage(m) { if (m.t === 'deliver') { delivered.push(m.params.content); client.send({ t: 'ack', qid: m.qid }) } },
   })
   await until(() => delivered.length >= 1)
@@ -132,7 +132,7 @@ test('a plugin for the conversation gets the queued message, and its reply goes 
   expect(JSON.parse(out.payload_json)).toMatchObject({ chat_id: '111', text: 'pong' })
   expect(out.error).toBeNull()
   // a user-role conversation cannot write to another chat
-  const g = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'group-100777'), pid: 2 }, onMessage(m) { if (m.t === 'deliver') g.send({ t: 'ack', qid: m.qid }) } })
+  const g = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'group-100777'), pid: 2 }, onMessage(m) { if (m.t === 'deliver') g.send({ t: 'ack', qid: m.qid }) } })
   await until(() => g.state().kind === 'ready')
   const denied = await g.call('reply', { chat_id: '111', text: 'leak' })
   expect(denied.isError).toBe(true)
@@ -146,7 +146,7 @@ test('a /router command is answered by the router, not forwarded, and the next d
   const delivered: string[] = []
   const client = connectRouter({
     socketPath: join(state, 'router.sock'),
-    hello: { t: 'hello', project_dir: join(dir, 'dm-111'), pid: 3 },
+    hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-111'), pid: 3 },
     onMessage(m) { if (m.t === 'deliver') { delivered.push(m.params.content); client.send({ t: 'ack', qid: m.qid }) } },
   })
   await until(() => client.state().kind === 'ready')
@@ -177,7 +177,7 @@ test('terminal CLI runs the same commands as owner through the router socket', a
 }, 15000)
 
 test('a plugin or hook reporting a subfolder of a conversation is still that conversation', async () => {
-  const sub = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'dm-111', 'memory'), pid: 9 }, onMessage() {} })
+  const sub = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-111', 'memory'), pid: 9 }, onMessage() {} })
   await until(() => sub.state().kind !== 'connecting')
   expect(sub.state()).toMatchObject({ kind: 'ready', welcome: { conv: 'dm-111' } })
   const other = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, '.router'), pid: 10 }, onMessage() {} })
@@ -192,7 +192,7 @@ test('bot rotate (owner DM): the poller moves to the new token, the token messag
   const delivered: string[] = []
   const client = connectRouter({
     socketPath: join(state, 'router.sock'),
-    hello: { t: 'hello', project_dir: join(dir, 'dm-111'), pid: 11 },
+    hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-111'), pid: 11 },
     onMessage(m) { if (m.t === 'deliver') { delivered.push(m.params.content); client.send({ t: 'ack', qid: m.qid }) } },
   })
   await until(() => client.state().kind === 'ready')
