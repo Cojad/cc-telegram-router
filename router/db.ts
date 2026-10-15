@@ -53,7 +53,9 @@ export interface RouterDb {
   /** Conversations with anything not yet acked. */
   convsWithBacklog(): string[]
   /** Upsert from an update: name, @username, last seen, where. */
-  seePerson(p: { uid: string; name: string | null; username: string | null; chat_id: string | null }): Person
+  seePerson(p: { uid: string; name: string | null; username: string | null; chat_id: string | null }, at?: string): Person
+  /** Fill the people table from logged updates for anyone not in it yet. */
+  backfillPeople(): number
   setPersonPhoto(uid: string, file_id: string | null): void
   getPerson(uid: string): Person | null
   findPersonByUsername(username: string): Person | null
@@ -184,10 +186,28 @@ export function openRouterDb(path: string): RouterDb {
     ack: qid => { qAck.run(now(), qid) },
     undelivered: conv => qUnd.all(conv) as QueueRow[],
     convsWithBacklog: () => (qBack.all() as Array<{ conv: string }>).map(r => r.conv),
-    seePerson(p) {
-      const t = now()
+    seePerson(p, at) {
+      const t = at ?? now()
       qPeopleUp.run(p.uid, p.name, p.username, t, t, p.chat_id)
       return qPeopleGet.get(p.uid) as Person
+    },
+    backfillPeople() {
+      const known = new Set((db.query('SELECT uid FROM people').all() as Array<{ uid: string }>).map(r => r.uid))
+      const filled = new Set<string>()
+      // Oldest first, so the newest name/username and last_seen win.
+      for (const row of db.query('SELECT ts, update_json FROM events ORDER BY id').iterate() as Iterable<{ ts: string; update_json: string }>) {
+        let u: any
+        try { u = JSON.parse(row.update_json) } catch { continue }
+        const m = u.message ?? u.edited_message ?? u.callback_query
+        const from = m?.from
+        if (!from?.id) continue
+        const uid = String(from.id)
+        if (known.has(uid)) continue
+        filled.add(uid)
+        const chat = m.chat ?? m.message?.chat
+        qPeopleUp.run(uid, [from.first_name, from.last_name].filter(Boolean).join(' ') || null, from.username ?? null, row.ts, row.ts, chat?.id != null ? String(chat.id) : null)
+      }
+      return filled.size
     },
     setPersonPhoto: (uid, file_id) => { qPeoplePhoto.run(file_id, now(), uid) },
     getPerson: uid => (qPeopleGet.get(uid) as Person | null) ?? null,

@@ -434,6 +434,12 @@ function startBot(bc: BotConfig): BotHandle {
 
 for (const bc of cfg.bots) startBot(bc)
 
+// People seen before the people table existed: fill them in from the event log.
+{
+  const n = db.backfillPeople()
+  if (n) log(`people: backfilled ${n} from the event log`)
+}
+
 // Conversations created before titles were tracked (or quiet since): ask
 // Telegram once for the group's title.
 for (const c of db.listConversations()) {

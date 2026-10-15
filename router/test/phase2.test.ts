@@ -476,3 +476,13 @@ test('status: per bot newest first with state/type/role icons and "ago", 10 each
   expect(six).not.toContain('f(@f)')
   expect([ago(5000), ago(185000), ago(8520000), ago(3 * 86400000 + 4 * 3600000)]).toEqual(['5s', '3m5s', '2h22m', '3d4h'])
 })
+
+test('people are backfilled from the event log for anyone not yet in the table, newest name winning', () => {
+  db.logEvent('cc', { update_id: 1, message: { message_id: 1, chat: { id: 137438526, type: 'private' }, from: { id: 137438526, first_name: '舊名' } } })
+  db.logEvent('cc', { update_id: 2, message: { message_id: 2, chat: { id: -100555, type: 'supergroup' }, from: { id: 137438526, first_name: '🦅 柯姊❤️', last_name: 'Cojad', username: 'Cojad' } } })
+  db.seePerson({ uid: '600', name: 'Known', username: null, chat_id: null })
+  db.logEvent('cc', { update_id: 3, message: { message_id: 3, chat: { id: 600, type: 'private' }, from: { id: 600, first_name: 'Other' } } })
+  expect(db.backfillPeople()).toBe(1)
+  expect(db.getPerson('137438526')).toMatchObject({ name: '🦅 柯姊❤️ Cojad', username: 'Cojad', last_chat_id: '-100555' })
+  expect(db.getPerson('600')!.name).toBe('Known') // already known: untouched
+})
