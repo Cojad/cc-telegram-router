@@ -19,9 +19,9 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 
 | 打法 | 結果 |
 |---|---|
-| `/id` | 你自己的名稱與 uid, 這個對話的 chat id, 這則訊息的編號 |
-| `/id @username` | 那個人的名稱, uid, 最後出現的時間與對話 (bot 要收過他的訊息) |
-| 回覆某則訊息打 `/id` | 那則訊息的編號, 發送者的名稱與 uid, 對話 id |
+| `/id` | 這則訊息: `訊息ID`, `作者ID` (你的 uid, 有 username 時加 `[@username]`), `對話ID` |
+| 回覆某則訊息打 `/id` | 被回覆那則的 `訊息ID`, `作者ID`, `對話ID` |
+| `/id @username` | `使用者ID` 與最後出現的時間, 對話 (bot 要收過他的訊息) |
 
 ## 設定角色
 
@@ -37,13 +37,14 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 
 | 指令 | 作用 |
 |---|---|
-| `/router status` | router 運作時間, 各對話是否在線 |
+| `/router status` | router 運作時間, 各對話的 worker 狀態: 「在線」= worker 正在執行且已連上 router, 訊息立刻送達; 「離線」= worker 沒在執行 (閒置被回收或被停掉), 訊息先排隊, 下一則訊息會自動叫醒它 |
 | `/router chat` | 列出所有對話的角色, 模型, compact, mention, 最後活動 |
 | `/router chat [chat_id] compact <750k\|1m\|auto>` | 調整自動壓縮門檻 (worker 會重啟) |
 | `/router chat [chat_id] model <模型>` | 換模型 (worker 會重啟) |
 | `/router chat [chat_id] mention <on\|off>` | 群組是否要提到 bot 才回應 |
 | `/router access show \| pair <code> \| allow <uid> \| remove <uid> \| group add <chat_id> \| group rm <chat_id> \| policy <...>` | 誰能跟 bot 說話 |
 | `/router session restart\|stop [chat_id]` | 重啟或停止某個對話的 worker |
+| `/router session rotate [chat_id\|all]` | 標記 worker 等待輪替: 閒置的一分鐘內停掉, 忙碌的等它閒置; 下一則訊息會用新的程式與設定叫醒. 更新 plugin 或設定後用 |
 | `/router config` | 列出 router 設定; `get`/`set <key>` 讀寫單項 |
 | `/router log [chat_id] [筆數]` | 最近的訊息紀錄 |
 | `/router bot list` | 列出 bot (add/rotate/remove 只限 owner 私訊) |

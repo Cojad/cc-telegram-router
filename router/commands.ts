@@ -38,6 +38,8 @@ export interface CommandDeps {
     isConnected(key: string): boolean
     restart(c: Conversation, opts?: { dropJob?: boolean }): Promise<void>
     stop(c: Conversation): Promise<void>
+    /** Run a rotation pass now (stop marked workers that are idle). */
+    rotateNow(): void
   }
   /** Rewrite the conversation's settings and context file; restart the worker if it runs. */
   applySettings(c: Conversation, opts: { dropJob: boolean }): Promise<void>
@@ -81,7 +83,7 @@ const HELP = [
   '/router role <uid|@username> <角色|none> (回覆某人的訊息時可省略對象) | role list',
   '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off>',
   '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] | group rm <chat_id> | policy <pairing|allowlist|disabled>',
-  '/router session restart|stop [chat_id]',
+  '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒)',
   '/router config (列出全部) | get <key> | set <key> <值>',
   '/router log (所有對話) | log <chat_id> [筆數]',
   '/restart',
@@ -142,24 +144,25 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       const lines = [`router 已運作 ${up} 分鐘, bots: ${cfg.bots.map(b => b.name).join(', ')}`]
       for (const c of db.listConversations()) {
         const backlog = db.undelivered(c.key).length
-        lines.push(`${c.key} ${c.title ? `(${c.title}) ` : ''}${c.role} ${deps.sessions.isConnected(c.key) ? '在線' : '離線'}${backlog ? `, 待送 ${backlog}` : ''}`)
+        lines.push(`${c.key} ${c.title ? `(${c.title}) ` : ''}${c.role} ${deps.sessions.isConnected(c.key) ? '在線' : '離線'}${backlog ? `, 待送 ${backlog}` : ''}${c.rotate_pending ? ', 待輪替' : ''}`)
       }
       return done(lines.join('\n'), { private: true })
     }
 
     case 'id': {
-      // /id: you and this chat; /id @username: that person; as a reply: that message.
-      const convHere = here ? ` (${here.key}${here.title ? `, ${here.title}` : ''})` : ''
-      if (input.reply) {
-        return done([`訊息 ${input.reply.messageId}`, `發送者: ${personLabel(db, input.reply.uid)} uid ${input.reply.uid}`, `對話: ${input.chatId}${convHere}`].join('\n'))
+      // /id: this message; as a reply: that message; /id @username: that person.
+      const author = (uid: string) => {
+        const u = db.getPerson(uid)?.username
+        return `${uid}${u ? ` [@${u}]` : ''}`
       }
-      if (args[1]) {
+      if (args[1] && !input.reply) {
         const uid = resolveUser(db, args[1])
         if (!uid) return done(`找不到 ${args[1]}: bot 還沒收過這個人的訊息, 或 username 打錯了`)
         const p = db.getPerson(uid)
-        return done([`${personLabel(db, uid)} uid ${uid}`, ...(p ? [`最後出現: ${gmt8(p.last_seen)}${p.last_chat_id ? ` 在 ${p.last_chat_id}` : ''}`] : [])].join('\n'))
+        return done([`使用者ID: ${author(uid)}`, ...(p ? [`最後出現: ${gmt8(p.last_seen)}${p.last_chat_id ? `, 對話ID ${p.last_chat_id}` : ''}`] : [])].join('\n'))
       }
-      return done([`你: ${personLabel(db, input.senderId)} uid ${input.senderId}`, `這個對話: ${input.chatId}${convHere}`, ...(input.messageId ? [`這則訊息: ${input.messageId}`] : [])].join('\n'))
+      const [mid, uid] = input.reply ? [input.reply.messageId, input.reply.uid] : [input.messageId, input.senderId]
+      return done([...(mid != null ? [`訊息ID: ${mid}`] : []), `作者ID: ${author(uid)}`, `對話ID: ${input.chatId}`].join('\n'))
     }
 
     case 'bot': {
@@ -307,7 +310,18 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
 
     case 'session': {
       const op = args[1]
-      if (op !== 'restart' && op !== 'stop') return done('用法: /router session restart|stop [chat_id]')
+      if (op === 'rotate') {
+        const all = args[2] === 'all'
+        const picked = all ? db.listConversations() : [target(2).conv].filter(Boolean) as Conversation[]
+        if (!picked.length) return done('找不到這個對話')
+        const skipped = role === 'admin' ? picked.filter(c => c.role === 'owner') : []
+        const marked = picked.filter(c => !skipped.includes(c))
+        for (const c of marked) db.setRotate(c.key, true)
+        for (const c of marked) if (here?.key !== c.key) logs.push({ conv: c.key, text: `${who} 標記這個 worker 等待輪替` })
+        const note = skipped.length ? `\n略過 ${skipped.map(c => c.key).join(', ')}: admin 不能異動 owner 的角色與權限` : ''
+        return done(`已標記 ${marked.length} 個 worker 等待輪替: ${marked.map(c => c.key).join(', ') || '(無)'}\n閒置的會在一分鐘內停掉, 忙碌的等它閒置; 下一則訊息會用新的程式與設定叫醒${note}`, { after: () => deps.sessions.rotateNow() })
+      }
+      if (op !== 'restart' && op !== 'stop') return done('用法: /router session restart|stop [chat_id] | rotate [chat_id|all]')
       const { conv } = target(2)
       if (!conv) return done('找不到這個對話')
       if (role === 'admin' && conv.role === 'owner' && op === 'stop') return deny('admin 不能異動 owner 的角色與權限')

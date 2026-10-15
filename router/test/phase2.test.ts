@@ -39,7 +39,7 @@ function deps(): CommandDeps {
       async rotate(name) { calls.push(`rotate ${name}`); return 'cc_bot' },
       async remove(name) { calls.push(`remove ${name}`) },
     },
-    sessions: { isConnected: () => false, async restart(c) { calls.push(`restart ${c.key}`) }, async stop(c) { calls.push(`stop ${c.key}`) } },
+    sessions: { isConnected: () => false, async restart(c) { calls.push(`restart ${c.key}`) }, async stop(c) { calls.push(`stop ${c.key}`) }, rotateNow() { calls.push('rotate-now') } },
     async applySettings(c, o) { calls.push(`apply ${c.key} dropJob=${o.dropJob}`) },
     async sendTo(_b, chat, text) { calls.push(`send ${chat} ${text}`) },
     recentMessages: () => [],
@@ -381,15 +381,15 @@ test('role targets: uid, @username, or the replied-to person; "user" keyword opt
   expect(list.private).toBe(true)
 })
 
-test('/id and /info: you and this chat, @username, or the replied message; silent for non-admins', async () => {
+test('/id and /info: 訊息ID / 作者ID [@username] / 對話ID; @username lookup; silent for non-admins', async () => {
   db.seePerson({ uid: '900000001', name: 'Example User', username: 'example_user', chat_id: '-100555' })
+  db.seePerson({ uid: '9000000006', name: '柯柯', username: 'example_bot', chat_id: null })
   ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
-  db.updateConversation('group-100555', { title: 'Example Group' })
   const mine = (await runCommand({ bot: 'cc', text: '/id', senderId: ADMIN, senderName: 'a', chatId: '-100555', chatType: 'supergroup', messageId: 77 }, deps()))!
-  expect(mine.reply).toBe(`你: ${ADMIN} uid ${ADMIN}\n這個對話: -100555 (group-100555, Example Group)\n這則訊息: 77`)
-  expect((await run('/info @example_user', ADMIN))!.reply).toMatch(/^Example User\(@example_user\) uid 900000001\n最後出現: \d{4}-\d\d-\d\d \d\d:\d\d 在 -100555$/)
-  const replied = (await runCommand({ bot: 'cc', text: '/id', senderId: OWNER, senderName: 'o', chatId: '-100555', chatType: 'supergroup', reply: { uid: '900000001', messageId: 9 } }, deps()))!
-  expect(replied.reply).toBe('訊息 9\n發送者: Example User(@example_user) uid 900000001\n對話: -100555 (group-100555, Example Group)')
+  expect(mine.reply).toBe(`訊息ID: 77\n作者ID: ${ADMIN}\n對話ID: -100555`) // no username known: none shown
+  const replied = (await runCommand({ bot: 'cc', text: '/id', senderId: OWNER, senderName: 'o', chatId: '-9990000003', chatType: 'group', reply: { uid: '9000000006', messageId: 180 } }, deps()))!
+  expect(replied.reply).toBe('訊息ID: 180\n作者ID: 9000000006 [@example_bot]\n對話ID: -9990000003')
+  expect((await run('/info @example_user', ADMIN))!.reply).toMatch(/^使用者ID: 900000001 \[@example_user\]\n最後出現: \d{4}-\d\d-\d\d \d\d:\d\d, 對話ID -100555$/)
   expect(await run('/id', USER, GROUP)).toBeNull() // may be another bot's command
   expect((await run('/router status', USER, GROUP))!.reply).toStartWith('⛔') // /router still refuses
 })
@@ -402,4 +402,44 @@ test('listings are marked private (sent to DM when run in a group); actions are 
   for (const c of ['/router help', '/router chat mention on', '/router access allow 9', '/id']) {
     expect([c, (await run(c, OWNER, GROUP))!.private ?? false]).toEqual([c, false])
   }
+})
+
+// --- rotation -----------------------------------------------------------------
+
+import { rotateTick } from '../rotate'
+
+test('/router session rotate marks one or all workers (admin skips owner ones) and runs a pass right after', async () => {
+  ensureConversation(cfg, db, 'cc', OWNER, 'private', () => {})
+  ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  const one = (await run('/router session rotate', ADMIN, GROUP))!
+  expect(one.reply).toStartWith('已標記 1 個 worker 等待輪替: group-100555')
+  one.after!()
+  expect(calls).toEqual(['rotate-now'])
+  const all = (await run('/router session rotate all', ADMIN))!
+  expect(all.reply).toContain('略過 dm-137438526: admin 不能異動 owner 的角色與權限')
+  expect(db.rotatePending().map(c => c.key)).toEqual(['group-100555'])
+  expect((await run('/router session rotate all', OWNER))!.reply).toStartWith('已標記 2 個 worker')
+  expect((await run('/router status', OWNER))!.reply).toContain('group-100555 user 離線, 待輪替')
+})
+
+test('rotation: idle workers are stopped and unmarked, busy ones wait, stopped ones are just unmarked; a backlog is woken', async () => {
+  const a = ensureConversation(cfg, db, 'cc', '-1001', 'supergroup', () => {})
+  const b = ensureConversation(cfg, db, 'cc', '-1002', 'supergroup', () => {})
+  const c = ensureConversation(cfg, db, 'cc', '-1003', 'supergroup', () => {})
+  for (const x of [a, b, c]) db.setRotate(x.key, true)
+  db.enqueue(c.key, { content: 'waiting', meta: {} })
+  const status: Record<string, string | undefined> = { [a.key]: 'idle', [b.key]: 'busy', [c.key]: undefined }
+  const log: string[] = []
+  const r = await rotateTick({
+    db,
+    async liveJob(x) { return status[x.key] ? { id: x.key, pid: 1, status: status[x.key] } : undefined },
+    async stop(x) { log.push(`stop ${x.key}`) },
+    async ensureAwake(x) { log.push(`wake ${x.key}`) },
+  })
+  expect(r).toEqual({ stopped: [a.key], waiting: [b.key] })
+  expect(log).toEqual([`stop ${a.key}`, `wake ${c.key}`])
+  expect(db.rotatePending().map(x => x.key)).toEqual([b.key])
+  status[b.key] = 'idle'
+  expect((await rotateTick({ db, async liveJob(x) { return status[x.key] ? { id: x.key, pid: 1, status: status[x.key] } : undefined }, async stop() {}, async ensureAwake() {} })).stopped).toEqual([b.key])
+  expect(db.rotatePending()).toEqual([])
 })

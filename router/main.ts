@@ -26,6 +26,7 @@ import { buildContext, renderContext, renderLogs, writeContextFile } from './con
 import { isCommand, runCommand, roleOf, type CommandDeps } from './commands'
 import { runCli } from './cli'
 import { createProgress, type ProgressEvent } from './progress'
+import { rotateTick } from './rotate'
 import { parseRelay, mayRelay, relay, codeBlock, type Exec } from './relay'
 import { homedir } from 'os'
 import { openStore } from './telegram/store'
@@ -250,6 +251,7 @@ const commandDeps: CommandDeps = {
     isConnected: ipc.isConnected,
     restart: (c, opts) => supervisor.restart(c, opts),
     stop: c => supervisor.stop(c),
+    rotateNow: () => void rotate(),
   },
   async applySettings(c, opts) {
     settingsFor(c)
@@ -463,6 +465,17 @@ function sweepBacklog(): void {
   }
 }
 setInterval(sweepBacklog, 60_000).unref()
+
+// Workers marked by /router session rotate: stop each once it is idle.
+let rotating = false
+async function rotate(): Promise<void> {
+  if (rotating) return
+  rotating = true
+  try {
+    await rotateTick({ db, liveJob: c => supervisor.liveJob(c), stop: c => supervisor.stop(c), ensureAwake: c => supervisor.ensureAwake(c), log })
+  } catch (e) { log(`rotate: ${e}`) } finally { rotating = false }
+}
+setInterval(() => void rotate(), 60_000).unref()
 // After a router restart, give already-running workers a moment to
 // reconnect before deciding they need waking.
 setTimeout(sweepBacklog, 15_000).unref()

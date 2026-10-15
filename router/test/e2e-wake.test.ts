@@ -121,3 +121,16 @@ test('a burst while the worker is down wakes it exactly once and every message a
   // and none of it leaked to the DM worker
   expect(deliveries().filter(x => x.dir.endsWith('/dm-111')).map(x => body(x.content))).toEqual(['dm-1', 'dm-2 after reap'])
 }, 40000)
+
+test('/router session rotate: an idle marked worker is stopped right away and the next message wakes it again', async () => {
+  const before = jobFor('dm-111')
+  const alive = (pid: number | null) => { try { return !!pid && (process.kill(pid, 0), true) } catch { return false } }
+  expect(alive(before.pid)).toBe(true)
+  say(DM, 111, '/router session rotate')
+  await until(() => !alive(jobFor('dm-111').pid ?? before.pid), 20000) // the fake daemon reports it idle
+  say(DM, 111, 'after rotate')
+  await until(() => deliveries().some(x => body(x.content) === 'after rotate'))
+  const got = deliveries().find(x => body(x.content) === 'after rotate')!
+  expect(got.pid).not.toBe(before.pid)
+  expect(jobFor('dm-111').id).toBe(before.id) // same session continues
+}, 40000)

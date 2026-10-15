@@ -24,6 +24,8 @@ export type Conversation = {
   /** chat_context version, bumped on every change (plan 06). */
   ctx_v?: number
   last_seen?: string | null
+  /** Marked by /router session rotate: stop the worker once it is idle. */
+  rotate_pending?: number
 }
 
 /** Everyone the bot has seen (plan 03 資料表 people). */
@@ -57,6 +59,8 @@ export interface RouterDb {
   findPersonByUsername(username: string): Person | null
   /** Conversations: refresh title and last activity. */
   touchConversation(key: string, title: string | null): void
+  setRotate(key: string, on: boolean): void
+  rotatePending(): Conversation[]
   getUserRole(uid: string): string | null
   setUserRole(uid: string, role: string | null): void
   listUsers(): Array<{ uid: string; role: string }>
@@ -112,7 +116,7 @@ export function openRouterDb(path: string): RouterDb {
   `)
   // Columns added after Phase 1.
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
-  for (const [name, type] of [['title', 'TEXT'], ['compact', 'INTEGER'], ['model', 'TEXT'], ['ctx_v', 'INTEGER NOT NULL DEFAULT 1'], ['last_seen', 'TEXT']]) {
+  for (const [name, type] of [['title', 'TEXT'], ['compact', 'INTEGER'], ['model', 'TEXT'], ['ctx_v', 'INTEGER NOT NULL DEFAULT 1'], ['last_seen', 'TEXT'], ['rotate_pending', 'INTEGER NOT NULL DEFAULT 0']]) {
     if (!cols.has(name)) db.exec(`ALTER TABLE conversations ADD COLUMN ${name} ${type}`)
   }
 
@@ -150,6 +154,8 @@ export function openRouterDb(path: string): RouterDb {
   const qPeopleByName = db.prepare('SELECT * FROM people WHERE lower(username) = lower(?) ORDER BY last_seen DESC LIMIT 1')
   const qPeoplePhoto = db.prepare('UPDATE people SET photo_file_id = ?, photo_checked_at = ? WHERE uid = ?')
   const qConvTouch = db.prepare('UPDATE conversations SET last_seen = ?, title = coalesce(?, title) WHERE key = ?')
+  const qRotSet = db.prepare('UPDATE conversations SET rotate_pending = ? WHERE key = ?')
+  const qRotAll = db.prepare('SELECT * FROM conversations WHERE rotate_pending = 1 ORDER BY key')
   const get = (key: string) => (qGet.get(key) as Conversation | null) ?? null
   return {
     logEvent: (bot, update) => { qEvent.run(now(), bot, json(update)) },
@@ -187,6 +193,8 @@ export function openRouterDb(path: string): RouterDb {
     getPerson: uid => (qPeopleGet.get(uid) as Person | null) ?? null,
     findPersonByUsername: u => (qPeopleByName.get(u.replace(/^@/, '')) as Person | null) ?? null,
     touchConversation: (key, title) => { qConvTouch.run(now(), title, key) },
+    setRotate: (key, on) => { qRotSet.run(on ? 1 : 0, key) },
+    rotatePending: () => qRotAll.all() as Conversation[],
     getUserRole: uid => ((qUserGet.get(uid) as { role: string } | null)?.role) ?? null,
     setUserRole: (uid, role) => { if (role) qUserSet.run(uid, role, now()); else qUserDel.run(uid) },
     listUsers: () => qUsers.all() as Array<{ uid: string; role: string }>,
