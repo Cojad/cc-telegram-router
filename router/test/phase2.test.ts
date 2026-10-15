@@ -396,10 +396,10 @@ test('/id and /info: 訊息ID / 作者ID [@username] / 對話ID; @username looku
 
 test('listings are marked private (sent to DM when run in a group); actions are not', async () => {
   ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
-  for (const c of ['/router status', '/router chat', '/router chat -100555', '/router log', '/router role list', '/router access show', '/router config', '/router config get model', '/router bot list']) {
+  for (const c of ['/router chat', '/router chat -100555', '/router log', '/router role list', '/router access show', '/router config', '/router config get model', '/router bot list']) {
     expect([c, (await run(c, OWNER, GROUP))!.private]).toEqual([c, true])
   }
-  for (const c of ['/router help', '/router chat mention on', '/router access allow 9', '/id']) {
+  for (const c of ['/router status', '/router help', '/router chat mention on', '/router access allow 9', '/id']) { // status stays in the group (柯姊 2026-10-16)
     expect([c, (await run(c, OWNER, GROUP))!.private ?? false]).toEqual([c, false])
   }
 })

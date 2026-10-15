@@ -53,7 +53,7 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 
 `[chat_id]` 省略時代表目前這個對話.
 
-**在群組裡下列表類指令** (status, chat, log, role list, access show, config, bot list), 結果會私訊給下指令的人, 群組只會看到「已私訊給你」. 對方沒私訊過 bot 的話要先私訊一次.
+**在群組裡下列表類指令** (chat, log, role list, access show, config, bot list; status 例外, 直接回在群組), 結果會私訊給下指令的人, 群組只會看到「已私訊給你」. 對方沒私訊過 bot 的話要先私訊一次.
 
 ## 「cc /xxx」代打 slash command
 

@@ -199,7 +199,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         isConnected: deps.sessions.isConnected,
         label: c => c.type === 'dm' ? dmLabel(db, c.chat_id) : (c.title ?? c.chat_id),
         backlog: c => db.undelivered(c.key).length,
-      }), { private: true })
+      }))
     }
 
     case 'id': {
