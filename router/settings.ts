@@ -2,11 +2,11 @@
 // + roles/<role>.json, placeholders filled, written to
 // <stateDir>/sessions/<key>.json and passed to the worker via --settings.
 // Lives outside the conversation folder so a worker can never edit its own
-// permissions. Phase 1 has only the owner and user templates; overrides come
-// in Phase 3.
+// permissions. /router perm overrides are laid on top (applyOverrides).
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
+import type { Override } from './db'
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
 
@@ -41,10 +41,43 @@ export function renderSettings(templatesDir: string, role: string, vars: Record<
   return fill(deepMerge(base, roleT), vars)
 }
 
-export function writeSessionSettings(stateDir: string, templatesDir: string, key: string, role: string, vars: Record<string, string | number>): string {
+export function writeSessionSettings(stateDir: string, templatesDir: string, key: string, role: string, vars: Record<string, string | number>, overrides: Override[] = []): string {
   const dir = join(stateDir, 'sessions')
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   const path = join(dir, `${key}.json`)
-  writeFileSync(path, JSON.stringify(renderSettings(templatesDir, role, vars), null, 2) + '\n', { mode: 0o600 })
+  writeFileSync(path, JSON.stringify(applyOverrides(renderSettings(templatesDir, role, vars), overrides), null, 2) + '\n', { mode: 0o600 })
   return path
+}
+
+/** Lay /router perm overrides over a rendered settings object (plan 03 對話權限怎麼算).
+ *  Paths go into both the permission rules and the Bash sandbox. */
+export function applyOverrides(settings: Json, overrides: Override[]): Json {
+  const s = JSON.parse(JSON.stringify(settings ?? {})) as any
+  const perms = (s.permissions ??= {})
+  const allow: string[] = (perms.allow ??= [])
+  const deny: string[] = (perms.deny ??= [])
+  const sandbox = s.sandbox
+  const fs = sandbox ? (sandbox.filesystem ??= {}) : null
+  const push = (arr: string[], v: string) => { if (!arr.includes(v)) arr.push(v) }
+  for (const o of overrides) {
+    const abs = o.value.replace(/\/+$/, '')
+    switch (o.kind) {
+      case 'tool-allow': push(allow, o.value); break
+      case 'tool-deny': push(deny, o.value); break
+      case 'path-read':
+        push(allow, `Read(/${abs}/**)`)
+        if (fs) push(fs.allowRead ??= [], abs)
+        break
+      case 'path-write':
+        for (const t of ['Read', 'Edit', 'Write']) push(allow, `${t}(/${abs}/**)`)
+        if (fs) { push(fs.allowRead ??= [], abs); push(fs.allowWrite ??= [], abs) }
+        break
+      case 'net':
+        if (sandbox) push((sandbox.network ??= {}).allowedDomains ??= [], o.value)
+        break
+      case 'mcp': push(allow, `mcp__${o.value}`); break
+      case 'send': break // enforced by the router (guard.ts), not by Claude Code
+    }
+  }
+  return s
 }

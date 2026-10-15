@@ -275,7 +275,7 @@ test('cc-hook progress reports events to the router socket for its conversation;
     cfg, db,
     identify: d => { const x = db.getConversation(d.slice(dir.length + 1)); return x ? { mode: 'worker', conv: x, role: x.role } : null },
     onCall: async () => ({ content: [] }),
-    onProgress: (peer, ev) => got.push({ key: peer.conv?.key, ev }),
+    onHook: (peer, ev) => { got.push({ key: peer.conv?.key, ev }); return {} },
   })
   // cwd is a subfolder (the session ran `cd memory` earlier); the hook must
   // still report the conversation folder, which Claude Code gives it as
@@ -290,7 +290,7 @@ test('cc-hook progress reports events to the router socket for its conversation;
   for (let i = 0; i < 40 && got.length < 3; i++) await sleepMs(25)
   expect(got).toEqual([
     { key: 'group-100555', ev: { event: 'prompt', telegram: true } },
-    { key: 'group-100555', ev: { event: 'pre', summary: 'Bash: List' } },
+    { key: 'group-100555', ev: { event: 'pre', summary: 'Bash: List', tool_name: 'Bash', tool_input: {} } },
     { key: 'group-100555', ev: { event: 'stop' } },
   ])
   ipc.stop()

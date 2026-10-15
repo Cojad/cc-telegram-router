@@ -31,6 +31,13 @@ export type Conversation = {
 /** Everyone the bot has seen (plan 03 資料表 people). */
 export type Person = { uid: string; name: string | null; username: string | null; photo_file_id: string | null; photo_checked_at: string | null; first_seen: string; last_seen: string; last_chat_id: string | null }
 
+/** /router perm overrides on top of a conversation's role template. */
+export type OverrideKind = 'tool-allow' | 'tool-deny' | 'path-read' | 'path-write' | 'net' | 'mcp' | 'send'
+export type Override = { conv: string; kind: OverrideKind; value: string }
+
+/** Cross-conversation send requests (plan 03 Grants). */
+export type Grant = { id: number; from_conv: string; target: string; mode: 'owner' | 'target'; reason: string | null; status: 'pending' | 'approved' | 'denied'; created_at: string; decided_by: string | null; decided_at: string | null }
+
 export type QueueRow = { qid: number; conv: string; params: string; status: 'pending' | 'delivered' | 'acked' }
 export type LogRow = { id: number; conv: string; ts: string; text: string; qid: number | null }
 
@@ -62,6 +69,13 @@ export interface RouterDb {
   /** Conversations: refresh title and last activity. */
   touchConversation(key: string, title: string | null): void
   setRotate(key: string, on: boolean): void
+  listOverrides(conv: string): Override[]
+  addOverride(o: Override): boolean
+  removeOverride(conv: string, kinds: OverrideKind[], value: string): number
+  clearOverrides(conv: string): number
+  addGrant(g: Pick<Grant, 'from_conv' | 'target' | 'mode' | 'reason'>): number
+  getGrant(id: number): Grant | null
+  decideGrant(id: number, status: 'approved' | 'denied', by: string): boolean
   rotatePending(): Conversation[]
   getUserRole(uid: string): string | null
   setUserRole(uid: string, role: string | null): void
@@ -114,6 +128,11 @@ export function openRouterDb(path: string): RouterDb {
       first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, last_chat_id TEXT
     );
     CREATE INDEX IF NOT EXISTS people_username ON people (lower(username));
+    CREATE TABLE IF NOT EXISTS overrides (conv TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (conv, kind, value));
+    CREATE TABLE IF NOT EXISTS grants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, from_conv TEXT NOT NULL, target TEXT NOT NULL, mode TEXT NOT NULL,
+      reason TEXT, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_by TEXT, decided_at TEXT
+    );
     CREATE TABLE IF NOT EXISTS progress_msgs (key TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (key, message_id));
   `)
   // Columns added after Phase 1.
@@ -156,6 +175,9 @@ export function openRouterDb(path: string): RouterDb {
   const qPeopleByName = db.prepare('SELECT * FROM people WHERE lower(username) = lower(?) ORDER BY last_seen DESC LIMIT 1')
   const qPeoplePhoto = db.prepare('UPDATE people SET photo_file_id = ?, photo_checked_at = ? WHERE uid = ?')
   const qConvTouch = db.prepare('UPDATE conversations SET last_seen = ?, title = coalesce(?, title) WHERE key = ?')
+  const qOvList = db.prepare('SELECT conv, kind, value FROM overrides WHERE conv = ? ORDER BY kind, value')
+  const qOvAdd = db.prepare('INSERT OR IGNORE INTO overrides (conv, kind, value, created_at) VALUES (?, ?, ?, ?)')
+  const qOvClear = db.prepare('DELETE FROM overrides WHERE conv = ?')
   const qRotSet = db.prepare('UPDATE conversations SET rotate_pending = ? WHERE key = ?')
   const qRotAll = db.prepare('SELECT * FROM conversations WHERE rotate_pending = 1 ORDER BY key')
   const get = (key: string) => (qGet.get(key) as Conversation | null) ?? null
@@ -213,6 +235,17 @@ export function openRouterDb(path: string): RouterDb {
     getPerson: uid => (qPeopleGet.get(uid) as Person | null) ?? null,
     findPersonByUsername: u => (qPeopleByName.get(u.replace(/^@/, '')) as Person | null) ?? null,
     touchConversation: (key, title) => { qConvTouch.run(now(), title, key) },
+    listOverrides: conv => qOvList.all(conv) as Override[],
+    addOverride: o => qOvAdd.run(o.conv, o.kind, o.value, now()).changes > 0,
+    removeOverride(conv, kinds, value) {
+      let n = 0
+      for (const k of kinds) n += db.prepare('DELETE FROM overrides WHERE conv = ? AND kind = ? AND value = ?').run(conv, k, value).changes
+      return n
+    },
+    addGrant: g => Number(db.prepare('INSERT INTO grants (from_conv, target, mode, reason, created_at) VALUES (?, ?, ?, ?, ?)').run(g.from_conv, g.target, g.mode, g.reason, now()).lastInsertRowid),
+    getGrant: id => (db.prepare('SELECT * FROM grants WHERE id = ?').get(id) as Grant | null) ?? null,
+    decideGrant: (id, status, by) => db.prepare("UPDATE grants SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'").run(status, by, now(), id).changes > 0,
+    clearOverrides: conv => qOvClear.run(conv).changes,
     setRotate: (key, on) => { qRotSet.run(on ? 1 : 0, key) },
     rotatePending: () => qRotAll.all() as Conversation[],
     getUserRole: uid => ((qUserGet.get(uid) as { role: string } | null)?.role) ?? null,

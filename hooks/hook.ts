@@ -5,8 +5,9 @@
 //
 // session-start (matcher compact): put the current <chat_context> back from
 //   the conversation's .chat/context.json (plan 06 壓縮後補回).
-// progress <event>: report a live-progress event to the router, which owns
-//   the "🤔 思考中…" Telegram message (router/progress.ts). Fire and forget.
+// progress <event>: report the event to the router, which owns the
+//   "🤔 思考中…" Telegram message (router/progress.ts) and decides elevation
+//   (router/elevation.ts): for PreToolUse its allow/deny is printed back.
 
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -17,32 +18,56 @@ import { DEFAULT_SOCKET, encode } from '../shared/protocol'
 const SOCKET = process.env.CC_TELEGRAM_ROUTER_SOCKET ?? DEFAULT_SOCKET
 
 function progressEvent(event: string, input: Record<string, any>): Record<string, unknown> | null {
+  const agent = input.agent_id ? { agent_id: String(input.agent_id) } : {}
   switch (event) {
     case 'prompt': return { event, telegram: /<channel source="[^"]*telegram/.test(String(input.prompt ?? '')) }
     case 'pre':
     case 'post': {
       const name = String(input.tool_name ?? '')
       if (!name || name.startsWith('mcp__plugin_telegram_telegram__')) return null
-      return { event, summary: toolSummary(name, input.tool_input) }
+      return {
+        event, summary: toolSummary(name, input.tool_input), tool_name: name, ...agent,
+        // what the elevation check needs; the rest of tool_input stays on this machine
+        ...(event === 'pre' ? { tool_input: pick(input.tool_input ?? {}, ['dangerouslyDisableSandbox', 'to', 'recipient']) } : {}),
+      }
     }
     case 'compact-pre':
     case 'compact-post': return { event, trigger: String(input.trigger ?? '') }
     case 'stop': return { event }
+    case 'subagent-start':
+    case 'subagent-stop': return { event, ...agent }
   }
   return null
 }
 
-async function send(projectDir: string, ev: Record<string, unknown>): Promise<void> {
-  await new Promise<void>(resolve => {
-    const t = setTimeout(resolve, 2000)
+function pick(o: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  return Object.fromEntries(keys.filter(k => k in o).map(k => [k, o[k]]))
+}
+
+/** Ask the router; resolve its decision, or null when it cannot be reached in time. */
+async function ask(projectDir: string, ev: Record<string, unknown>): Promise<Record<string, any> | null> {
+  return new Promise(resolve => {
+    let buf = '', done = false
+    const finish = (v: Record<string, any> | null) => { if (!done) { done = true; resolve(v) } }
+    setTimeout(() => finish(null), 1500)
     Bun.connect({
       unix: SOCKET,
       socket: {
-        open(s) { s.write(encode({ t: 'progress', project_dir: projectDir, ev })); s.end() },
-        close() { clearTimeout(t); resolve() },
-        data() {}, error() { clearTimeout(t); resolve() },
+        open(s) { s.write(encode({ t: 'hook', id: 1, project_dir: projectDir, ev })) },
+        data(s, chunk) {
+          buf += chunk.toString()
+          const line = buf.split('\n')[0]
+          if (!buf.includes('\n')) return
+          try {
+            const m = JSON.parse(line!)
+            finish(m.t === 'result' ? JSON.parse(m.result.content[0].text) : {})
+          } catch { finish({}) }
+          s.end()
+        },
+        close() { finish(null) },
+        error() { finish(null) },
       },
-    }).catch(() => { clearTimeout(t); resolve() })
+    }).catch(() => finish(null))
   })
 }
 
@@ -59,7 +84,15 @@ async function main(): Promise<void> {
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: renderContext(ctx) } }))
   } else if (job === 'progress' && event) {
     const ev = progressEvent(event, input)
-    if (ev) await send(dir, ev)
+    if (!ev) return
+    const d = await ask(dir, ev)
+    if (event !== 'pre') return
+    // The router decides elevation (router/elevation.ts). Unreachable router:
+    // nobody leaves the sandbox.
+    const decision = d?.decision ?? (input.tool_input?.dangerouslyDisableSandbox ? 'deny' : undefined)
+    if (decision) {
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision, permissionDecisionReason: d?.reason ?? 'router unreachable: no unsandboxed commands' } }))
+    }
   }
 }
 

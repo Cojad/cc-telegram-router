@@ -106,6 +106,19 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'request_send_grant',
+    description: 'Ask for permission to send to another Telegram conversation after reply refused it. mode "owner": ask the owner for a permanent grant (they get approve/deny buttons). mode "target": ask the target conversation to accept messages from this one. You get a <router_status> message when it is decided; send again then.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'The conversation you want to send to' },
+        mode: { type: 'string', enum: ['owner', 'target'] },
+        reason: { type: 'string', description: 'One line: why, shown to whoever decides' },
+      },
+      required: ['chat_id', 'mode', 'reason'],
+    },
+  },
+  {
     name: 'get_chat_context',
     description: 'Current information about this Telegram conversation: chat id, type, title, your role and what it allows, folder, model, autoCompactWindow. The same data arrives as <chat_context> with messages; call this when unsure.',
     inputSchema: { type: 'object', properties: {} },

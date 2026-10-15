@@ -15,10 +15,12 @@ function real(p: string): string {
   try { return realpathSync(p) } catch { return p }
 }
 
-/** Phase 1: owner may target any allowlisted chat; everyone else only their own. */
-export function makeAssertAllowedChat(peer: Peer, loadAccess: () => Access) {
+/** owner and admin may target any allowlisted chat; everyone else their own
+ *  chat plus the targets granted to their conversation (/router perm send). */
+export function makeAssertAllowedChat(peer: Peer, loadAccess: () => Access, granted: (chat_id: string) => boolean = () => false) {
   return (chat_id: string): void => {
-    if (peer.role === 'owner') {
+    if (peer.conv && granted(chat_id)) return
+    if (peer.role === 'owner' || peer.role === 'admin') {
       const a = loadAccess()
       if (a.allowFrom.includes(chat_id) || chat_id in a.groups) return
       if (peer.conv && peer.conv.chat_id === chat_id) return
@@ -27,7 +29,7 @@ export function makeAssertAllowedChat(peer: Peer, loadAccess: () => Access) {
     if (peer.conv && peer.conv.chat_id === chat_id) return
     throw new Error(
       `chat ${chat_id} is not this conversation (${peer.conv?.chat_id ?? 'none'}). ` +
-      `Sending to another conversation needs a grant from the owner.`,
+      `Sending to another conversation needs a grant: call request_send_grant to ask the owner for a permanent grant, or to ask that conversation to accept.`,
     )
   }
 }

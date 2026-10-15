@@ -18,7 +18,7 @@ import { defaultConfigPath, loadConfig, type BotConfig } from './config'
 import { acquireLock } from './lock'
 import { openRouterDb, type Conversation } from './db'
 import { ensureConversation } from './conversations'
-import { writeSessionSettings } from './settings'
+import { writeSessionSettings, renderSettings, applyOverrides } from './settings'
 import { createSupervisor, bunRunner } from './supervisor'
 import { createIpc, type Peer } from './ipc'
 import { makeAssertAllowedChat, makeAssertSendable } from './guard'
@@ -27,6 +27,9 @@ import { isCommand, runCommand, roleOf, type CommandDeps } from './commands'
 import { runCli } from './cli'
 import { createProgress, type ProgressEvent } from './progress'
 import { rotateTick } from './rotate'
+import { requestGrant, decideGrant, type GrantDeps } from './grants'
+import { createElevation } from './elevation'
+import { dmLabel } from './commands'
 import { parseRelay, mayRelay, relay, codeBlock, type Exec } from './relay'
 import { homedir } from 'os'
 import { openStore } from './telegram/store'
@@ -76,10 +79,9 @@ function writeConfig(mutate: (raw: Record<string, unknown>) => void): void {
   renameSync(tmp, configPath)
 }
 
+const settingsVars = (c: Conversation) => ({ folder: c.folder, autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR })
 const settingsFor = (c: Conversation) =>
-  writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, {
-    folder: c.folder, autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR,
-  })
+  writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, settingsVars(c), db.listOverrides(c.key))
 
 // Templates may have changed since the last run: rewrite every
 // conversation's settings and context file. Running workers pick settings up
@@ -94,6 +96,16 @@ const chats = new Map<string, { type: string; title: string | null }>()
 
 type BotHandle = { cfg: BotConfig; bot: Bot; info: { id: number; username: string; first_name: string } | null }
 const bots = new Map<string, BotHandle>()
+
+const elevation = createElevation(cfg.owners, log)
+
+/** Live progress events from a worker's hooks (router/progress.ts). */
+function ipcOnProgress(peer: Peer, ev: Record<string, unknown>): void {
+  const c = peer.conv
+  if (!c) return
+  if (ev.event === 'stop' || (ev.event === 'prompt' && ev.telegram)) log(`progress ${c.key} ${ev.event}`)
+  void callConv.run(c.key, () => progress.handle(c.key, c.chat_id, ev as ProgressEvent)).catch(e => log(`progress ${c.key}: ${e}`))
+}
 
 const ipc = createIpc({
   cfg, db, log,
@@ -111,6 +123,11 @@ const ipc = createIpc({
     // Role or settings may have changed since this plugin said hello.
     const conv = peer.conv ? db.getConversation(peer.conv.key) : null
     const live: Peer = conv ? { ...peer, conv, role: conv.role } : peer
+    if (tool === 'request_send_grant') {
+      if (!conv) return { content: [{ type: 'text', text: 'terminal session: send anywhere directly' }] }
+      const text = await callConv.run(conv.key, () => requestGrant(grantDeps, conv, String(args.chat_id ?? ''), args.mode === 'target' ? 'target' : 'owner', String(args.reason ?? '')))
+      return { content: [{ type: 'text', text }] }
+    }
     if (tool === 'get_chat_context') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal session: no conversation' }] }
       return { content: [{ type: 'text', text: JSON.stringify(buildContext(cfg, conv), null, 2) }] }
@@ -121,16 +138,18 @@ const ipc = createIpc({
     const inboxDir = conv ? join(conv.folder, 'attachments') : join(cfg.home, '.terminal-attachments')
     return callConv.run(conv?.key ?? 'terminal', () => callTool(tool, args, {
       bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store,
-      assertAllowedChat: makeAssertAllowedChat(live, loadAccess),
+      assertAllowedChat: makeAssertAllowedChat(live, loadAccess, chatId => !!conv && db.listOverrides(conv.key).some(o => o.kind === 'send' && o.value === chatId)),
       assertSendable: makeAssertSendable(live, cfg.stateDir),
     }))
   },
-  onProgress(peer, ev) {
+  onHook(peer, ev) {
     const c = peer.conv
-    if (!c) return
-    if (ev.event === 'stop' || (ev.event === 'prompt' && ev.telegram)) log(`progress ${c.key} ${ev.event}`)
-    void callConv.run(c.key, () => progress.handle(c.key, c.chat_id, ev as ProgressEvent)).catch(e => log(`progress ${c.key}: ${e}`))
+    if (!c) return {}
+    // progress events ride along (pre/post/stop/...); subagent events are elevation only
+    if (!String(ev.event).startsWith('subagent-')) ipcOnProgress(peer, ev)
+    return elevation.onHook(c.key, ev as Record<string, any>)
   },
+  onProgress(peer, ev) { ipcOnProgress(peer, ev) },
   async onCli(text) {
     const owner = cfg.owners[0]
     if (!owner) return 'config 沒有 owners'
@@ -148,6 +167,8 @@ const ipc = createIpc({
     if (conn.ctxV !== v) { parts.push(renderContext(buildContext(cfg, c))); conn.ctxV = v }
     const logs = renderLogs(db.bindLogs(key, qid))
     if (logs) parts.push(logs)
+    const elevated = elevation.onDeliver(key, c.role, params.meta.user_id)
+    if (elevated) parts.push(elevated)
     return {
       content: parts.length ? `${parts.join('\n')}\n${params.content}` : params.content,
       meta: { ...params.meta, ctx_v: String(v) },
@@ -174,6 +195,30 @@ const supervisor = createSupervisor({
   waitConnected: ipc.waitConnected,
   settingsPath: settingsFor,
 })
+
+/** Put a router-originated message in front of a conversation's worker. */
+function notifyConversation(c: Conversation, text: string): void {
+  db.enqueue(c.key, { content: text, meta: { chat_id: c.chat_id, user: 'router', ts: new Date().toISOString() } })
+  if (ipc.isConnected(c.key)) ipc.pushQueue(c.key)
+  else void supervisor.ensureAwake(c)
+}
+
+const grantDeps: GrantDeps = {
+  db, owners: cfg.owners,
+  async ask(chatId, text, buttons) {
+    const c = db.listConversations().find(x => x.chat_id === chatId)
+    const api = bots.get(c?.bot ?? cfg.bots[0]!.name)?.bot.api
+    if (!api) return false
+    return api.sendMessage(chatId, text, { reply_markup: { inline_keyboard: [buttons.map(b => ({ text: b.text, callback_data: b.data }))] } }).then(() => true, e => { log(`grant ask ${chatId}: ${e}`); return false })
+  },
+  notify: notifyConversation,
+  label(id) {
+    const c = db.listConversations().find(x => x.chat_id === id)
+    if (c?.type === 'dm' || (!c && !id.startsWith('-'))) return `${dmLabel(db, id)} (${id})`
+    return `${c?.title ?? id} (${id})`
+  },
+  isAdmin: uid => roleOf(commandDeps, uid) === 'admin',
+}
 
 /** A message gate() delivered: queue it for its conversation and make sure a worker picks it up. */
 function onChannel(botName: string, params: ChannelParams): void {
@@ -259,6 +304,13 @@ const commandDeps: CommandDeps = {
     if (await supervisor.liveJob(c)) await supervisor.restart(c, opts)
     else if (opts.dropJob) await supervisor.stop(c, opts)
   },
+  applyPermissions(c) {
+    settingsFor(c)
+    writeContextFile(cfg, c)
+    db.setRotate(c.key, true)
+    void rotate()
+  },
+  effectiveSettings: c => applyOverrides(renderSettings(TEMPLATES, c.role, settingsVars(c)), db.listOverrides(c.key)),
   async sendTo(botName, chatId, text) {
     await bots.get(botName)?.bot.api.sendMessage(chatId, text)
   },
@@ -342,6 +394,17 @@ function startBot(bc: BotConfig): BotHandle {
       chats.set(String(ctx.chat.id), { type: ctx.chat.type, title })
       const conv = db.findConversation(bc.name, String(ctx.chat.id))
       if (conv) db.touchConversation(conv.key, ctx.chat.type === 'private' ? null : title)
+    }
+    // Approve/deny buttons of cross-conversation send requests.
+    const data = ctx.callbackQuery?.data
+    if (data?.startsWith('grant:') && ctx.from) {
+      const answer = decideGrant(grantDeps, data, String(ctx.from.id), String(ctx.chat?.id ?? ''))
+      await ctx.answerCallbackQuery({ text: answer ?? '' }).catch(() => {})
+      const msg = ctx.callbackQuery!.message
+      if (answer && (answer === '已允許' || answer === '已拒絕') && msg && 'text' in msg) {
+        await ctx.editMessageText(`${msg.text}\n\n${answer} (${ctx.from.username ? '@' + ctx.from.username : ctx.from.first_name})`).catch(() => {})
+      }
+      return
     }
     const text = ctx.message?.text
     // 「cc /xxx」: type a slash command into this conversation's worker.

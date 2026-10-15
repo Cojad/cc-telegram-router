@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read(/{{folder}}/**)", "Edit(/{{folder}}/**)", "Write(/{{folder}}/**)",
+      "Bash", "WebSearch", "WebFetch",
+      "mcp__plugin_telegram_telegram"
+    ],
+    "deny": ["Edit(/{{folder}}/.chat/**)", "Write(/{{folder}}/.chat/**)"]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "filesystem": {
+      "denyRead": ["/x", "~"],
+      "allowRead": ["{{folder}}", "~/bin", "~/.bun"],
+      "denyWrite": ["{{folder}}/.chat"]
+    },
+    "network": { "allowedDomains": ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"] }
+  }
+}

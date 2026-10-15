@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": ["mcp__plugin_telegram_telegram", "Read(/{{folder}}/attachments/**)"]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": false,
+    "filesystem": { "denyRead": ["/x", "~"], "allowRead": ["{{folder}}"] }
+  }
+}

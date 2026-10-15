@@ -4,7 +4,7 @@
 // owner; bot token changes only in the owner's own DM.
 
 import type { Config } from './config'
-import type { Conversation, RouterDb } from './db'
+import type { Conversation, RouterDb, OverrideKind } from './db'
 import type { Access } from './telegram/policy'
 import type { MessageRecord } from './telegram/store'
 import { gmt8 } from './context'
@@ -43,6 +43,10 @@ export interface CommandDeps {
   }
   /** Rewrite the conversation's settings and context file; restart the worker if it runs. */
   applySettings(c: Conversation, opts: { dropJob: boolean }): Promise<void>
+  /** Permissions changed: rewrite settings/context now, rotate the worker (stop when idle). */
+  applyPermissions(c: Conversation): void
+  /** The effective settings the router would write for this conversation. */
+  effectiveSettings(c: Conversation): any
   sendTo(bot: string, chatId: string, text: string): Promise<void>
   recentMessages(chatId: string, n: number): MessageRecord[]
   writeConfig(mutate: (raw: Record<string, unknown>) => void): void
@@ -138,6 +142,7 @@ const HELP = [
   '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off>',
   '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] | group rm <chat_id> | policy <pairing|allowlist|disabled>',
   '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒)',
+  '/router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | reset',
   '/router config (列出全部) | get <key> | set <key> <值>',
   '/router log (所有對話) | log <chat_id> [筆數]',
   '/restart',
@@ -316,6 +321,67 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return done(`${conv.key} ${value === 'on' ? '要 mention 才回應' : '不用 mention 也會收到所有訊息'}`)
       }
       return done('用法: /router chat [chat_id] compact|model|mention <值>')
+    }
+
+    case 'perm': {
+      const { conv, rest } = target(1)
+      if (!conv) return done('找不到這個對話 (它還沒有任何訊息進來過)')
+      const [what, op, ...valueParts] = rest
+      const value = valueParts.join(' ')
+      const summary = (c: Conversation) => {
+        const eff = deps.effectiveSettings(c) ?? {}
+        const ov = db.listOverrides(c.key)
+        const by = (k: string) => ov.filter(o => o.kind === k).map(o => o.value)
+        const fs = eff.sandbox?.filesystem ?? {}
+        return [
+          `${c.key}${c.title ? ` (${c.title})` : ''}: 角色 ${c.role}`,
+          `權限模式: ${eff.permissions?.defaultMode ?? '-'}, sandbox: ${eff.sandbox?.enabled ? '開' : '關'}`,
+          `允許: ${(eff.permissions?.allow ?? []).join(', ') || '(無)'}`,
+          `拒絕: ${(eff.permissions?.deny ?? []).join(', ') || '(無)'}`,
+          ...(eff.sandbox ? [`sandbox 可讀: ${(fs.allowRead ?? []).join(', ') || '(無)'}; 可寫: ${(fs.allowWrite ?? []).join(', ') || '(資料夾本身)'}; 網域: ${(eff.sandbox.network?.allowedDomains ?? []).join(', ') || '(全擋)'}`] : []),
+          `覆寫: ${ov.length ? ov.map(o => `${o.kind} ${o.value}`).join(', ') : '(無)'}`,
+          `可跨對話送往: ${by('send').join(', ') || '(只限自己的對話)'}`,
+        ].join('\n')
+      }
+      if (!what || what === 'show') return done(summary(conv), { private: true })
+      if (role === 'admin' && conv.role === 'owner') return deny('admin 不能異動 owner 的角色與權限')
+      const before = summary(conv)
+      const changed = (note: string) => {
+        const c = db.getConversation(conv.key)!
+        deps.applyPermissions(c)
+        if (here?.key !== c.key) logs.push({ conv: c.key, text: `${who} 調整了這個對話的權限: ${note}` })
+        const after = summary(c)
+        const diff = after.split('\n').filter((l, i) => l !== before.split('\n')[i])
+        return done(`${c.key} ${note}\n變更:\n${diff.join('\n') || '(設定內容沒有變化)'}\nworker 閒置時會停掉, 下一則訊息套用新權限`)
+      }
+      if (what === 'role') {
+        if (!op || !(ROLES as readonly string[]).includes(op)) return done(`用法: /router perm [chat_id] role <${ROLES.join('|')}>`)
+        if (role === 'admin' && op === 'owner') return deny('admin 不能把角色設成 owner')
+        db.updateConversation(conv.key, { role: op })
+        return changed(`角色 ${conv.role} → ${op}`)
+      }
+      if (what === 'reset') {
+        const n = db.clearOverrides(conv.key)
+        return changed(`清掉 ${n} 筆覆寫, 回到 ${conv.role} 的預設`)
+      }
+      const kinds: Record<string, { add: Record<string, OverrideKind>; rm: OverrideKind[] }> = {
+        tool: { add: { allow: 'tool-allow', deny: 'tool-deny' }, rm: ['tool-allow', 'tool-deny'] },
+        path: { add: { read: 'path-read', write: 'path-write' }, rm: ['path-read', 'path-write'] },
+        net: { add: { allow: 'net' }, rm: ['net'] },
+        mcp: { add: { allow: 'mcp' }, rm: ['mcp'] },
+        send: { add: { allow: 'send' }, rm: ['send'] },
+      }
+      const k = what ? kinds[what] : undefined
+      if (!k || !op || !value) return done('用法: /router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | reset')
+      if (what === 'path' && !value.startsWith('/')) return done('路徑要用絕對路徑, 例如 /x/data/shared')
+      if (op === 'rm') {
+        const n = db.removeOverride(conv.key, k.rm, value)
+        return n ? changed(`移除 ${what} ${value}`) : done(`${conv.key} 沒有 ${what} ${value} 這筆覆寫`)
+      }
+      const kind = k.add[op]
+      if (!kind) return done(`${what} 只能用 ${[...Object.keys(k.add), 'rm'].join(', ')}`)
+      db.addOverride({ conv: conv.key, kind, value })
+      return changed(`${what} ${op} ${value}`)
     }
 
     case 'access': {

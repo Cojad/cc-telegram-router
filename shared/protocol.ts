@@ -20,7 +20,9 @@ export type PluginToRouter =
   | { t: 'ack'; qid: number }
   | { t: 'call'; id: number; tool: string; args: Record<string, unknown> }
   | { t: 'bye' }
-  /** Worker hook: a live-progress event (router/progress.ts). No answer. */
+  /** Worker hook event; answered with a result whose text is a JSON HookDecision. */
+  | { t: 'hook'; id: number; project_dir: string; ev: Record<string, unknown> }
+  /** Worker hook: a live-progress event (router/progress.ts). No answer (older hooks). */
   | { t: 'progress'; project_dir: string; ev: Record<string, unknown> }
   /** Terminal CLI (owner): run a /router command. Answered with result. */
   | { t: 'cli'; id: number; text: string }
