@@ -23,6 +23,7 @@ export interface RouterDb {
   logEvent(bot: string, update: unknown): void
   logApiCall(bot: string, method: string, payload: unknown, result: unknown, error: string | null, conv: string | null): void
   getConversation(key: string): Conversation | null
+  listConversations(): Conversation[]
   findConversation(bot: string, chat_id: string): Conversation | null
   insertConversation(c: Conversation): void
   setSession(key: string, session_id: string): void
@@ -70,6 +71,7 @@ export function openRouterDb(path: string): RouterDb {
   const qEvent = db.prepare('INSERT INTO events (ts, bot, update_json) VALUES (?, ?, ?)')
   const qApi = db.prepare('INSERT INTO outbound (ts, bot, conv, method, payload_json, result_json, error) VALUES (?, ?, ?, ?, ?, ?, ?)')
   const qGet = db.prepare('SELECT * FROM conversations WHERE key = ?')
+  const qAll = db.prepare('SELECT * FROM conversations ORDER BY key')
   const qFind = db.prepare('SELECT * FROM conversations WHERE bot = ? AND chat_id = ?')
   const qIns = db.prepare('INSERT INTO conversations (key, bot, chat_id, type, folder, role, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
   const qSess = db.prepare('UPDATE conversations SET session_id = ? WHERE key = ?')
@@ -84,6 +86,7 @@ export function openRouterDb(path: string): RouterDb {
       qApi.run(now(), bot, conv, method, json(payload), result === undefined ? null : json(result), error)
     },
     getConversation: key => (qGet.get(key) as Conversation | null) ?? null,
+    listConversations: () => qAll.all() as Conversation[],
     findConversation: (bot, chat_id) => (qFind.get(bot, chat_id) as Conversation | null) ?? null,
     insertConversation: c => { qIns.run(c.key, c.bot, c.chat_id, c.type, c.folder, c.role, c.session_id, c.created_at) },
     setSession: (key, sid) => { qSess.run(sid, key) },

@@ -57,6 +57,11 @@ const settingsFor = (c: Conversation) =>
   writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, { folder: c.folder, autoCompactWindow: cfg.autoCompactWindow })
 
 // Which conversation a Bot API call is made on behalf of, for the outbound log.
+// Templates may have changed since the last run: rewrite every
+// conversation's settings. Running workers pick them up on their next
+// resume (live sessions do not reload settings).
+for (const c of db.listConversations()) settingsFor(c)
+
 const callConv = new AsyncLocalStorage<string>()
 // Telegram chat type per chat_id, captured from updates (the channel
 // notification itself only carries chat_id).
