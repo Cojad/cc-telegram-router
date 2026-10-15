@@ -169,3 +169,41 @@ test('SessionStart hook puts the chat_context back after compact', async () => {
   const q = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'session-start'], { stdin: new Blob([JSON.stringify({ cwd: dir })]), stdout: 'pipe' })
   expect(await new Response(q.stdout).text()).toBe('')
 })
+
+// --- 「cc /」relay (plan 01 待驗證 1) -------------------------------------
+
+import { parseRelay, mayRelay, codeBlock, relay } from '../relay'
+
+test('relay syntax, who may relay, and MarkdownV2 code block escaping', () => {
+  expect(parseRelay('cc /status')).toEqual({ cmd: '/status', args: '' })
+  expect(parseRelay('柯柯 /model opus')).toEqual({ cmd: '/model', args: 'opus' })
+  expect(parseRelay('CC/usage')).toEqual({ cmd: '/usage', args: '' })
+  expect(parseRelay('cc 你好')).toBeNull()
+  expect(parseRelay('/router status')).toBeNull()
+  expect(mayRelay('owner', '/model', 'private')).toBe(true)
+  expect(mayRelay('admin', '/compact', 'supergroup')).toBe(true)
+  expect(mayRelay('user', '/status', 'supergroup')).toBe(true)
+  expect(mayRelay('user', '/usage', 'private')).toBe(false)
+  expect(mayRelay('user', '/model', 'supergroup')).toBe(false)
+  expect(codeBlock('a`b\\c (x).')).toBe('```\na\\`b\\\\c (x).\n```')
+})
+
+test('relay drives a hidden tmux on the router socket dir and always cleans up', async () => {
+  const seen: Array<{ args: string[]; env?: Record<string, string> }> = []
+  let captures = 0
+  const exec = async (args: string[], env?: Record<string, string>) => {
+    seen.push({ args, env })
+    if (args[1] === 'capture-pane') { captures++; return { code: 0, stdout: captures < 2 ? '' : '❯ \nModel: opus\n▔▔▔▔\n' } }
+    return { code: 0, stdout: args[0]!.endsWith('tg-status-report.sh') ? 'Version: 2.1\n' : '' }
+  }
+  const out = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s' }, 'abcd1234', '/status', '')
+  expect(out).toBe('Version: 2.1')
+  expect(seen.every(s => s.env?.TMUX_TMPDIR === join(dir, 'tmux'))).toBe(true)
+  expect(seen.find(s => s.args[1] === 'new-session')!.args).toContain('claude attach abcd1234')
+  expect(seen.find(s => s.args[0] === '/s/tg-status-report.sh')!.args).toEqual(['/s/tg-status-report.sh', 'relay-abcd1234'])
+  expect(seen.at(-1)!.args).toEqual(['tmux', 'kill-session', '-t', 'relay-abcd1234'])
+  captures = 1
+  const gen = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s' }, 'abcd1234', '/model', 'opus')
+  expect(gen).toBe('❯\nModel: opus')
+  expect(seen.some(s => s.args[1] === 'send-keys' && s.args.includes('/model opus'))).toBe(true)
+}, 15000)

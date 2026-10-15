@@ -23,7 +23,9 @@ import { createSupervisor, bunRunner } from './supervisor'
 import { createIpc, type Peer } from './ipc'
 import { makeAssertAllowedChat, makeAssertSendable } from './guard'
 import { buildContext, renderContext, renderLogs, writeContextFile } from './context'
-import { isCommand, runCommand, type CommandDeps } from './commands'
+import { isCommand, runCommand, roleOf, type CommandDeps } from './commands'
+import { parseRelay, mayRelay, relay, codeBlock, type Exec } from './relay'
+import { homedir } from 'os'
 import { openStore } from './telegram/store'
 import { readAccessFile, gate as policyGate, dmCommandGate as policyDmCommandGate, type Access, type InboundContext } from './telegram/policy'
 import { createHandleInbound } from './telegram/inbound'
@@ -228,6 +230,40 @@ const commandDeps: CommandDeps = {
   },
 }
 
+const exec: Exec = async (args, env) => {
+  const p = Bun.spawn(args, { env: { ...process.env, ...env }, stdout: 'pipe', stderr: 'ignore', stdin: 'ignore' })
+  const stdout = await new Response(p.stdout).text()
+  return { code: await p.exited, stdout }
+}
+
+async function handleRelay(botName: string, chatId: string, chatType: string, senderId: string, senderName: string, messageId: number, rel: { cmd: string; args: string }): Promise<void> {
+  const api = bots.get(botName)!.bot.api
+  const reply = (text: string, md = false) => api.sendMessage(chatId, text, {
+    reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+    ...(md ? { parse_mode: 'MarkdownV2' as const } : {}),
+  }).catch(e => log(`relay reply failed: ${e}`))
+  const role = roleOf(commandDeps, senderId)
+  const conv = db.findConversation(botName, chatId)
+  const who = `${senderName}(${role})`
+  if (!mayRelay(role, rel.cmd, chatType)) {
+    const why = `⛔ 代打 ${rel.cmd} 只開放 owner 與 admin${chatType === 'private' ? '' : ' (群組裡所有人都能用 /status 與 /usage)'}, 你的角色是 ${role}`
+    if (conv) db.addLog(conv.key, `${who} cc ${rel.cmd} → ${why}`)
+    await reply(why)
+    return
+  }
+  if (!conv) { await reply('這個對話還沒有 worker, 先傳一則一般訊息給我'); return }
+  try {
+    await supervisor.ensureAwake(conv)
+    const job = await supervisor.liveJob(db.getConversation(conv.key)!)
+    if (!job) { await reply('叫不醒這個對話的 worker'); return }
+    const out = await callConv.run(conv.key, () => relay({ exec, stateDir: cfg.stateDir, claudeBin: cfg.claudeBin, scriptsDir: join(homedir(), '.claude', 'bin') }, job.id, rel.cmd, rel.args))
+    db.addLog(conv.key, `${who} 代打 ${rel.cmd}${rel.args ? ' ' + rel.args : ''}`)
+    await reply(codeBlock(out), true)
+  } catch (e) {
+    await reply(`代打 ${rel.cmd} 失敗: ${e}`)
+  }
+}
+
 function startBot(bc: BotConfig): BotHandle {
   const bot = new Bot(bc.token, apiOpts())
   const h: BotHandle = { cfg: bc, bot, info: null }
@@ -252,8 +288,14 @@ function startBot(bc: BotConfig): BotHandle {
         : ('title' in ctx.chat ? ctx.chat.title ?? null : null)
       chats.set(String(ctx.chat.id), { type: ctx.chat.type, title })
     }
-    // /router and /restart are the router's own: answered here, never forwarded.
     const text = ctx.message?.text
+    // 「cc /xxx」: type a slash command into this conversation's worker.
+    const rel = parseRelay(text)
+    if (rel && ctx.chat && ctx.from && loadAccess().allowFrom.concat(Object.keys(loadAccess().groups)).some(x => x === String(ctx.chat!.id) || x === String(ctx.from!.id))) {
+      void handleRelay(bc.name, String(ctx.chat.id), ctx.chat.type, String(ctx.from.id), ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name, ctx.message!.message_id, rel)
+      return
+    }
+    // /router and /restart are the router's own: answered here, never forwarded.
     if (ctx.chat && ctx.from && isCommand(text)) {
       const out = await runCommand({
         bot: bc.name, text: text!, senderId: String(ctx.from.id),
