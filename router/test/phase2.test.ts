@@ -271,8 +271,11 @@ test('cc-hook progress reports events to the router socket for its conversation;
     onCall: async () => ({ content: [] }),
     onProgress: (peer, ev) => got.push({ key: peer.conv?.key, ev }),
   })
+  // cwd is a subfolder (the session ran `cd memory` earlier); the hook must
+  // still report the conversation folder, which Claude Code gives it as
+  // CLAUDE_PROJECT_DIR.
   const hook = (event: string, input: object) => Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', event], {
-    stdin: new Blob([JSON.stringify({ cwd: c.folder, ...input })]), env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket },
+    stdin: new Blob([JSON.stringify({ cwd: join(c.folder, 'memory'), ...input })]), env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket, CLAUDE_PROJECT_DIR: c.folder },
   }).exited
   await hook('prompt', { prompt: '<channel source="plugin:telegram:telegram" chat_id="-100555">hi</channel>' })
   await hook('pre', { tool_name: 'Bash', tool_input: { command: 'ls', description: 'List' } })

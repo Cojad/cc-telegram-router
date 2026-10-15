@@ -49,7 +49,9 @@ async function send(projectDir: string, ev: Record<string, unknown>): Promise<vo
 async function main(): Promise<void> {
   const [job, event] = [process.argv[2], process.argv[3]]
   const input = JSON.parse(await new Response(Bun.stdin.stream()).text() || '{}')
-  const dir = input.cwd ?? process.env.CLAUDE_PROJECT_DIR
+  // The project dir, not input.cwd: a `cd` in a Bash call moves the
+  // session's cwd into subfolders, and every later hook would report that.
+  const dir = process.env.CLAUDE_PROJECT_DIR ?? input.cwd
   if (!dir) return
   if (job === 'session-start') {
     const ctx = JSON.parse(readFileSync(join(dir, '.chat', 'context.json'), 'utf8')) as ChatContext

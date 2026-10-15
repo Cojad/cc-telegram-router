@@ -98,9 +98,11 @@ const ipc = createIpc({
   identify(projectDir): Peer | null {
     let dir = projectDir
     try { dir = realpathSync(projectDir) } catch {}
-    if (dir === realpathSync(cfg.home)) return { mode: 'terminal', conv: null, role: 'owner' }
-    if (dirname(dir) !== realpathSync(cfg.home)) return null
-    const conv = db.getConversation(basename(dir))
+    const home = realpathSync(cfg.home)
+    if (dir === home) return { mode: 'terminal', conv: null, role: 'owner' }
+    if (!dir.startsWith(home + '/')) return null
+    // Any path inside a conversation folder belongs to that conversation.
+    const conv = db.getConversation(dir.slice(home.length + 1).split('/')[0]!)
     return conv ? { mode: 'worker', conv, role: conv.role } : null
   },
   async onCall(peer, tool, args) {
@@ -124,6 +126,7 @@ const ipc = createIpc({
   onProgress(peer, ev) {
     const c = peer.conv
     if (!c) return
+    if (ev.event === 'stop' || (ev.event === 'prompt' && ev.telegram)) log(`progress ${c.key} ${ev.event}`)
     void callConv.run(c.key, () => progress.handle(c.key, c.chat_id, ev as ProgressEvent)).catch(e => log(`progress ${c.key}: ${e}`))
   },
   async onCli(text) {

@@ -167,3 +167,13 @@ test('terminal CLI runs the same commands as owner through the router socket', a
   const q2 = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cli', 'role', 'user', '222', 'admin'], { stdout: 'pipe' })
   expect((await new Response(q2.stdout).text()).trim()).toBe('222 的角色: user → admin')
 }, 15000)
+
+test('a plugin or hook reporting a subfolder of a conversation is still that conversation', async () => {
+  const sub = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'dm-111', 'memory'), pid: 9 }, onMessage() {} })
+  await until(() => sub.state().kind !== 'connecting')
+  expect(sub.state()).toMatchObject({ kind: 'ready', welcome: { conv: 'dm-111' } })
+  const other = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, '.router'), pid: 10 }, onMessage() {} })
+  await until(() => other.state().kind !== 'connecting')
+  expect(other.state().kind).toBe('rejected')
+  sub.close(); other.close()
+}, 15000)
