@@ -1,6 +1,6 @@
 ---
 name: doc
-description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, 角色, 「cc /」代打, 即時進度訊息. 有人問「怎麼設定角色」「怎麼查 uid」「/router 怎麼用」「這個 bot 能做什麼」時使用.
+description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, 角色與權限, 提權, 套件安裝審核, 審核群組與新 bot 初次設定, 「cc /」代打, 即時進度訊息. 有人問「怎麼設定角色」「怎麼查 uid」「/router 怎麼用」「為什麼被擋」「怎麼提權」「這個 bot 能做什麼」時使用.
 ---
 
 # cc-telegram-router 使用說明
@@ -14,6 +14,36 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 - owner: 全部能力, 含 bot token 與 router core 設定. 由 config 的 owners 指定.
 - admin: 可以用所有 /router 指令, 但不能把任何人設成 owner, 不能異動 owner, bot token 的新增/更換/移除只限 owner 私訊.
 - power, user, guest: 不能用 /router 指令 (會收到明確的拒絕訊息).
+
+使用者有自己的角色 (`/router role`), 每個對話也有角色 (`/router perm ... role`). 對話的角色決定那個對話裡的 worker 能做什麼:
+
+| 對話角色 | worker 能做的事 |
+|---|---|
+| owner | 全部, 不受資料夾與 sandbox 限制 |
+| admin, power | 自己資料夾內讀寫, Bash 在 sandbox 裡執行 (python3, node, bun), 可連 PyPI 與 npm. power 安裝套件要經過審核 |
+| user | 自己資料夾內讀寫, Bash 只能跑唯讀指令 |
+| guest | 只能對話, 讀收到的附件 |
+
+## 權限不足與提權
+
+- 每個工具呼叫都會先由 router 依對話角色檢查; 越權就擋下, worker 會改用不越權的方法, 做不到時告訴你並問要不要向 bot owner 申請.
+- **你的角色高於這個對話時**: 被擋的同時, router 會在對話裡貼出「⚡ 提權執行 / ❌ 拒絕」, 120 秒沒人按視為拒絕. 按下的人角色要高於對話, 而且被擋的動作在他的角色下允許; 之後 worker 開的第一個 subagent 以按的人的角色執行.
+- **向 owner 申請**: 你同意後 worker 會呼叫 request_elevation, 申請送到審核群組 (或 owner 私訊), owner 或 admin 決定.
+- 所有被擋下的動作, 提權申請與結果都記在提權紀錄 (審核群組的「📜 提權紀錄」話題, 附原申請的連結).
+
+## 套件安裝審核 (power 對話)
+
+pip, uv, poetry, npm, bun, yarn, pnpm, npx, uvx 的安裝指令會先由 router 查 PyPI/npm 的資料, 交給模型判斷風險: low 直接放行 (結果快取一週); medium, high, 審核失敗, 或從 URL, 本機路徑, 自訂來源安裝, 一律送 owner 審核. 核准後該對話之後都能安裝那些套件; owner 也可以直接用 `/router perm [chat_id] pkg allow pypi:名稱`.
+
+## 跨對話傳訊
+
+worker 要送訊息到別的對話會被擋, 它可以用 request_send_grant 申請: 向 owner 申請 (永久有效), 或請目標對話同意 (同時也會送給 owner, 先按的人決定).
+
+## 審核群組與新 bot 初次設定
+
+- 重要通知 (新對話, worker 叫不醒) 與權限申請預設私訊 owner. owner 可以建一個開了話題的 supergroup, 把 bot 設為管理員並勾選「管理話題」, 在群組裡下 `/router setup group`, 之後改送到群組的「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」三個話題.
+- 新 bot 第一次被 owner 私訊時, 會先訪談名字, 個性, 說話風格, 用途, 寫成那隻 bot 的人設.
+- `/router setup` 看狀態, `setup skip` 改回私訊 owner, `setup persona` 下次私訊時重新訪談.
 
 ## 查 uid 與 id: /id (同義 /info)
 
@@ -45,6 +75,8 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 | `/router access show \| pair <code> \| allow <uid> \| remove <uid> \| group add <chat_id> \| group rm <chat_id> \| policy <...>` | 誰能跟 bot 說話 |
 | `/router session restart\|stop [chat_id]` | 重啟或停止某個對話的 worker |
 | `/router session rotate [chat_id\|all]` | 標記 worker 等待輪替: 閒置的一分鐘內停掉, 忙碌的等它閒置; 下一則訊息會用新的程式與設定叫醒. 更新 plugin 或設定後用 |
+| `/router perm [chat_id] show \| role <角色> \| tool allow\|deny\|rm <規則> \| path read\|write\|rm <路徑> \| net allow\|rm <網域> \| mcp allow\|rm <名稱> \| send allow\|rm <chat_id> \| pkg allow\|rm <pypi\|npm:名稱> \| reset` | 調整對話的角色與權限覆寫, 回覆會列出變更; worker 閒置時重啟套用 |
+| `/router setup [group\|skip\|persona]` | 審核群組與 bot 初次設定 (只限 owner) |
 | `/router config` | 列出 router 設定; `get`/`set <key>` 讀寫單項 |
 | `/router log [chat_id] [筆數]` | 最近的訊息紀錄 |
 | `/router bot list` | 列出 bot (add/rotate/remove 只限 owner 私訊) |

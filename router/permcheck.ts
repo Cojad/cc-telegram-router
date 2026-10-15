@@ -78,6 +78,7 @@ export function checkCall(settings: any, call: Call, folder: string, role = 'thi
   if (tool === 'Bash') {
     const cmd = String(input.command ?? '')
     if (input.dangerouslyDisableSandbox && sandbox?.enabled) return { ok: false, why: `${role} 的 Bash 只能在 sandbox 裡執行, 不能跳出 sandbox` }
+    if (deny.some(r => r.tool === 'Bash' && !r.spec)) return { ok: false, why: `${role} 不能使用 Bash` }
     const subs = subcommands(cmd)
     for (const s of subs) if (deny.some(r => r.tool === 'Bash' && (!r.spec || bashMatches(r.spec, s)))) return { ok: false, why: `${role} 禁止這個指令: ${s.slice(0, 80)}` }
     if (allow.some(r => r.tool === 'Bash' && !r.spec)) return { ok: true }

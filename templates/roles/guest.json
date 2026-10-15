@@ -1,7 +1,8 @@
 {
   "permissions": {
     "defaultMode": "dontAsk",
-    "allow": ["mcp__plugin_telegram_telegram", "Read(/{{folder}}/attachments/**)"]
+    "allow": ["mcp__plugin_telegram_telegram", "Read(/{{folder}}/attachments/**)"],
+    "deny": ["Bash"]
   },
   "sandbox": {
     "enabled": true,
