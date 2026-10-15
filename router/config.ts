@@ -7,6 +7,18 @@ import { dirname, join, resolve } from 'path'
 
 export type BotConfig = { name: string; token: string }
 
+/** A token for cross-bot skills (router/credentials.ts); never shown to workers. */
+export type Credential = {
+  token: string
+  /** Bot API methods it may be used for. */
+  methods: string[]
+  /** Conversation roles that may use it; default owner and admin. */
+  roles?: string[]
+  /** "@username (id)" from getMe when it was added. */
+  label?: string
+  addedBy?: string
+}
+
 export type Config = {
   /** Where this config file lives; relative paths below resolve against it. */
   path: string
@@ -26,6 +38,7 @@ export type Config = {
   claudeBin: string
   /** Bot API base URL; only tests point this elsewhere. */
   apiRoot?: string
+  credentials: Record<string, Credential>
 }
 
 export function defaultConfigPath(argv: string[], execPath: string): string {
@@ -54,5 +67,6 @@ export function loadConfig(path: string): Config {
     autoCompactWindow: raw.autoCompactWindow ?? 750000,
     claudeBin: raw.claudeBin ?? 'claude',
     apiRoot: raw.apiRoot,
+    credentials: raw.credentials ?? {},
   }
 }

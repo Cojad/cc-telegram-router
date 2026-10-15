@@ -7,7 +7,8 @@ import type { Config } from './config'
 import type { Conversation, RouterDb, OverrideKind } from './db'
 import type { Access } from './telegram/policy'
 import type { MessageRecord } from './telegram/store'
-import { gmt8 } from './context'
+import { gmt8, maskTokens } from './context'
+import { describeCreds } from './credentials'
 
 export const ROLES = ['owner', 'admin', 'power', 'user', 'guest'] as const
 
@@ -47,6 +48,17 @@ export interface CommandDeps {
   applyPermissions(c: Conversation): void
   /** The effective settings the router would write for this conversation. */
   effectiveSettings(c: Conversation): any
+  /** Credentials for cross-bot skills (router/credentials.ts). */
+  creds: {
+    /** Validate with getMe, store in config.json; returns "@username (id)". */
+    add(name: string, token: string, methods: string[], addedBy: string): Promise<string>
+    /** Change a stored credential (methods, roles) or remove it (null). */
+    update(name: string, change: ((c: import('./config').Credential) => void) | null): void
+    /** Re-read credentials from config.json (after cred-import in the terminal). */
+    reload(): number
+    /** Owner: call the Bot API with a credential or one of the router's own bots. */
+    call(name: string, method: string, params: Record<string, unknown>, files: Record<string, string>): Promise<unknown>
+  }
   /** First-run setup of a bot (router/setup.ts). */
   setup: {
     describe(bot: string): string
@@ -152,6 +164,8 @@ const HELP = [
   '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒)',
   '/router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
+  '/router cred list | add <名稱> <token> [方法...] (owner 或 admin 的私訊) | allow|disallow <名稱> <方法...> | roles <名稱> <角色,...> | rm <名稱> | reload',
+  '/router botapi <憑證或 bot 名稱> <方法> <JSON 參數> [--file 欄位=/路徑] (只限 owner)',
   '/router config (列出全部) | get <key> | set <key> <值>',
   '/router log (所有對話) | log <chat_id> [筆數]',
   '/restart',
@@ -188,7 +202,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     : m[1] === 'id' || m[1] === 'info' ? ['id', ...(m[2] ?? '').trim().split(/\s+/).filter(Boolean)]
     : (m[2] ?? '').trim().split(/\s+/).filter(Boolean)
   const sub = args[0] ?? 'help'
-  const hasToken = sub === 'bot' && (args[1] === 'add' || args[1] === 'rotate') && args.length >= 4
+  const hasToken = (sub === 'bot' && (args[1] === 'add' || args[1] === 'rotate') && args.length >= 4) || (sub === 'cred' && args[1] === 'add' && args.length >= 4)
 
   // /id and /info are common names; in a group they may be meant for another
   // bot, so only owner and admin get an answer (the /router refusal stays).
@@ -384,7 +398,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       const k = what ? kinds[what] : undefined
       if (!k || !op || !value) return done('用法: /router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset')
       if (what === 'path' && !value.startsWith('/')) return done('路徑要用絕對路徑, 例如 /x/data/shared')
-      if (what === 'pkg' && !/^(pypi|npm|other):\S+$/.test(value)) return done('套件寫成 pypi:名稱 或 npm:名稱, 例如 pypi:requests')
+      if (what === 'pkg' && !/^((pypi|npm|other):\S+|\*)$/.test(value)) return done('套件寫成 pypi:名稱 或 npm:名稱, 例如 pypi:requests; * 代表不用審核')
       if (op === 'rm') {
         const n = db.removeOverride(conv.key, k.rm, value)
         return n ? changed(`移除 ${what} ${value}`) : done(`${conv.key} 沒有 ${what} ${value} 這筆覆寫`)
@@ -506,6 +520,65 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return `[${c.key}${c.title ? ` ${c.title}` : ''}]\n${rows.map(fmt).join('\n') || '(沒有紀錄)'}`
       })
       return done(blocks.join('\n\n'), { private: true })
+    }
+
+    case 'cred': {
+      const op = args[1] ?? 'list', name = args[2]
+      if (op === 'list') return done(describeCreds(cfg), { private: true })
+      if (op === 'reload') {
+        if (role !== 'owner') return deny('/router cred reload 只開放 owner')
+        return done(`已重新讀取 ${deps.creds.reload()} 個憑證`)
+      }
+      if (op === 'add') {
+        const inOwnDm = input.chatType === 'private' && input.chatId === input.senderId
+        if (!inOwnDm) return deny(`/router cred add 只能在你自己和 bot 的私訊使用${hasToken && input.chatType !== 'private' ? '; token 曾出現在群組, 請到發 token 的地方換一把新的' : ''}`, { deleteMessage: hasToken })
+        const token = args[3]
+        if (!name || !token || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) return done('用法: /router cred add <名稱 (小寫英數)> <token> [方法...]', { deleteMessage: hasToken })
+        if (cfg.credentials?.[name] && role !== 'owner') return deny(`已經有名為 ${name} 的憑證, 只有 owner 能取代`, { deleteMessage: true })
+        try {
+          const label = await deps.creds.add(name, token, args.slice(4), input.senderId)
+          return done(`已加入憑證 ${name}: ${label}
+方法: ${args.slice(4).join(', ') || '(還沒有, 用 /router cred allow 加入)'}
+角色: owner, admin
+token 只存在 router 設定檔, worker 用 bot_api 工具使用`, { deleteMessage: true })
+        } catch (e) {
+          return done(`cred add 失敗: ${e instanceof Error ? e.message : e}`, { deleteMessage: true })
+        }
+      }
+      const cred = name ? cfg.credentials?.[name] : undefined
+      if (!cred) return done(`找不到憑證 ${name ?? ''}
+用法: /router cred list | add | allow | disallow | roles | rm | reload`)
+      if (role !== 'owner' && cred.addedBy !== input.senderId) return deny('admin 只能調整自己加入的憑證')
+      if (op === 'allow' || op === 'disallow') {
+        const ms = args.slice(3)
+        if (!ms.length) return done(`用法: /router cred ${op} <名稱> <方法...>`)
+        deps.creds.update(name!, c => { c.methods = op === 'allow' ? [...new Set([...c.methods, ...ms])] : c.methods.filter(x => !ms.includes(x)) })
+        return done(`${name} 的方法: ${cfg.credentials[name!]!.methods.join(', ') || '(無)'}`)
+      }
+      if (op === 'roles') {
+        const rs = (args[3] ?? '').split(',').filter(Boolean)
+        if (!rs.length || rs.some(r => !(ROLES as readonly string[]).includes(r))) return done(`用法: /router cred roles <名稱> <角色,...> (角色: ${ROLES.join(', ')})`)
+        deps.creds.update(name!, c => { c.roles = rs })
+        return done(`${name} 開放給: ${rs.join(', ')} 角色的對話`)
+      }
+      if (op === 'rm') { deps.creds.update(name!, null); return done(`已移除憑證 ${name}`) }
+      return done('用法: /router cred list | add | allow | disallow | roles | rm | reload')
+    }
+
+    case 'botapi': {
+      if (role !== 'owner') return deny('/router botapi 只開放 owner')
+      const [name, method] = [args[1], args[2]]
+      const rest = cmdText.replace(/^\/router(?:@\w+)?\s+botapi\s+\S+\s+\S+\s*/, '')
+      const files: Record<string, string> = {}
+      const json = rest.replace(/\s--file\s+(\w+)=(\S+)/g, (_m, f: string, p: string) => { files[f] = p; return '' }).trim()
+      if (!name || !method) return done('用法: /router botapi <憑證或 bot 名稱> <方法> <JSON 參數> [--file 欄位=/路徑]')
+      let params: Record<string, unknown> = {}
+      try { params = json ? JSON.parse(json) : {} } catch { return done('參數要是 JSON 物件, 例如 {"name":"my_set"}') }
+      try {
+        return done(maskTokens(JSON.stringify(await deps.creds.call(name, method, params, files))))
+      } catch (e) {
+        return done(`botapi 失敗: ${e instanceof Error ? e.message : e}`)
+      }
     }
 
     case 'setup': {

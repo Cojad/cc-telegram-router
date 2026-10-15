@@ -5,14 +5,16 @@
 //   all low                 -> allowed (the normal sandbox rules apply)
 //   any medium/high, any URL/path/custom index, or the review failed
 //                           -> refused; the request goes to the approvals
-//                              place, and owner/admin approval lets this
-//                              conversation install those packages from then on.
+//                              place. 允許一次: this conversation may install
+//                              those packages (pkg <eco:name>); 永久允許: any
+//                              registry package without review (pkg *), while
+//                              URLs, paths and custom indexes still ask.
 // Verdicts are cached for a week across conversations; approvals are per
 // conversation (overrides kind pkg, value "<eco>:<name>").
 
 import type { Conversation, RouterDb } from './db'
 import { parseInstall, readManifest, type Pkg } from './packages'
-import { postApproval, settleApproval, mayDecide, type ApprovalDeps } from './approvals'
+import { postApproval, settleApproval, mayDecide, parseChoice, CHOICE_WORD, type ApprovalDeps } from './approvals'
 import type { HookDecision } from './elevation'
 
 export type Risk = 'low' | 'medium' | 'high'
@@ -75,7 +77,15 @@ export function createPkgGate(deps: PkgDeps) {
     const id = db.addPkgRequest({ conv: conv.key, pkgs: JSON.stringify(items), reason })
     open.set(sig, id)
     const passed = vs.filter(v => v.risk === 'low').map(v => key(v))
-    const text = `📦 套件安裝審核 #${id}\n${conv.key}${conv.title ? ` (${conv.title})` : ''} 想安裝:\n${reason}${passed.length ? `\n(自動審核已通過: ${passed.join(', ')})` : ''}\n允許後這個對話之後都能安裝這些套件 (可用 /router perm ${conv.chat_id} pkg rm <eco:name> 撤銷)`
+    const text = [
+      `📦 套件安裝審核 #${id}`,
+      `${conv.key}${conv.title ? ` (${conv.title})` : ''} 想安裝:`,
+      reason,
+      ...(passed.length ? [`(自動審核已通過: ${passed.join(', ')})`] : []),
+      `✅ 允許一次: 這個對話可以安裝上面列出的套件 (之後再裝同樣的不用再問).`,
+      `♾️ 永久允許的範圍: ${conv.key} 之後安裝 PyPI 與 npm 上的任何套件都不用審核 (權限覆寫 pkg *); 從 URL, 本機路徑或自訂來源安裝仍要審核. 這次列出的也一併允許.`,
+      `撤銷: /router perm ${conv.chat_id} pkg rm <eco:名稱> 或 pkg rm *`,
+    ].join('\n')
     const reached = await postApproval(deps.approvals, conv.bot, 'pkg', id, text)
     return reached.length ? `已送 owner 審核 (#${id}): ${items.join(', ')}. 決定後會通知你, 到時再重新安裝` : '審核頻道送不到, 這次安裝不能放行'
   }
@@ -87,7 +97,7 @@ export function createPkgGate(deps: PkgDeps) {
     const pkgs = [...inst.pkgs], unusual = [...inst.unusual]
     for (const m of inst.manifests) { const r = readManifest(conv.folder, m); pkgs.push(...r.pkgs); unusual.push(...r.unusual) }
     const approved = new Set(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value))
-    const need = pkgs.filter(p => !approved.has(key(p)))
+    const need = approved.has('*') ? [] : pkgs.filter(p => !approved.has(key(p)))
     const odd = unusual.filter(u => !approved.has(`other:${u}`))
     if (!need.length && !odd.length) return {}
     const all = verdicts(need)
@@ -109,22 +119,24 @@ export function createPkgGate(deps: PkgDeps) {
     return { decision: 'deny', reason: await escalate(conv, vs, odd) }
   }
 
-  /** A button press "pkg:<id>:approve|deny". */
+  /** A button press "pkg:<id>:once|always|deny". */
   async function decide(data: string, uid: string): Promise<string | null> {
-    const m = /^pkg:(\d+):(approve|deny)$/.exec(data)
-    if (!m) return null
-    const r = db.getPkgRequest(Number(m[1]))
+    const p = parseChoice('pkg', data)
+    if (!p) return null
+    const r = db.getPkgRequest(p.ref)
     if (!r) return '找不到這個申請'
     if (r.status !== 'pending') return `這個申請已經${r.status === 'approved' ? '允許' : '拒絕'}了`
     if (!mayDecide(deps.approvals, uid)) return '你不能決定這個申請'
-    const status = m[2] === 'approve' ? 'approved' : 'denied'
+    const status = p.choice === 'deny' ? 'denied' : 'approved'
     if (!db.decidePkgRequest(r.id, status, uid)) return '這個申請已經處理過了'
     const items = JSON.parse(r.pkgs) as string[]
     if (status === 'approved') for (const v of items) db.addOverride({ conv: r.conv, kind: 'pkg', value: v })
-    const word = status === 'approved' ? '已允許' : '已拒絕'
+    if (p.choice === 'always') db.addOverride({ conv: r.conv, kind: 'pkg', value: '*' })
+    const word = CHOICE_WORD[p.choice]
     await settleApproval(deps.approvals, 'pkg', r.id, `${word} (${deps.label(uid)})`)
     const conv = db.getConversation(r.conv)
-    if (conv) deps.notify(conv, `<router_status>\n套件安裝審核 #${r.id} ${word} (${deps.label(uid)}): ${items.join(', ')}${status === 'approved' ? ', 現在可以重新安裝了' : ''}.\n</router_status>`)
+    const scope = p.choice === 'always' ? ', 之後安裝 PyPI 與 npm 的套件都不用審核, 現在可以重新安裝了' : p.choice === 'once' ? ', 現在可以重新安裝了' : ''
+    if (conv) deps.notify(conv, `<router_status>\n套件安裝審核 #${r.id} ${word} (${deps.label(uid)}): ${items.join(', ')}${scope}.\n</router_status>`)
     return word
   }
 

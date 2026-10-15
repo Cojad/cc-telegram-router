@@ -10,6 +10,26 @@ import type { RouterDb } from './db'
 export type Place = { chat_id: string; thread_id?: number }
 export type Button = { text: string; data: string }
 
+/** The three answers to a request (柯姊 2026-10-16): once = this request only;
+ *  always = the whole kind of action, with its scope spelled out in the request;
+ *  deny. "approve" is the old two-button data, read as once. */
+export type Choice = 'once' | 'always' | 'deny'
+
+export function buttons(kind: string, ref: number, always: boolean): Button[] {
+  return [
+    { text: '✅ 允許一次', data: `${kind}:${ref}:once` },
+    ...(always ? [{ text: '♾️ 永久允許', data: `${kind}:${ref}:always` }] : []),
+    { text: '❌ 拒絕', data: `${kind}:${ref}:deny` },
+  ]
+}
+
+export function parseChoice(kind: string, data: string): { ref: number; choice: Choice } | null {
+  const m = new RegExp(`^${kind}:(\\d+):(once|always|deny|approve)$`).exec(data)
+  return m ? { ref: Number(m[1]), choice: m[2] === 'approve' ? 'once' : m[2] as Choice } : null
+}
+
+export const CHOICE_WORD: Record<Choice, string> = { once: '✅ 已允許一次', always: '♾️ 已永久允許', deny: '❌ 已拒絕' }
+
 export interface ApprovalDeps {
   db: RouterDb
   owners: string[]
@@ -36,15 +56,15 @@ export function mayDecide(deps: Pick<ApprovalDeps, 'owners' | 'isAdmin'>, uid: s
   return deps.owners.includes(uid) || deps.isAdmin(uid)
 }
 
-/** Post a request with buttons "<kind>:<ref>:approve|deny" to the approvals
- *  place plus any extra places. Resolves the places it reached. */
-export async function postApproval(deps: ApprovalDeps, bot: string, kind: string, ref: number, text: string, extra: Array<{ place: Place; text: string }> = []): Promise<Place[]> {
-  const buttons = [{ text: '✅ 允許', data: `${kind}:${ref}:approve` }, { text: '❌ 拒絕', data: `${kind}:${ref}:deny` }]
+/** Post a request with buttons "<kind>:<ref>:once|always|deny" to the
+ *  approvals place plus any extra places (each with its own text, and
+ *  without 永久允許 unless it says so). Resolves the places it reached. */
+export async function postApproval(deps: ApprovalDeps, bot: string, kind: string, ref: number, text: string, extra: Array<{ place: Place; text: string; always?: boolean }> = [], always = true): Promise<Place[]> {
   const main = approvalPlace(deps.db, deps.owners, bot)
-  const targets = [...(main ? [{ place: main, text }] : []), ...extra.filter(e => e.place.chat_id !== main?.chat_id)]
+  const targets = [...(main ? [{ place: main, text, always }] : []), ...extra.filter(e => e.place.chat_id !== main?.chat_id)]
   const reached: Place[] = []
   for (const t of targets) {
-    const id = await deps.send(bot, t.place, t.text, buttons)
+    const id = await deps.send(bot, t.place, t.text, buttons(kind, ref, !!t.always))
     if (id == null) continue
     deps.db.addApprovalMsg({ kind, ref, bot, chat_id: t.place.chat_id, message_id: id, text: t.text })
     reached.push(t.place)

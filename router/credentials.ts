@@ -1,0 +1,43 @@
+// Credentials for cross-bot skills (plan 03 憑證). Tokens a skill needs that
+// are not one of the router's own bots (e.g. another bot that owns a sticker
+// set) live in config.json under "credentials", never in a skill, a .env a
+// worker can read, or a chat. Workers use them through the bot_api tool: the
+// router checks the conversation's role and the method against the
+// credential's lists and makes the Bot API call itself.
+
+import type { Config, Credential } from './config'
+
+export const DEFAULT_CRED_ROLES = ['owner', 'admin']
+
+/** Why this use is refused, or null when allowed. */
+export function refuseUse(cred: Credential | undefined, name: string, role: string, method: string): string | null {
+  if (!cred) return `沒有名為 ${name} 的憑證 (/router cred list 查看)`
+  if (!(cred.roles ?? DEFAULT_CRED_ROLES).includes(role)) return `憑證 ${name} 只開放 ${(cred.roles ?? DEFAULT_CRED_ROLES).join(', ')} 角色的對話使用, 這個對話是 ${role}`
+  if (!cred.methods.includes(method)) return `憑證 ${name} 沒有開放 ${method} (允許: ${cred.methods.join(', ') || '(無)'}); owner 可用 /router cred allow ${name} ${method} 加入`
+  return null
+}
+
+/** Call the Bot API with a credential's token. files: field -> local path, sent as multipart. */
+export async function botApiCall(o: { apiRoot?: string; token: string; method: string; params: Record<string, unknown>; files?: Record<string, string> }): Promise<any> {
+  const url = `${o.apiRoot ?? 'https://api.telegram.org'}/bot${o.token}/${o.method}`
+  let init: RequestInit
+  if (o.files && Object.keys(o.files).length) {
+    const form = new FormData()
+    for (const [k, v] of Object.entries(o.params)) form.append(k, typeof v === 'string' ? v : JSON.stringify(v))
+    for (const [field, path] of Object.entries(o.files)) form.append(field, Bun.file(path), path.split('/').pop())
+    init = { method: 'POST', body: form }
+  } else {
+    init = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(o.params) }
+  }
+  const r = await fetch(url, { ...init, signal: AbortSignal.timeout(60_000) })
+  return r.json()
+}
+
+/** "123456:AA...": what a Telegram bot token looks like. */
+export const TOKEN_RE = /\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/
+
+export function describeCreds(cfg: Pick<Config, 'credentials'>): string {
+  const all = Object.entries(cfg.credentials ?? {})
+  if (!all.length) return '沒有任何憑證. owner 或 admin 可以在私訊用 /router cred add <名稱> <token> [方法...] 加入'
+  return all.map(([n, c]) => `${n}: ${c.label ?? '(未驗證)'}, 方法 ${c.methods.join(', ') || '(無)'}, 角色 ${(c.roles ?? DEFAULT_CRED_ROLES).join(', ')}${c.addedBy ? `, 加入者 ${c.addedBy}` : ''}`).join('\n')
+}

@@ -22,13 +22,15 @@ import { writeSessionSettings, renderSettings, applyOverrides } from './settings
 import { createSupervisor, bunRunner } from './supervisor'
 import { createIpc, type Peer } from './ipc'
 import { makeAssertAllowedChat, makeAssertSendable } from './guard'
-import { buildContext, renderContext, renderLogs, writeContextFile } from './context'
+import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens } from './context'
 import { isCommand, runCommand, roleOf, type CommandDeps } from './commands'
 import { runCli } from './cli'
 import { importV1Messages } from './importv1'
+import { refuseUse, botApiCall, DEFAULT_CRED_ROLES } from './credentials'
+import { installSkill } from './skills'
 import { createProgress, type ProgressEvent } from './progress'
 import { rotateTick } from './rotate'
-import { requestGrant, decideGrant, type GrantDeps } from './grants'
+import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
 import { postNotice, type ApprovalDeps } from './approvals'
 import { createPkgGate, claudeReviewer } from './pkgreview'
 import { newClaimCode, isClaim, initBotSetups, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup } from './setup'
@@ -53,6 +55,28 @@ const cfg = loadConfig(configPath)
 // `cc-telegram-router [--config x] cli <子指令...>`: talk to the running router.
 const cliAt = process.argv.indexOf('cli')
 if (cliAt > 0) process.exit(await runCli(cfg.socket, process.argv.slice(cliAt + 1)))
+
+// `cc-telegram-router [--config x] cred-import <名稱> <env 檔> <變數> [方法,...]`:
+// move a token from a file into config.json credentials without it ever
+// being printed (router/credentials.ts). Tells a running router to reload.
+const credAt = process.argv.indexOf('cred-import')
+if (credAt > 0) {
+  const [name, file, varName, methods] = process.argv.slice(credAt + 1)
+  if (!name || !file || !varName) { console.error('用法: cc-telegram-router cred-import <名稱> <env 檔> <變數> [方法,...]'); process.exit(2) }
+  const line = readFileSync(file, 'utf8').split('\n').find(l => l.startsWith(`${varName}=`))
+  const token = line?.slice(varName.length + 1).trim().replace(/^["']|["']$/g, '')
+  if (!token) { console.error(`${file} 裡沒有 ${varName}`); process.exit(1) }
+  const me = await new Bot(token, cfg.apiRoot ? { client: { apiRoot: cfg.apiRoot } } : undefined).api.getMe().catch(e => { console.error(`token 驗證失敗: ${e}`); process.exit(1) })
+  const label = `@${me.username} (${me.id})`
+  const raw = JSON.parse(readFileSync(configPath, 'utf8'))
+  raw.credentials ??= {}
+  raw.credentials[name] = { ...(raw.credentials[name] ?? {}), token, label, methods: methods ? methods.split(',') : (raw.credentials[name]?.methods ?? []), roles: raw.credentials[name]?.roles ?? DEFAULT_CRED_ROLES, addedBy: raw.credentials[name]?.addedBy ?? 'terminal' }
+  writeFileSync(configPath + '.tmp', JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 })
+  renameSync(configPath + '.tmp', configPath)
+  console.log(`已存入憑證 ${name}: ${label}, 方法 ${raw.credentials[name].methods.join(', ') || '(無)'}`)
+  if (existsSync(cfg.socket)) await runCli(cfg.socket, ['cred', 'reload'])
+  process.exit(0)
+}
 
 // `cc-telegram-router [--config x] import-v1 <messages.db>`: copy the v1 message log in.
 const importAt = process.argv.indexOf('import-v1')
@@ -150,6 +174,35 @@ const ipc = createIpc({
       const text = await callConv.run(conv.key, () => requestGrant(grantDeps, conv, String(args.chat_id ?? ''), args.mode === 'target' ? 'target' : 'owner', String(args.reason ?? '')))
       return { content: [{ type: 'text', text }] }
     }
+    if (tool === 'bot_api') {
+      if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cc-telegram-router cli botapi' }], isError: true }
+      const name = String(args.credential ?? ''), method = String(args.method ?? '')
+      const cred = cfg.credentials[name]
+      const why = refuseUse(cred, name, conv.role, method)
+      if (why) return { content: [{ type: 'text', text: why }], isError: true }
+      const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
+      try { for (const p of Object.values(files)) makeAssertSendable(live, cfg.stateDir)(p) } catch (e) { return { content: [{ type: 'text', text: String(e instanceof Error ? e.message : e) }], isError: true } }
+      const params = (args.params ?? {}) as Record<string, unknown>
+      const res = await botApiCall({ apiRoot: cfg.apiRoot, token: cred!.token, method, params, files }).catch(e => ({ ok: false, description: String(e) }))
+      db.logApiCall(`cred:${name}`, method, { params, files }, res, res.ok ? null : `${res.error_code ?? ''}: ${res.description}`, conv.key)
+      return { content: [{ type: 'text', text: maskTokens(JSON.stringify(res)) }], isError: !res.ok }
+    }
+    if (tool === 'install_skill') {
+      if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接把技能放進對應的 .claude/skills' }], isError: true }
+      const scope = args.scope === 'all' ? 'all' : 'bot'
+      const name = String(args.name ?? '')
+      try {
+        const dest = installSkill({ convFolder: conv.folder, role: conv.role, name, scopeDir: scope === 'all' ? cfg.home : botDir(cfg, conv.bot), replace: args.replace === true })
+        const others = db.listConversations().filter(c => c.key !== conv.key && (scope === 'all' || c.bot === conv.bot))
+        for (const c of others) db.setRotate(c.key, true)
+        void rotate()
+        log(`${conv.key}: installed skill ${name} -> ${dest}`)
+        void postNotice(approvalDeps, conv.bot, `🧩 ${conv.key} 安裝了技能 ${name} (${scope === 'all' ? '全部 bot' : '這隻 bot'} 共用): ${dest}`)
+        return { content: [{ type: 'text', text: `已安裝到 ${dest}. 其他 ${others.length} 個對話下次叫醒時就有這個技能.` }] }
+      } catch (e) {
+        return { content: [{ type: 'text', text: String(e instanceof Error ? e.message : e) }], isError: true }
+      }
+    }
     if (tool === 'request_elevation') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal session: already owner' }] }
       const text = await callConv.run(conv.key, () => elevation.request(conv, String(args.reason ?? ''), String(args.action ?? '')))
@@ -182,7 +235,7 @@ const ipc = createIpc({
     const inboxDir = conv ? join(conv.folder, 'attachments') : join(cfg.home, '.terminal-attachments')
     return callConv.run(conv?.key ?? 'terminal', () => callTool(tool, args, {
       bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store,
-      assertAllowedChat: makeAssertAllowedChat(live, loadAccess, chatId => !!conv && db.listOverrides(conv.key).some(o => o.kind === 'send' && o.value === chatId)),
+      assertAllowedChat: makeAssertAllowedChat(live, loadAccess, chatId => !!conv && sendGranted(db.listOverrides(conv.key).filter(o => o.kind === 'send').map(o => o.value), chatId, id => { const a = loadAccess(); return a.allowFrom.includes(id) || id in a.groups })),
       assertSendable: makeAssertSendable(live, cfg.stateDir),
     }))
   },
@@ -282,6 +335,7 @@ const grantDeps: GrantDeps = { db, approvals: approvalDeps, notify: notifyConver
 
 const elevation = createElevation({
   db, approvals: approvalDeps, notify: notifyConversation, label, log,
+  applyPermissions: c => commandDeps.applyPermissions(c),
   roleOf: uid => roleOf(commandDeps, uid),
   settingsAs: (c, role) => applyOverrides(renderSettings(TEMPLATES, role, settingsVars(c)), db.listOverrides(c.key)),
 })
@@ -408,6 +462,35 @@ const commandDeps: CommandDeps = {
     ctxFile(c)
     db.setRotate(c.key, true)
     void rotate()
+  },
+  creds: {
+    async add(name, token, methods, addedBy) {
+      const me = await new Bot(token, apiOpts()).api.getMe()
+      const label = `@${me.username} (${me.id})`
+      const c = { token, label, methods, roles: DEFAULT_CRED_ROLES, addedBy }
+      writeConfig(r => { r.credentials = { ...(r.credentials as object ?? {}), [name]: c } })
+      cfg.credentials[name] = c
+      return label
+    },
+    update(name, change) {
+      writeConfig(r => {
+        const all = (r.credentials ?? {}) as Record<string, any>
+        if (change) change(all[name]); else delete all[name]
+        r.credentials = all
+      })
+      if (change) change(cfg.credentials[name]!); else delete cfg.credentials[name]
+    },
+    reload() {
+      cfg.credentials = JSON.parse(readFileSync(configPath, 'utf8')).credentials ?? {}
+      return Object.keys(cfg.credentials).length
+    },
+    async call(name, method, params, files) {
+      const token = cfg.credentials[name]?.token ?? cfg.bots.find(b => b.name === name)?.token
+      if (!token) throw new Error(`沒有名為 ${name} 的憑證或 bot`)
+      const res = await botApiCall({ apiRoot: cfg.apiRoot, token, method, params, files })
+      db.logApiCall(`cred:${name}`, method, { params, files }, res, res.ok ? null : `${res.error_code ?? ''}: ${res.description}`, 'terminal')
+      return res
+    },
   },
   setup: {
     describe: bot => describeSetup(db.getBotSetup(bot), cfg.owners[0]),

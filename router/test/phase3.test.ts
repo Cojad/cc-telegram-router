@@ -13,7 +13,7 @@ import { renderSettings, applyOverrides } from '../settings'
 import { runCommand, type CommandDeps } from '../commands'
 import { makeAssertAllowedChat } from '../guard'
 import { createElevation } from '../elevation'
-import { requestGrant, decideGrant, type GrantDeps } from '../grants'
+import { requestGrant, decideGrant, sendGranted, type GrantDeps } from '../grants'
 import { approvalPlace, noticePlace, type ApprovalDeps } from '../approvals'
 import { createIpc } from '../ipc'
 import type { Access } from '../telegram/policy'
@@ -169,14 +169,15 @@ test('grants: owner mode goes to the approvals place; only owner/admin decide; a
   const g: GrantDeps = { db, approvals, notify(c, text) { told.push(`${c.key}: ${text}`) }, label: id => id }
   expect(await requestGrant(g, from, '-100777', 'owner', '回報結果')).toBe('已向 owner 申請 (#1), 決定後會通知你')
   expect(sent).toHaveLength(1)
-  expect(sent[0]).toMatchObject({ chat: '-100900', thread: 7, buttons: ['grant:1:approve', 'grant:1:deny'] })
+  expect(sent[0]).toMatchObject({ chat: '-100900', thread: 7, buttons: ['grant:1:once', 'grant:1:always', 'grant:1:deny'] })
+  expect(sent[0]!.text).toContain('♾️ 永久允許的範圍: group-100555 之後可以送訊息到 bot 所在的任何對話')
   expect(sent[0]!.text).toContain('理由: 回報結果')
-  expect(await decideGrant(g, 'grant:1:approve', '999', '-100900')).toBe('你不能決定這個申請')
-  expect(await decideGrant(g, 'grant:1:approve', ADMIN, '-100900')).toBe('已允許')
+  expect(await decideGrant(g, 'grant:1:once', '999', '-100900')).toBe('你不能決定這個申請')
+  expect(await decideGrant(g, 'grant:1:once', ADMIN, '-100900')).toBe('✅ 已允許一次')
   expect(await decideGrant(g, 'grant:1:deny', OWNER, '-100900')).toBe('這個申請已經允許了')
   expect(db.listOverrides(from.key)).toEqual([{ conv: from.key, kind: 'send', value: '-100777' }])
-  expect(edits).toEqual([{ chat: '-100900', id: sent[0]!.id, text: `${sent[0]!.text}\n\n已允許 (${ADMIN})` }])
-  expect(told[0]).toContain('跨對話傳訊申請 #1 已允許')
+  expect(edits).toEqual([{ chat: '-100900', id: sent[0]!.id, text: `${sent[0]!.text}\n\n✅ 已允許一次 (${ADMIN})` }])
+  expect(told[0]).toContain('跨對話傳訊申請 #1 ✅ 已允許一次')
   expect(await requestGrant(g, from, '-100777', 'owner', 'x')).toBe('已經可以送往 -100777, 直接送出即可')
 })
 
@@ -189,17 +190,23 @@ test('grants: target mode asks the target chat and the owner at once; the first 
   expect(sent.map(m => m.chat)).toEqual([OWNER, '-100888'])
   expect(sent[0]!.text).toContain('也已在目標對話詢問')
   expect(await decideGrant(g, 'grant:1:deny', '42', '-100999')).toBe('你不能決定這個申請') // a stranger elsewhere
-  expect(await decideGrant(g, 'grant:1:deny', '42', '-100888')).toBe('已拒絕') // anyone in the target chat
-  expect(await decideGrant(g, 'grant:1:approve', OWNER, OWNER)).toBe('這個申請已經拒絕了')
+  expect(sent[1]!.buttons).toEqual(['grant:1:once', 'grant:1:deny']) // the target chat cannot open everything up
+  expect(await decideGrant(g, 'grant:1:deny', '42', '-100888')).toBe('❌ 已拒絕') // anyone in the target chat
+  expect(await decideGrant(g, 'grant:1:once', OWNER, OWNER)).toBe('這個申請已經拒絕了')
   expect(db.listOverrides(from.key)).toEqual([])
   expect(edits.map(e => e.chat)).toEqual([OWNER, '-100888'])
   expect(told[0]).toContain('已拒絕')
   expect(await decideGrant(g, 'not-ours', '42', '-100888')).toBeNull()
-  // the owner may decide a target-mode request from the approvals place too
-  await requestGrant(g, from, '-100888', 'target', '再一次')
-  expect(await decideGrant(g, 'grant:2:approve', OWNER, OWNER)).toBe('已允許')
   // the target chat unreachable: the owner alone decides
-  expect(await requestGrant(g, from, 'unreachable', 'target', 'x')).toBe('無法在 unreachable 詢問 (bot 可能不在那個對話), 已改由 owner 決定 (#3)')
+  expect(await requestGrant(g, from, 'unreachable', 'target', 'x')).toBe('無法在 unreachable 詢問 (bot 可能不在那個對話), 已改由 owner 決定 (#2)')
+  // the owner may decide a target-mode request from the approvals place too, and only owner/admin may open everything up
+  await requestGrant(g, from, '-100888', 'target', '再一次')
+  expect(await decideGrant(g, 'grant:3:always', '42', '-100888')).toBe('永久允許只能由 owner 或 admin 決定')
+  expect(await decideGrant(g, 'grant:3:always', OWNER, OWNER)).toBe('♾️ 已永久允許')
+  expect(db.listOverrides(from.key).map(o => o.value)).toEqual(['*'])
+  expect(sendGranted(['*'], '-100123', id => id === '-100123')).toBe(true)
+  expect(sendGranted(['*'], '-100124', () => false)).toBe(false) // only chats the bot is allowed in
+  expect(await requestGrant(g, from, '-100555', 'owner', 'x')).toBe('已經可以送往 -100555, 直接送出即可')
 })
 
 // --- 07 權限檢查 --------------------------------------------------------------
@@ -241,15 +248,15 @@ test('permcheck: each role template allows what it lists and blocks the rest, wi
 function elevHarness(opts: { askTimeoutMs?: number } = {}) {
   const conv = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
   const { approvals, sent, edits } = fakeApprovals()
-  const told: string[] = []
+  const told: string[] = [], applied: string[] = []
   db.setUserRole('42', 'user')
   const e = createElevation({
-    db, approvals, notify: (_c, t) => told.push(t), label: u => `u${u}`,
+    db, approvals, notify: (_c, t) => told.push(t), label: u => `u${u}`, applyPermissions: c => applied.push(c.key),
     roleOf: uid => uid === OWNER ? 'owner' : db.getUserRole(uid) ?? 'user',
     settingsAs: (c, role) => applyOverrides(renderSettings(TEMPLATES, role, vars(c.folder)), db.listOverrides(c.key)),
     askTimeoutMs: opts.askTimeoutMs ?? 60_000,
   })
-  return { conv, e, sent, edits, told }
+  return { conv, e, sent, edits, told, applied }
 }
 const escape = { event: 'pre', tool_name: 'Bash', tool_input: { command: 'ls /x', description: '列出 /x', dangerouslyDisableSandbox: true } }
 
@@ -271,15 +278,17 @@ test('elevation: a higher-role sender gets an in-chat 提權執行/拒絕 prompt
   const d = await e.onHook(conv, escape)
   expect(d.reason).toContain('router 已在對話裡詢問是否提權 (#1, 60 秒內沒人回應視為拒絕)')
   expect(sent).toHaveLength(1)
-  expect(sent[0]).toMatchObject({ chat: '-100555', buttons: ['elev:1:approve', 'elev:1:deny'] })
+  expect(sent[0]).toMatchObject({ chat: '-100555', buttons: ['elev:1:once', 'elev:1:deny'] }) // leaving the sandbox: no 永久允許
+  expect(sent[0]!.text).toContain('♾️ 不能永久允許: 跳出 sandbox 沒辦法寫成固定規則')
   expect(sent[0]!.text).toContain('原因: 列出 /x')
   // a second refusal in the same turn does not ask again
   expect((await e.onHook(conv, escape)).reason).toContain('已在對話裡詢問是否提權 (#1)')
   expect(sent).toHaveLength(1)
-  expect(await e.decide('elev:1:approve', '42')).toBe('你的角色 (user) 沒有高於這個對話 (user), 不能決定')
-  expect(await e.decide('elev:1:approve', ADMIN)).toBe('你的角色 (admin) 也不允許這個動作')
-  expect(await e.decide('elev:1:approve', OWNER)).toBe('已提權')
-  expect(edits[0]!.text).toEndWith(`⚡ 已提權 (u${OWNER} [owner], 以 owner 角色執行)`)
+  expect(await e.decide('elev:1:once', '42')).toBe('你的角色 (user) 沒有高於這個對話 (user), 不能決定')
+  expect(await e.decide('elev:1:once', ADMIN)).toBe('你的角色 (admin) 也不允許這個動作')
+  expect(await e.decide('elev:1:always', OWNER)).toBe('不能永久允許: 跳出 sandbox 沒辦法寫成固定規則, 只能一次一次允許')
+  expect(await e.decide('elev:1:once', OWNER)).toBe('已提權一次')
+  expect(edits[0]!.text).toEndWith(`✅ 已允許一次 (u${OWNER} [owner], 以 owner 角色執行)`)
   expect(told[0]).toContain('提權 #1 已核准')
   expect(told[0]).toContain('開「一個」general-purpose subagent')
   expect(db.getElevation(1)).toMatchObject({ status: 'approved', decided_by: OWNER, decided_role: 'owner', kind: 'passive' })
@@ -300,6 +309,26 @@ test('elevation: a higher-role sender gets an in-chat 提權執行/拒絕 prompt
   e.stop()
 })
 
+test('elevation: 永久允許 runs it this time and adds that kind of action to the conversation, spelled out in the prompt', async () => {
+  const { conv, e, sent, told, applied } = elevHarness()
+  e.onDeliver(conv, OWNER)
+  const py = { event: 'pre', tool_name: 'Bash', tool_input: { command: 'ls && python3 run.py', description: '跑分析' } }
+  await e.onHook(conv, py)
+  expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:always', 'elev:1:deny'])
+  expect(sent[0]!.text).toContain('♾️ 永久允許的範圍: group-100555 之後可以執行 python3 開頭的 Bash 指令 (仍在 sandbox 裡), 不用再問 (權限覆寫 tool-allow Bash(python3 *))')
+  expect(await e.decide('elev:1:always', OWNER)).toBe('已永久允許並提權')
+  expect(db.listOverrides(conv.key)).toEqual([{ conv: conv.key, kind: 'tool-allow', value: 'Bash(python3 *)' }])
+  expect(applied).toEqual([conv.key])
+  expect(told[0]).toContain('另外永久允許: 之後可以執行 python3 開頭的 Bash 指令')
+  expect(db.elevLog(conv.key, 1)[0]!.text).toContain('永久允許: 執行 python3 開頭的 Bash 指令')
+  // the rule now holds for the conversation itself
+  expect(await e.onHook(conv, py)).toEqual({})
+  // a read outside the folder: the permanent scope is that folder
+  await e.onHook(conv, { event: 'pre', tool_name: 'Read', tool_input: { file_path: '/x/data/a.csv' } })
+  expect(sent[1]!.text).toContain('之後可以讀取 /x/data 底下的檔案')
+  e.stop()
+})
+
 test('elevation: nobody answers within the time limit -> refused by default, the worker is told, the log shows it', async () => {
   const { conv, e, edits, told } = elevHarness({ askTimeoutMs: 50 })
   e.onDeliver(conv, OWNER)
@@ -309,14 +338,15 @@ test('elevation: nobody answers within the time limit -> refused by default, the
   expect(edits[0]!.text).toEndWith('⌛ 逾時, 預設拒絕')
   expect(told[0]).toContain('逾時沒有回應, 視為拒絕')
   expect(db.elevLog(conv.key, 1)[0]!.kind).toBe('expired')
-  expect(await e.decide('elev:1:approve', OWNER)).toBe('這個請求已經逾時了')
+  expect(await e.decide('elev:1:once', OWNER)).toBe('這個請求已經逾時了')
 })
 
 test('elevation: request_elevation from a plain user turn goes to the bot owner; a denial is reported', async () => {
   const { conv, e, sent, told } = elevHarness()
   e.onDeliver(conv, '42')
   expect(await e.request(conv, '要讀共用資料', '讀 /x/data/a.csv')).toBe('已向 bot owner 申請提權 (#1), 結果會以 <router_status> 通知')
-  expect(sent[0]).toMatchObject({ chat: OWNER, buttons: ['elev:1:approve', 'elev:1:deny'] })
+  expect(sent[0]).toMatchObject({ chat: OWNER, buttons: ['elev:1:once', 'elev:1:deny'] })
+  expect(sent[0]!.text).toContain('♾️ 不能永久允許: 主動申請沒有具體的動作')
   expect(sent[0]!.text).toContain('(主動申請)')
   expect(await e.request(conv, 'again', 'x')).toBe('已有一個提權請求在等待 (#1)')
   expect(await e.decide('elev:1:deny', OWNER)).toBe('已拒絕')
@@ -352,7 +382,7 @@ test('cc-hook asks the router and prints its PreToolUse decision; unreachable ro
   const esc = { tool_name: 'Bash', tool_input: { command: 'ls /x', dangerouslyDisableSandbox: true } }
   e.onDeliver(conv, OWNER)
   expect(await hook('pre', esc)).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('router 已在對話裡詢問是否提權 (#1') })
-  await e.decide('elev:1:approve', OWNER)
+  await e.decide('elev:1:once', OWNER)
   await hook('subagent-start', { agent_id: 'sub1' })
   expect(await hook('pre', { ...esc, agent_id: 'sub1' })).toMatchObject({ permissionDecision: 'allow' })
   expect(await hook('pre', { tool_name: 'Read', tool_input: { file_path: `${conv.folder}/x` } })).toBeNull() // within the role: no opinion

@@ -119,6 +119,33 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'bot_api',
+    description: 'Call the Telegram Bot API with a credential the owner stored in the router (cross-bot skills, e.g. managing another bot\'s sticker set). The token never reaches you; the router checks your conversation\'s role and the method against the credential. files maps a form field to an absolute path inside your folder (use "attach://<field>" in params to refer to it). See /telegram:bot-skill.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        credential: { type: 'string', description: 'Credential name (ask the owner, or /router cred list)' },
+        method: { type: 'string', description: 'Bot API method, e.g. addStickerToSet' },
+        params: { type: 'object', description: 'Method parameters' },
+        files: { type: 'object', description: 'Form field -> absolute file path to upload' },
+      },
+      required: ['credential', 'method'],
+    },
+  },
+  {
+    name: 'install_skill',
+    description: 'Owner/admin conversations only: install a skill you wrote in <your folder>/.claude/skills/<name>/ so every conversation of this bot (scope "bot") or of every bot (scope "all") gets it. Skills must not contain tokens. See /telegram:bot-skill.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        scope: { type: 'string', enum: ['bot', 'all'] },
+        replace: { type: 'boolean', description: 'Overwrite an installed skill of the same name' },
+      },
+      required: ['name', 'scope'],
+    },
+  },
+  {
     name: 'request_elevation',
     description: 'Ask for permission above this conversation\'s role, after a tool call was refused for lack of permission and the person agreed to ask. If the person who started this turn has a higher role, they are asked right in the chat; otherwise the bot owner is asked. You get a <router_status> message with the outcome; when approved it tells you how to run the work.',
     inputSchema: {

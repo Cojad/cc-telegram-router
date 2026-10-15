@@ -116,3 +116,37 @@ export function describeCall(call: Call): string {
   const what = i.command ?? i.file_path ?? i.notebook_path ?? i.path ?? i.url ?? i.query ?? ''
   return `${call.tool_name}${i.dangerouslyDisableSandbox ? ' (跳出 sandbox)' : ''}: ${String(what).replace(/\s+/g, ' ').slice(0, 160)}`
 }
+
+export type Rule = { overrides: Array<{ kind: 'tool-allow' | 'path-read' | 'path-write' | 'mcp'; value: string }>; desc: string }
+
+/** What 永久允許 would add for a blocked call (柯姊 2026-10-16: 「該類動作」):
+ *  Bash -> the leading command of each refused part, Bash(<cmd> *); reads and
+ *  writes -> the folder of the path; WebFetch/WebSearch -> the tool; MCP ->
+ *  the server. lay(settings, overrides) applies /router perm overrides (from
+ *  settings.ts); the rule is offered only when it really makes the call pass.
+ *  Leaving the sandbox has no such rule. */
+export function permanentRule(settings: any, call: Call, folder: string, lay: (s: any, o: Rule['overrides']) => any): Rule | { none: string } {
+  const i = call.tool_input ?? {}
+  const tool = call.tool_name
+  let r: Rule | null = null
+  if (tool === 'Bash') {
+    if (i.dangerouslyDisableSandbox) return { none: '跳出 sandbox 沒辦法寫成固定規則, 只能一次一次允許' }
+    const cmds = [...new Set(subcommands(String(i.command ?? ''))
+      .filter(s => !checkCall(settings, { tool_name: 'Bash', tool_input: { command: s } }, folder).ok)
+      .map(s => s.split(/\s+/).find(w => !/^\w+=/.test(w) && w !== 'sudo') ?? ''))].filter(Boolean)
+    if (cmds.length) r = { overrides: cmds.map(c => ({ kind: 'tool-allow' as const, value: `Bash(${c} *)` })), desc: `執行 ${cmds.join(', ')} 開頭的 Bash 指令 (仍在 sandbox 裡)` }
+  } else if (READ_TOOLS.has(tool) || EDIT_TOOLS.has(tool)) {
+    const p = callPath(call, folder)
+    const dir = tool === 'Glob' || tool === 'Grep' || tool === 'LS' ? p : p.replace(/\/[^/]*$/, '') || '/'
+    const write = EDIT_TOOLS.has(tool)
+    r = { overrides: [{ kind: write ? 'path-write' : 'path-read', value: dir }], desc: `${write ? '讀寫' : '讀取'} ${dir} 底下的檔案` }
+  } else if (NAMED_TOOLS.has(tool)) {
+    r = { overrides: [{ kind: 'tool-allow', value: tool }], desc: `使用 ${tool}` }
+  } else if (tool.startsWith('mcp__')) {
+    const server = tool.split('__')[1]!
+    r = { overrides: [{ kind: 'mcp', value: server }], desc: `使用 MCP ${server} 的所有工具` }
+  }
+  if (!r) return { none: '這類動作沒有對應的權限規則' }
+  if (!checkCall(lay(settings, r.overrides), call, folder).ok) return { none: '這類動作是這個角色明確禁止的, 要改對話角色才行' }
+  return r
+}

@@ -113,15 +113,16 @@ test('pkg gate: medium/high or unknown sources are refused and go to the approva
   expect(d.decision).toBe('deny')
   expect(d.reason).toBe('已送 owner 審核 (#1): pypi:reqeusts, other:git+https://x/y.git. 決定後會通知你, 到時再重新安裝')
   expect(sent).toHaveLength(1)
-  expect(sent[0]).toMatchObject({ chat: OWNER, buttons: ['pkg:1:approve', 'pkg:1:deny'] })
+  expect(sent[0]).toMatchObject({ chat: OWNER, buttons: ['pkg:1:once', 'pkg:1:always', 'pkg:1:deny'] })
+  expect(sent[0]!.text).toContain('♾️ 永久允許的範圍: group-100555 之後安裝 PyPI 與 npm 上的任何套件都不用審核')
   expect(sent[0]!.text).toContain('pypi:reqeusts [high] reqeusts high')
   expect(sent[0]!.text).toContain('自動審核已通過: pypi:requests')
   // retrying while pending does not post again
   expect((await gate.check(conv, 'pip install requests reqeusts git+https://x/y.git')).reason).toBe('套件安裝已在等 owner 審核 (#1), 決定後會通知你')
   expect(sent).toHaveLength(1)
-  expect(await gate.decide('pkg:1:approve', '42')).toBe('你不能決定這個申請')
-  expect(await gate.decide('pkg:1:approve', ADMIN)).toBe('已允許')
-  expect(told[0]).toContain('套件安裝審核 #1 已允許')
+  expect(await gate.decide('pkg:1:once', '42')).toBe('你不能決定這個申請')
+  expect(await gate.decide('pkg:1:once', ADMIN)).toBe('✅ 已允許一次')
+  expect(told[0]).toContain('套件安裝審核 #1 ✅ 已允許一次')
   expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value).sort()).toEqual(['other:git+https://x/y.git', 'pypi:reqeusts'])
   expect(await gate.check(conv, 'pip install requests reqeusts git+https://x/y.git')).toEqual({})
 })
@@ -130,10 +131,23 @@ test('pkg gate: a denial is reported and installs nothing new; a failed review c
   const { conv, gate, told } = harness(judge({}))
   const d = await gate.check(conv, 'npm i some-new-thing')
   expect(d.reason).toContain('已送 owner 審核 (#1): npm:some-new-thing')
-  expect(await gate.decide('pkg:1:deny', OWNER)).toBe('已拒絕')
+  expect(await gate.decide('pkg:1:deny', OWNER)).toBe('❌ 已拒絕')
   expect(told[0]).toContain('已拒絕')
   expect(db.listOverrides(conv.key)).toEqual([])
   expect((await gate.check(conv, 'npm i some-new-thing')).decision).toBe('deny')
+})
+
+test('pkg gate: 永久允許 lets the conversation install any registry package without review; URLs still ask', async () => {
+  const review = judge({ 'brand-new-thing': 'medium' })
+  const { conv, gate, sent, told } = harness(review)
+  await gate.check(conv, 'pip install brand-new-thing')
+  expect(await gate.decide('pkg:1:always', OWNER)).toBe('♾️ 已永久允許')
+  expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value).sort()).toEqual(['*', 'pypi:brand-new-thing'])
+  expect(told[0]).toContain('之後安裝 PyPI 與 npm 的套件都不用審核')
+  expect(await gate.check(conv, 'npm i whatever-else && pip install another')).toEqual({})
+  expect(review.calls).toEqual([['brand-new-thing']]) // no review any more
+  expect((await gate.check(conv, 'pip install git+https://x/y.git')).decision).toBe('deny')
+  expect(sent).toHaveLength(2)
 })
 
 test('pkg gate: a slow review refuses now and tells the worker when it is done', async () => {
@@ -167,7 +181,7 @@ test('/router perm pkg allow|rm takes eco:name', async () => {
     sessions: { isConnected: () => false }, applyPermissions() {}, effectiveSettings: () => ({}),
   }
   const run = (t: string) => runCommand({ bot: 'cc', text: t, senderId: OWNER, senderName: 'o', chatId: OWNER, chatType: 'private' }, deps)
-  expect((await run('/router perm -100555 pkg allow requests'))!.reply).toBe('套件寫成 pypi:名稱 或 npm:名稱, 例如 pypi:requests')
+  expect((await run('/router perm -100555 pkg allow requests'))!.reply).toBe('套件寫成 pypi:名稱 或 npm:名稱, 例如 pypi:requests; * 代表不用審核')
   expect((await run('/router perm -100555 pkg allow pypi:requests'))!.reply).toContain('覆寫: pkg pypi:requests')
   expect(db.listOverrides(conv.key)).toEqual([{ conv: conv.key, kind: 'pkg', value: 'pypi:requests' }])
   expect((await run('/router perm -100555 pkg rm pypi:requests'))!.reply).toContain('移除 pkg pypi:requests')
