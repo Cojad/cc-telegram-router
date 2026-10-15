@@ -14,6 +14,8 @@ export type PluginToRouter =
   | { t: 'ack'; qid: number }
   | { t: 'call'; id: number; tool: string; args: Record<string, unknown> }
   | { t: 'bye' }
+  /** Terminal CLI (owner): run a /router command. Answered with result. */
+  | { t: 'cli'; id: number; text: string }
 
 export type Mode = 'worker' | 'terminal'
 

@@ -20,6 +20,8 @@ export interface IpcDeps {
   /** Map a plugin's project dir to who it is; null = reject. */
   identify: (projectDir: string) => Peer | null
   onCall: (peer: Peer, tool: string, args: Record<string, unknown>) => Promise<ToolResult>
+  /** Terminal CLI: run a /router command as owner and return the reply. */
+  onCli?: (text: string) => Promise<string>
   /** Last-moment additions to a delivery (chat_context, router_log). */
   decorate?: (key: string, qid: number, params: ChannelParams, conn: ClientState) => ChannelParams
   log?: (msg: string) => void
@@ -86,6 +88,11 @@ export function createIpc(deps: IpcDeps) {
         const key = s.data.peer?.conv?.key
         if (key && workers.get(key) === s) workers.delete(key)
         log(`worker ${key ?? '(terminal)'} said bye`)
+        return
+      }
+      case 'cli': {
+        const text = deps.onCli ? await deps.onCli(m.text) : 'CLI not available'
+        send(s, { t: 'result', id: m.id, result: { content: [{ type: 'text', text }] } })
         return
       }
       case 'call': {

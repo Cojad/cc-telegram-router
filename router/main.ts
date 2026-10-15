@@ -24,6 +24,7 @@ import { createIpc, type Peer } from './ipc'
 import { makeAssertAllowedChat, makeAssertSendable } from './guard'
 import { buildContext, renderContext, renderLogs, writeContextFile } from './context'
 import { isCommand, runCommand, roleOf, type CommandDeps } from './commands'
+import { runCli } from './cli'
 import { parseRelay, mayRelay, relay, codeBlock, type Exec } from './relay'
 import { homedir } from 'os'
 import { openStore } from './telegram/store'
@@ -38,6 +39,11 @@ const startedAt = new Date()
 
 const configPath = defaultConfigPath(process.argv, process.execPath)
 const cfg = loadConfig(configPath)
+
+// `cc-telegram-router [--config x] cli <子指令...>`: talk to the running router.
+const cliAt = process.argv.indexOf('cli')
+if (cliAt > 0) process.exit(await runCli(cfg.socket, process.argv.slice(cliAt + 1)))
+
 const release = acquireLock(configPath + '.lock')
 mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 })
 mkdirSync(cfg.home, { recursive: true })
@@ -113,6 +119,15 @@ const ipc = createIpc({
       assertAllowedChat: makeAssertAllowedChat(live, loadAccess),
       assertSendable: makeAssertSendable(live, cfg.stateDir),
     }))
+  },
+  async onCli(text) {
+    const owner = cfg.owners[0]
+    if (!owner) return 'config 沒有 owners'
+    const out = await runCommand({ bot: cfg.bots[0]!.name, text, senderId: owner, senderName: 'terminal', chatId: owner, chatType: 'private' }, commandDeps)
+    if (!out) return `不是 /router 指令: ${text}`
+    for (const l of out.logs) db.addLog(l.conv, l.text)
+    out.after?.()
+    return out.reply
   },
   decorate(key, qid, params, conn) {
     const c = db.getConversation(key)

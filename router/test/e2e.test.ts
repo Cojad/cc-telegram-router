@@ -157,3 +157,13 @@ test('a /router command is answered by the router, not forwarded, and the next d
   expect(JSON.parse(readFileSync(join(state, 'sessions', 'dm-111.json'), 'utf8')).autoCompactWindow).toBe(300000)
   client.close()
 }, 15000)
+
+test('terminal CLI runs the same commands as owner through the router socket', async () => {
+  const p = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cli', 'status'], { stdout: 'pipe', stderr: 'pipe' })
+  const out = await new Response(p.stdout).text()
+  expect(await p.exited).toBe(0)
+  expect(out).toStartWith('router 已運作')
+  expect(out).toContain('dm-111')
+  const q2 = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cli', 'role', 'user', '222', 'admin'], { stdout: 'pipe' })
+  expect((await new Response(q2.stdout).text()).trim()).toBe('222 的角色: user → admin')
+}, 15000)
