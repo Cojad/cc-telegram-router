@@ -332,7 +332,7 @@ function startBot(bc: BotConfig): BotHandle {
   })
   bot.use(async (ctx, next) => {
     db.logEvent(bc.name, ctx.update)
-    if (ctx.from && !ctx.from.is_bot) notePerson(bot, ctx.from, ctx.chat ? String(ctx.chat.id) : null)
+    if (ctx.from) notePerson(bot, ctx.from, ctx.chat ? String(ctx.chat.id) : null)
     if (ctx.chat) {
       const title = ctx.chat.type === 'private'
         ? [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || null
@@ -408,7 +408,12 @@ function startBot(bc: BotConfig): BotHandle {
   void (async () => {
     for (let attempt = 1; bots.get(bc.name) === h; attempt++) {
       try {
-        await bot.start({ onStart: info => { h.info = info; log(`${bc.name}: polling as @${info.username}`) } })
+        await bot.start({ onStart: info => {
+          h.info = info
+          // The bot itself never appears as a sender in its own updates; record it so /id shows its name.
+          db.seePerson({ uid: String(info.id), name: info.first_name, username: info.username, chat_id: null })
+          log(`${bc.name}: polling as @${info.username}`)
+        } })
         return
       } catch (err) {
         if (err instanceof GrammyError && err.error_code === 409) {
