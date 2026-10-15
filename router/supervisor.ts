@@ -36,6 +36,13 @@ export function workerArgs(cfg: Config, c: Conversation, settings: string): stri
   ]
 }
 
+/** First prompt of a new worker. A background session that never had a
+ *  prompt has no transcript yet: it ignores channel messages and cannot be
+ *  resumed later, so every worker starts with this one short turn. */
+export function initPrompt(c: Conversation): string {
+  return `你是 Telegram 對話 ${c.key} 的 worker. 之後的訊息會以 <channel> 送進來, 依 CLAUDE.md 處理. 這句不用回覆.`
+}
+
 /** "backgrounded · 979f4788 · tg-dm-1 (idle — ...)" -> 979f4788 */
 export function parseShortId(stdout: string): string | null {
   const m = /backgrounded\s*·\s*([0-9a-f]{6,})/.exec(stdout)
@@ -56,13 +63,16 @@ export function createSupervisor(deps: SupervisorDeps) {
   async function start(c: Conversation): Promise<void> {
     const settings = settingsPath(c)
     if (c.session_id) {
+      // No flags: the session keeps the options it was created with
+      // (--settings path included, so regenerated settings apply). Passing
+      // flags here would start a copy under a new session id instead.
       log(`resume ${c.key} ${c.session_id}`)
-      const r = await run([cfg.claudeBin, '--bg', '--resume', c.session_id, ...workerArgs(cfg, c, settings)], c.folder)
+      const r = await run([cfg.claudeBin, '--bg', '--resume', c.session_id], c.folder)
       if (r.code !== 0) log(`resume ${c.key} failed: ${r.stderr || r.stdout}`)
       return
     }
     log(`spawn ${c.key}`)
-    const r = await run([cfg.claudeBin, '--bg', '--name', `tg-${c.key}`, ...workerArgs(cfg, c, settings)], c.folder)
+    const r = await run([cfg.claudeBin, '--bg', '--name', `tg-${c.key}`, ...workerArgs(cfg, c, settings), '--', initPrompt(c)], c.folder)
     const short = parseShortId(r.stdout)
     if (!short) { log(`spawn ${c.key} failed: ${r.stderr || r.stdout}`); return }
     const entry = (await listAgents()).find(a => a.id === short)

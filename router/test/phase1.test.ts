@@ -15,7 +15,7 @@ import { renderSettings } from '../settings'
 import { makeAssertAllowedChat, makeAssertSendable } from '../guard'
 import { acquireLock } from '../lock'
 import { createIpc } from '../ipc'
-import { createSupervisor, parseShortId, type Runner } from '../supervisor'
+import { createSupervisor, initPrompt, parseShortId, type Runner } from '../supervisor'
 import { connectRouter } from '../../plugin/client'
 import type { RouterToPlugin } from '../../shared/protocol'
 
@@ -233,11 +233,13 @@ test('wake: first time spawns with the worker flags and records the session; a b
   const spawns = runs.filter(a => a[1] === '--bg')
   expect(spawns.length).toBe(1)
   expect(spawns[0]).toEqual(expect.arrayContaining(['--name', `tg-${conv.key}`, '--allow-dangerously-skip-permissions', '--setting-sources', 'project,local', '--settings', '--channels', 'plugin:telegram@claude-plugins-official', '--model', 'claude-opus-5-5']))
+  expect(spawns[0]!.slice(-2)).toEqual(['--', initPrompt(conv)])
   expect(db.getConversation(conv.key)?.session_id).toBe('abc12345-0000')
   connected = false
   runs.length = 0
   await sup.ensureAwake(db.getConversation(conv.key)!)
-  expect(runs.find(a => a[1] === '--bg')).toEqual(expect.arrayContaining(['--resume', 'abc12345-0000']))
+  // resume carries no flags (they would start a copy) and no prompt
+  expect(runs.find(a => a[1] === '--bg')).toEqual(['claude', '--bg', '--resume', 'abc12345-0000'])
 })
 
 test('parseShortId reads the id claude --bg prints', () => {
