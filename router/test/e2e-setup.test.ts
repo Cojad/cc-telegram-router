@@ -17,7 +17,7 @@ const state = join(dir, '.router')
 mkdirSync(state)
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-const calls: Array<{ method: string; body: any }> = []
+const calls: Array<{ method: string; body: any; token?: string }> = []
 const updates: unknown[] = []
 const now = Math.floor(Date.now() / 1000)
 let forum = { type: 'group', is_forum: false }
@@ -26,9 +26,11 @@ let topic = 40
 const api = Bun.serve({
   port: 0,
   async fetch(req) {
-    const method = new URL(req.url).pathname.split('/').pop()!
-    const body = req.headers.get('content-type')?.includes('json') ? await req.json() : {}
-    calls.push({ method, body })
+    const parts = new URL(req.url).pathname.split('/')
+    const method = parts.pop()!, token = parts.pop()!.replace(/^bot/, '')
+    const type = req.headers.get('content-type') ?? ''
+    const body = type.includes('json') ? await req.json() : type.includes('multipart') ? Object.fromEntries([...(await req.formData()).entries()].map(([k, v]) => [k, typeof v === 'string' ? v : `<file ${v.size}>`])) : {}
+    calls.push({ method, body, token })
     const ok = (result: unknown) => Response.json({ ok: true, result })
     switch (method) {
       case 'getMe': return ok({ id: 1, is_bot: true, first_name: 'new', username: 'new_bot' })
@@ -169,3 +171,32 @@ test('skip: only the owner may press it; afterwards everything goes to the owner
   const shown = await until(() => sentTo(555, '人設: 已完成')[0])
   expect(shown.body.text).toBe('人設: 已完成\n審核與通知: owner 私訊 555 (已略過群組設定)')
 }, 20000)
+
+test('credentials end to end: cred-import moves a token from a file into config without printing it, the router reloads, bot_api calls the API with it for an owner conversation only', async () => {
+  const CRED = '777:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
+  writeFileSync(join(dir, 'old.env'), `OTHER=x\nEAGLE_TOKEN=${CRED}\n`)
+  const p = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cred-import', 'eagle', join(dir, 'old.env'), 'EAGLE_TOKEN', 'addStickerToSet,getStickerSet'], { stdout: 'pipe', stderr: 'pipe' })
+  const out = await new Response(p.stdout).text()
+  expect(await p.exited).toBe(0)
+  expect(out).toContain('已存入憑證 eagle: @new_bot (1), 方法 addStickerToSet, getStickerSet')
+  expect(out).toContain('已重新讀取 1 個憑證')
+  expect(out).not.toContain(CRED.split(':')[1]!)
+  expect(JSON.parse(readFileSync(join(state, 'config.json'), 'utf8')).credentials.eagle).toMatchObject({ token: CRED, roles: ['owner', 'admin'], addedBy: 'terminal' })
+  const owner = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-555'), pid: 7 }, onMessage(m) { if (m.t === 'deliver') owner.send({ t: 'ack', qid: m.qid }) } })
+  const user = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-666'), pid: 8 }, onMessage(m) { if (m.t === 'deliver') user.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => owner.state().kind === 'ready' && user.state().kind === 'ready')
+  writeFileSync(join(dir, 'bot123', 'dm-555', 's.webp'), 'WEBP')
+  const r = await owner.call('bot_api', { credential: 'eagle', method: 'addStickerToSet', params: { user_id: 555, name: 'set_by_x', sticker: { sticker: 'attach://file', emoji_list: ['🐳'], format: 'static' } }, files: { file: join(dir, 'bot123', 'dm-555', 's.webp') } })
+  expect(r.isError).toBeFalsy()
+  const hit = calls.find(c => c.method === 'addStickerToSet')!
+  expect(hit.token).toBe(CRED)
+  expect(hit.body).toMatchObject({ name: 'set_by_x', file: '<file 4>' })
+  expect(q("SELECT bot, conv FROM outbound WHERE method = 'addStickerToSet'")[0]).toEqual({ bot: 'cred:eagle', conv: 'dm-555' })
+  expect((await owner.call('bot_api', { credential: 'eagle', method: 'sendMessage', params: {} })).content[0]!.text).toContain('沒有開放 sendMessage')
+  // router state (config.json holds the tokens) can never be uploaded, not even by an owner conversation
+  const leak = await owner.call('bot_api', { credential: 'eagle', method: 'getStickerSet', params: {}, files: { f: join(state, 'config.json') } })
+  expect(leak.content[0]!.text).toStartWith('refusing to send router state')
+  expect((await user.call('bot_api', { credential: 'eagle', method: 'getStickerSet', params: {} })).content[0]!.text).toBe('憑證 eagle 只開放 owner, admin 角色的對話使用, 這個對話是 user')
+  owner.close(); user.close()
+}, 30000)
+
