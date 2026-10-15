@@ -217,9 +217,10 @@ test('wake: first time spawns with the worker flags and records the session; a b
   const conv = ensureConversation(cfg, db, 'main', '-100555', 'supergroup', () => {})
   const runs: string[][] = []
   let connected = false
+  let jobGone = false
   const run: Runner = async args => {
     runs.push(args)
-    if (args[1] === 'agents') return { code: 0, stdout: JSON.stringify([{ id: 'abc12345', sessionId: 'abc12345-0000', name: `tg-${conv.key}` }]), stderr: '' }
+    if (args[1] === 'agents') return { code: 0, stdout: JSON.stringify(jobGone ? [] : [{ id: 'abc12345', sessionId: 'abc12345-0000', name: `tg-${conv.key}` }]), stderr: '' }
     if (args[1] === '--bg') { setTimeout(() => { connected = true }, 30); return { code: 0, stdout: 'backgrounded · abc12345 · tg-x (idle)', stderr: '' } }
     return { code: 0, stdout: '', stderr: '' }
   }
@@ -238,8 +239,14 @@ test('wake: first time spawns with the worker flags and records the session; a b
   connected = false
   runs.length = 0
   await sup.ensureAwake(db.getConversation(conv.key)!)
-  // resume carries no flags (they would start a copy) and no prompt
+  // daemon still has the job: resume carries no flags (they would start a copy)
   expect(runs.find(a => a[1] === '--bg')).toEqual(['claude', '--bg', '--resume', 'abc12345-0000'])
+  // job gone (claude rm / pruned): nothing saved, so the flags go along
+  jobGone = true
+  connected = false
+  runs.length = 0
+  await sup.ensureAwake(db.getConversation(conv.key)!)
+  expect(runs.find(a => a[1] === '--bg')).toEqual(expect.arrayContaining(['--resume', 'abc12345-0000', '--settings', '--channels', 'plugin:telegram@claude-plugins-official']))
 })
 
 test('parseShortId reads the id claude --bg prints', () => {

@@ -60,14 +60,18 @@ export function createSupervisor(deps: SupervisorDeps) {
     try { return JSON.parse(r.stdout) as AgentEntry[] } catch { return [] }
   }
 
-  async function start(c: Conversation): Promise<void> {
+  async function start(c: Conversation, agents: AgentEntry[]): Promise<void> {
     const settings = settingsPath(c)
     if (c.session_id) {
-      // No flags: the session keeps the options it was created with
-      // (--settings path included, so regenerated settings apply). Passing
-      // flags here would start a copy under a new session id instead.
-      log(`resume ${c.key} ${c.session_id}`)
-      const r = await run([cfg.claudeBin, '--bg', '--resume', c.session_id], c.folder)
+      // While the daemon still has the job, resume without flags: it keeps
+      // the options it was created with (--settings path included, so
+      // regenerated settings apply), and passing flags would start a copy
+      // under a new session id. Once the job is gone (claude rm, pruned),
+      // nothing is saved any more and the flags must be given again.
+      const hasJob = agents.some(a => a.sessionId === c.session_id)
+      log(`resume ${c.key} ${c.session_id}${hasJob ? '' : ' (job gone, with flags)'}`)
+      const args = [cfg.claudeBin, '--bg', '--resume', c.session_id, ...(hasJob ? [] : workerArgs(cfg, c, settings))]
+      const r = await run(args, c.folder)
       if (r.code !== 0) log(`resume ${c.key} failed: ${r.stderr || r.stdout}`)
       return
     }
@@ -92,7 +96,7 @@ export function createSupervisor(deps: SupervisorDeps) {
       log(`${c.key} running without plugin connection, restarting`)
       await run([cfg.claudeBin, 'stop', live.id], cfg.home)
     }
-    await start(c)
+    await start(c, agents)
     if (!(await waitConnected(c.key, timeout))) log(`${c.key}: plugin did not connect within ${timeout}ms`)
   }
 
