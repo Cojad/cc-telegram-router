@@ -27,9 +27,15 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 ## 權限不足與提權
 
 - 每個工具呼叫都會先由 router 依對話角色檢查; 越權就擋下, worker 會改用不越權的方法, 做不到時告訴你並問要不要向 bot owner 申請.
-- **你的角色高於這個對話時**: 被擋的同時, router 會在對話裡貼出「⚡ 提權執行 / ❌ 拒絕」, 120 秒沒人按視為拒絕. 按下的人角色要高於對話, 而且被擋的動作在他的角色下允許; 之後 worker 開的第一個 subagent 以按的人的角色執行.
+- **你的角色高於這個對話時**: 被擋的同時, router 會在對話裡貼出「✅ 允許一次 / ♾️ 永久允許 / ❌ 拒絕」, 120 秒沒人按視為拒絕. 按下的人角色要高於對話, 而且被擋的動作在他的角色下允許; 之後 worker 開的第一個 subagent 以按的人的角色執行. 永久允許會把這類動作加進對話的權限覆寫 (訊息裡會寫明範圍, 例如「執行 python3 開頭的指令」「讀取 /x/data 底下的檔案」); 跳出 sandbox 不能永久允許.
 - **向 owner 申請**: 你同意後 worker 會呼叫 request_elevation, 申請送到審核群組 (或 owner 私訊), owner 或 admin 決定.
 - 所有被擋下的動作, 提權申請與結果都記在提權紀錄 (審核群組的「📜 提權紀錄」話題, 附原申請的連結).
+
+## 審核按鈕, 撤銷與執行授權
+
+- 每個申請 (跨對話傳訊, 套件安裝, 提權) 都有「✅ 允許一次」「♾️ 永久允許」「❌ 拒絕」, 申請訊息會寫明永久允許的範圍. 目標對話收到的跨對話詢問只有允許與拒絕.
+- 允許過的申請, 審核群組裡那則訊息會留一個「🚫 撤銷」按鈕; owner 或 admin 按下後, 加入的權限立刻移除, worker 閒置時重啟套用.
+- 每一次動用已核准的權限 (提權的 subagent 的每個工具呼叫, 靠永久允許才過的動作, 靠授權送往其他對話, 安裝已核准的套件) 都記在「🧾 執行授權」話題, 附工具呼叫內容與「🚫 撤銷」按鈕.
 
 ## 套件安裝審核 (power 對話)
 
@@ -39,9 +45,13 @@ pip, uv, poetry, npm, bun, yarn, pnpm, npx, uvx 的安裝指令會先由 router 
 
 worker 要送訊息到別的對話會被擋, 它可以用 request_send_grant 申請: 向 owner 申請 (永久有效), 或請目標對話同意 (同時也會送給 owner, 先按的人決定).
 
+## 技能與憑證
+
+做技能, 或技能需要 token / 要操作另一隻 bot 時, 先讀 `/telegram:bot-skill`. 重點: token 不寫進技能, 由 owner 或 admin 在私訊用 `/router cred add` 登記成 router 的憑證, worker 用 `bot_api` 工具使用; owner 與 admin 的對話可以用 `install_skill` 把技能裝成整隻 bot 或全部 bot 共用.
+
 ## 審核群組與新 bot 初次設定
 
-- 重要通知 (新對話, worker 叫不醒) 與權限申請預設私訊 owner. owner 可以建一個開了話題的 supergroup, 把 bot 設為管理員並勾選「管理話題」, 在群組裡下 `/router setup group`, 之後改送到群組的「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」三個話題.
+- 重要通知 (新對話, worker 叫不醒) 與權限申請預設私訊 owner. owner 可以建一個開了話題的 supergroup, 把 bot 設為管理員並勾選「管理話題」, 在群組裡下 `/router setup group`, 之後改送到群組的「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」「🧾 執行授權」四個話題 (已設定過的群組再下一次會補上缺的話題).
 - 新 bot 第一次被 owner 私訊時, 會先訪談名字, 個性, 說話風格, 用途, 寫成那隻 bot 的人設.
 - `/router setup` 看狀態, `setup skip` 改回私訊 owner, `setup persona` 下次私訊時重新訪談.
 
@@ -77,6 +87,8 @@ worker 要送訊息到別的對話會被擋, 它可以用 request_send_grant 申
 | `/router session rotate [chat_id\|all]` | 標記 worker 等待輪替: 閒置的一分鐘內停掉, 忙碌的等它閒置; 下一則訊息會用新的程式與設定叫醒. 更新 plugin 或設定後用 |
 | `/router perm [chat_id] show \| role <角色> \| tool allow\|deny\|rm <規則> \| path read\|write\|rm <路徑> \| net allow\|rm <網域> \| mcp allow\|rm <名稱> \| send allow\|rm <chat_id> \| pkg allow\|rm <pypi\|npm:名稱> \| reset` | 調整對話的角色與權限覆寫, 回覆會列出變更; worker 閒置時重啟套用 |
 | `/router setup [group\|skip\|persona]` | 審核群組與 bot 初次設定 (只限 owner) |
+| `/router cred list \| add <名稱> <token> [方法...] \| allow\|disallow <名稱> <方法...> \| roles <名稱> <角色,...> \| rm <名稱>` | 跨 bot 技能用的憑證; add 只能在自己和 bot 的私訊下, 訊息會被刪除 |
+| `/router botapi <憑證> <方法> <JSON> [--file 欄位=/路徑]` | owner 直接用憑證呼叫 Bot API (終端機用 `cc-telegram-router cli botapi ...`) |
 | `/router config` | 列出 router 設定; `get`/`set <key>` 讀寫單項 |
 | `/router log [chat_id] [筆數]` | 最近的訊息紀錄 |
 | `/router bot list` | 列出 bot (add/rotate/remove 只限 owner 私訊) |

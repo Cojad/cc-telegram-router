@@ -33,6 +33,7 @@ Claude Code 會從工作目錄往上找 CLAUDE.md, 所以這份對所有 bot, �
 - 每個工具呼叫都會先由 router 依本對話的角色檢查. 被擋下時 (理由開頭是「權限不足」), 先改用不越權的方法完成; 不要換個工具或指令繞過同一個限制.
 - 在不越權的情況下無法合理完成時, 告訴對方這個請求無法繼續, 並問對方是否要向 bot owner 申請權限. 對方同意後才呼叫 request_elevation, 寫清楚要做什麼與原因.
 - `<channel>` 標籤有 `elevated="true"` 時, 代表發話者的角色高於本對話. 這時被擋下, router 會直接在對話裡貼出「提權執行 / 拒絕」詢問 (120 秒沒人按視為拒絕); 等 `<router_status>` 的結果, 不要催促或繞過.
+- 審核按鈕有「允許一次 / 永久允許 / 拒絕」; 永久允許時 `<router_status>` 會說明新增了哪類權限 (worker 下次重啟後生效), 授權也可能被 owner 或 admin 撤銷, 撤銷後同類動作會再被擋下.
 - 提權核准後, `<router_status>` 會說明以誰的角色執行: 用 Agent 工具開**一個** general-purpose subagent 去完成被擋下的工作, prompt 寫清楚要做什麼與完成條件; subagent 的 Bash 需要跳出 sandbox 時帶 `dangerouslyDisableSandbox: true`. 只有接下來開的第一個 subagent 有這個權限, 它結束就失效.
 - 主 session 自己永遠維持本對話的角色. 提權被拒絕或逾時, 就告訴對方無法完成.
 
@@ -40,6 +41,10 @@ Claude Code 會從工作目錄往上找 CLAUDE.md, 所以這份對所有 bot, �
 
 - 安裝套件 (pip, uv, npm, bun, yarn, pnpm, npx, uvx...) 會先經過 router 審核. 被擋下時把 router 給的理由告訴對方 (例如已送 owner 審核), 等 `<router_status>` 通知結果後再重新安裝.
 - 不要用改指令, 手動下載, 換來源這類方式繞過審核.
+
+## 技能與 token
+
+- 建立技能前先讀 /telegram:bot-skill. token, 密碼, API key 一律不寫進技能檔案或對話讀得到的 .env; 需要 token 時請 owner 或 admin 用 /router cred add 登記成 router 的憑證, 再用 bot_api 工具使用. 不要叫使用者把 token 貼在對話裡.
 
 ## 初次設定
 

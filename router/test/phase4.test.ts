@@ -66,3 +66,11 @@ test('plugin skills: /telegram:doc covers the Phase 3 features, /telegram:format
   expect(fmt).toStartWith('---\nname: format\n')
   for (const s of ['## MarkdownV2 跳脫', '_ * [ ] ( ) ~', '4096']) expect(fmt).toContain(s)
 })
+
+test('/telegram:bot-skill: the skill SOP covers scopes, who installs where, credentials instead of tokens, and cross-bot skills', async () => {
+  const md = await Bun.file(join(import.meta.dir, '..', '..', 'plugin', 'skills', 'bot-skill', 'SKILL.md')).text()
+  expect(md).toStartWith('---\nname: bot-skill\n')
+  for (const s of ['<home>/bot<id>/.claude/skills', '<home>/.claude/skills', 'install_skill', '/router cred add', 'cred-import', 'bot_api', '## 跨 bot 技能', 'attach://', 'cli botapi', '不要叫使用者把 token 貼在對話裡']) expect(md).toContain(s)
+  const ex = await Bun.file(join(import.meta.dir, '..', '..', 'templates', 'CLAUDE.md.example')).text()
+  expect(ex.slice(ex.indexOf('# FORCED RULES'), ex.indexOf('# GENERAL RULES'))).toContain('/telegram:bot-skill')
+})
