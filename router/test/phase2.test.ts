@@ -104,9 +104,14 @@ test('access: pair adds the sender, removes the code and greets them; group ment
 
 test('chat compact/model update the conversation, bump ctx_v and reapply settings; model drops the job', async () => {
   const c0 = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
-  expect((await run('/router chat compact 300k', ADMIN, GROUP))!.reply).toBe('group-100555 autoCompactWindow → 300000')
+  const a = (await run('/router chat compact 300k', ADMIN, GROUP))!
+  expect(a.reply).toBe('group-100555 autoCompactWindow → 300000')
+  expect(calls).toEqual([]) // the reply goes out before the worker is restarted
+  a.after!()
   expect((await run('/router chat compact 5k', ADMIN, GROUP))!.reply).toContain('100k 到 1m')
-  expect((await run('/router chat -100555 model claude-sonnet-5-5', OWNER))!.reply).toBe('group-100555 模型 → claude-sonnet-5-5, worker 已重啟')
+  const b = (await run('/router chat -100555 model claude-sonnet-5-5', OWNER))!
+  expect(b.reply).toBe('group-100555 模型 → claude-sonnet-5-5, worker 重啟中')
+  b.after!()
   const c = db.getConversation('group-100555')!
   expect(c.compact).toBe(300000)
   expect(c.model).toBe('claude-sonnet-5-5')
@@ -203,9 +208,10 @@ test('relay drives a hidden tmux on the router socket dir and always cleans up',
   expect(seen.find(s => s.args[0] === '/s/tg-status-report.sh')!.args).toEqual(['/s/tg-status-report.sh', 'relay-abcd1234'])
   expect(seen.at(-1)!.args).toEqual(['tmux', 'kill-session', '-t', 'relay-abcd1234'])
   captures = 1
-  const gen = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s' }, 'abcd1234', '/model', 'opus')
+  const gen = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 50 }, 'abcd1234', '/model', 'opus')
   expect(gen).toBe('❯\nModel: opus')
   expect(seen.some(s => s.args[1] === 'send-keys' && s.args.includes('/model opus'))).toBe(true)
+  expect(seen.some(s => s.args[1] === 'send-keys' && s.args.includes('Escape'))).toBe(false) // nothing to close
 }, 15000)
 
 // --- listing commands -------------------------------------------------------
@@ -311,4 +317,25 @@ test('progress: a failed send (e.g. chat not found) neither throws nor leaves ed
   await p.handle('x', '1', { event: 'stop' })
   await sleepMs(40)
   expect(ops).toEqual([])
+})
+
+import { settle } from '../relay'
+
+test('relay waits for a long command to finish (screen stops changing) instead of cancelling it', async () => {
+  const frames = ['❯ /compact', 'Compacting conversation… 1s', 'Compacting conversation… 2s', 'Compacting conversation… 3s', '✻ Conversation compacted']
+  let i = 0
+  const out = await settle(async () => frames[Math.min(i++, frames.length - 1)]!, 120, 5000, 30)
+  expect(out).toBe('✻ Conversation compacted')
+})
+
+test('progress: parallel tool calls each get their own ▶ line ticked in place', async () => {
+  const ops: string[] = []
+  const p = createProgress({ async send() { return 5 }, async edit(_c, _i, t) { ops.push(t) }, async remove() {} }, { throttleMs: 10, deleteAfterMs: 10 })
+  await p.handle('k', '1', { event: 'prompt', telegram: true })
+  for (const ev of ['pre:Bash: a', 'pre:Read: b', 'post:Read: b', 'post:Bash: a'] as const) {
+    const [e, summary] = [ev.split(':')[0] as 'pre' | 'post', ev.slice(ev.indexOf(':') + 1)]
+    await p.handle('k', '1', { event: e, summary })
+  }
+  await sleepMs(40)
+  expect(ops.at(-1)).toBe('🤔 思考中…\n\n✅ Bash: a\n✅ Read: b')
 })

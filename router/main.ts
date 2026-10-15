@@ -33,6 +33,7 @@ import { readAccessFile, gate as policyGate, dmCommandGate as policyDmCommandGat
 import { createHandleInbound } from './telegram/inbound'
 import { registerTransport } from './telegram/transport'
 import { callTool } from './telegram/outbound'
+import { chunk } from './telegram/format'
 import type { ChannelParams } from '../shared/protocol'
 
 const log = (msg: string) => process.stderr.write(`${new Date().toISOString()} ${msg}\n`)
@@ -330,20 +331,29 @@ function startBot(bc: BotConfig): BotHandle {
       void handleRelay(bc.name, String(ctx.chat.id), ctx.chat.type, String(ctx.from.id), ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name, ctx.message!.message_id, rel)
       return
     }
-    // /router and /restart are the router's own: answered here, never forwarded.
+    // /router and /restart are the router's own: answered here, never
+    // forwarded. Handled off the update loop so a slow command (getMe for a
+    // new token, ...) never holds up other chats' messages.
     if (ctx.chat && ctx.from && isCommand(text)) {
-      const out = await runCommand({
+      const chatId = ctx.chat.id, messageId = ctx.message!.message_id
+      const input = {
         bot: bc.name, text: text!, senderId: String(ctx.from.id),
         senderName: ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name,
-        chatId: String(ctx.chat.id), chatType: ctx.chat.type,
-      }, commandDeps)
-      if (out) {
-        for (const l of out.logs) db.addLog(l.conv, l.text)
-        if (out.deleteMessage && ctx.message) await bot.api.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(e => log(`delete command message failed: ${e}`))
-        await bot.api.sendMessage(ctx.chat.id, out.reply, { reply_parameters: { message_id: ctx.message!.message_id, allow_sending_without_reply: true } }).catch(e => log(`command reply failed: ${e}`))
-        out.after?.()
-        return
+        chatId: String(chatId), chatType: ctx.chat.type,
       }
+      void (async () => {
+        const out = await runCommand(input, commandDeps)
+        if (!out) return
+        for (const l of out.logs) db.addLog(l.conv, l.text)
+        if (out.deleteMessage) await bot.api.deleteMessage(chatId, messageId).catch(e => log(`delete command message failed: ${e}`))
+        // Long listings (log, chat) can exceed Telegram's 4096 per message.
+        const parts = chunk(out.reply, 4000, 'newline')
+        for (let i = 0; i < parts.length; i++) {
+          await bot.api.sendMessage(chatId, parts[i]!, i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {}).catch(e => log(`command reply failed: ${e}`))
+        }
+        out.after?.()
+      })().catch(e => log(`command failed: ${e}`))
+      return
     }
     await next()
   })

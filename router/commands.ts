@@ -182,16 +182,15 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const n = parseCompact(value)
         if (n === undefined) return done('compact 要介於 100k 到 1m, 或 auto')
         const c = db.updateConversation(conv.key, { compact: n })
-        await deps.applySettings(c, { dropJob: false })
         if (here?.key !== c.key) logs.push({ conv: c.key, text: `${who} 把 autoCompactWindow 改成 ${n ?? cfg.autoCompactWindow}` })
-        return done(`${c.key} autoCompactWindow → ${n ?? `預設 (${cfg.autoCompactWindow})`}`)
+        // Restarting the worker takes seconds: answer first.
+        return done(`${c.key} autoCompactWindow → ${n ?? `預設 (${cfg.autoCompactWindow})`}`, { after: () => void deps.applySettings(c, { dropJob: false }) })
       }
       if (key === 'model') {
         if (!value) return done('用法: /router chat [chat_id] model <模型>')
         const c = db.updateConversation(conv.key, { model: value === 'default' ? null : value })
-        await deps.applySettings(c, { dropJob: true })
         if (here?.key !== c.key) logs.push({ conv: c.key, text: `${who} 把模型改成 ${c.model ?? cfg.model}` })
-        return done(`${c.key} 模型 → ${c.model ?? `預設 (${cfg.model})`}, worker 已重啟`)
+        return done(`${c.key} 模型 → ${c.model ?? `預設 (${cfg.model})`}, worker 重啟中`, { after: () => void deps.applySettings(c, { dropJob: true }) })
       }
       if (key === 'mention') {
         if (conv.type !== 'group') return done('mention 只適用群組')

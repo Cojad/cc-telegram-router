@@ -67,7 +67,9 @@ export function createProgress(api: ProgressApi, opts: { throttleMs?: number; de
       if (ev.event === 'stop') return finish(key, s)
       if (ev.event === 'pre' || ev.event === 'post') {
         const pre = `▶ ${ev.summary}`, post = `✅ ${ev.summary}`
-        if (ev.event === 'post' && s.lines.at(-1) === pre) s.lines[s.lines.length - 1] = post
+        // Tools can run in parallel: tick the latest matching ▶ line, wherever it is.
+        const at = ev.event === 'post' ? s.lines.lastIndexOf(pre) : -1
+        if (at >= 0) s.lines[at] = post
         else s.lines.push(ev.event === 'post' ? post : pre)
       } else {
         const pre = `🗜 壓縮 context 中 (trigger=${ev.trigger})…`

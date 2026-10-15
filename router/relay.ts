@@ -30,7 +30,23 @@ export function codeBlock(text: string): string {
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
+/** Poll until the screen is unchanged for quietMs (or maxMs passes); return it. */
+export async function settle(capture: () => Promise<string>, quietMs: number, maxMs: number, stepMs = 500): Promise<string> {
+  let last = await capture(), since = Date.now()
+  const start = Date.now()
+  while (Date.now() - start < maxMs) {
+    await sleep(stepMs)
+    const now = await capture()
+    if (now !== last) { last = now; since = Date.now(); continue }
+    if (Date.now() - since >= quietMs) break
+  }
+  return last
+}
+
 export interface RelayDeps {
+  /** Screen must be unchanged this long to count as done (default 3s). */
+  settleMs?: number
+  maxWaitMs?: number
   exec: Exec
   stateDir: string
   claudeBin: string
@@ -58,9 +74,11 @@ export async function relay(deps: RelayDeps, workerId: string, cmd: string, args
       return r.stdout.trim() || `${cmd} 沒有輸出`
     }
     await tmux('send-keys', '-t', name, args ? `${cmd} ${args}` : cmd, 'Enter')
-    await sleep(2500)
-    const out = (await tmux('capture-pane', '-p', '-t', name, '-S', '-60')).stdout
-    await tmux('send-keys', '-t', name, 'Escape')
+    // Some commands run for a while (/compact summarises the whole
+    // conversation): wait until the screen stops changing instead of a fixed
+    // delay, and never press Esc on something still running, Esc cancels it.
+    const out = await settle(() => tmux('capture-pane', '-p', '-t', name, '-S', '-60').then(r => r.stdout), deps.settleMs ?? 3000, deps.maxWaitMs ?? 120_000)
+    if (/Esc to (cancel|close|go back|exit)/i.test(out)) await tmux('send-keys', '-t', name, 'Escape')
     const lines = out.split('\n').map(l => l.replace(/\s+$/, '')).filter(l => l && !/^[▔▁─━]+$/.test(l))
     return lines.slice(-40).join('\n') || `${cmd} 沒有輸出`
   } finally {
