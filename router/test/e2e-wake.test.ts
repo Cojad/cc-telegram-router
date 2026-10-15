@@ -98,6 +98,8 @@ test('a reaped worker is woken by the next message, continuing the same session'
   const got = deliveries().filter(x => body(x.content) === 'dm-2 after reap')
   expect(got).toHaveLength(1)
   expect(got[0]!.pid).not.toBe(before.pid) // a new worker process got it
+  // a new connection is shown the chat_context again (plan 06)
+  expect(got[0]!.content).toStartWith('<chat_context v="')
 }, 30000)
 
 test('a burst while the worker is down wakes it exactly once and every message arrives once, in order', async () => {

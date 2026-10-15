@@ -17,7 +17,7 @@ mkdirSync(state)
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 // --- fake Bot API ---------------------------------------------------------
-const calls: Array<{ method: string; body: any }> = []
+const calls: Array<{ method: string; body: any; token?: string }> = []
 let updatesServed = false
 const laterUpdates: unknown[] = []
 const now = Math.floor(Date.now() / 1000)
@@ -29,9 +29,11 @@ const UPDATES = [
 const api = Bun.serve({
   port: 0,
   async fetch(req) {
-    const method = new URL(req.url).pathname.split('/').pop()!
+    const parts = new URL(req.url).pathname.split('/')
+    const method = parts.pop()!
+    const token = parts.pop()!.replace(/^bot/, '')
     const body = req.headers.get('content-type')?.includes('json') ? await req.json() : {}
-    calls.push({ method, body })
+    calls.push({ method, body, token })
     const ok = (result: unknown) => Response.json({ ok: true, result })
     switch (method) {
       case 'getMe': return ok({ id: 1, is_bot: true, first_name: 'cc', username: 'cc_bot' })
@@ -177,3 +179,28 @@ test('a plugin or hook reporting a subfolder of a conversation is still that con
   expect(other.state().kind).toBe('rejected')
   sub.close(); other.close()
 }, 15000)
+
+test('bot rotate (owner DM): the poller moves to the new token, the token message is deleted, nothing sent meanwhile is lost', async () => {
+  const from = { id: 111, is_bot: false, first_name: 'O', username: 'owner' }
+  const NEW = '123:ROTATEDROTATEDROTATEDROTATEDROTATED00'
+  const delivered: string[] = []
+  const client = connectRouter({
+    socketPath: join(state, 'router.sock'),
+    hello: { t: 'hello', project_dir: join(dir, 'dm-111'), pid: 11 },
+    onMessage(m) { if (m.t === 'deliver') { delivered.push(m.params.content); client.send({ t: 'ack', qid: m.qid }) } },
+  })
+  await until(() => client.state().kind === 'ready')
+  laterUpdates.push({ update_id: 30, message: { message_id: 40, date: now, chat: { id: 111, type: 'private' }, from, text: `/router bot rotate cc ${NEW}` } })
+  await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('已更換 bot cc')))
+  expect(calls.some(c => c.method === 'deleteMessage' && c.body.message_id === 40)).toBe(true)
+  // a message that arrives right after the switch is picked up by the new poller
+  laterUpdates.push({ update_id: 31, message: { message_id: 41, date: now, chat: { id: 111, type: 'private' }, from, text: 'after rotate' } })
+  await until(() => delivered.some(d => d.endsWith('after rotate')))
+  const lastPoll = calls.filter(c => c.method === 'getUpdates').at(-1)!
+  expect(lastPoll.token).toBe(NEW)
+  expect(JSON.parse(readFileSync(join(state, 'config.json'), 'utf8')).bots[0].token).toBe(NEW)
+  // the token is in events (kept as is) but never in what the worker saw
+  expect(delivered.join('\n')).not.toContain('ROTATEDROTATED')
+  expect(delivered.join('\n')).toContain('123:…ED00')
+  client.close()
+}, 20000)

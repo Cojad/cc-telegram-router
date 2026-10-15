@@ -70,7 +70,7 @@ export function gmt8(iso: string | Date): string {
 
 /** Bot tokens never go into a worker's context: keep the bot id and last 4. */
 export function maskTokens(text: string): string {
-  return text.replace(/\b(\d{5,15}):([A-Za-z0-9_-]{25,})\b/g, (_m, id: string, secret: string) => `${id}:…${secret.slice(-4)}`)
+  return text.replace(/\b(\d{3,15}):([A-Za-z0-9_-]{25,})\b/g, (_m, id: string, secret: string) => `${id}:…${secret.slice(-4)}`)
 }
 
 export function renderLogs(logs: LogRow[]): string {
