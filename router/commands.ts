@@ -72,6 +72,59 @@ export function resolveUser(db: RouterDb, arg: string | undefined): string | nul
   return null
 }
 
+/** "3m5s", "2h22m", "3d4h" */
+export function ago(ms: number): string {
+  const sec = Math.max(0, Math.floor(ms / 1000))
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m${sec % 60}s`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `${h}h${min % 60}m`
+  return `${Math.floor(h / 24)}d${h % 24}h`
+}
+
+/** DM title: "@Cojad:🦅 柯姊❤️ Cojad", or just the name when there is no username. */
+export function dmLabel(db: RouterDb, uid: string): string {
+  const p = db.getPerson(uid)
+  if (!p) return uid
+  if (p.username && p.name) return `@${p.username}:${p.name}`
+  return p.name ?? (p.username ? `@${p.username}` : uid)
+}
+
+const STATE_ICON = { on: '🛜', off: '💤' }
+const TYPE_ICON: Record<string, string> = { dm: '😀', group: '💬', channel: '📣' }
+const ROLE_ICON: Record<string, string> = { owner: '🥇', admin: '🥈', power: '🏅', user: '🥉', guest: '🥷' }
+const MAX_BOTS = 5
+
+/** /router status: per bot, its conversations newest first (10 each, or 5
+ *  each when that would run past 30 lines), at most 5 bots, then a legend. */
+export function renderStatus(
+  now: number,
+  startedAt: Date,
+  bots: Array<{ name: string; username: string; first_name: string }>,
+  convs: Conversation[],
+  o: { isConnected(key: string): boolean; label(c: Conversation): string; backlog(c: Conversation): number },
+): string {
+  const lastAt = (c: Conversation) => Date.parse(c.last_seen ?? c.created_at)
+  const shown = bots.slice(0, MAX_BOTS)
+  const per = (n: number) => shown.map(b => ({ b, list: convs.filter(c => c.bot === b.name).sort((x, y) => lastAt(y) - lastAt(x)).slice(0, n) }))
+  const lineCount = (groups: ReturnType<typeof per>) => groups.reduce((n, g) => n + 2 + g.list.length, 0)
+  let groups = per(10)
+  if (lineCount(groups) > 30) groups = per(5)
+  const out = [`router 已運作 ${ago(now - startedAt.getTime())}`]
+  for (const { b, list } of groups) {
+    out.push('', `${b.first_name}(@${b.username})`)
+    if (!list.length) out.push(' (還沒有對話)')
+    for (const c of list) {
+      const extra = [o.backlog(c) ? `待送 ${o.backlog(c)}` : '', c.rotate_pending ? '待輪替' : ''].filter(Boolean)
+      out.push(` ${o.isConnected(c.key) ? STATE_ICON.on : STATE_ICON.off}${TYPE_ICON[c.type] ?? '❔'}${ROLE_ICON[c.role] ?? '❔'}: ${o.label(c)} - ${ago(now - lastAt(c))}前${extra.length ? ` (${extra.join(', ')})` : ''}`)
+    }
+  }
+  if (bots.length > MAX_BOTS) out.push('', `(另有 ${bots.length - MAX_BOTS} 隻 bot 未列出)`)
+  out.push('', '說明:', ' 🛜待命中 💤已休眠', ' 😀DM 💬群組 📣頻道', ' 🥇owner 🥈admin 🏅power 🥉user 🥷guest')
+  return out.join('\n')
+}
+
 export function roleOf(deps: Pick<CommandDeps, 'cfg' | 'db'>, uid: string): string {
   if (deps.cfg.owners.includes(uid)) return 'owner'
   return deps.db.getUserRole(uid) ?? 'user'
@@ -140,13 +193,12 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       return done(HELP)
 
     case 'status': {
-      const up = Math.round((Date.now() - deps.startedAt.getTime()) / 60000)
-      const lines = [`router 已運作 ${up} 分鐘, bots: ${cfg.bots.map(b => b.name).join(', ')}`]
-      for (const c of db.listConversations()) {
-        const backlog = db.undelivered(c.key).length
-        lines.push(`${c.key} ${c.title ? `(${c.title}) ` : ''}${c.role} ${deps.sessions.isConnected(c.key) ? '在線' : '離線'}${backlog ? `, 待送 ${backlog}` : ''}${c.rotate_pending ? ', 待輪替' : ''}`)
-      }
-      return done(lines.join('\n'), { private: true })
+      const bots = await deps.bots.list()
+      return done(renderStatus(Date.now(), deps.startedAt, bots, db.listConversations(), {
+        isConnected: deps.sessions.isConnected,
+        label: c => c.type === 'dm' ? dmLabel(db, c.chat_id) : (c.title ?? c.chat_id),
+        backlog: c => db.undelivered(c.key).length,
+      }), { private: true })
     }
 
     case 'id': {
@@ -229,7 +281,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const a = deps.loadAccess()
         const mention = c.type === 'group' ? (a.groups[c.chat_id]?.requireMention === false ? 'off' : 'on') : '-'
         const title = c.type === 'dm' ? personLabel(db, c.chat_id) : c.title
-        return `${c.key}${title && title !== c.chat_id ? ` (${title})` : ''}\n  chat_id ${c.chat_id}, role ${c.role}, model ${c.model ?? `${cfg.model} (預設)`}, compact ${c.compact ?? `${cfg.autoCompactWindow} (預設)`}, mention ${mention}, ${deps.sessions.isConnected(c.key) ? '在線' : '離線'}${c.last_seen ? `, 最後活動 ${gmt8(c.last_seen)}` : ''}`
+        return `${c.key}${title && title !== c.chat_id ? ` (${title})` : ''}\n  chat_id ${c.chat_id}, role ${c.role}, model ${c.model ?? `${cfg.model} (預設)`}, compact ${c.compact ?? `${cfg.autoCompactWindow} (預設)`}, mention ${mention}, ${deps.sessions.isConnected(c.key) ? '待命中' : '已休眠'}${c.last_seen ? `, 最後活動 ${gmt8(c.last_seen)}` : ''}`
       }
       if (args.length === 1) return done(db.listConversations().map(describe).join('\n') || '還沒有任何對話', { private: true })
       if (args.length === 2 && /^-?\d+$/.test(args[1]!)) {

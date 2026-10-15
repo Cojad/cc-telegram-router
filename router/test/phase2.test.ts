@@ -225,8 +225,8 @@ test('/router config, /router chat and /router log with no arguments list everyt
   ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
   db.updateConversation('group-100555', { title: 'Example Group', compact: 300000 })
   const chats = (await run('/router chat', OWNER))!.reply
-  expect(chats).toContain('dm-137438526\n  chat_id 137438526, role owner, model claude-opus-5-5 (預設), compact 750000 (預設), mention -, 離線')
-  expect(chats).toContain('group-100555 (Example Group)\n  chat_id -100555, role user, model claude-opus-5-5 (預設), compact 300000, mention on, 離線')
+  expect(chats).toContain('dm-137438526\n  chat_id 137438526, role owner, model claude-opus-5-5 (預設), compact 750000 (預設), mention -, 已休眠')
+  expect(chats).toContain('group-100555 (Example Group)\n  chat_id -100555, role user, model claude-opus-5-5 (預設), compact 300000, mention on, 已休眠')
   expect((await run('/router chat -100555', OWNER))!.reply).toStartWith('group-100555 (Example Group)')
   const logs = (await run('/router log', OWNER))!.reply
   expect(logs).toContain('[dm-137438526]')
@@ -419,7 +419,7 @@ test('/router session rotate marks one or all workers (admin skips owner ones) a
   expect(all.reply).toContain('略過 dm-137438526: admin 不能異動 owner 的角色與權限')
   expect(db.rotatePending().map(c => c.key)).toEqual(['group-100555'])
   expect((await run('/router session rotate all', OWNER))!.reply).toStartWith('已標記 2 個 worker')
-  expect((await run('/router status', OWNER))!.reply).toContain('group-100555 user 離線, 待輪替')
+  expect((await run('/router status', OWNER))!.reply).toMatch(/ 💤💬🥉: -100555 - \d+s前 \(待輪替\)/) // a group without a title shows its chat id
 })
 
 test('rotation: idle workers are stopped and unmarked, busy ones wait, stopped ones are just unmarked; a backlog is woken', async () => {
@@ -442,4 +442,37 @@ test('rotation: idle workers are stopped and unmarked, busy ones wait, stopped o
   status[b.key] = 'idle'
   expect((await rotateTick({ db, async liveJob(x) { return status[x.key] ? { id: x.key, pid: 1, status: status[x.key] } : undefined }, async stop() {}, async ensureAwake() {} })).stopped).toEqual([b.key])
   expect(db.rotatePending()).toEqual([])
+})
+
+import { renderStatus, ago } from '../commands'
+
+test('status: per bot newest first with state/type/role icons and "ago", 10 each or 5 when past 30 lines, max 5 bots, legend', () => {
+  const now = Date.parse('2026-10-16T05:00:00Z')
+  const conv = (bot: string, i: number, type: 'dm' | 'group', role: string, secAgo: number) => ({
+    key: `${type}-${bot}-${i}`, bot, chat_id: String(i), type, folder: '', role, session_id: null,
+    created_at: '2026-10-01T00:00:00Z', last_seen: new Date(now - secAgo * 1000).toISOString(), title: `T${i}`,
+  }) as any
+  const bots = [{ name: 'cc', username: 'example_bot', first_name: '柯柯' }, { name: 'tiger', username: 'tigerbot', first_name: '虎虎' }]
+  const convs = [conv('cc', 1, 'dm', 'owner', 90), conv('cc', 2, 'group', 'admin', 2 * 3600 + 22 * 60), conv('tiger', 3, 'group', 'user', 185)]
+  const out = renderStatus(now, new Date(now - (3 * 3600 + 45 * 60) * 1000), bots, convs, {
+    isConnected: k => k === 'dm-cc-1', label: c => c.type === 'dm' ? '@Cojad:🦅 柯姊❤️ Cojad' : c.title, backlog: () => 0,
+  })
+  expect(out).toBe([
+    'router 已運作 3h45m', '',
+    '柯柯(@example_bot)', ' 🛜😀🥇: @Cojad:🦅 柯姊❤️ Cojad - 1m30s前', ' 💤💬🥈: T2 - 2h22m前', '',
+    '虎虎(@tigerbot)', ' 💤💬🥉: T3 - 3m5s前', '',
+    '說明:', ' 🛜待命中 💤已休眠', ' 😀DM 💬群組 📣頻道', ' 🥇owner 🥈admin 🏅power 🥉user 🥷guest',
+  ].join('\n'))
+  // limits: 12 conversations on one bot -> 10 shown; 3 bots x 10 -> past 30 lines -> 5 each; 6 bots -> 5 listed
+  const many = (bot: string, n: number) => Array.from({ length: n }, (_, i) => conv(bot, i + 100, 'group', 'user', i * 10))
+  const one = renderStatus(now, new Date(now), [bots[0]!], many('cc', 12), { isConnected: () => false, label: c => c.title, backlog: () => 0 })
+  expect(one.split('\n').filter(l => l.startsWith(' 💤')).length).toBe(10)
+  const b3 = ['a', 'b', 'c'].map(x => ({ name: x, username: x, first_name: x }))
+  const three = renderStatus(now, new Date(now), b3, [...many('a', 12), ...many('b', 12), ...many('c', 12)], { isConnected: () => false, label: c => c.title, backlog: () => 0 })
+  expect(three.split('\n').filter(l => l.startsWith(' 💤')).length).toBe(15)
+  const b6 = ['a', 'b', 'c', 'd', 'e', 'f'].map(x => ({ name: x, username: x, first_name: x }))
+  const six = renderStatus(now, new Date(now), b6, [], { isConnected: () => false, label: c => c.title, backlog: () => 0 })
+  expect(six).toContain('(另有 1 隻 bot 未列出)')
+  expect(six).not.toContain('f(@f)')
+  expect([ago(5000), ago(185000), ago(8520000), ago(3 * 86400000 + 4 * 3600000)]).toEqual(['5s', '3m5s', '2h22m', '3d4h'])
 })
