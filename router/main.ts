@@ -304,7 +304,7 @@ const ipc = createIpc({
     // plan 10e: the original of a masked event, through the fixed agent (owner or admin turns)
     if (tool === 'event_raw') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cc-telegram-router cli event raw <id>' }], isError: true }
-      const r = await callConv.run(conv.key, () => vault.requestRaw(conv, turnSender.get(conv.key) ?? null, args))
+      const r = await callConv.run(conv.key, () => vault.requestRaw(conv, elevation.senderOf(conv), args))
       return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
     }
     if (tool === 'secret_from_handle') {
@@ -446,7 +446,6 @@ const ipc = createIpc({
     if (logs) parts.push(logs)
     const who = elevation.onDeliver(c, params.meta.user_id)
     if (params.meta.message_id && params.meta.user !== 'router') currentMsg.set(key, Number(params.meta.message_id))
-    if (params.meta.user_id && params.meta.user !== 'router') turnSender.set(key, String(params.meta.user_id))
     if (c.type === 'dm' && cfg.owners.includes(c.chat_id) && params.meta.user_id === c.chat_id && needsPersona(db.getBotSetup(c.bot))) parts.push(bootstrapNote(c.bot))
     return {
       content: parts.length ? `${parts.join('\n')}\n${params.content}` : params.content,
@@ -493,8 +492,6 @@ const supervisor = createSupervisor({
 /** Put a router-originated message in front of a conversation's worker. */
 /** The Telegram message each conversation is handling (set as messages are delivered). */
 const currentMsg = new Map<string, number>()
-/** Who started each conversation's current turn (event_raw is for owner and admin turns). */
-const turnSender = new Map<string, string>()
 /** Per update: its secret findings, and how to record them (plan 10e). */
 const secretOf = new WeakMap<object, { rec: import('./rawvault').Recorded; note(command: boolean): void }>()
 /** Conversations whose next turn answers a request: its progress replies to the message that asked. */

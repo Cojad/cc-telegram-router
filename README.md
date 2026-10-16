@@ -75,7 +75,7 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
 - 送進 worker 與存進 messages 表 (`lookup_message` 讀的那份) 的內容同樣換掉, 附種類與末 4 碼: `<已遮蔽 #12.1: Telegram bot token, 末 4 碼 a1B2>`.
 - 每次偵測記在 router.db 的 `secret_log` 與審核群組的第五個話題「🔑 密鑰偵測」(沒有審核群組就私訊 owner): 對話, 發送者, 種類與末 4 碼 (等於哪個已登記的值), 欄位, event id, 處理結果. 已設定的審核群組在 router 啟動時自動補建這個話題, `/router setup group` 也會補.
 - router 服務的對話 (允許的私訊與群組) 裡, 發送者自己的訊息 (不算被引用的) 含密鑰時, router 回覆那則訊息提醒, 5 分鐘後刪除; 提醒附「取消刪除」按鈕, 發送者, owner, admin 可以按. 排程存在 `secret_deletions`, router 重啟後照常執行 (停機期間到期的在啟動時刪). bot 沒有刪除權限時只提醒. 登記指令維持立刻刪除; 其他對話, 頻道貼文, 按鈕資料只記錄.
-- 請求原文: 發話者或對話角色是 owner 或 admin 的那一輪, worker 呼叫 `event_raw(event_id, question, [ttl_minutes 或 permanent])`, 任何對話的 event 都可以 (含 owner 對話). router 解密, 把每個值換成代號說明, 例如 «密鑰 h7: Telegram bot token, getMe: @example_bot (123), 末 4 碼 a1B2, 跟全域憑證 eagle相同» (種類, getMe, 是否等於已登記的值都由程式填), 交給固定 system prompt, 沒有工具, 設定與 MCP 的 `claude -p` 回答 (模型是 config 的 `model`, haiku 一律拒絕). agent 從頭到尾看不到值.
+- 請求原文: 發話者或對話角色是 owner 或 admin 的那一輪 (在終端機 attach 進對話打字的那一輪沒有發話者, 只看對話角色), worker 呼叫 `event_raw(event_id, question, [ttl_minutes 或 permanent])`, 任何對話的 event 都可以 (含 owner 對話). router 解密, 把每個值換成代號說明, 例如 «密鑰 h7: Telegram bot token, getMe: @example_bot (123), 末 4 碼 a1B2, 跟全域憑證 eagle相同» (種類, getMe, 是否等於已登記的值都由程式填), 交給固定 system prompt, 沒有工具, 設定與 MCP 的 `claude -p` 回答 (模型是 config 的 `model`, haiku 一律拒絕). agent 從頭到尾看不到值.
 - 出口檢查: router 對回答做完全比對 (這個 event 的值, 所有已登記的值) 與格式掃描, 有任何一項就整份擋下, 撤銷這次的代號, 記在話題並發重要通知給 owner. 這是程式保證, 不靠模型自律. 通過時 worker 拿到代號版 update 與回答.
 - 代號 (`secret_handles`) 只在申請的對話有效, 預設 10 分鐘, 最多 60 分鐘, 或永久. `secret_from_handle(handle, name, scope)` 把代號登記成這個對話的密鑰 (scope 跟 `/secret set` 值後面的寫法一樣, bot token 用 getMe 驗證, 10b 的限制照樣適用), 之後用 `bot_api` / `http_api`, 每次使用都累計在代號的 uses. 查看與撤銷: 對話裡 `/secret handles`, `/secret revoke <代號>`; owner 與 admin 用 `/router secret handles [chat_id]`, `/router secret revoke <代號>`. 撤銷代號不會移除已登記的密鑰.
 - 每次請求與登記記在「🔑 密鑰偵測」話題與 router.db: `secret_requests` (誰, 哪個對話, 哪個 event, 問題, 發出的代號, 結果), `secret_handles` (之後是否登記成密鑰, 使用次數).
@@ -248,7 +248,7 @@ bun test router/test
 | 送進 worker 的訊息換成代號, 附種類與末 4 碼 | rawvault「record: …」; e2e-rawvault「a token pasted in a DM…」(含 messages 表) |
 | 一般對話: 回覆提醒, 5 分鐘後刪除, 取消刪除 (發送者, owner, admin), 沒有刪除權限只提醒; 登記指令立刻刪除 | rawvault「a served chat…」「no right to delete…」「取消刪除…」; e2e-rawvault「a token pasted in a DM…」「an edited message…」 |
 | 刪除排程撐過 router 重啟 | rawvault「the deletion schedule survives a restart…」; e2e-rawvault「startup: …」 |
-| event_raw: 只限發話者或對話角色 owner/admin, 任何對話 (含 owner 對話); 代號說明由程式填 (種類, getMe, 是否等於已登記的值); 固定 system prompt, 沒有工具的 claude -p, config 的 model, 不用 haiku | rawvault「event_raw: only when…」「the fixed agent is claude -p…」「event_raw exit check…」; e2e-rawvault「event_raw: …」 |
+| event_raw: 只限發話者或對話角色 owner/admin, 任何對話 (含 owner 對話); 代號說明由程式填 (種類, getMe, 是否等於已登記的值); 固定 system prompt, 沒有工具的 claude -p, config 的 model, 不用 haiku | rawvault「event_raw: only when…」「the fixed agent is claude -p…」「event_raw exit check…」; e2e-rawvault「event_raw: …」「event_raw goes by who started the turn…」(終端機那一輪只看對話角色) |
 | 出口檢查: 回答有明文或疑似密鑰就整份擋下並通知 owner | rawvault「event_raw exit check…」 |
 | 代號只在申請的對話有效, 預設 10 分鐘, 最多 1 小時或永久; 永久代號可查看與撤銷 | rawvault「event_raw: only when…」「secret_from_handle…」(過期, 撤銷)「/secret handles | revoke…」 |
 | secret_from_handle 登記成對話密鑰 (10b 範圍規則與 getMe), 之後 bot_api / http_api 使用 | rawvault「secret_from_handle…」; e2e-rawvault「event_raw: …」(bot_api 送出真值) |

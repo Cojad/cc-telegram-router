@@ -155,7 +155,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'event_raw',
-    description: 'Ask what a masked message originally was (plan 10e). A secret in a message reaches you as <已遮蔽 #<event id>.<n>: 種類, 末 4 碼 xxxx>; the original update is kept encrypted. Only in a turn whose sender, or this conversation, is owner or admin (any conversation\'s event, the owner\'s DM too). The router swaps each value for a handle with what it can tell (kind, the bot getMe finds, whether it equals a stored credential) and a fixed-prompt agent with no tools answers your question; you get that handle version and the answer, never a value. Handles work only in this conversation: ttl_minutes (default 10, at most 60) or permanent (listed and revoked with /secret handles, /secret revoke). Logged in the 🔑 密鑰偵測 topic. To use a handle call secret_from_handle.',
+    description: 'Ask what a masked message originally was (plan 10e). A secret in a message reaches you as <已遮蔽 #<event id>.<n>: 種類, 末 4 碼 xxxx>; the original update is kept encrypted. Only in a turn whose sender, or this conversation, is owner or admin (a turn typed in the terminal has no sender: only the conversation\'s role counts) (any conversation\'s event, the owner\'s DM too). The router swaps each value for a handle with what it can tell (kind, the bot getMe finds, whether it equals a stored credential) and a fixed-prompt agent with no tools answers your question; you get that handle version and the answer, never a value. Handles work only in this conversation: ttl_minutes (default 10, at most 60) or permanent (listed and revoked with /secret handles, /secret revoke). Logged in the 🔑 密鑰偵測 topic. To use a handle call secret_from_handle.',
     inputSchema: {
       type: 'object',
       properties: {

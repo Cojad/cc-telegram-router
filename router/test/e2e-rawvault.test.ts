@@ -8,7 +8,8 @@
 // /secret set is still deleted at once; event_raw from the owner's worker
 // (fixed agent, handles), secret_from_handle and then bot_api with the real
 // token; a user conversation is refused; cli event raw writes a 600 file;
-// a .env file with a key: the worker's download has a marker, the message is answered.
+// a .env file with a key: the worker's download has a marker, the message is answered;
+// event_raw in a terminal turn goes by the conversation's role.
 // Keep in sync with README 「原始事件與密鑰保護」; module level in rawvault.test.ts.
 // Every token here is fake and built at runtime.
 
@@ -24,7 +25,7 @@ const dir = mkdtempSync(join(tmpdir(), 'cctr-rawvault-'))
 const state = join(dir, '.router')
 mkdirSync(state)
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-const APPROVALS = -100900
+const APPROVALS = -100900, GROUP = -100800
 const OWNER = { id: 555, is_bot: false, first_name: 'Boss', username: 'boss' }
 const USER = { id: 666, is_bot: false, first_name: 'U', username: 'u' }, STRANGER = { id: 888, is_bot: false, first_name: 'S', username: 's' }
 const PASTED = `${'7000000'}01:${'AAF'}${'x'.repeat(32)}`
@@ -65,7 +66,7 @@ writeFileSync(join(state, 'config.json'), JSON.stringify({
   bots: [{ name: 'cc', token: '123:test' }], home: dir, stateDir: state, owners: ['555'],
   model: 'claude-opus-5-5', claudeBin: fakeClaude, apiRoot: `http://127.0.0.1:${api.port}`,
 }))
-writeFileSync(join(state, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: ['555', '666'], groups: {}, pending: {} }))
+writeFileSync(join(state, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: ['555', '666'], groups: { [String(GROUP)]: { requireMention: false, allowFrom: [] } }, pending: {} }))
 // before 10e: an approvals group with four topics, and a deletion that came due while the router was down
 {
   const old = openRouterDb(join(state, 'router.db'))
@@ -227,3 +228,22 @@ test('download_attachment of a .env file with a key: the file in the worker\'s f
   expect(log.body.text).toContain('附件: app.env (worker 下載時偵測)')
   w.close()
 })
+
+test('event_raw goes by who started the turn: an owner\'s message in a user group may; a turn typed in the terminal has no sender, so the group\'s role (user) decides', async () => {
+  const ev = q('SELECT id FROM events WHERE masked = 1 ORDER BY id LIMIT 1')[0].id as number
+  const delivered: string[] = []
+  const id = mid++
+  updates.push({ update_id: id, message: { message_id: id, date: now, chat: { id: GROUP, type: 'supergroup', title: 'Team' }, from: OWNER, text: '幫我看 event' } })
+  await until(() => q(`SELECT role FROM conversations WHERE key = 'group-${-GROUP}'`)[0]?.role === 'user')
+  const w = worker(`group-${-GROUP}`, 15, delivered)
+  await until(() => delivered.some(d => d.includes('幫我看 event')))
+  expect((await w.call('event_raw', { event_id: ev, question: 'q' })).isError).toBeFalsy()
+  const hook = (telegram: boolean) => w.send({ t: 'hook', id: 9000 + Number(telegram), project_dir: join(dir, 'bot123', `group-${-GROUP}`), ev: { event: 'prompt', telegram } })
+  hook(false)
+  await sleep(300)
+  expect((await w.call('event_raw', { event_id: ev, question: 'q' })).content[0]!.text).toBe('⛔ event_raw 只限 owner 或 admin: 這一輪的發話者 (不明) 或這個對話的角色 (user) 要是 owner 或 admin')
+  hook(true)
+  await sleep(300)
+  expect((await w.call('event_raw', { event_id: ev, question: 'q' })).isError).toBeFalsy()
+  w.close()
+}, 20000)
