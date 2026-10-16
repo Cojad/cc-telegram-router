@@ -14,6 +14,7 @@ import { runCommand, type CommandDeps } from '../commands'
 import { makeAssertAllowedChat } from '../guard'
 import { createElevation } from '../elevation'
 import { credRoleRefusal } from '../credentials'
+import { installRefusal, skillScope } from '../skills'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from '../grants'
 import { approvalPlace, noticePlace, type ApprovalDeps } from '../approvals'
 import { createAuthz } from '../authz'
@@ -633,6 +634,24 @@ test('elevation for a credential: bot_api / http_api refused only for the conver
   await e.onHook(conv, { event: 'subagent-start', agent_id: 'W' })
   expect(await e.onHook(conv, { event: 'pre', quiet: true, agent_id: 'W', tool_name: call.tool_name, tool_input: call.tool_input })).toMatchObject({ decision: 'allow' })
   expect(e.takeTicket(conv.key, 'http_api', call.tool_input)).toBe('admin')
+  e.stop()
+})
+
+test('elevation for install_skill: a scope above the conversation\'s role asks like any block (admin sender: in the chat, once only); approved, the subagent\'s call runs as admin', async () => {
+  const pre = 'mcp__plugin_telegram_telegram__'
+  const { conv, e, sent } = elevHarness({ extraCheck: (_c, call, role) => call.tool_name === `${pre}install_skill` ? installRefusal(skillScope(call.tool_input.scope), role) : null })
+  db.setUserRole('500', 'admin')
+  const call = { tool_name: `${pre}install_skill`, tool_input: { name: 'hello', scope: 'conversation' } }
+  expect(e.extraCheck(conv, call, 'user')).toBe('只有 power 以上的對話能安裝這個對話自己的技能, 這個對話是 user')
+  expect(e.extraCheck(conv, call, 'power')).toBeNull()
+  e.onDeliver(conv, '500')
+  expect((await e.refuse(conv, call, e.extraCheck(conv, call, 'user')!)).reason).toContain('router 已在對話裡詢問是否提權 (#1')
+  expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:deny'])
+  expect(sent[0]!.text).toContain('♾️ 不能永久允許: 安裝技能的角色限制跟著對話角色')
+  expect(await e.decide('elev:1:once', '500')).toBe('已提權一次')
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'X' })
+  expect(await e.onHook(conv, { event: 'pre', quiet: true, agent_id: 'X', tool_name: call.tool_name, tool_input: call.tool_input })).toMatchObject({ decision: 'allow' })
+  expect(e.takeTicket(conv.key, 'install_skill', call.tool_input)).toBe('admin')
   e.stop()
 })
 

@@ -102,3 +102,17 @@ test.skipIf(!LIVE)('guest: can read its attachments; no Bash', async () => {
   const sum = new Bun.CryptoHasher('sha256').update('ATTACHMENT-OK').digest('hex')
   expect(sh.text).not.toContain(sum.slice(0, 16))
 }, 300_000)
+
+// Why install_skill copies from <folder>/skills: Claude Code itself refuses a
+// worker below owner any write under .claude (dontAsk denies it; no allow rule
+// or hook lifts that), while skills/ in its folder is writable.
+test.skipIf(!LIVE)('skills: admin, power and user cannot write .claude/skills in their folder, but can write skills/', async () => {
+  const roles = ['admin', 'power', 'user']
+  const dot = await Promise.all(roles.map(r => asRole(r, `用 Write 工具寫入 .claude/skills/probe/SKILL.md, 內容是 PROBE. ${ONE}`)))
+  const src = await Promise.all(roles.map(r => asRole(r, `用 Write 工具寫入 skills/probe/SKILL.md, 內容是 PROBE. ${ONE}`)))
+  for (const r of dot) {
+    expect(r.denied).toContain('Write')
+    expect(existsSync(join(r.folder, '.claude', 'skills', 'probe', 'SKILL.md'))).toBe(false)
+  }
+  for (const r of src) expect(readFileSync(join(r.folder, 'skills', 'probe', 'SKILL.md'), 'utf8')).toContain('PROBE')
+}, 300_000)

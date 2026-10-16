@@ -7,22 +7,22 @@ description: 建立或修改技能 (skill) 的 SOP: 技能放在哪個範圍 (�
 
 ## 技能放哪裡
 
-Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能放的位置決定誰拿得到:
+Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能裝在哪裡決定誰拿得到. 你自己寫不進任何 `.claude` 資料夾 (Claude Code 內建保護, 只有 owner 的對話例外), 所以一律先寫在 `<你的資料夾>/skills/<名稱>/`, 再用 `install_skill` 請 router 複製過去:
 
-| 範圍 | 位置 | 誰能放 |
+| 範圍 | 裝到哪裡 | 誰能裝 |
 |---|---|---|
-| 只有這個對話 | `<你的資料夾>/.claude/skills/<名稱>/` | 任何對話, 直接寫檔 |
-| 這隻 bot 的所有對話 | `<home>/bot<id>/.claude/skills/<名稱>/` | owner 與 admin 對話, 用 `install_skill` (scope `bot`) |
-| 全部 bot 的所有對話 | `<home>/.claude/skills/<名稱>/` | owner 與 admin 對話, 用 `install_skill` (scope `all`) |
+| 只有這個對話 | `<你的資料夾>/.claude/skills/<名稱>/` | power 以上的對話, `install_skill` (scope `conversation`) |
+| 這隻 bot 的所有對話 | `<home>/bot<id>/.claude/skills/<名稱>/` | owner 與 admin 對話, `install_skill` (scope `bot`) |
+| 全部 bot 的所有對話 | `<home>/.claude/skills/<名稱>/` | owner 與 admin 對話, `install_skill` (scope `all`) |
 
-不確定範圍時先問使用者; 預設只放在這個對話.
+不確定範圍時先問使用者; 預設只裝在這個對話. 對話角色不夠時 `install_skill` 跟其他越權動作一樣被擋並走提權 (發話者角色較高就在對話裡詢問, 否則問使用者要不要用 request_elevation 向 owner 申請), 只能允許一次.
 
 ## 步驟
 
-1. 在自己資料夾寫好 `.claude/skills/<名稱>/SKILL.md` (frontmatter 要有 `name` 與 `description`, description 寫清楚「什麼時候用」), 腳本放 `scripts/`.
-2. 在這個對話實際跑一次, 確認可用.
-3. 要給整隻 bot 或全部 bot 用時, 呼叫 `install_skill` (name, scope). router 會檢查: 對話角色是 owner 或 admin, 有 SKILL.md, 沒有符號連結, 檔案裡沒有像 token 的字串; 通過後複製過去 (venv, node_modules 不複製), 並讓其他對話下次叫醒時載入.
-4. 告訴使用者裝在哪個範圍, 之後怎麼更新 (改自己資料夾的版本, 再用 `install_skill` 帶 `replace: true`).
+1. 在自己資料夾寫好 `skills/<名稱>/SKILL.md` (frontmatter 要有 `name` 與 `description`, description 寫清楚「什麼時候用」), 腳本放 `skills/<名稱>/scripts/`.
+2. 照 SKILL.md 實際跑一次腳本, 確認可用.
+3. 呼叫 `install_skill` (name, scope). router 會檢查: 對話角色夠裝這個範圍, 有 SKILL.md, 沒有符號連結, 檔案裡沒有像 token 的字串; 通過後複製過去 (venv, node_modules 不複製). scope `conversation` 會在這一輪結束, worker 閒置後重新叫醒時載入; `bot` 與 `all` 讓其他對話下次叫醒時載入.
+4. 告訴使用者裝在哪個範圍, 之後怎麼更新 (改 `skills/<名稱>/`, 再用 `install_skill` 帶 `replace: true`).
 
 ## 技能需要 token 時
 

@@ -28,7 +28,7 @@ import { runCli } from './cli'
 import { importV1Messages } from './importv1'
 import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
 import { newSecretKey, maskSecretUpdate, openSecret, refuseSecret, secretCred, scrubSecret } from './secrets'
-import { installSkill } from './skills'
+import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
 import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
 import { hashSkill, loadManifest, argRoleRefusal } from './privskill'
@@ -300,14 +300,24 @@ const ipc = createIpc({
     }
     if (tool === 'install_skill') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接把技能放進對應的 .claude/skills' }], isError: true }
-      const scope = args.scope === 'all' ? 'all' : 'bot'
+      const scope = skillScope(args.scope)
       const name = String(args.name ?? '')
+      // a role too low for the scope: elevation, as for a hook block
+      const call = { tool_name: 'mcp__plugin_telegram_telegram__install_skill', tool_input: args }
+      const roleWhy = elevation.extraCheck(conv, call, role)
+      if (roleWhy) return { content: [{ type: 'text', text: (await elevation.refuse(conv, call, roleWhy)).reason ?? roleWhy }], isError: true }
       try {
-        const dest = installSkill({ convFolder: conv.folder, role, name, scopeDir: scope === 'all' ? cfg.home : botDir(cfg, conv.bot), replace: args.replace === true })
+        const dest = installSkill({ convFolder: conv.folder, role, name, scope, scopeDir: scope === 'all' ? cfg.home : scope === 'bot' ? botDir(cfg, conv.bot) : conv.folder, replace: args.replace === true })
+        log(`${conv.key}: installed skill ${name} (${scope}) -> ${dest}`)
+        if (scope === 'conversation') {
+          // skills are read when a session starts: this worker picks it up on its next wake
+          db.setRotate(conv.key, true)
+          void rotate()
+          return { content: [{ type: 'text', text: `已安裝到 ${dest} (只有這個對話). 這個 worker 這一輪結束, 閒置後會重新叫醒並載入它; 之後要改, 改 ${SKILL_SRC}/${name}/ 再用 install_skill 帶 replace: true.` }] }
+        }
         const others = db.listConversations().filter(c => c.key !== conv.key && (scope === 'all' || c.bot === conv.bot))
         for (const c of others) db.setRotate(c.key, true)
         void rotate()
-        log(`${conv.key}: installed skill ${name} -> ${dest}`)
         void postNotice(approvalDeps, conv.bot, `🧩 ${conv.key} 安裝了技能 ${name} (${scope === 'all' ? '全部 bot' : '這隻 bot'} 共用): ${dest}`)
         return { content: [{ type: 'text', text: `已安裝到 ${dest}. 其他 ${others.length} 個對話下次叫醒時就有這個技能.` }] }
       } catch (e) {
@@ -514,6 +524,7 @@ const elevation = createElevation({
   // bot_api / http_api with a credential the conversation's role may not use (a conversation's own secret has no role check)
   extraCheck: (c, call, role) => {
     const tool = call.tool_name.replace(/^mcp__plugin_telegram_telegram__/, '')
+    if (tool === 'install_skill') return installRefusal(skillScope(call.tool_input?.scope), role)
     if (tool === 'bot_api' || tool === 'http_api') {
       const args = (call.tool_input ?? {}) as Record<string, unknown>
       if (db.getConvSecret(c.bot, c.chat_id, String(args.credential ?? ''))) return null

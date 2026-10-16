@@ -164,12 +164,12 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'install_skill',
-    description: 'Owner/admin conversations only: install a skill you wrote in <your folder>/.claude/skills/<name>/ so every conversation of this bot (scope "bot") or of every bot (scope "all") gets it. Skills must not contain tokens. See /telegram:bot-skill.',
+    description: 'Install a skill you wrote in <your folder>/skills/<name>/ (you cannot write under .claude yourself): scope "conversation" puts it in this conversation\'s .claude/skills (power and up), "bot" makes every conversation of this bot get it, "all" every bot (owner/admin). A role too low is refused like any other block (elevation). Skills must not contain tokens. See /telegram:bot-skill.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string' },
-        scope: { type: 'string', enum: ['bot', 'all'] },
+        scope: { type: 'string', enum: ['conversation', 'bot', 'all'] },
         replace: { type: 'boolean', description: 'Overwrite an installed skill of the same name' },
       },
       required: ['name', 'scope'],

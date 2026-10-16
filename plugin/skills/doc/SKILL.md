@@ -51,7 +51,7 @@ worker 要送訊息到別的對話會被擋, 它可以用 request_send_grant 申
 
 owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 Bot API (例如刪除訊息, 置頂, 查群組資訊): `bot_api` 的 credential 填 `self`, 不用另外登記. getUpdates, setWebhook, deleteWebhook, logOut, close 會讓 router 收不到訊息, 不開放; 其他角色不能用.
 
-做技能, 或技能需要 token / 要操作另一隻 bot 時, 先讀 `/telegram:bot-skill`. 重點: token 不寫進技能, 由 owner 或 admin 在私訊用 `/router cred add` 登記成 router 的憑證, worker 用 `bot_api` 工具使用 (一般 API key 由 owner 在終端機登記, 用 `http_api`); owner 與 admin 的對話可以用 `install_skill` 把技能裝成整隻 bot 或全部 bot 共用.
+做技能, 或技能需要 token / 要操作另一隻 bot 時, 先讀 `/telegram:bot-skill`. 重點: token 不寫進技能, 由 owner 或 admin 在私訊用 `/router cred add` 登記成 router 的憑證, worker 用 `bot_api` 工具使用 (一般 API key 由 owner 在終端機登記, 用 `http_api`); 技能寫在對話資料夾的 `skills/<名稱>/` (`.claude` 底下只有 owner 的對話寫得進去), 再用 `install_skill` 安裝: power 以上裝到這個對話自己 (scope `conversation`), owner 與 admin 可以裝成整隻 bot 或全部 bot 共用; 角色不夠時走提權.
 
 任何角色的對話都能有自己的密鑰: 使用者在這個對話傳 `/secret set <名稱> <值> [方法...]` 或 `/secret set <名稱> <值> --http <網址> [路徑...]`, router 加密保存並刪掉那則訊息 (群組沒有刪除權限時提醒發送者刪), worker 用 `bot_api` / `http_api` 填那個名稱使用, 不看角色也不用授權, 值不會進到對話. `/secret list` 看有哪些, `/secret rm <名稱>` 移除; owner 與 admin 用 `/router secret list|rm <chat_id>` 管理任何對話的密鑰.
 

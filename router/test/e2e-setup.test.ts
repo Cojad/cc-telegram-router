@@ -6,7 +6,7 @@
 //   approvals group checks and topics; skip button.
 
 import { test, expect, afterAll } from 'bun:test'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Database } from 'bun:sqlite'
@@ -259,6 +259,23 @@ test('http credentials end to end: cred-import --http stores an API key; http_ap
   owner.close()
 }, 30000)
 
+
+test('install_skill end to end: from <folder>/skills into the conversation\'s own .claude/skills (owner here); a user conversation is refused like any block, with the elevation advice, and logged', async () => {
+  const owner = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-555'), pid: 51 }, onMessage(m) { if (m.t === 'deliver') owner.send({ t: 'ack', qid: m.qid }) } })
+  const user = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-666'), pid: 52 }, onMessage(m) { if (m.t === 'deliver') user.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => owner.state().kind === 'ready' && user.state().kind === 'ready')
+  for (const c of ['dm-555', 'dm-666']) { mkdirSync(join(dir, 'bot123', c, 'skills', 'hello'), { recursive: true }); writeFileSync(join(dir, 'bot123', c, 'skills', 'hello', 'SKILL.md'), '---\nname: hello\n---\n') }
+  const r = await owner.call('install_skill', { name: 'hello', scope: 'conversation' })
+  expect(r.isError).toBeFalsy()
+  expect(r.content[0]!.text).toStartWith(`已安裝到 ${join(dir, 'bot123', 'dm-555', '.claude', 'skills', 'hello')} (只有這個對話)`)
+  expect(readFileSync(join(dir, 'bot123', 'dm-555', '.claude', 'skills', 'hello', 'SKILL.md'), 'utf8')).toBe('---\nname: hello\n---\n')
+  const low = (await user.call('install_skill', { name: 'hello', scope: 'conversation' })).content[0]!.text
+  expect(low).toStartWith('權限不足 (本對話角色 user): 只有 power 以上的對話能安裝這個對話自己的技能, 這個對話是 user.')
+  expect(low).toContain('request_elevation')
+  expect(existsSync(join(dir, 'bot123', 'dm-666', '.claude', 'skills', 'hello'))).toBe(false)
+  expect(q("SELECT kind FROM elev_log WHERE conv = 'dm-666' AND text LIKE '%install_skill%'").length).toBeGreaterThan(0)
+  owner.close(); user.close()
+}, 30000)
 
 test('bot_api "self": owner and admin conversations call any Bot API method as their own bot; others are refused; methods that would break the router are blocked', async () => {
   const owner = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-555'), pid: 41 }, onMessage(m) { if (m.t === 'deliver') owner.send({ t: 'ack', qid: m.qid }) } })

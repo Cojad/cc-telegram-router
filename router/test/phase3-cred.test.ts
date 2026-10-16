@@ -8,7 +8,7 @@ import { join } from 'path'
 import type { Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
 import { refuseUse, botApiCall, describeCreds } from '../credentials'
-import { installSkill } from '../skills'
+import { installSkill, installRefusal, skillScope } from '../skills'
 import { runCommand, type CommandDeps } from '../commands'
 
 const OWNER = '137438526', ADMIN = '500'
@@ -51,16 +51,22 @@ test('botApiCall: JSON for plain calls, multipart with the file for uploads, the
   } finally { api.stop(true) }
 })
 
-test('install_skill: owner/admin only; needs SKILL.md; refuses tokens and symlinks; replace is explicit; venv is not copied', () => {
+test('install_skill: copies from <folder>/skills (workers cannot write .claude); conversation scope for power and up, bot and all for owner/admin; needs SKILL.md; refuses tokens and symlinks; replace is explicit; venv is not copied', () => {
   const conv = join(dir, 'bot1', 'dm-1'), scope = join(dir, 'bot1')
-  const skill = join(conv, '.claude', 'skills', 'stickers')
+  const skill = join(conv, 'skills', 'stickers')
   mkdirSync(join(skill, 'scripts'), { recursive: true })
   mkdirSync(join(skill, 'venv', 'lib'), { recursive: true })
   writeFileSync(join(skill, 'venv', 'lib', 'big.py'), 'x')
-  const go = (o: Partial<Parameters<typeof installSkill>[0]> = {}) => installSkill({ convFolder: conv, role: 'admin', name: 'stickers', scopeDir: scope, ...o })
+  const go = (o: Partial<Parameters<typeof installSkill>[0]> = {}) => installSkill({ convFolder: conv, role: 'admin', name: 'stickers', scope: 'bot', scopeDir: scope, ...o })
+  expect(installRefusal('bot', 'power')).toBe('只有 owner 與 admin 的對話能安裝這隻 bot 共用的技能, 這個對話是 power')
+  expect(installRefusal('all', 'admin')).toBeNull()
+  expect(installRefusal('conversation', 'power')).toBeNull()
+  expect(installRefusal('conversation', 'user')).toBe('只有 power 以上的對話能安裝這個對話自己的技能, 這個對話是 user')
+  expect(skillScope('conversation')).toBe('conversation')
+  expect(skillScope(undefined)).toBe('bot')
   expect(() => go({ role: 'power' })).toThrow('只有 owner 與 admin 的對話能安裝')
   expect(() => go({ name: 'Bad Name' })).toThrow('技能名稱只能用小寫英數與 -')
-  expect(() => go()).toThrow('找不到 .claude/skills/stickers/SKILL.md')
+  expect(() => go()).toThrow('找不到 skills/stickers/SKILL.md: 先在自己資料夾的 skills/stickers/ 寫好技能')
   writeFileSync(join(skill, 'SKILL.md'), '---\nname: stickers\n---\n')
   writeFileSync(join(skill, 'scripts', 'add.sh'), `TOKEN=${TOKEN}\n`)
   expect(() => go()).toThrow('scripts/add.sh 裡有像 token 的字串')
@@ -73,6 +79,16 @@ test('install_skill: owner/admin only; needs SKILL.md; refuses tokens and symlin
   expect(existsSync(join(scope, '.claude', 'skills', 'stickers', 'venv'))).toBe(false)
   expect(() => go()).toThrow('已經有同名技能; 確定要覆蓋就帶 replace: true')
   expect(go({ replace: true, role: 'owner' })).toBe(join(scope, '.claude', 'skills', 'stickers'))
+  // conversation scope: the router copies it into the conversation's own .claude/skills
+  expect(() => go({ scope: 'conversation', scopeDir: conv, role: 'user' })).toThrow('只有 power 以上的對話能安裝這個對話自己的技能')
+  expect(go({ scope: 'conversation', scopeDir: conv, role: 'power' })).toBe(join(conv, '.claude', 'skills', 'stickers'))
+  expect(readFileSync(join(conv, '.claude', 'skills', 'stickers', 'SKILL.md'), 'utf8')).toBe('---\nname: stickers\n---\n')
+  // an owner conversation may have written under .claude/skills itself: used for bot/all when skills/<name> is missing
+  const own = join(conv, '.claude', 'skills', 'mine')
+  mkdirSync(own, { recursive: true })
+  writeFileSync(join(own, 'SKILL.md'), '---\nname: mine\n---\n')
+  expect(go({ name: 'mine', role: 'owner' })).toBe(join(scope, '.claude', 'skills', 'mine'))
+  expect(() => go({ name: 'mine', scope: 'conversation', scopeDir: conv })).toThrow('找不到 skills/mine/SKILL.md')
 })
 
 function deps(store: { added: any[]; config: Record<string, any> }): CommandDeps {
