@@ -9,7 +9,7 @@ import type { Access } from './telegram/policy'
 import type { MessageRecord } from './telegram/store'
 import { gmt8, maskTokens } from './context'
 import { describeCreds } from './credentials'
-import { SECRET_RE, runSecretCommand, describeSecrets } from './secrets'
+import { SECRET_RE, runSecretCommand, describeSecrets, describeHandles } from './secrets'
 
 export const ROLES = ['owner', 'admin', 'power', 'user', 'guest'] as const
 
@@ -85,6 +85,8 @@ export interface CommandDeps {
     group(bot: string, chatId: string): Promise<string>
   }
   sendTo(bot: string, chatId: string, text: string): Promise<void>
+  /** Plan 10e: the plaintext of a masked event into a 600 file (terminal only); returns what to print. */
+  events?: { rawToFile(id: number): Promise<string> }
   recentMessages(chatId: string, n: number): MessageRecord[]
   writeConfig(mutate: (raw: Record<string, unknown>) => void): void
   restartRouter(): void
@@ -184,6 +186,8 @@ const HELP = [
   '/router skill list | approve <技能> | revoke <技能> (技能的特權動作: 核准後 user 與 power 對話也能執行, 憑證不外流)',
   '/router cred list | add <名稱> <token> [方法...] (owner 或 admin 的私訊) | allow|disallow <名稱> <方法...> | roles <名稱> <角色,...> | rm <名稱> | reload',
   '/router secret list [chat_id] (不寫就列出所有有密鑰的對話) | rm <chat_id> [名稱] (不寫名稱就全部移除): 各對話用 /secret 登記的密鑰',
+  '/router secret handles [chat_id] (原文請求發出的密鑰代號, 不寫就列出全部) | revoke <代號>',
+  '/router event raw <event id> (只在終端機: 遮蔽過的原始 update 明文寫進權限 600 的檔案, 只印路徑)',
   '/router botapi <憑證或 bot 名稱> <方法> <JSON 參數> [--file 欄位=/路徑] (只限 owner)',
   '/router config (列出全部) | get <key> | set <key> <值>',
   '/router log (所有對話) | log <chat_id> [筆數]',
@@ -633,11 +637,26 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
 
     case 'secret': {
       const op = args[1] ?? 'list', chat = args[2]
+      // handles from raw requests (plan 10e): permanent ones stay until revoked
+      if (op === 'handles') {
+        let list = db.listHandles(null, null)
+        if (chat) {
+          const found = isChatRef(chat) ? findChat(chat) : { conv: null, error: `不認得的對話 ${chat}` }
+          if (found.error || !found.conv) return done(found.error ?? `沒有對話 ${chat}`)
+          list = list.filter(h => h.conv === found.conv!.key)
+        }
+        return done(list.length ? describeHandles(list.map(h => ({ ...h, code: `${h.code} (${h.conv})` }))) : '沒有密鑰代號', { private: true })
+      }
+      if (op === 'revoke') {
+        const h = chat ? db.getHandle(chat) : null
+        if (!h) return done('用法: /router secret revoke <代號> (/router secret handles 列出)')
+        return done(db.revokeHandle(h.code, input.senderId) ? `已撤銷 ${h.conv} 的代號 ${h.code}${h.registered ? ` (已登記的密鑰 ${h.registered} 不受影響, 要移除用 /router secret rm ${h.conv} ${h.registered})` : ''}` : `代號 ${h.code} 已經撤銷過`)
+      }
       if (op === 'list' && !chat) {
         const all = db.convSecretChats()
         return done(all.length ? all.map(r => `${r.bot} ${r.chat_id}: ${r.n} 把`).join('\n') : '沒有任何對話登記密鑰', { private: true })
       }
-      if (!chat || !isChatRef(chat) || (op !== 'list' && op !== 'rm')) return done('用法: /router secret list [chat_id] | rm <chat_id> [名稱]')
+      if (!chat || !isChatRef(chat) || (op !== 'list' && op !== 'rm')) return done('用法: /router secret list [chat_id] | rm <chat_id> [名稱] | handles [chat_id] | revoke <代號>')
       // secrets belong to (bot, chat): a known conversation tells which bot
       const found = findChat(chat)
       if (found.error) return done(found.error)
@@ -648,6 +667,14 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       }
       const n = db.removeConvSecret(sbot, schat, args[3] ?? null)
       return done(n ? `已移除對話 ${chat} 的${args[3] ? `密鑰 ${args[3]}` : `全部 ${n} 把密鑰`}` : `對話 ${chat} 沒有${args[3] ? `名為 ${args[3]} 的` : ''}密鑰`)
+    }
+
+    case 'event': {
+      // plan 10e: plaintext only for the owner, only in the terminal, only into a 600 file
+      if (args[1] !== 'raw' || !/^\d+$/.test(args[2] ?? '')) return done('用法: cc-telegram-router cli event raw <event id>')
+      if (!input.terminal || role !== 'owner') return deny('event raw 只在 owner 的終端機執行 (cc-telegram-router cli event raw <id>), 不提供 Telegram 裡的明文')
+      if (!deps.events) return done('這個 router 沒有 event_raw')
+      return done(await deps.events.rawToFile(Number(args[2])))
     }
 
     case 'botapi': {

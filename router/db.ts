@@ -52,6 +52,8 @@ export type BotSetup = {
   elevlog_topic: number | null
   /** Topic for each use of an approved authorization (執行授權). */
   authuse_topic: number | null
+  /** Topic for secret detections, raw requests and handles (🔑 密鑰偵測, plan 10e). */
+  secret_topic: number | null
   /** The owner chose DM instead of a group. */
   group_skipped: number
 }
@@ -82,13 +84,59 @@ export type ConvSecret = {
   header: string | null; scheme: string | null
   /** telegram-bot: "@username (id)" from getMe at registration. */
   label: string | null
+  /** Registered from a handle (secret_from_handle, plan 10e): its code; null for /secret set. */
+  source?: string | null
+}
+
+/** Plan 10e 原始事件: events rows with masked = 1 have their original update in
+ *  event_raw, sealed (AES-256-GCM) and bound to the event id; fields is a JSON
+ *  list of findings (path, kind, last 4, hash, held value it equals). */
+export type EventRow = { id: number; ts: string; bot: string; update_json: string; masked: number }
+export type EventRaw = { event_id: number; sealed: string; fields: string; created_at: string }
+/** A handle given to one conversation for one value of an event (secret_from_handle). expires_at null: permanent. */
+export type SecretHandle = {
+  id: number; code: string; event_id: number; n: number; kind: string; last4: string
+  bot: string; chat_id: string; conv: string; request_id: number | null; expires_at: string | null
+  uses: number; registered: string | null; revoked_by: string | null; revoked_at: string | null; created_at: string
+}
+export type SecretRequest = { id: number; ts: string; conv: string; sender: string | null; event_id: number; question: string; handles: string | null; status: 'pending' | 'answered' | 'blocked' | 'no-answer' | 'refused'; note: string | null }
+/** A message with a secret, deleted 5 minutes after the reminder unless someone cancels (survives restarts). */
+export type SecretDeletion = {
+  id: number; event_id: number; bot: string; chat_id: string; message_id: number; sender: string
+  notice_id: number | null; log_chat: string | null; log_msg: number | null; log_text: string | null
+  due_at: string; status: 'pending' | 'deleted' | 'failed' | 'cancelled'; decided_by: string | null; done_at: string | null
 }
 
 export type QueueRow = { qid: number; conv: string; params: string; status: 'pending' | 'delivered' | 'acked' }
 export type LogRow = { id: number; conv: string; ts: string; text: string; qid: number | null }
 
 export interface RouterDb {
-  logEvent(bot: string, update: unknown): void
+  /** The new events row id. */
+  logEvent(bot: string, update: unknown): number
+  /** An update with secrets (plan 10e): build gets the row id and returns the
+   *  masked update, the sealed original and its findings; one transaction. */
+  logMaskedEvent(bot: string, build: (id: number) => { update: unknown; sealed: string; fields: string }): number
+  getEvent(id: number): EventRow | null
+  getEventRaw(id: number): EventRaw | null
+  addHandle(h: Pick<SecretHandle, 'event_id' | 'n' | 'kind' | 'last4' | 'bot' | 'chat_id' | 'conv' | 'request_id' | 'expires_at'>): SecretHandle
+  getHandle(code: string): SecretHandle | null
+  /** bot and chat null: every conversation's. */
+  listHandles(bot: string | null, chat_id: string | null): SecretHandle[]
+  /** One use: registered as a secret (name), or a call with that secret. */
+  useHandle(code: string, registered?: string): void
+  revokeHandle(code: string, by: string): boolean
+  addSecretRequest(r: Pick<SecretRequest, 'conv' | 'sender' | 'event_id' | 'question'>): number
+  settleSecretRequest(id: number, status: SecretRequest['status'], handles: string[], note: string | null): void
+  getSecretRequest(id: number): SecretRequest | null
+  /** The 🔑 密鑰偵測 record in router.db (also posted to the topic). */
+  addSecretLog(bot: string, kind: string, text: string, ref: number | null): void
+  secretLog(limit: number): Array<{ ts: string; bot: string; kind: string; text: string; ref: number | null }>
+  scheduleDeletion(d: Pick<SecretDeletion, 'event_id' | 'bot' | 'chat_id' | 'message_id' | 'sender' | 'notice_id' | 'due_at'>): number
+  getDeletion(id: number): SecretDeletion | null
+  dueDeletions(nowIso: string): SecretDeletion[]
+  updateDeletion(id: number, fields: Partial<Pick<SecretDeletion, 'notice_id' | 'log_chat' | 'log_msg' | 'log_text'>>): void
+  /** pending -> deleted | failed | cancelled; false when it was already settled. */
+  settleDeletion(id: number, status: 'deleted' | 'failed' | 'cancelled', by: string | null): boolean
   logApiCall(bot: string, method: string, payload: unknown, result: unknown, error: string | null, conv: string | null): void
   recentOutbound(conv: string, limit: number): Array<{ ts: string; method: string; payload_json: string; error: string | null }>
   getConversation(key: string): Conversation | null
@@ -179,6 +227,8 @@ export interface RouterDb {
   setConvSecret(s: ConvSecret): void
   getConvSecret(bot: string, chat_id: string, name: string): ConvSecret | null
   listConvSecrets(bot: string, chat_id: string): ConvSecret[]
+  /** Every conversation secret (sealed), for exact-match detection. */
+  allConvSecrets(): ConvSecret[]
   /** Every conversation that has secrets, with their count. */
   convSecretChats(): Array<{ bot: string; chat_id: string; n: number }>
   /** name null: all of the conversation's secrets. Returns how many went. */
@@ -257,15 +307,34 @@ export function openRouterDb(path: string): RouterDb {
       bot TEXT NOT NULL, chat_id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL,
       base_url TEXT, allowed TEXT NOT NULL, added_by TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (bot, chat_id, name)
     );
+    CREATE TABLE IF NOT EXISTS event_raw (event_id INTEGER PRIMARY KEY, sealed TEXT NOT NULL, fields TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS secret_handles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, event_id INTEGER NOT NULL, n INTEGER NOT NULL, kind TEXT NOT NULL, last4 TEXT NOT NULL,
+      bot TEXT NOT NULL, chat_id TEXT NOT NULL, conv TEXT NOT NULL, request_id INTEGER, expires_at TEXT,
+      uses INTEGER NOT NULL DEFAULT 0, registered TEXT, revoked_by TEXT, revoked_at TEXT, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS secret_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, conv TEXT NOT NULL, sender TEXT, event_id INTEGER NOT NULL,
+      question TEXT NOT NULL, handles TEXT, status TEXT NOT NULL DEFAULT 'pending', note TEXT
+    );
+    CREATE TABLE IF NOT EXISTS secret_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, bot TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, ref INTEGER);
+    CREATE TABLE IF NOT EXISTS secret_deletions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL, bot TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, sender TEXT NOT NULL,
+      notice_id INTEGER, log_chat TEXT, log_msg INTEGER, log_text TEXT, due_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending', decided_by TEXT, done_at TEXT
+    );
     CREATE TABLE IF NOT EXISTS progress_msgs (key TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (key, message_id));
   `)
   // Columns added after Phase 1.
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
   const setupCols = new Set((db.query('PRAGMA table_info(bot_setup)').all() as Array<{ name: string }>).map(c => c.name))
   const secCols = new Set((db.query('PRAGMA table_info(conv_secrets)').all() as Array<{ name: string }>).map(c => c.name))
-  for (const n of ['header', 'scheme', 'label']) if (!secCols.has(n)) db.exec(`ALTER TABLE conv_secrets ADD COLUMN ${n} TEXT`)
+  for (const n of ['header', 'scheme', 'label', 'source']) if (!secCols.has(n)) db.exec(`ALTER TABLE conv_secrets ADD COLUMN ${n} TEXT`)
   if (!setupCols.has('elevlog_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN elevlog_topic INTEGER')
   if (!setupCols.has('authuse_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN authuse_topic INTEGER')
+  if (!setupCols.has('secret_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN secret_topic INTEGER')
+  const evCols = new Set((db.query('PRAGMA table_info(events)').all() as Array<{ name: string }>).map(c => c.name))
+  if (!evCols.has('masked')) db.exec('ALTER TABLE events ADD COLUMN masked INTEGER NOT NULL DEFAULT 0')
   const useCols = new Set((db.query('PRAGMA table_info(auth_uses)').all() as Array<{ name: string }>).map(c => c.name))
   for (const [n, t] of [['bot', 'TEXT'], ['chat_id', 'TEXT'], ['message_id', 'INTEGER']]) if (!useCols.has(n!)) db.exec(`ALTER TABLE auth_uses ADD COLUMN ${n} ${t}`)
   for (const [name, type] of [['title', 'TEXT'], ['compact', 'INTEGER'], ['model', 'TEXT'], ['ctx_v', 'INTEGER NOT NULL DEFAULT 1'], ['last_seen', 'TEXT'], ['rotate_pending', 'INTEGER NOT NULL DEFAULT 0']]) {
@@ -313,7 +382,45 @@ export function openRouterDb(path: string): RouterDb {
   const qRotAll = db.prepare('SELECT * FROM conversations WHERE rotate_pending = 1 ORDER BY key')
   const get = (key: string) => (qGet.get(key) as Conversation | null) ?? null
   return {
-    logEvent: (bot, update) => { qEvent.run(now(), bot, json(update)) },
+    logEvent: (bot, update) => Number(qEvent.run(now(), bot, json(update)).lastInsertRowid),
+    logMaskedEvent(bot, build) {
+      return db.transaction(() => {
+        const ts = now()
+        const id = Number(db.prepare("INSERT INTO events (ts, bot, update_json, masked) VALUES (?, ?, '{}', 1)").run(ts, bot).lastInsertRowid)
+        const b = build(id)
+        db.prepare('UPDATE events SET update_json = ? WHERE id = ?').run(json(b.update), id)
+        db.prepare('INSERT INTO event_raw (event_id, sealed, fields, created_at) VALUES (?, ?, ?, ?)').run(id, b.sealed, b.fields, ts)
+        return id
+      })()
+    },
+    getEvent: id => (db.prepare('SELECT id, ts, bot, update_json, masked FROM events WHERE id = ?').get(id) as EventRow | null) ?? null,
+    getEventRaw: id => (db.prepare('SELECT * FROM event_raw WHERE event_id = ?').get(id) as EventRaw | null) ?? null,
+    addHandle(h) {
+      const id = Number(db.prepare('INSERT INTO secret_handles (event_id, n, kind, last4, bot, chat_id, conv, request_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(h.event_id, h.n, h.kind, h.last4, h.bot, h.chat_id, h.conv, h.request_id, h.expires_at, now()).lastInsertRowid)
+      db.prepare('UPDATE secret_handles SET code = ? WHERE id = ?').run(`h${id}`, id)
+      return db.prepare('SELECT * FROM secret_handles WHERE id = ?').get(id) as SecretHandle
+    },
+    getHandle: code => (db.prepare('SELECT * FROM secret_handles WHERE code = ?').get(code) as SecretHandle | null) ?? null,
+    listHandles: (bot, chat_id) => (bot == null
+      ? db.prepare('SELECT * FROM secret_handles ORDER BY id').all()
+      : db.prepare('SELECT * FROM secret_handles WHERE bot = ? AND chat_id = ? ORDER BY id').all(bot, chat_id)) as SecretHandle[],
+    useHandle: (code, registered) => { db.prepare('UPDATE secret_handles SET uses = uses + 1, registered = coalesce(?, registered) WHERE code = ?').run(registered ?? null, code) },
+    revokeHandle: (code, by) => db.prepare('UPDATE secret_handles SET revoked_by = ?, revoked_at = ? WHERE code = ? AND revoked_at IS NULL').run(by, now(), code).changes > 0,
+    addSecretRequest: r => Number(db.prepare('INSERT INTO secret_requests (ts, conv, sender, event_id, question) VALUES (?, ?, ?, ?, ?)').run(now(), r.conv, r.sender, r.event_id, r.question).lastInsertRowid),
+    settleSecretRequest: (id, status, handles, note) => { db.prepare('UPDATE secret_requests SET status = ?, handles = ?, note = ? WHERE id = ?').run(status, JSON.stringify(handles), note, id) },
+    getSecretRequest: id => (db.prepare('SELECT * FROM secret_requests WHERE id = ?').get(id) as SecretRequest | null) ?? null,
+    addSecretLog: (bot, kind, text, ref) => { db.prepare('INSERT INTO secret_log (ts, bot, kind, text, ref) VALUES (?, ?, ?, ?, ?)').run(now(), bot, kind, text, ref) },
+    secretLog: limit => db.prepare('SELECT ts, bot, kind, text, ref FROM secret_log ORDER BY id DESC LIMIT ?').all(limit) as any,
+    scheduleDeletion: d => Number(db.prepare('INSERT INTO secret_deletions (event_id, bot, chat_id, message_id, sender, notice_id, due_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(d.event_id, d.bot, d.chat_id, d.message_id, d.sender, d.notice_id, d.due_at).lastInsertRowid),
+    getDeletion: id => (db.prepare('SELECT * FROM secret_deletions WHERE id = ?').get(id) as SecretDeletion | null) ?? null,
+    dueDeletions: at => db.prepare("SELECT * FROM secret_deletions WHERE status = 'pending' AND due_at <= ? ORDER BY id").all(at) as SecretDeletion[],
+    updateDeletion(id, fields) {
+      const keys = Object.keys(fields).filter(k => ['notice_id', 'log_chat', 'log_msg', 'log_text'].includes(k))
+      if (keys.length) db.prepare(`UPDATE secret_deletions SET ${keys.map(k => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map(k => ((fields as any)[k] ?? null) as string | number | null), id)
+    },
+    settleDeletion: (id, status, by) => db.prepare("UPDATE secret_deletions SET status = ?, decided_by = ?, done_at = ? WHERE id = ? AND status = 'pending'").run(status, by, now(), id).changes > 0,
     logApiCall: (bot, method, payload, result, error, conv) => {
       qApi.run(now(), bot, conv, method, json(payload), result === undefined ? null : json(result), error)
     },
@@ -404,12 +511,12 @@ export function openRouterDb(path: string): RouterDb {
       ? db.prepare('SELECT ts, conv, kind, text, ref FROM elev_log WHERE conv = ? ORDER BY id DESC LIMIT ?').all(conv, limit)
       : db.prepare('SELECT ts, conv, kind, text, ref FROM elev_log ORDER BY id DESC LIMIT ?').all(limit)) as any,
     bumpContext: bot => { db.prepare('UPDATE conversations SET ctx_v = ctx_v + 1 WHERE bot = ?').run(bot) },
-    getBotSetup: bot => (db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup | null) ?? null,
+    getBotSetup: bot => (db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, secret_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup | null) ?? null,
     updateBotSetup(bot, fields) {
       db.prepare('INSERT OR IGNORE INTO bot_setup (bot, updated_at) VALUES (?, ?)').run(bot, now())
-      const keys = Object.keys(fields).filter(k => ['persona_done', 'persona', 'approvals_chat', 'approvals_topic', 'notices_topic', 'elevlog_topic', 'authuse_topic', 'group_skipped'].includes(k))
+      const keys = Object.keys(fields).filter(k => ['persona_done', 'persona', 'approvals_chat', 'approvals_topic', 'notices_topic', 'elevlog_topic', 'authuse_topic', 'secret_topic', 'group_skipped'].includes(k))
       if (keys.length) db.prepare(`UPDATE bot_setup SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE bot = ?`).run(...keys.map(k => ((fields as any)[k] ?? null) as string | number | null), now(), bot)
-      return db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup
+      return db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, secret_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup
     },
     addApprovalMsg: m => { db.prepare('INSERT INTO approval_msgs (kind, ref, bot, chat_id, message_id, text) VALUES (?, ?, ?, ?, ?, ?)').run(m.kind, m.ref, m.bot, m.chat_id, m.message_id, m.text) },
     approvalMsgs: (kind, ref) => db.prepare('SELECT * FROM approval_msgs WHERE kind = ? AND ref = ?').all(kind, ref) as ApprovalMsg[],
@@ -445,11 +552,12 @@ export function openRouterDb(path: string): RouterDb {
       return changed
     },
     setConvSecret: s => {
-      db.prepare('INSERT OR REPLACE INTO conv_secrets (bot, chat_id, name, kind, value, base_url, allowed, header, scheme, label, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(s.bot, s.chat_id, s.name, s.kind, s.value, s.base_url, s.allowed, s.header ?? null, s.scheme ?? null, s.label ?? null, s.added_by, s.created_at)
+      db.prepare('INSERT OR REPLACE INTO conv_secrets (bot, chat_id, name, kind, value, base_url, allowed, header, scheme, label, added_by, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(s.bot, s.chat_id, s.name, s.kind, s.value, s.base_url, s.allowed, s.header ?? null, s.scheme ?? null, s.label ?? null, s.added_by, s.created_at, s.source ?? null)
     },
     getConvSecret: (bot, chat_id, name) => (db.prepare('SELECT * FROM conv_secrets WHERE bot = ? AND chat_id = ? AND name = ?').get(bot, chat_id, name) as ConvSecret | null) ?? null,
     listConvSecrets: (bot, chat_id) => db.prepare('SELECT * FROM conv_secrets WHERE bot = ? AND chat_id = ? ORDER BY name').all(bot, chat_id) as ConvSecret[],
+    allConvSecrets: () => db.prepare('SELECT * FROM conv_secrets ORDER BY bot, chat_id, name').all() as ConvSecret[],
     convSecretChats: () => db.prepare('SELECT bot, chat_id, count(*) n FROM conv_secrets GROUP BY bot, chat_id ORDER BY bot, chat_id').all() as any,
     removeConvSecret: (bot, chat_id, name) => name == null
       ? db.prepare('DELETE FROM conv_secrets WHERE bot = ? AND chat_id = ?').run(bot, chat_id).changes

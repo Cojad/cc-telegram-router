@@ -110,3 +110,14 @@ export function logPlace(db: RouterDb, bot: string): Place | null {
 export function messageLink(chatId: string, messageId: number): string | null {
   return chatId.startsWith('-100') ? `https://t.me/c/${chatId.slice(4)}/${messageId}` : null
 }
+
+/** Secret detections, raw requests and handles (🔑 密鑰偵測, plan 10e): the
+ *  approvals group's topic for them (重要通知 until it exists), else the owner's DM. */
+export function secretPlace(db: RouterDb, owners: string[], bot: string): Place | null {
+  const s = db.getBotSetup(bot)
+  if (s?.approvals_chat) {
+    const thread = s.secret_topic ?? s.notices_topic
+    return { chat_id: s.approvals_chat, ...(thread ? { thread_id: thread } : {}) }
+  }
+  return owners[0] ? { chat_id: owners[0] } : null
+}

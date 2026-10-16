@@ -27,7 +27,8 @@ import { isCommand, runCommand, roleOf, type CommandDeps, type CommandInput } fr
 import { runCli } from './cli'
 import { importV1Messages } from './importv1'
 import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
-import { newSecretKey, maskSecretUpdate, openSecret, refuseSecret, secretCred, scrubSecret } from './secrets'
+import { newSecretKey, maskSecretUpdate, openSecret, refuseSecret, secretCred, scrubSecret, servesChat } from './secrets'
+import { createVault, claudeAsk, SECRET_TOPIC, SECRET_TOPIC_INTRO } from './rawvault'
 import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
 import { fingerprint, noteStart, STALE_NOTE } from './freshness'
 import { createAuthz } from './authz'
@@ -40,7 +41,7 @@ import { postNotice, type ApprovalDeps } from './approvals'
 import { createPkgGate, claudeReviewer } from './pkgreview'
 import { newClaimCode, isClaim, initBotSetups, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
 import { createElevation } from './elevation'
-import { dmLabel } from './commands'
+import { dmLabel, personLabel } from './commands'
 import { parseRelay, mayRelay, relay, codeBlock, ROUTER_CMDS, type Exec, type RelayCmd } from './relay'
 import { homedir } from 'os'
 import { openStore } from './telegram/store'
@@ -191,6 +192,7 @@ async function convSecretCall(live: Peer, conv: Conversation, s: ConvSecret, too
   const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
   try { for (const p of Object.values(files)) makeAssertSendable(live, cfg.stateDir)(p) } catch (e) { return fail(String(e instanceof Error ? e.message : e)) }
   const label = `secret:${s.name}`
+  vault.used(s.source)
   if (!http) {
     const params = (args.params ?? {}) as Record<string, unknown>
     const res = await botApiCall({ apiRoot: cfg.apiRoot, token: value, method, params, files }).catch(e => ({ ok: false, description: String(e) }))
@@ -295,6 +297,17 @@ const ipc = createIpc({
       db.logApiCall(`cred:${name}`, `${method} ${path}`, { json: shorten(args.json), form: args.form, files }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
       // an API may echo the auth header (httpbin /anything does): the key never goes back to the worker
       return { content: [{ type: 'text', text: scrubSecret(JSON.stringify({ status: res.status, body: shorten(body) }), cred!.token) }], isError: res.status === 0 || res.status >= 300 }
+    }
+    // plan 10e: the original of a masked event, through the fixed agent (owner or admin turns)
+    if (tool === 'event_raw') {
+      if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cc-telegram-router cli event raw <id>' }], isError: true }
+      const r = await callConv.run(conv.key, () => vault.requestRaw(conv, turnSender.get(conv.key) ?? null, args))
+      return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
+    }
+    if (tool === 'secret_from_handle') {
+      if (!conv) return { content: [{ type: 'text', text: 'terminal: 沒有對話' }], isError: true }
+      const r = await callConv.run(conv.key, () => vault.fromHandle(conv, args))
+      return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
     }
     if (tool === 'run_skill') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接執行技能的腳本' }], isError: true }
@@ -425,6 +438,7 @@ const ipc = createIpc({
     if (logs) parts.push(logs)
     const who = elevation.onDeliver(c, params.meta.user_id)
     if (params.meta.message_id && params.meta.user !== 'router') currentMsg.set(key, Number(params.meta.message_id))
+    if (params.meta.user_id && params.meta.user !== 'router') turnSender.set(key, String(params.meta.user_id))
     if (c.type === 'dm' && cfg.owners.includes(c.chat_id) && params.meta.user_id === c.chat_id && needsPersona(db.getBotSetup(c.bot))) parts.push(bootstrapNote(c.bot))
     return {
       content: parts.length ? `${parts.join('\n')}\n${params.content}` : params.content,
@@ -471,6 +485,10 @@ const supervisor = createSupervisor({
 /** Put a router-originated message in front of a conversation's worker. */
 /** The Telegram message each conversation is handling (set as messages are delivered). */
 const currentMsg = new Map<string, number>()
+/** Who started each conversation's current turn (event_raw is for owner and admin turns). */
+const turnSender = new Map<string, string>()
+/** Per update: its secret findings, and how to record them (plan 10e). */
+const secretOf = new WeakMap<object, { rec: import('./rawvault').Recorded; note(command: boolean): void }>()
 /** Conversations whose next turn answers a request: its progress replies to the message that asked. */
 const replyNext = new Map<string, number>()
 /** Where the button being handled was pressed (callback handler), for mirrored progress. */
@@ -575,6 +593,60 @@ const pkgGate = createPkgGate({
   review: claudeReviewer({ claudeBin: cfg.claudeBin, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
 })
 
+/** Original updates and secrets (router/rawvault.ts, plan 10e). */
+const vault = createVault({
+  db, owners: cfg.owners, approvals: approvalDeps,
+  secretKey: () => cfg.secretKey!,
+  // values the router holds: matched exactly in every update
+  known: () => [
+    ...cfg.bots.map(b => ({ value: b.token, label: `router 的 bot ${b.name}` })),
+    ...Object.entries(cfg.credentials).map(([n, c]) => ({ value: c.token, label: `全域憑證 ${n}` })),
+    ...db.allConvSecrets().flatMap(s => {
+      try { return [{ value: openSecret(cfg.secretKey!, s.bot, s.chat_id, s.name, s.value), label: `對話密鑰 ${s.name} (${db.findConversation(s.bot, s.chat_id)?.key ?? s.chat_id})` }] } catch { return [] }
+    }),
+  ],
+  roleOf: uid => roleOf(commandDeps, uid),
+  api(name) {
+    const h = bots.get(name)
+    if (!h) return null
+    const api = h.bot.api
+    return {
+      send: (chatId, text, o) => api.sendMessage(chatId, text, {
+        ...(o?.replyTo ? { reply_parameters: { message_id: o.replyTo, allow_sending_without_reply: true } } : {}),
+        ...(o?.buttons?.length ? { reply_markup: { inline_keyboard: [o.buttons.map(b => ({ text: b.text, callback_data: b.data }))] } } : {}),
+      }).then(m => m.message_id, e => { log(`secret reminder to ${chatId}: ${e}`); return null }),
+      remove: (chatId, id) => api.deleteMessage(chatId, id).then(() => true, e => { log(`delete ${chatId}/${id}: ${e}`); return false }),
+      edit: async (chatId, id, text) => { await api.editMessageText(chatId, id, text, { reply_markup: { inline_keyboard: [] } }) },
+      async canDelete(chatId, type) {
+        if (type === 'private') return true
+        if (!h.info) return false
+        const m = await api.getChatMember(chatId, h.info.id).catch(() => null) as { status: string; can_delete_messages?: boolean } | null
+        return !!m && (m.status === 'creator' || (m.status === 'administrator' && !!m.can_delete_messages))
+      },
+    }
+  },
+  verifyBot: t => commandDeps.verifyBot(t),
+  ask: claudeAsk({ claudeBin: cfg.claudeBin, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
+  model: () => cfg.model,
+  secretDeps: { cfg, db, loadAccess, verifyBot: t => commandDeps.verifyBot(t) },
+  rawDir: join(cfg.stateDir, 'raw'),
+  notice: (bot, text) => postNotice(approvalDeps, bot, text),
+  personLabel: uid => personLabel(db, uid),
+  chatLabel: (_bot, chatId) => label(chatId),
+  log,
+})
+
+/** The 🔑 密鑰偵測 topic of a bot's approvals group, created when missing (setup group, startup). */
+async function ensureSecretTopic(bot: string): Promise<void> {
+  const s = db.getBotSetup(bot)
+  const api = bots.get(bot)?.bot.api
+  if (!s?.approvals_chat || s.secret_topic || !api) return
+  const t = (await api.createForumTopic(s.approvals_chat, SECRET_TOPIC)).message_thread_id
+  db.updateBotSetup(bot, { secret_topic: t })
+  await approvalDeps.send(bot, { chat_id: s.approvals_chat, thread_id: t }, SECRET_TOPIC_INTRO, [])
+  log(`${bot}: created topic ${SECRET_TOPIC} in the approvals group`)
+}
+
 /** Group setup: /router setup group, run in the forum group itself. */
 async function setupGroup(bot: string, chatId: string): Promise<string> {
   const h = bots.get(bot)
@@ -587,15 +659,17 @@ async function setupGroup(bot: string, chatId: string): Promise<string> {
   if (!check.ok) return `⛔ ${check.reason}\n\n${botSettingsNotice(meOf.get(bot) ?? h.info)}`
   const s = db.getBotSetup(bot)
   const same = s?.approvals_chat === chatId
-  const reuse = same && !!s.notices_topic && !!s.approvals_topic && !!s.elevlog_topic && !!s.authuse_topic
+  const reuse = same && !!s.notices_topic && !!s.approvals_topic && !!s.elevlog_topic && !!s.authuse_topic && !!s.secret_topic
   const topic = async (have: number | null | undefined, name: string) => (same && have) ? have : (await h.bot.api.createForumTopic(chatId, name)).message_thread_id
   const notices = await topic(s?.notices_topic, '🔔 重要通知')
   const approvals = await topic(s?.approvals_topic, '🔐 權限審核')
   const elevlog = await topic(s?.elevlog_topic, '📜 提權紀錄')
   const authuse = await topic(s?.authuse_topic, '🧾 執行授權')
+  const secret = await topic(s?.secret_topic, SECRET_TOPIC)
   const fresh = (have: number | null | undefined) => !(same && have)
-  db.updateBotSetup(bot, { approvals_chat: chatId, notices_topic: notices, approvals_topic: approvals, elevlog_topic: elevlog, authuse_topic: authuse, group_skipped: 0 })
+  db.updateBotSetup(bot, { approvals_chat: chatId, notices_topic: notices, approvals_topic: approvals, elevlog_topic: elevlog, authuse_topic: authuse, secret_topic: secret, group_skipped: 0 })
   if (fresh(s?.authuse_topic)) await approvalDeps.send(bot, { chat_id: chatId, thread_id: authuse }, '執行授權: 每一次動用已核准的權限 (提權的 subagent, 永久允許的動作, 跨對話傳訊, 已核准的套件) 都會記在這裡, 附工具呼叫內容與 🚫 撤銷 按鈕.', [])
+  if (fresh(s?.secret_topic)) await approvalDeps.send(bot, { chat_id: chatId, thread_id: secret }, SECRET_TOPIC_INTRO, [])
   if (!reuse) {
     await approvalDeps.send(bot, { chat_id: chatId, thread_id: notices }, '這裡會收到重要通知: 新對話, worker 叫不醒等.', [])
     await approvalDeps.send(bot, { chat_id: chatId, thread_id: approvals }, '這裡會收到權限申請: 跨對話傳訊, 套件安裝, 向 owner 的提權申請. owner 與 admin 可以按允許或拒絕.', [])
@@ -770,6 +844,7 @@ const commandDeps: CommandDeps = {
     resetPersona(bot) { db.updateBotSetup(bot, { persona_done: 0 }) },
     group: setupGroup,
   },
+  events: { rawToFile: id => vault.rawToFile(id) },
   overridesRemoved: (c, uid) => authz.syncRemoved(c, uid),
   effectiveSettings: c => applyOverrides(renderSettings(TEMPLATES, c.role, settingsVars(c)), db.listOverrides(c.key)),
   async sendTo(botName, chatId, text) {
@@ -904,8 +979,26 @@ function startBot(bc: BotConfig): BotHandle {
       throw e
     }
   })
+  // plan 10e: every update masked into events (the original sealed in
+  // event_raw) and each detection recorded in 🔑 密鑰偵測; the handlers below
+  // say whether the router took it as a command (secretOf).
   bot.use(async (ctx, next) => {
-    db.logEvent(bc.name, maskSecretUpdate(ctx.update))
+    const rec = vault.record(bc.name, ctx.update)
+    let noted = false
+    const note = (command: boolean) => {
+      if (!rec.findings.length || noted) return
+      noted = true
+      const chatId = ctx.chat ? String(ctx.chat.id) : null, senderId = ctx.from ? String(ctx.from.id) : null
+      const msg = ctx.message ?? ctx.editedMessage
+      void vault.detected(bc.name, rec, {
+        chatId, chatType: ctx.chat?.type ?? null, messageId: msg?.message_id ?? null, senderId, command,
+        served: !!chatId && !!senderId && servesChat(loadAccess(), cfg.owners, ctx.chat!.type, chatId, senderId),
+      }).catch(e => log(`secret detection ${rec.id}: ${e}`))
+    }
+    secretOf.set(ctx, { rec, note })
+    try { await next() } finally { note(false) }
+  })
+  bot.use(async (ctx, next) => {
     if (ctx.from) notePerson(bot, ctx.from, ctx.chat ? String(ctx.chat.id) : null)
     if (ctx.chat) {
       const title = ctx.chat.type === 'private'
@@ -929,7 +1022,7 @@ function startBot(bc: BotConfig): BotHandle {
     }
     // Buttons: send grants, package reviews, setup. Each settles every copy itself.
     const data = ctx.callbackQuery?.data
-    if (data && ctx.from && /^(grant|pkg|elev|setup):/.test(data)) {
+    if (data && ctx.from && /^(grant|pkg|elev|setup|sdel):/.test(data)) {
       const uid = String(ctx.from.id)
       let answer = null as string | null
       // the request message that was pressed: the turn this decision starts mirrors its progress there
@@ -940,6 +1033,7 @@ function startBot(bc: BotConfig): BotHandle {
         else if (data.startsWith('grant:')) answer = await decideGrant(grantDeps, data, uid, String(ctx.chat?.id ?? ''))
         else if (data.startsWith('pkg:')) answer = await pkgGate.decide(data, uid)
         else if (data.startsWith('elev:')) answer = await elevation.decide(data, uid)
+        else if (data.startsWith('sdel:')) answer = await vault.cancel(data, uid)
       })
       if (data === `setup:${bc.name}:skip`) {
         if (!cfg.owners.includes(uid)) answer = '只有 owner 能決定'
@@ -968,6 +1062,7 @@ function startBot(bc: BotConfig): BotHandle {
     // 「cc /xxx」: type a slash command into this conversation's worker.
     const rel = parseRelay(text)
     if (rel && ctx.chat && ctx.from && loadAccess().allowFrom.concat(Object.keys(loadAccess().groups)).some(x => x === String(ctx.chat!.id) || x === String(ctx.from!.id))) {
+      secretOf.get(ctx)?.note(true)
       void handleRelay(bc.name, String(ctx.chat.id), ctx.chat.type, String(ctx.from.id), ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name, ctx.message!.message_id, rel)
       return
     }
@@ -984,9 +1079,12 @@ function startBot(bc: BotConfig): BotHandle {
         chatId: String(chatId), chatType: ctx.chat.type, messageId, botUsername: h.info?.username,
         ...(replied?.from ? { reply: { uid: String(replied.from.id), messageId: replied.message_id } } : {}),
       }
+      secretOf.get(ctx)?.note(true)
       void answerCommand(bot, input).catch(e => log(`command failed: ${e}`))
       return
     }
+    // from here on (store, worker) the values are markers with kind and last 4
+    { const sec = secretOf.get(ctx); if (sec) vault.maskForWorker(ctx.update, sec.rec) }
     await next()
   })
 
@@ -1039,6 +1137,18 @@ for (const c of db.listConversations()) {
 }
 
 for (const bc of cfg.bots) startBot(bc)
+
+// 🔑 密鑰偵測 for approvals groups set up before it existed; deletions due
+// while the router was down go now, the rest as they come due.
+for (const bc of cfg.bots) void ensureSecretTopic(bc.name).catch(e => log(`${bc.name}: topic ${SECRET_TOPIC}: ${e}`))
+let vaultTicking = false
+const vaultTick = () => {
+  if (vaultTicking) return
+  vaultTicking = true
+  void vault.tick().catch(e => log(`secret deletions: ${e}`)).finally(() => { vaultTicking = false })
+}
+vaultTick()
+setInterval(vaultTick, 10_000).unref()
 
 // People seen before the people table existed: fill them in from the event log.
 {

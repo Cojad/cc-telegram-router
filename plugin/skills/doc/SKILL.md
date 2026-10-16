@@ -1,6 +1,6 @@
 ---
 name: doc
-description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, 角色與權限, 提權, 套件安裝審核, 審核群組與新 bot 初次設定, 頻道 (目前不支援), 「cc /」代打, 即時進度訊息. 有人問「怎麼設定角色」「怎麼查 uid」「/router 怎麼用」「為什麼被擋」「怎麼提權」「這個 bot 能做什麼」時使用.
+description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, 角色與權限, 提權, 套件安裝審核, 密鑰遮蔽與原文請求 (event_raw), 審核群組與新 bot 初次設定, 頻道 (目前不支援), 「cc /」代打, 即時進度訊息. 有人問「怎麼設定角色」「怎麼查 uid」「/router 怎麼用」「為什麼被擋」「怎麼提權」「這個 bot 能做什麼」時使用.
 ---
 
 # cc-telegram-router 使用說明
@@ -57,13 +57,22 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 
 任何角色的對話都能有自己的密鑰: 使用者在這個對話傳 `/secret set <名稱> <值> [方法...]` 或 `/secret set <名稱> <值> --http <網址> [路徑...]`, router 加密保存並刪掉那則訊息 (群組沒有刪除權限時提醒發送者刪), worker 用 `bot_api` / `http_api` 填那個名稱使用, 不看角色也不用授權, 值不會進到對話. `/secret list` 看有哪些, `/secret rm <名稱>` 移除; owner 與 admin 用 `/router secret list|rm <chat_id>` 管理任何對話的密鑰.
 
+## 密鑰與原文 (event_raw)
+
+- 訊息裡的密鑰 (Telegram bot token, OpenAI, Anthropic, GitHub, AWS, Google, Slack 的 key, PEM 私鑰, 已登記的憑證與對話密鑰) 由 router 換成 `<已遮蔽 #<event id>.<序號>: 種類, 末 4 碼 xxxx>` 才交給你, 原文加密保存. 不要叫使用者重貼.
+- 一般對話裡偵測到時, router 會回覆那則訊息提醒, 5 分鐘後刪除 (發送者, owner, admin 可以按「取消刪除」), bot 沒有刪除權限時只提醒. 每次偵測都記在審核群組的「🔑 密鑰偵測」話題.
+- 這一輪的發話者或這個對話是 owner 或 admin 時, 可以用 `event_raw` (event_id, question, 可選 ttl_minutes 或 permanent) 問原本是什麼, 任何對話的 event 都行: 你拿到密鑰換成代號 (`h<數字>`) 的原始 update 與固定 agent 的說明, 拿不到值. 代號只在這個對話有效, 預設 10 分鐘, 最多 60 分鐘, 或永久.
+- 要用就呼叫 `secret_from_handle` (handle, name, scope) 把代號登記成這個對話的密鑰 (scope 跟 `/secret set` 值後面的寫法一樣), 再用 `bot_api` / `http_api` 填 name.
+- `/secret handles` 列出這個對話的代號, `/secret revoke <代號>` 撤銷; owner 與 admin 用 `/router secret handles [chat_id]`, `/router secret revoke <代號>`.
+- 明文只有 owner 在終端機用 `cc-telegram-router cli event raw <id>` 寫進權限 600 的檔案; Telegram 裡沒有取得明文的方法.
+
 ## 頻道
 
 目前不支援 Telegram 廣播頻道 (channel): bot 被加入頻道時, router 只會通知 owner, 頻道貼文不會送進任何 worker, 頻道裡的指令也不處理. 有實際想要的應用場景, 請到 GitHub https://github.com/Cojad/cc-telegram-router/issues 提交使用情境與需要的功能.
 
 ## 審核群組與新 bot 初次設定
 
-- 重要通知 (新對話, worker 叫不醒) 與權限申請預設私訊 owner. owner 可以建一個開了話題的 supergroup, 把 bot 設為管理員並勾選「管理話題」, 在群組裡下 `/router setup group`, 之後改送到群組的「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」「🧾 執行授權」四個話題 (已設定過的群組再下一次會補上缺的話題).
+- 重要通知 (新對話, worker 叫不醒) 與權限申請預設私訊 owner. owner 可以建一個開了話題的 supergroup, 把 bot 設為管理員並勾選「管理話題」, 在群組裡下 `/router setup group`, 之後改送到群組的「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」「🧾 執行授權」「🔑 密鑰偵測」五個話題 (已設定過的群組再下一次會補上缺的話題).
 - 新 bot 第一次被 owner 私訊時, 會先訪談名字, 個性, 說話風格, 用途, 寫成那隻 bot 的人設.
 - `/router setup` 看狀態, `setup skip` 改回私訊 owner, `setup persona` 下次私訊時重新訪談.
 

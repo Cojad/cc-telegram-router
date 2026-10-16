@@ -10,10 +10,10 @@
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto'
 import type { Config, Credential } from './config'
-import type { RouterDb, ConvSecret } from './db'
+import type { RouterDb, ConvSecret, SecretHandle } from './db'
 import type { Access } from './telegram/policy'
 import type { CommandInput, CommandOutput } from './commands'
-import { maskTokens } from './context'
+import { maskTokens, gmt8 } from './context'
 import { badPath } from './credentials'
 
 export const MAX_SECRETS = 20
@@ -31,29 +31,37 @@ function keyOf(b64: string): Buffer {
 }
 const aadOf = (bot: string, chatId: string, name: string) => Buffer.from(`${bot}\n${chatId}\n${name}`)
 
-/** "v1:" + base64(iv 12 | tag 16 | ciphertext); bound to bot, chat and name. */
-export function sealSecret(keyB64: string, bot: string, chatId: string, name: string, value: string): string {
+/** "v1:" + base64(iv 12 | tag 16 | ciphertext), AES-256-GCM bound to aad. */
+function sealWith(keyB64: string, aad: Buffer, value: string): string {
   const iv = randomBytes(12)
   const c = createCipheriv('aes-256-gcm', keyOf(keyB64), iv)
-  c.setAAD(aadOf(bot, chatId, name))
+  c.setAAD(aad)
   const ct = Buffer.concat([c.update(value, 'utf8'), c.final()])
   return `v1:${Buffer.concat([iv, c.getAuthTag(), ct]).toString('base64')}`
 }
-
-export function openSecret(keyB64: string, bot: string, chatId: string, name: string, sealed: string): string {
+function openWith(keyB64: string, aad: Buffer, sealed: string): string {
   if (!sealed.startsWith('v1:')) throw new Error('密鑰格式不明')
   const raw = Buffer.from(sealed.slice(3), 'base64')
   const d = createDecipheriv('aes-256-gcm', keyOf(keyB64), raw.subarray(0, 12))
-  d.setAAD(aadOf(bot, chatId, name))
+  d.setAAD(aad)
   d.setAuthTag(raw.subarray(12, 28))
   return Buffer.concat([d.update(raw.subarray(28)), d.final()]).toString('utf8')
 }
+
+/** Bound to bot, chat and name. */
+export const sealSecret = (keyB64: string, bot: string, chatId: string, name: string, value: string) => sealWith(keyB64, aadOf(bot, chatId, name), value)
+export const openSecret = (keyB64: string, bot: string, chatId: string, name: string, sealed: string) => openWith(keyB64, aadOf(bot, chatId, name), sealed)
+
+/** An original update (plan 10e event_raw), bound to its events row: moved to another row it does not open. */
+const rawAad = (eventId: number) => Buffer.from(`event_raw\n${eventId}`)
+export const sealRaw = (keyB64: string, eventId: number, json: string) => sealWith(keyB64, rawAad(eventId), json)
+export const openRaw = (keyB64: string, eventId: number, sealed: string) => openWith(keyB64, rawAad(eventId), sealed)
 
 /** Commands that carry a token or key: "/secret set <名稱> <值>", "/router
  *  cred add <名稱> <token>", "/router bot add|rotate <名稱> <token>". The
  *  value becomes <已遮蔽> (a lone argument is masked too, it may be a value
  *  without a name). Also inside "cc /..." and reply quotes. */
-const SECRET_CMDS = /(\/(?:secret(?:@\w+)?\s+set|router(?:@\w+)?\s+(?:cred\s+add|bot\s+(?:add|rotate)))\s+)(\S+)(?:(\s+)(\S+))?/gi
+export const SECRET_CMDS = /(\/(?:secret(?:@\w+)?\s+set|router(?:@\w+)?\s+(?:cred\s+add|bot\s+(?:add|rotate)))\s+)(\S+)(?:(\s+)(\S+))?/gi
 export function maskSecretText(text: string): string {
   return text.replace(SECRET_CMDS, (_m, head: string, a: string, sp: string | undefined, b: string | undefined) =>
     b ? `${head}${a}${sp}${MASK}` : `${head}${MASK}`)
@@ -112,6 +120,7 @@ const USAGE = [
   '/secret set <名稱> <token> [方法...] (Telegram bot token, 沒寫方法就是全部)',
   '/secret set <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴>] [路徑...] (結尾 * 代表前綴, 沒寫路徑就是全部; 預設 Authorization: Bearer <key>, 只寫 --header 時值原樣放進那個標頭)',
   '/secret list | rm <名稱>',
+  '/secret handles (router 發給這個對話的密鑰代號) | revoke <代號>',
   '密鑰只屬於這個對話, 加密存在 router, 對話裡的分身只拿得到名稱, 用 bot_api / http_api 工具呼叫',
 ].join('\n')
 
@@ -121,6 +130,21 @@ export interface SecretDeps {
   loadAccess(): Access
   /** getMe with the token: "@username (id)", or throws why it is not a bot token. */
   verifyBot(token: string): Promise<string>
+}
+
+/** A chat the router serves for this sender: an allowed DM, an allowed group. */
+export function servesChat(access: Access, owners: string[], chatType: string, chatId: string, senderId: string): boolean {
+  return chatType === 'private'
+    ? owners.includes(senderId) || access.allowFrom.includes(senderId)
+    : Object.prototype.hasOwnProperty.call(access.groups, chatId) && (!access.groups[chatId]!.allowFrom?.length || access.groups[chatId]!.allowFrom.includes(senderId))
+}
+
+/** Handles (plan 10e secret_handles) as a list: code, kind, last 4, expiry, registered name, uses. */
+export function describeHandles(list: SecretHandle[], at = Date.now()): string {
+  return list.map(h => {
+    const state = h.revoked_at ? `已撤銷 (${h.revoked_by})` : h.expires_at == null ? '永久' : Date.parse(h.expires_at) <= at ? '已過期' : `${gmt8(new Date(h.expires_at))} 到期`
+    return `${h.code}: ${h.kind}, 末 4 碼 ${h.last4}, event #${h.event_id}, ${state}${h.registered ? `, 已登記為 ${h.registered}` : ''}, 使用 ${h.uses} 次`
+  }).join('\n')
 }
 
 /** /secret in any chat the router serves, any role. null: not for this bot. */
@@ -140,10 +164,7 @@ export async function runSecretCommand(input: CommandInput & { botUsername?: str
     return { reply, logs, ...(del ? { deleteMessage: true, deleteLabel: '含密鑰的訊息' } : {}) }
   }
   // only chats the router serves: an allowed DM, an allowed group
-  const access = deps.loadAccess()
-  const served = input.chatType === 'private'
-    ? deps.cfg.owners.includes(input.senderId) || access.allowFrom.includes(input.senderId)
-    : Object.prototype.hasOwnProperty.call(access.groups, input.chatId) && (!access.groups[input.chatId]!.allowFrom?.length || access.groups[input.chatId]!.allowFrom.includes(input.senderId))
+  const served = servesChat(deps.loadAccess(), deps.cfg.owners, input.chatType, input.chatId, input.senderId)
   if (!served) return done(`⛔ 這個對話沒有開放給 bot 使用, 不能登記密鑰${hasValue ? '; 值曾出現在這裡, 請到發出它的地方換一把新的' : ''}`)
 
   const bot = input.bot, chatId = input.chatId
@@ -154,6 +175,17 @@ export async function runSecretCommand(input: CommandInput & { botUsername?: str
       const list = db.listConvSecrets(bot, chatId)
       return done(list.length ? `這個對話的密鑰 (${list.length}/${MAX_SECRETS}):\n${describeSecrets(list)}` : '這個對話還沒有密鑰\n' + USAGE)
     }
+    case 'handles': {
+      // handles the router gave this conversation (plan 10e event_raw)
+      const list = db.listHandles(bot, chatId).filter(h => !h.revoked_at && (h.expires_at == null || Date.parse(h.expires_at) > Date.now()))
+      return done(list.length ? `這個對話有效的密鑰代號:\n${describeHandles(list)}` : '這個對話沒有有效的密鑰代號')
+    }
+    case 'revoke': {
+      const code = args[1]
+      const h = code ? db.getHandle(code) : null
+      if (!h || h.bot !== bot || h.chat_id !== chatId) return done('用法: /secret revoke <代號> (這個對話的代號, /secret handles 列出)')
+      return done(db.revokeHandle(h.code, input.senderId) ? `已撤銷代號 ${h.code}${h.registered ? ` (已登記的密鑰 ${h.registered} 不受影響, 要移除用 /secret rm ${h.registered})` : ''}` : `代號 ${h.code} 已經撤銷過`)
+    }
     case 'rm': {
       const name = args[1]
       if (!name) return done('用法: /secret rm <名稱>')
@@ -162,62 +194,72 @@ export async function runSecretCommand(input: CommandInput & { botUsername?: str
     case 'set': {
       const name = args[1], value = args[2]
       if (!name || !value || !NAME_RE.test(name)) return done(`用法:\n${USAGE}\n名稱用小寫英數, - 或 _, 最多 32 字`)
-      if (name === 'self') return done('self 是 bot_api 保留給 bot 自己的名稱, 換一個名稱')
-      if (!deps.cfg.secretKey) return done('router 還沒有加密金鑰 (config.json secretKey), 請 owner 重啟 router')
-      if (Buffer.byteLength(value, 'utf8') > MAX_SECRET_BYTES) return done(`值太長, 最多 ${MAX_SECRET_BYTES} bytes`)
-      if (deps.cfg.bots.some(b => b.token === value)) return done('⛔ 這是 router 自己的 bot token, 不能登記; 它出現在對話裡了, 請 owner 換一把新的')
-      const rest = args.slice(3)
-      const httpAt = rest.indexOf('--http')
-      let kind: ConvSecret['kind'] = 'telegram-bot', baseUrl: string | null = null, allowed: string[]
-      let header: string | null = null, scheme: string | null = null, label: string | null = null
-      if (httpAt >= 0) {
-        if (httpAt !== 0) return done('--http 要接在值的後面: /secret set <名稱> <API key> --http <網址> [路徑...]')
-        baseUrl = rest[1] ?? ''
-        // --header <標頭> / --scheme <前綴>, anywhere after the URL
-        const after = rest.slice(2)
-        for (const flag of ['--header', '--scheme'] as const) {
-          const i = after.indexOf(flag)
-          if (i < 0) continue
-          const v = after[i + 1]
-          if (!v || v.startsWith('--')) return done(`${flag} 後面要接${flag === '--header' ? '標頭名稱, 例如 --header x-api-key' : '前綴, 例如 --scheme Token'}`)
-          if (flag === '--header') {
-            if (!/^[A-Za-z0-9-]{1,64}$/.test(v) || RESERVED_HEADERS.has(v.toLowerCase())) return done(`標頭 ${v} 不行: 只能用英數與 -, 不能是 Host, Content-Type, Cookie 這類標頭`)
-            header = v
-          } else {
-            if (!/^[A-Za-z0-9._-]{1,32}$/.test(v)) return done(`前綴 ${v} 不行: 只能用英數與 . _ -`)
-            scheme = v
-          }
-          after.splice(i, 2)
-        }
-        // only --header: the key goes in that header as it is
-        if (header && scheme == null) scheme = ''
-        if (header?.toLowerCase() === 'authorization') header = 'Authorization'
-        rest.splice(2, rest.length - 2, ...after)
-        let u: URL | null = null
-        try { u = new URL(baseUrl) } catch {}
-        if (!u || !/^https?:$/.test(u.protocol) || u.username || u.password || u.search || u.hash) return done('--http 後面要接網址, 例如 --http https://api.example.com (不含帳密, ? 或 #)')
-        baseUrl = baseUrl.replace(/\/+$/, '')
-        kind = 'http'
-        allowed = rest.slice(2)
-        const bad = allowed.find(p => !p.startsWith('/') || badPath(p.replace(/\*$/, '')))
-        if (bad) return done(`路徑 ${bad} 不行: 要以 / 開頭, 不能含 .. 等, 例如 /v1/images/generations (結尾 * 代表前綴)`)
-      } else {
-        allowed = rest
-        const bad = allowed.find(x => !/^([A-Za-z]+\*?|\*)$/.test(x))
-        if (bad) return done(`方法 ${bad} 不像 Bot API 方法名稱, 例如 sendMessage 或 get* (要登記一般 API key 請加 --http <網址>)`)
-        // a bot token must be one: getMe with it (no switch to skip this)
-        try { label = await deps.verifyBot(value) } catch (e) { return done(`這不是可用的 bot token (getMe 失敗: ${e instanceof Error ? e.message : e}), 沒有登記`) }
-      }
-      if (!allowed.length) allowed = ['*']
-      const exists = db.getConvSecret(bot, chatId, name)
-      if (!exists && db.listConvSecrets(bot, chatId).length >= MAX_SECRETS) return done(`這個對話已經有 ${MAX_SECRETS} 把密鑰, 先 /secret rm 不用的`)
-      db.setConvSecret({ bot, chat_id: chatId, name, kind, value: sealSecret(deps.cfg.secretKey, bot, chatId, name, value), base_url: baseUrl, allowed: JSON.stringify(allowed), header, scheme, label, added_by: input.senderId, created_at: now() })
-      return done([
-        `已${exists ? '更新' : '登記'}這個對話的密鑰 ${name}: ${scope({ kind, base_url: baseUrl, allowed: JSON.stringify(allowed), header, scheme, label })}`,
-        `值加密存在 router, 只有這個對話能用 (${kind === 'http' ? 'http_api' : 'bot_api'} 工具, credential 填 ${name})`,
-      ].join('\n'))
+      return done((await registerSecret(deps, bot, chatId, name, value, args.slice(3), input.senderId, now)).text)
     }
     default:
       return done(USAGE)
   }
+}
+
+/** Register (or replace) a conversation secret: /secret set, and a handle
+ *  registered with secret_from_handle (plan 10e; source = the handle). rest:
+ *  what follows the value in /secret set (methods, or --http <網址> ...). */
+export async function registerSecret(deps: SecretDeps, bot: string, chatId: string, name: string, value: string, restIn: string[], addedBy: string, now = () => new Date().toISOString(), source: string | null = null): Promise<{ ok: boolean; text: string }> {
+  const { db } = deps
+  const no = (text: string) => ({ ok: false, text })
+  if (!NAME_RE.test(name)) return no('名稱用小寫英數, - 或 _, 最多 32 字')
+  if (name === 'self') return no('self 是 bot_api 保留給 bot 自己的名稱, 換一個名稱')
+  if (!deps.cfg.secretKey) return no('router 還沒有加密金鑰 (config.json secretKey), 請 owner 重啟 router')
+  if (Buffer.byteLength(value, 'utf8') > MAX_SECRET_BYTES) return no(`值太長, 最多 ${MAX_SECRET_BYTES} bytes`)
+  if (deps.cfg.bots.some(b => b.token === value)) return no('⛔ 這是 router 自己的 bot token, 不能登記; 它出現在對話裡了, 請 owner 換一把新的')
+  const rest = [...restIn]
+  const httpAt = rest.indexOf('--http')
+  let kind: ConvSecret['kind'] = 'telegram-bot', baseUrl: string | null = null, allowed: string[]
+  let header: string | null = null, scheme: string | null = null, label: string | null = null
+  if (httpAt >= 0) {
+    if (httpAt !== 0) return no('--http 要接在值的後面: /secret set <名稱> <API key> --http <網址> [路徑...]')
+    baseUrl = rest[1] ?? ''
+    // --header <標頭> / --scheme <前綴>, anywhere after the URL
+    const after = rest.slice(2)
+    for (const flag of ['--header', '--scheme'] as const) {
+      const i = after.indexOf(flag)
+      if (i < 0) continue
+      const v = after[i + 1]
+      if (!v || v.startsWith('--')) return no(`${flag} 後面要接${flag === '--header' ? '標頭名稱, 例如 --header x-api-key' : '前綴, 例如 --scheme Token'}`)
+      if (flag === '--header') {
+        if (!/^[A-Za-z0-9-]{1,64}$/.test(v) || RESERVED_HEADERS.has(v.toLowerCase())) return no(`標頭 ${v} 不行: 只能用英數與 -, 不能是 Host, Content-Type, Cookie 這類標頭`)
+        header = v
+      } else {
+        if (!/^[A-Za-z0-9._-]{1,32}$/.test(v)) return no(`前綴 ${v} 不行: 只能用英數與 . _ -`)
+        scheme = v
+      }
+      after.splice(i, 2)
+    }
+    // only --header: the key goes in that header as it is
+    if (header && scheme == null) scheme = ''
+    if (header?.toLowerCase() === 'authorization') header = 'Authorization'
+    rest.splice(2, rest.length - 2, ...after)
+    let u: URL | null = null
+    try { u = new URL(baseUrl) } catch {}
+    if (!u || !/^https?:$/.test(u.protocol) || u.username || u.password || u.search || u.hash) return no('--http 後面要接網址, 例如 --http https://api.example.com (不含帳密, ? 或 #)')
+    baseUrl = baseUrl.replace(/\/+$/, '')
+    kind = 'http'
+    allowed = rest.slice(2)
+    const bad = allowed.find(p => !p.startsWith('/') || badPath(p.replace(/\*$/, '')))
+    if (bad) return no(`路徑 ${bad} 不行: 要以 / 開頭, 不能含 .. 等, 例如 /v1/images/generations (結尾 * 代表前綴)`)
+  } else {
+    allowed = rest
+    const bad = allowed.find(x => !/^([A-Za-z]+\*?|\*)$/.test(x))
+    if (bad) return no(`方法 ${bad} 不像 Bot API 方法名稱, 例如 sendMessage 或 get* (要登記一般 API key 請加 --http <網址>)`)
+    // a bot token must be one: getMe with it (no switch to skip this)
+    try { label = await deps.verifyBot(value) } catch (e) { return no(`這不是可用的 bot token (getMe 失敗: ${e instanceof Error ? e.message : e}), 沒有登記`) }
+  }
+  if (!allowed.length) allowed = ['*']
+  const exists = db.getConvSecret(bot, chatId, name)
+  if (!exists && db.listConvSecrets(bot, chatId).length >= MAX_SECRETS) return no(`這個對話已經有 ${MAX_SECRETS} 把密鑰, 先 /secret rm 不用的`)
+  db.setConvSecret({ bot, chat_id: chatId, name, kind, value: sealSecret(deps.cfg.secretKey, bot, chatId, name, value), base_url: baseUrl, allowed: JSON.stringify(allowed), header, scheme, label, added_by: addedBy, created_at: now(), source })
+  return { ok: true, text: [
+    `已${exists ? '更新' : '登記'}這個對話的密鑰 ${name}: ${scope({ kind, base_url: baseUrl, allowed: JSON.stringify(allowed), header, scheme, label })}`,
+    `值加密存在 router, 只有這個對話能用 (${kind === 'http' ? 'http_api' : 'bot_api'} 工具, credential 填 ${name})`,
+  ].join('\n') }
 }

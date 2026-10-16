@@ -33,7 +33,7 @@ export function connectRouter(opts: ClientOpts) {
   let backoff = 500
   const pending = new Map<number, (r: ToolResult) => void>()
   const timeout = opts.callTimeoutMs ?? 120_000
-  const toolTimeout = opts.toolTimeoutMs ?? { run_skill: 2_100_000 }
+  const toolTimeout = opts.toolTimeoutMs ?? { run_skill: 2_100_000, event_raw: 180_000 }
 
   function flush(): void {
     if (!sock || !out) return

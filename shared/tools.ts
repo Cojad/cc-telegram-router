@@ -154,6 +154,33 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'event_raw',
+    description: 'Ask what a masked message originally was (plan 10e). A secret in a message reaches you as <已遮蔽 #<event id>.<n>: 種類, 末 4 碼 xxxx>; the original update is kept encrypted. Only in a turn whose sender, or this conversation, is owner or admin (any conversation\'s event, the owner\'s DM too). The router swaps each value for a handle with what it can tell (kind, the bot getMe finds, whether it equals a stored credential) and a fixed-prompt agent with no tools answers your question; you get that handle version and the answer, never a value. Handles work only in this conversation: ttl_minutes (default 10, at most 60) or permanent (listed and revoked with /secret handles, /secret revoke). Logged in the 🔑 密鑰偵測 topic. To use a handle call secret_from_handle.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'number', description: 'The event id: the number after # in <已遮蔽 #id.n ...>' },
+        question: { type: 'string', description: 'What you want to know, e.g. 這則訊息原本是什麼, 遮掉的是什麼, 可以怎麼用' },
+        ttl_minutes: { type: 'number', description: 'How long the handles stay valid, 1 to 60 (default 10)' },
+        permanent: { type: 'boolean', description: 'Handles that stay until revoked' },
+      },
+      required: ['event_id', 'question'],
+    },
+  },
+  {
+    name: 'secret_from_handle',
+    description: 'Register a handle from event_raw (h<數字>) as this conversation\'s own secret, as /secret set would (a Telegram bot token is checked with getMe; same limits), without the value ever reaching you. Then call bot_api / http_api with credential = name. Logged in the 🔑 密鑰偵測 topic.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', description: 'e.g. h7' },
+        name: { type: 'string', description: 'Secret name: lowercase letters, digits, - or _' },
+        scope: { type: 'string', description: 'What follows the value in /secret set: Bot API methods ("sendMessage get*", empty = all), or "--http <網址> [--header <標頭>] [--scheme <前綴>] [路徑...]" for an API key' },
+      },
+      required: ['handle', 'name'],
+    },
+  },
+  {
     name: 'run_skill',
     description: 'Run an approved privileged action of a skill (its privileged.json, e.g. web-instagram extract): the router runs it in its own sandbox with the credentials it needs (cookies...), which never reach you; output files land in your folder. Works for user and power conversations without elevation. args must match the action\'s argument patterns; an argument limited to higher roles (e.g. force for a long video) triggers an elevation request instead. Limited to 10 runs per hour per conversation.',
     inputSchema: {

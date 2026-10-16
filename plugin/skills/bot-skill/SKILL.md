@@ -52,6 +52,7 @@ bot token 會先用 getMe 驗證, 不是有效的 bot token 就不會存.
 router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到 `<已遮蔽>`), 加密存起來, 私訊裡立刻刪掉; 群組裡 bot 沒有刪除權限時會提醒發送者自己刪.
 之後用 `bot_api` 或 `http_api`, credential 填那個名稱: 對話自己的密鑰優先於全域憑證, 不看角色也不用授權, 只能呼叫登記時的方法或網址與路徑.
 回應裡出現的值會換成 `<密鑰>`. 使用者用 `/secret list` 看有哪些, `/secret rm <名稱>` 移除. 這只是**建議使用者自己去下指令**, 不要叫他把值貼給你.
+使用者已經把值貼在對話裡時, 你看到的是 `<已遮蔽 #<event id>.<序號>: ...>`: 不要叫他重貼. owner 或 admin 的一輪可以用 `event_raw` 拿到代號, 再用 `secret_from_handle` 登記成這個對話的密鑰 (見 /telegram:doc 的「密鑰與原文」).
 
 ### 一般 API key (OpenAI 之類)
 
