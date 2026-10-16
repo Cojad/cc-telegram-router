@@ -31,6 +31,7 @@ const HTTP_KEY = 'sk-fake-e2e-0001', BOT_KEY = '999:fake-group-token-AAAAAAAAAAA
 
 const calls: Array<{ method: string; body: any; token?: string; auth?: string | null; xkey?: string | null }> = []
 const updates: unknown[] = []
+let forumOk = true
 const now = Math.floor(Date.now() / 1000)
 const api = Bun.serve({
   port: 0,
@@ -52,7 +53,7 @@ const api = Bun.serve({
       case 'sendMessage': return ok({ message_id: 900 + calls.length, date: now, chat: { id: Number(body.chat_id) }, text: body.text, token_seen: token })
       // not an admin in the group: it cannot delete other people's messages there
       case 'deleteMessage': return Number(body.chat_id) === GROUP ? Response.json({ ok: false, error_code: 400, description: "Bad Request: message can't be deleted" }) : ok(true)
-      case 'getChat': return ok({ id: Number(body.chat_id), title: 'Approvals', type: 'supergroup', is_forum: true })
+      case 'getChat': return ok(forumOk ? { id: Number(body.chat_id), title: 'Approvals', type: 'supergroup', is_forum: true } : { id: Number(body.chat_id), title: 'Plain', type: 'group' })
       case 'getChatMember': return ok({ user: { id: 1 }, status: 'administrator', can_manage_topics: true })
       case 'createForumTopic': return ok({ message_thread_id: 40 + calls.length, name: body.name })
       default: return ok(true)
@@ -224,7 +225,7 @@ test('added to a group: the owner is told about privacy mode (re-add after chang
   expect(a.body.text).toContain('Bot-to-Bot Communication Mode')
 }, 30000)
 
-test('bot settings notices on first-run setup and /router setup group: the group guide and the setup result carry the privacy notice and bot-to-bot', async () => {
+test('bot settings notices on first-run setup and /router setup group: the group guide and the setup result (done or refused) carry the privacy notice and bot-to-bot', async () => {
   // the bot is new here (no persona): the owner's worker saves one, the router sends the group guide
   const owner = worker('dm-555', 41)
   await until(() => owner.state().kind === 'ready')
@@ -232,6 +233,12 @@ test('bot settings notices on first-run setup and /router setup group: the group
   const guide = await until(() => sentTo(555, '最後一步: 設定審核群組')[0], 10000)
   for (const s of ['你目前 Group Privacy 設定: ⚠️ 開啟', '從群組移除再重新加入才會生效', '不受隱私模式限制', 'Bot-to-Bot Communication Mode']) expect(guide.body.text).toContain(s)
   owner.close()
+  // a plain group cannot be the approvals group: refused, with the notice all the same
+  forumOk = false
+  updates.push({ update_id: mid, message: { message_id: mid++, date: now, chat: { id: -100802, type: 'group', title: 'Plain' }, from: OWNER, text: '/router setup group', entities: [{ type: 'bot_command', offset: 0, length: 7 }] } })
+  const no = await until(() => sentTo(-100802, '⛔ 審核群組必須是 supergroup')[0])
+  for (const s of ['你目前 Group Privacy 設定: ⚠️ 開啟', 'Bot-to-Bot Communication Mode']) expect(no.body.text).toContain(s)
+  forumOk = true
   updates.push({ update_id: mid, message: { message_id: mid++, date: now, chat: { id: -100801, type: 'supergroup', title: 'Approvals' }, from: OWNER, text: '/router setup group', entities: [{ type: 'bot_command', offset: 0, length: 7 }] } })
   const done = await until(() => sentTo(-100801, '✅ 審核群組設定完成')[0])
   for (const s of ['你目前 Group Privacy 設定: ⚠️ 開啟', '從群組移除再重新加入才會生效', 'Bot-to-Bot Communication Mode']) expect(done.body.text).toContain(s)

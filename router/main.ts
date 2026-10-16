@@ -557,7 +557,8 @@ async function setupGroup(bot: string, chatId: string): Promise<string> {
   if (!chat) return '查不到這個群組'
   const member = await h.bot.api.getChatMember(chatId, h.info.id).catch(() => null)
   const check = checkGroup(chat as { type: string; is_forum?: boolean }, member as { status: string; can_manage_topics?: boolean } | null)
-  if (!check.ok) return `⛔ ${check.reason}`
+  // the bot settings notice either way: privacy matters for every group, not only the approvals one
+  if (!check.ok) return `⛔ ${check.reason}\n\n${botSettingsNotice(meOf.get(bot) ?? h.info)}`
   const s = db.getBotSetup(bot)
   const same = s?.approvals_chat === chatId
   const reuse = same && !!s.notices_topic && !!s.approvals_topic && !!s.elevlog_topic && !!s.authuse_topic
