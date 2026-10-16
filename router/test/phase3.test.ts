@@ -591,6 +591,7 @@ test('elevation for a skill argument: run_skill with force from a user conversat
   expect(sent).toHaveLength(1)
   expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:deny'])
   expect(sent[0]!.text).toContain('♾️ 不能永久允許: 技能參數的角色限制沒辦法寫成固定規則')
+  expect(sent[0]!.text).toContain('mcp__plugin_telegram_telegram__run_skill: {"skill":"web-instagram","action":"extract","args":{"url":"https://www.youtube.com/watch?v=1","force":true}}')
   expect(await e.decide('elev:1:once', OWNER)).toBe('已提權一次')
   // the main session may still not; the elevated subagent's call passes and leaves an owner ticket
   expect((await e.onHook(conv, { event: 'pre', quiet: true, tool_name: call.tool_name, tool_input: call.tool_input })).decision).toBe('deny')

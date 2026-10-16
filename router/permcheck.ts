@@ -113,7 +113,8 @@ export function checkCall(settings: any, call: Call, folder: string, role = 'thi
 /** One line for logs and approval messages. */
 export function describeCall(call: Call): string {
   const i = call.tool_input ?? {}
-  const what = i.command ?? i.file_path ?? i.notebook_path ?? i.path ?? i.url ?? i.query ?? ''
+  // anything else (an MCP tool such as run_skill): its arguments as they are
+  const what = i.command ?? i.file_path ?? i.notebook_path ?? i.path ?? i.url ?? i.query ?? (Object.keys(i).length ? JSON.stringify(i) : '')
   return `${call.tool_name}${i.dangerouslyDisableSandbox ? ' (跳出 sandbox)' : ''}: ${String(what).replace(/\s+/g, ' ').slice(0, 160)}`
 }
 
