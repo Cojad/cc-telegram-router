@@ -95,7 +95,7 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 | `/router setup [group\|skip\|persona]` | 審核群組與 bot 初次設定 (只限 owner) |
 | `/router cred list \| add <名稱> <token> [方法...] \| allow\|disallow <名稱> <方法...> \| roles <名稱> <角色,...> \| rm <名稱>` | 跨 bot 技能用的憑證; add 只能在自己和 bot 的私訊下, 訊息會被刪除 |
 | `/router botapi <憑證> <方法> <JSON> [--file 欄位=/路徑]` | owner 直接用憑證呼叫 Bot API (終端機用 `cc-telegram-router cli botapi ...`) |
-| `/router config` | 列出 router 設定; `get`/`set <key>` 讀寫單項 |
+| `/router config` | 列出 router 設定; `get`/`set <key>` 讀寫單項 (owners 與 claudeBin 只有 owner 能改) |
 | `/router log [chat_id] [筆數]` | 最近的訊息紀錄 |
 | `/router bot list` | 列出 bot (add/rotate/remove 只限 owner 私訊) |
 | `/restart` | 重啟 router, worker 不受影響 |

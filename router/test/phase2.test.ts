@@ -74,6 +74,10 @@ test('admin may run commands but may not make anyone owner nor touch an owner', 
   expect((await run(`/router role user ${USER} power`, ADMIN))!.reply).toBe(`${USER} 的角色: user → power`)
   expect(db.getUserRole(USER)).toBe('power')
   expect((await run('/router config set owners 500', ADMIN))!.reply).toBe('⛔ admin 不能異動 owner 的角色與權限')
+  // claudeBin runs outside any sandbox: setting it would hand admin the owner's reach
+  expect((await run('/router config set claudeBin /tmp/evil', ADMIN))!.reply).toBe('⛔ claudeBin 由 router 在 sandbox 外執行, 只有 owner 能改')
+  expect(cfg.claudeBin).toBe('claude')
+  expect((await run('/router config set model claude-opus-5-5', ADMIN))!.reply).not.toStartWith('⛔')
 })
 
 test('bot list for admin; token commands only in the owner DM, and a token message is always deleted', async () => {

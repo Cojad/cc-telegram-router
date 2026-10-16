@@ -518,6 +518,8 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       if (op === 'get') return done(`${key} = ${JSON.stringify(cur)}`, { private: true })
       if (op !== 'set' || args.length < 4) return done('用法: /router config get <key> | set <key> <值>')
       if (key === 'owners' && role !== 'owner') return deny('admin 不能異動 owner 的角色與權限')
+      // the router runs claudeBin outside any sandbox (workers, package review, relay): owner-level power
+      if (key === 'claudeBin' && role !== 'owner') return deny('claudeBin 由 router 在 sandbox 外執行, 只有 owner 能改')
       const raw = args.slice(3).join(' ')
       let value: unknown = raw
       if (CONFIG_KEYS[key] === 'number') { value = Number(raw); if (!Number.isFinite(value)) return done(`${key} 要是數字`) }
