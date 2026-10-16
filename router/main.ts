@@ -400,7 +400,9 @@ const ipc = createIpc({
       }
     }
     return callConv.run(conv?.key ?? 'terminal', () => callTool(tool, args, {
-      bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store,
+      bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store, apiRoot: cfg.apiRoot,
+      // plan 10e: secrets in a downloaded text file become markers
+      scanDownload: (buf, file) => vault.attachment(botName, file, buf),
       assertAllowedChat: makeAssertAllowedChat(live, loadAccess, chatId => (onBehalf && chatId === target) || !!conv && sendGranted(db.listOverrides(conv.key).filter(o => o.kind === 'send').map(o => o.value), chatId, id => { const a = loadAccess(); return a.allowFrom.includes(id) || id in a.groups })),
       assertSendable: makeAssertSendable(live, cfg.stateDir),
     }))
@@ -635,6 +637,7 @@ const vault = createVault({
   notice: (bot, text) => postNotice(approvalDeps, bot, text),
   personLabel: uid => personLabel(db, uid),
   chatLabel: (_bot, chatId) => label(chatId),
+  served: (type, chatId, uid) => servesChat(loadAccess(), cfg.owners, type, chatId, uid),
   log,
 })
 

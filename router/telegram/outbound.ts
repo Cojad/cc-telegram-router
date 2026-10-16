@@ -32,6 +32,11 @@ export interface OutboundDeps {
   /** Throws if a file path being sent as an attachment reaches into plugin state. */
   assertSendable: (path: string) => void
   store: Pick<Store, 'record' | 'lookup' | 'recent'>
+  /** Bot API server (tests); default https://api.telegram.org. */
+  apiRoot?: string
+  /** A downloaded file before it is written (plan 10e: secrets in text files
+   *  become markers); returns the bytes to write. */
+  scanDownload?: (buf: Buffer, file: { file_id: string; file_path: string }) => Promise<Buffer>
 }
 
 const DEFAULT_LOOKUP_LIMIT = 10
@@ -176,10 +181,11 @@ export async function callTool(name: string, args: Record<string, unknown>, deps
         const file_id = args.file_id as string
         const file = await bot.api.getFile(file_id)
         if (!file.file_path) throw new Error('Telegram returned no file_path — file may have expired')
-        const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`
+        const url = `${deps.apiRoot ?? 'https://api.telegram.org'}/file/bot${token}/${file.file_path}`
         const res = await fetch(url)
         if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
-        const buf = Buffer.from(await res.arrayBuffer())
+        let buf = Buffer.from(await res.arrayBuffer())
+        if (deps.scanDownload) buf = await deps.scanDownload(buf, { file_id, file_path: file.file_path })
         // file_path is from Telegram (trusted), but strip to safe chars anyway
         // so nothing downstream can be tricked by an unexpected extension.
         const rawExt = file.file_path.includes('.') ? file.file_path.split('.').pop()! : 'bin'

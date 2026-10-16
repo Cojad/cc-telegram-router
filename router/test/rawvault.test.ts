@@ -5,7 +5,8 @@
 // (cancel by sender, owner, admin; survives a restart), event_raw (role,
 // handles, the fixed agent, the exit check, haiku refused), secret_from_handle,
 // cli event raw (600 file), /secret handles|revoke, /router secret
-// handles|revoke, /router event raw. Keep in sync with README 「原始事件與密鑰保護」
+// handles|revoke, /router event raw; text attachments scanned when a worker
+// downloads them; the fixed agent's language rule. Keep in sync with README 「原始事件與密鑰保護」
 // and /telegram:doc; end to end in e2e-rawvault.test.ts.
 // Every token here is fake and built at runtime (no token-shaped literal in the repo).
 
@@ -16,7 +17,7 @@ import { join } from 'path'
 import { openRouterDb, type RouterDb, type Conversation } from '../db'
 import { newSecretKey, sealRaw, openRaw, openSecret, runSecretCommand, type SecretDeps } from '../secrets'
 import { detectSecrets, scanUpdate, ownFindings, workerMarker, CMD_KIND, KNOWN_KIND } from '../detect'
-import { createVault, claudeAsk, RAW_SYSTEM, DELETE_AFTER_MS, type VaultApi, type VaultDeps } from '../rawvault'
+import { createVault, claudeAsk, isTextAttachment, RAW_SYSTEM, DELETE_AFTER_MS, MAX_TEXT_ATTACHMENT, type VaultApi, type VaultDeps } from '../rawvault'
 import { runCommand, type CommandDeps } from '../commands'
 import type { Access } from '../telegram/policy'
 import type { ApprovalDeps } from '../approvals'
@@ -62,6 +63,7 @@ function makeVault(extra: Partial<VaultDeps> = {}) {
     secretDeps, rawDir: join(dir, '.router', 'raw'),
     async notice(_bot, text) { notices.push(text) },
     personLabel: uid => `p${uid}`, chatLabel: (_b, c) => `chat ${c}`,
+    served: (_t, chatId, uid) => chatId === uid ? access.allowFrom.includes(uid) : chatId in access.groups,
     now: () => clock, ...extra,
   })
 }
@@ -388,11 +390,11 @@ test('docs: README 「原始事件與密鑰保護」, /telegram:doc, /telegram:b
   const root = join(import.meta.dir, '..', '..')
   const readme = readFileSync(join(root, 'README.md'), 'utf8')
   const sec = readme.slice(readme.indexOf('### 原始事件與密鑰保護'), readme.indexOf('### bot 設定提醒'))
-  for (const s of ['`<已遮蔽 #<event id>.<序號>>`', 'event_raw', 'AES-256-GCM', '綁定 event id', '「🔑 密鑰偵測」', '5 分鐘後刪除', '取消刪除', '發送者, owner, admin', 'claude -p', 'haiku', '出口檢查', '預設 10 分鐘, 最多 60 分鐘, 或永久', 'secret_from_handle', '/secret handles', 'cli event raw', '權限 600', '5 筆舊紀錄', '附件']) expect(sec).toContain(s)
+  for (const s of ['`<已遮蔽 #<event id>.<序號>>`', 'event_raw', 'AES-256-GCM', '綁定 event id', '「🔑 密鑰偵測」', '5 分鐘後刪除', '取消刪除', '發送者, owner, admin', 'claude -p', 'haiku', '出口檢查', '預設 10 分鐘, 最多 60 分鐘, 或永久', 'secret_from_handle', '/secret handles', 'cli event raw', '權限 600', '5 筆舊紀錄', '文字類附件', '`download_attachment`', '1 MB', '圖片, 二進位檔']) expect(sec).toContain(s)
   expect(readme).toContain('### 10e 原始事件與密鑰保護驗收對照')
   expect(readme).toContain('「🔑 密鑰偵測」五個話題')
   const doc = readFileSync(join(root, 'plugin', 'skills', 'doc', 'SKILL.md'), 'utf8')
-  for (const s of ['## 密鑰與原文 (event_raw)', '<已遮蔽 #<event id>.<序號>: 種類, 末 4 碼 xxxx>', '取消刪除', 'event_raw', 'secret_from_handle', '/secret handles', 'cli event raw', '五個話題']) expect(doc).toContain(s)
+  for (const s of ['## 密鑰與原文 (event_raw)', '文字類附件', '<已遮蔽 #<event id>.<序號>: 種類, 末 4 碼 xxxx>', '取消刪除', 'event_raw', 'secret_from_handle', '/secret handles', 'cli event raw', '五個話題']) expect(doc).toContain(s)
   expect(readFileSync(join(root, 'plugin', 'skills', 'bot-skill', 'SKILL.md'), 'utf8')).toContain('`secret_from_handle`')
   const { TOOL_DEFINITIONS } = await import('../../shared/tools')
   const tool = (n: string) => TOOL_DEFINITIONS.find(t => t.name === n) as any
@@ -400,4 +402,58 @@ test('docs: README 「原始事件與密鑰保護」, /telegram:doc, /telegram:b
   expect(Object.keys(tool('event_raw').inputSchema.properties)).toEqual(['event_id', 'question', 'ttl_minutes', 'permanent'])
   expect(tool('event_raw').description).toContain('owner or admin')
   expect(tool('secret_from_handle').inputSchema.required).toEqual(['handle', 'name'])
+  expect(tool('download_attachment').description).toContain('checked for secrets')
+})
+
+test('text attachments: by name (.env, .env.local, config and source extensions) or mime text/*; images and binaries are not', () => {
+  for (const [n, m] of [['prod.env', null], ['.env', null], ['.env.local', null], ['a.json', null], ['c.yaml', null], ['c.yml', null], ['s.ini', null], ['n.conf', null], ['r.md', null], ['d.csv', null], ['x.py', null], ['x.ts', null], ['x.go', null], ['noext', 'text/plain'], ['note.TXT', null]] as const) expect(isTextAttachment(n, m)).toBe(true)
+  for (const [n, m] of [['photo.png', 'image/png'], ['a.pdf', 'application/pdf'], ['b.zip', null], [null, null]] as const) expect(isTextAttachment(n, m)).toBe(false)
+  expect(isTextAttachment(null, null, 'documents/file_3.env')).toBe(true)
+})
+
+test('download_attachment of a text file with a key: the worker gets markers, the original is sealed as an attachment event, the message it came with is answered and deleted in 5 minutes, recorded with the file name; once per file', async () => {
+  const v = makeVault()
+  const doc = (id: number, file_id: string, file_name: string, mime_type = 'application/octet-stream') => ({ update_id: id, message: { message_id: id, date: 0, chat: { id: Number(USER), type: 'private' }, from: { id: Number(USER), is_bot: false, first_name: 'U' }, document: { file_id, file_unique_id: 'u' + id, file_name, mime_type } } })
+  v.record('cc', doc(40, 'F1', 'prod.env'))
+  const body = `A=1\nKEY=${OPENAI}\n`
+  const out = await v.attachment('cc', { file_id: 'F1', file_path: 'documents/file_1.env' }, Buffer.from(body))
+  const ev = db.attachmentEvent('F1')!
+  expect(out.toString()).toBe(`A=1\nKEY=<已遮蔽 #${ev.id}.1: OpenAI API key, 末 4 碼 oooo>\n`)
+  expect(ev.masked).toBe(1)
+  expect(JSON.parse(ev.update_json).attachment).toMatchObject({ file_id: 'F1', file_name: 'prod.env', chat_id: USER, message_id: 40, text: `A=1\nKEY=<已遮蔽 #${ev.id}.1>\n` })
+  expect(ev.update_json).not.toContain(OPENAI)
+  expect(JSON.parse(openRaw(key, ev.id, db.getEventRaw(ev.id)!.sealed)).attachment.text).toBe(body)
+  await new Promise(r => setTimeout(r, 20))
+  const reminder = sent.find(m => m.chatId === USER)!
+  expect(reminder).toMatchObject({ replyTo: 40 })
+  expect(reminder.text).toStartWith('⚠️ 這則訊息的附件 prod.env 含有密鑰 (OpenAI API key 末 4 碼 oooo), 10:05 會刪除.')
+  expect(db.getDeletion(1)).toMatchObject({ event_id: ev.id, chat_id: USER, message_id: 40, status: 'pending' })
+  const log = sent.find(m => m.chatId === OWNER)!.text
+  expect(log).toContain('附件: prod.env (worker 下載時偵測)')
+  expect(log).toContain('欄位: attachment.text')
+  // the same file again: the same markers, nothing recorded twice
+  const n = sent.length
+  expect((await v.attachment('cc', { file_id: 'F1', file_path: 'documents/file_1.env' }, Buffer.from(body))).toString()).toBe(out.toString())
+  await new Promise(r => setTimeout(r, 20))
+  expect(sent.length).toBe(n)
+  // event_raw works on it like on any event
+  const r = await v.requestRaw(conv('dm-555', OWNER, 'owner'), OWNER, { event_id: ev.id, question: '這個檔案原本是什麼' })
+  expect(r.ok).toBe(true)
+  expect(asked[0]!.input).toContain('«密鑰 h1: OpenAI API key')
+  expect(asked[0]!.input).not.toContain(OPENAI)
+  // passed on as they are: an image, a text file without keys, NUL bytes, too large
+  v.record('cc', doc(41, 'F2', 'shot.png', 'image/png'))
+  expect((await v.attachment('cc', { file_id: 'F2', file_path: 'documents/x.png' }, Buffer.from(body))).toString()).toBe(body)
+  v.record('cc', doc(42, 'F3', 'notes.txt'))
+  expect((await v.attachment('cc', { file_id: 'F3', file_path: 'documents/x.txt' }, Buffer.from('hello'))).toString()).toBe('hello')
+  expect((await v.attachment('cc', { file_id: 'F3', file_path: 'documents/x.txt' }, Buffer.from(`a\0${OPENAI}`))).toString()).toContain(OPENAI)
+  const big = Buffer.from(OPENAI + 'x'.repeat(MAX_TEXT_ATTACHMENT))
+  expect((await v.attachment('cc', { file_id: 'F3', file_path: 'documents/x.txt' }, big)).equals(big)).toBe(true)
+  expect(db.attachmentEvent('F2')).toBeNull()
+  expect(db.attachmentEvent('F3')).toBeNull()
+})
+
+test('the fixed agent answers in Taiwan traditional Chinese with half-width punctuation', () => {
+  expect(RAW_SYSTEM).toContain('一律使用台灣正體中文與半形標點')
+  expect(RAW_SYSTEM).not.toMatch(/[，。：；（）]/)
 })

@@ -80,7 +80,8 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
 - 代號 (`secret_handles`) 只在申請的對話有效, 預設 10 分鐘, 最多 60 分鐘, 或永久. `secret_from_handle(handle, name, scope)` 把代號登記成這個對話的密鑰 (scope 跟 `/secret set` 值後面的寫法一樣, bot token 用 getMe 驗證, 10b 的限制照樣適用), 之後用 `bot_api` / `http_api`, 每次使用都累計在代號的 uses. 查看與撤銷: 對話裡 `/secret handles`, `/secret revoke <代號>`; owner 與 admin 用 `/router secret handles [chat_id]`, `/router secret revoke <代號>`. 撤銷代號不會移除已登記的密鑰.
 - 每次請求與登記記在「🔑 密鑰偵測」話題與 router.db: `secret_requests` (誰, 哪個對話, 哪個 event, 問題, 發出的代號, 結果), `secret_handles` (之後是否登記成密鑰, 使用次數).
 - 明文只限 owner 的終端機: `cc-telegram-router cli event raw <id>` 把原始 update 寫進 `<stateDir>/raw/` (目錄 700) 底下權限 600 的檔案, 只印路徑, 由 owner 自己開檔; 也記在話題. Telegram 裡沒有取得明文的途徑, admin 與 Telegram 裡的 `/router event raw` 一律拒絕.
-- 限制: 2026-10-17 已遮蔽的 5 筆舊紀錄原始值已覆寫, 救不回來, 這套只保護之後的資料; 附件 (檔案, 圖片裡的文字) 不在偵測範圍; 不認得的格式偵測不到, 已登記的值則一定比對得到.
+- 文字類附件: worker 用 `download_attachment` 下載時, router 對文字檔 (`.txt` `.env` `.env.*` `.json` `.yaml` `.yml` `.ini` `.conf` `.cfg` `.toml` `.properties` `.md` `.csv`, 常見原始碼副檔名, 或 mime 是 `text/*`; 1 MB 以內, 不含 NUL 位元組) 用同一套偵測. 偵測到時原檔存成 events 的一列 (`update_json` 是 `{"attachment": {file_id, 檔名, 對話, 原訊息, 內容}}`, 遮蔽版, `masked` 1), 原文加密存在 `event_raw`; 寫進對話資料夾的檔案是代號版; 附件的原訊息照上面的方式提醒並 5 分鐘後刪除, 「🔑 密鑰偵測」記下檔名. 同一個檔案再下載拿到同樣的代號, 不重複記錄. `event_raw` 與 `cli event raw` 也適用這一列.
+- 限制: 2026-10-17 已遮蔽的 5 筆舊紀錄原始值已覆寫, 救不回來, 這套只保護之後的資料; 圖片, 二進位檔, 超過 1 MB 的文字檔不偵測, 附件也只在 worker 下載時才檢查; 不認得的格式偵測不到, 已登記的值則一定比對得到.
 
 ### bot 設定提醒
 
@@ -139,8 +140,8 @@ bun test router/test
 | `router/test/phase3-cred.test.ts` | 憑證的角色與方法限制, Bot API 呼叫 (含上傳), install_skill 的來源, 範圍與檢查, /router cred 與 botapi |
 | `router/test/secrets.test.ts` | 規劃 10b 對話專屬密鑰: 加密與綁定, 遮蔽, /secret 指令 (私訊, 群組, 拒絕, 上限, getMe 驗證, --header), 使用範圍檢查, /router secret; events 遮蔽與一次性 migration, 全域 http 路徑, bot 設定提醒 |
 | `router/test/e2e-secrets.test.ts` | 真的 router + 假 Bot API 與 HTTP API: secretKey 自動產生, 舊 events 遮蔽, 私訊登記與刪訊息, 群組登記與提醒, getMe 驗證, 引用遮蔽, http_api (含 --header) 與 bot_api 使用, 其他對話用不到, list / rm, 加入群組, 初次設定與 setup group 的設定提醒 |
-| `router/test/rawvault.test.ts` | 規劃 10e 原始事件與密鑰保護: 偵測 (格式, 指令的值, 已登記的值, 不猜熵), 掃描範圍, event_raw 加密與綁定, events 遮蔽與 worker 代號, 🔑 話題紀錄, 提醒與 5 分鐘刪除 (取消, 誰能按, 沒權限, 重啟後), event_raw (角色, 代號, 固定 agent, 出口檢查, haiku), secret_from_handle, cli event raw, /secret handles, /router secret handles, 文件與工具說明 |
-| `router/test/e2e-rawvault.test.ts` | 真的 router + 假 Bot API 與假 claude: 啟動時補建 🔑 話題與補刪到期的訊息, 私訊貼 token (events, event_raw, messages, worker 都沒有明文), 提醒與取消刪除, 編輯訊息, /secret set, event_raw (user 對話被拒, owner 對話拿到代號與回答), secret_from_handle 後 bot_api 用到真值, cli event raw 寫 600 檔 |
+| `router/test/rawvault.test.ts` | 規劃 10e 原始事件與密鑰保護: 偵測 (格式, 指令的值, 已登記的值, 不猜熵), 掃描範圍, event_raw 加密與綁定, events 遮蔽與 worker 代號, 🔑 話題紀錄, 提醒與 5 分鐘刪除 (取消, 誰能按, 沒權限, 重啟後), event_raw (角色, 代號, 固定 agent, 出口檢查, haiku, 語言), secret_from_handle, cli event raw, /secret handles, /router secret handles, 文字類附件, 文件與工具說明 |
+| `router/test/e2e-rawvault.test.ts` | 真的 router + 假 Bot API 與假 claude: 啟動時補建 🔑 話題與補刪到期的訊息, 私訊貼 token (events, event_raw, messages, worker 都沒有明文), 提醒與取消刪除, 編輯訊息, /secret set, event_raw (user 對話被拒, owner 對話拿到代號與回答), secret_from_handle 後 bot_api 用到真值, cli event raw 寫 600 檔, 下載含 key 的 .env 附件 |
 | `router/test/phase3-privskill.test.ts` | 規劃 10d 特權技能: 參數比對與逐一傳入 (不經 shell), 沙箱的 HOME 與 PATH, 核准與雜湊暫停, 角色與 internal 動作, 憑證不外流 (回傳與寫出的檔案, 通知 owner), 憑證被拒時更新一次再重試, 額外掛載只給 internal 動作, 參數限角色走提權, http API 憑證, 每日更新 (GMT+8 時間計算與 `skillRefreshAt`, 啟動時補跑超過 24 小時沒成功的技能, 執行與寫入憑證, 不佔對話限額, 雜湊不符略過並通知, 失敗通知且遮蔽憑證) |
 | `router/test/phase3-pkg.test.ts` | 規劃 07 套件安裝審核: 指令解析, manifest, 審核快取, 送審與核准, 慢審核, 審核模型的呼叫方式, hook |
 | `router/test/e2e-setup.test.ts` | 真的 router + 假 Bot API, 從沒有 owner 開始: 認領碼, 人設訪談與 bot CLAUDE.md, 審核群組的檢查與話題, 略過 |
@@ -229,6 +230,8 @@ bun test router/test
 | secret_from_handle 登記成對話密鑰 (10b 範圍規則與 getMe), 之後 bot_api / http_api 使用 | rawvault「secret_from_handle…」; e2e-rawvault「event_raw: …」(bot_api 送出真值) |
 | 每次請求與登記記在話題與 router.db | rawvault「event_raw: only when…」「secret_from_handle…」; e2e-rawvault「event_raw: …」 |
 | 明文: 只限 owner 終端機 `cli event raw`, 寫進 600 檔只印路徑, 記在話題; 不提供私訊明文 | rawvault「cli event raw…」「/secret handles | revoke…」(Telegram 與 admin 被拒); e2e-rawvault「event_raw: …」 |
+| 文字類附件 (副檔名或 text/*): 下載時偵測, worker 拿到代號版, 原檔加密保存, 提醒並 5 分鐘後刪除原訊息, 話題記檔名; 圖片與二進位檔不做 | rawvault「text attachments: …」「download_attachment of a text file…」; e2e-rawvault「download_attachment of a .env file…」 |
+| 固定 agent 一律台灣正體中文與半形標點 | rawvault「the fixed agent answers in Taiwan…」 |
 | 工具說明, /telegram:doc 與 README 同步 | rawvault「docs: …」 |
 
 ### Phase 4 驗收對照

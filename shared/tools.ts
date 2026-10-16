@@ -49,7 +49,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'download_attachment',
-    description: 'Download a file attachment from a Telegram message to the local inbox. Use when the inbound <channel> meta shows attachment_file_id. Returns the local file path ready to Read. Telegram caps bot downloads at 20MB.',
+    description: 'Download a file attachment from a Telegram message to the local inbox. Use when the inbound <channel> meta shows attachment_file_id. Returns the local file path ready to Read. Telegram caps bot downloads at 20MB. A text file (.env, .json, .yaml, .txt, source code, text/*; up to 1 MB) is checked for secrets first: any found are replaced with <已遮蔽 #<event id>.<n>: kind, 末 4 碼 xxxx> (use event_raw / secret_from_handle as for a message).',
     inputSchema: {
       type: 'object',
       properties: {

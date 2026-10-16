@@ -7,7 +7,8 @@
 // it, the sender can) and recorded in the topic; an edited message too;
 // /secret set is still deleted at once; event_raw from the owner's worker
 // (fixed agent, handles), secret_from_handle and then bot_api with the real
-// token; a user conversation is refused; cli event raw writes a 600 file.
+// token; a user conversation is refused; cli event raw writes a 600 file;
+// a .env file with a key: the worker's download has a marker, the message is answered.
 // Keep in sync with README 「原始事件與密鑰保護」; module level in rawvault.test.ts.
 // Every token here is fake and built at runtime.
 
@@ -28,6 +29,7 @@ const OWNER = { id: 555, is_bot: false, first_name: 'Boss', username: 'boss' }
 const USER = { id: 666, is_bot: false, first_name: 'U', username: 'u' }, STRANGER = { id: 888, is_bot: false, first_name: 'S', username: 's' }
 const PASTED = `${'7000000'}01:${'AAF'}${'x'.repeat(32)}`
 const EDITED = `${'sk'}-proj-${'e'.repeat(24)}`
+const IN_FILE = `${'gh'}p_${'F'.repeat(36)}`
 
 const calls: Array<{ method: string; body: any; token?: string }> = []
 const updates: unknown[] = []
@@ -36,6 +38,8 @@ const api = Bun.serve({
   port: 0,
   async fetch(req) {
     const url = new URL(req.url)
+    // a text attachment: a .env file with a key in it
+    if (url.pathname.startsWith('/file/')) { calls.push({ method: 'file', body: url.pathname }); return new Response(`HOST=example\nGH_TOKEN=${IN_FILE}\n`) }
     const type = req.headers.get('content-type') ?? ''
     const body = type.includes('json') ? await req.json() : {}
     const parts = url.pathname.split('/')
@@ -46,6 +50,7 @@ const api = Bun.serve({
       case 'getMe': return token === '123:test' ? ok({ id: 1, is_bot: true, first_name: 'cc', username: 'cc_bot' }) : ok({ id: 7000000001, is_bot: true, first_name: 'p', username: 'pasted_bot' })
       case 'getUpdates': await sleep(100); return ok(updates.splice(0))
       case 'sendMessage': return ok({ message_id: 900 + calls.length, date: now, chat: { id: Number(body.chat_id) }, text: body.text })
+      case 'getFile': return ok({ file_id: body.file_id, file_unique_id: 'uq9', file_path: 'documents/file_9.env' })
       case 'createForumTopic': return ok({ message_thread_id: 45, name: body.name })
       default: return ok(true)
     }
@@ -198,3 +203,27 @@ test('event_raw: a user conversation is refused; the owner\'s worker gets the ha
   expect(JSON.parse(readFileSync(file, 'utf8')).message.text).toContain(PASTED)
   await until(() => sentTo(APPROVALS, `🗝 owner 在終端機取出 event #${ev} 的明文`).length === 1)
 }, 30000)
+
+test('download_attachment of a .env file with a key: the file in the worker\'s folder has a marker, the original is sealed, the message it came with is answered', async () => {
+  const delivered: string[] = []
+  const w = worker('dm-666', 14, delivered)
+  await until(() => w.state().kind === 'ready')
+  const id = mid++
+  updates.push({ update_id: id, message: { message_id: id, date: now, chat: { id: 666, type: 'private' }, from: USER, document: { file_id: 'DOC1', file_unique_id: 'uq9', file_name: 'app.env', mime_type: 'text/plain', file_size: 40 } } })
+  await until(() => delivered.some(d => d.includes('DOC1')))
+  const r = await w.call('download_attachment', { file_id: 'DOC1' })
+  expect(r.isError).toBeFalsy()
+  const path = r.content[0]!.text
+  expect(path).toStartWith(join(dir, 'bot123', 'dm-666', 'attachments'))
+  const text = readFileSync(path, 'utf8')
+  const ev = q(`SELECT id, update_json FROM events WHERE update_json LIKE '{"attachment":%'`)[0]
+  expect(text).toBe(`HOST=example\nGH_TOKEN=<已遮蔽 #${ev.id}.1: GitHub token, 末 4 碼 FFFF>\n`)
+  expect(calls.some(c => c.method === 'file' && c.body === '/file/bot123:test/documents/file_9.env')).toBe(true)
+  for (const [t, c] of [['events', 'update_json'], ['event_raw', 'sealed'], ['messages', 'content'], ['outbound', 'payload_json'], ['outbound', 'result_json']]) expect(q(`SELECT count(*) n FROM ${t} WHERE CAST(${c} AS TEXT) LIKE '%${IN_FILE}%'`)[0].n).toBe(0)
+  const reminder = await until(() => sentTo(666, '⚠️ 這則訊息的附件 app.env 含有密鑰')[0])
+  expect(reminder.body.reply_parameters.message_id).toBe(id)
+  expect(reminder.body.text).toContain('(GitHub token 末 4 碼 FFFF)')
+  const log = await until(() => sentTo(APPROVALS, `🔑 偵測到密鑰 event #${ev.id}`)[0])
+  expect(log.body.text).toContain('附件: app.env (worker 下載時偵測)')
+  w.close()
+})

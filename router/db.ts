@@ -118,6 +118,10 @@ export interface RouterDb {
   logMaskedEvent(bot: string, build: (id: number) => { update: unknown; sealed: string; fields: string }): number
   getEvent(id: number): EventRow | null
   getEventRaw(id: number): EventRaw | null
+  /** Updates that mention a Telegram file_id, newest first (the message an attachment came with). */
+  eventsWithFile(fileId: string, limit?: number): EventRow[]
+  /** The events row a text attachment was stored as (plan 10e, update_json {"attachment": ...}). */
+  attachmentEvent(fileId: string): EventRow | null
   addHandle(h: Pick<SecretHandle, 'event_id' | 'n' | 'kind' | 'last4' | 'bot' | 'chat_id' | 'conv' | 'request_id' | 'expires_at'>): SecretHandle
   getHandle(code: string): SecretHandle | null
   /** bot and chat null: every conversation's. */
@@ -396,6 +400,8 @@ export function openRouterDb(path: string): RouterDb {
       })()
     },
     getEvent: id => (db.prepare('SELECT id, ts, bot, update_json, masked FROM events WHERE id = ?').get(id) as EventRow | null) ?? null,
+    eventsWithFile: (fileId, limit = 20) => db.prepare(`SELECT id, ts, bot, update_json, masked FROM events WHERE instr(update_json, ?) > 0 AND update_json NOT LIKE '{"attachment":%' ORDER BY id DESC LIMIT ?`).all(`"file_id":${JSON.stringify(fileId)}`, limit) as EventRow[],
+    attachmentEvent: fileId => (db.prepare('SELECT id, ts, bot, update_json, masked FROM events WHERE substr(update_json, 1, ?) = ? ORDER BY id DESC LIMIT 1').get(`{"attachment":{"file_id":${JSON.stringify(fileId)}`.length, `{"attachment":{"file_id":${JSON.stringify(fileId)}`) as EventRow | null) ?? null,
     getEventRaw: id => (db.prepare('SELECT * FROM event_raw WHERE event_id = ?').get(id) as EventRaw | null) ?? null,
     addHandle(h) {
       const id = Number(db.prepare('INSERT INTO secret_handles (event_id, n, kind, last4, bot, chat_id, conv, request_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
