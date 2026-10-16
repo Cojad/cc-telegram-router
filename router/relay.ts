@@ -132,7 +132,8 @@ export function parseContext(lines: string[]): ContextReport | null {
   const usage = /([\d.]+[km]?)\s*\/\s*([\d.]+[km]?)\s*tokens\s*\((\d+)%\)/i.exec(text)
   if (!usage) return null
   const categories: Array<[string, number, number]> = []
-  for (const m of text.matchAll(/[⛁⛀⛶⛝]\s+([^:\n]+):\s+([\d.]+[km]?)(?:\s*tokens)?\s*\(([\d.]+)%\)/g)) categories.push([m[1]!.trim(), num(m[2]!), Number(m[3])])
+  // the token grid shares lines with the legend: a category name starts with a letter
+  for (const m of text.matchAll(/[⛁⛀⛶⛝]\s+([A-Za-z][^:\n⛁⛀⛶⛝]*):\s+([\d.]+[km]?)(?:\s*tokens)?\s*\(([\d.]+)%\)/g)) categories.push([m[1]!.trim(), num(m[2]!), Number(m[3])])
   const window = /Auto-compact window:\s*([\d.]+[km]?)/i.exec(text)
   const extras: string[] = []
   const mcp = /MCP tools[^\n]*\n\s*└\s*(\d+) tools/.exec(text), mem = /Memory files[^\n]*\n\s*└\s*(\d+) files?/.exec(text), sk = /Skills[^\n]*\n\s*└\s*(\d+) skills?/.exec(text)

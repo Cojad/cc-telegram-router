@@ -236,8 +236,10 @@ test('relay /context: only its own output, as a table of the session\'s categori
   expect(out.kind).toBe('photo')
   const text = (out as any).text as string
   expect(text).toStartWith('📊 Context 用量 (2026-10-16 09:40)\nclaude-opus-5-5: 100.6k / 750k (13%)')
-  expect(text).toContain('Messages')
-  expect(text).toContain('63.5k')
+  const rows = text.split('\n').slice(3, 12)
+  expect(rows.map(r => r.split(/\s{2,}/)[0])).toEqual(['System prompt', 'System tools', 'MCP tools', 'MCP server instructions', 'Memory files', 'Skills', 'Messages', 'Free space', 'Autocompact buffer'])
+  expect(rows[6]).toMatch(/^Messages\s+63\.5k\s+8\.5%$/)
+  expect(text).not.toMatch(/[⛁⛀⛶⛝]/) // no grid icons in the table
   expect(text).toContain('自動壓縮門檻 750k · MCP 工具 191 個 · 記憶檔 3 個 · 技能 22 個')
   expect(text).not.toContain('Earlier reply') // nothing from before the command
   const chart = seen.find(s => s.args[0] === 'sh')!
