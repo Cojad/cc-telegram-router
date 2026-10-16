@@ -135,7 +135,8 @@ const ctxOf = (c: Conversation) => buildContext(cfg, c)
 // No owner yet: the first person to DM "/start <code>" to a bot becomes it.
 let claimCode: string | null = cfg.owners.length ? null : newClaimCode()
 
-const settingsVars = (c: Conversation) => ({ folder: c.folder, autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR })
+// home and botDir: skills shared by all bots / by this bot are readable (templates/roles)
+const settingsVars = (c: Conversation) => ({ folder: c.folder, home: cfg.home, botDir: botDir(cfg, c.bot), autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR })
 const settingsFor = (c: Conversation) =>
   writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, settingsVars(c), db.listOverrides(c.key))
 

@@ -27,7 +27,10 @@ async function asRole(role: string, prompt: string): Promise<Run & { folder: str
   const folder = join(root, `${role}-${Math.random().toString(36).slice(2, 8)}`)
   for (const d of ['memory', 'attachments', '.chat']) mkdirSync(join(folder, d), { recursive: true })
   writeFileSync(join(folder, 'attachments', 'note.txt'), 'ATTACHMENT-OK')
-  const s = renderSettings(TEMPLATES, role, { folder, autoCompactWindow: 750000, hooksDir: '/nonexistent' }) as any
+  const skill = join(root, 'bot1', '.claude', 'skills', 'probe')
+  mkdirSync(skill, { recursive: true })
+  writeFileSync(join(skill, 'run.sh'), 'echo SKILL-OK\n')
+  const s = renderSettings(TEMPLATES, role, { folder, home: root, botDir: join(root, 'bot1'), autoCompactWindow: 750000, hooksDir: '/nonexistent' }) as any
   delete s.hooks
   delete s.enabledPlugins
   const settings = join(root, `${role}-${Date.now()}.json`)
@@ -64,6 +67,17 @@ test.skipIf(!LIVE)('power: runs python in the sandbox and writes its folder; can
   expect(x.text).not.toContain('router.db')
   expect(chat.denied).toContain('Write')
   expect(existsSync(join(chat.folder, '.chat', 'context.json'))).toBe(false)
+}, 300_000)
+
+test.skipIf(!LIVE)('power: scripts of a bot-wide skill are readable and runnable from the sandbox, but not writable', async () => {
+  const run = join(root, 'bot1', '.claude', 'skills', 'probe', 'run.sh')
+  const [ok, write] = await Promise.all([
+    asRole('power', bash(`bash ${run}`)),
+    asRole('power', bash(`echo HACKED > ${run} && echo WROTE`)),
+  ])
+  expect(ok.text).toContain('SKILL-OK')
+  expect(write.text).not.toContain('WROTE')
+  expect(readFileSync(run, 'utf8')).toBe('echo SKILL-OK\n')
 }, 300_000)
 
 test.skipIf(!LIVE)('user: read-only Bash works; running code and reading outside the folder are refused', async () => {
