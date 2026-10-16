@@ -181,9 +181,11 @@ const ipc = createIpc({
     return conv ? { mode: 'worker', conv, role: conv.role } : null
   },
   async onCall(peer, tool, args) {
-    // Role or settings may have changed since this plugin said hello.
+    // Role or settings may have changed since this plugin said hello. An
+    // elevated subagent's call carries the elevated role (router/elevation.ts tickets).
     const conv = peer.conv ? db.getConversation(peer.conv.key) : null
-    const live: Peer = conv ? { ...peer, conv, role: conv.role } : peer
+    const role = conv ? (elevation.takeTicket(conv.key, tool, args) ?? conv.role) : peer.role
+    const live: Peer = conv ? { ...peer, conv, role } : peer
     if (tool === 'request_send_grant') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal session: send anywhere directly' }] }
       const text = await callConv.run(conv.key, () => requestGrant(grantDeps, conv, String(args.chat_id ?? ''), args.mode === 'target' ? 'target' : 'owner', String(args.reason ?? '')))
@@ -195,7 +197,7 @@ const ipc = createIpc({
       // "self" (or the bot's own name): this conversation's own bot, for owner/admin
       const own = (name === 'self' || name === conv.bot) && !cfg.credentials[name]
       const cred = own ? { token: cfg.bots.find(b => b.name === conv.bot)!.token, methods: [] } : cfg.credentials[name]
-      const why = own ? refuseOwnBot(conv.role, method) : refuseUse(cred, name, conv.role, method)
+      const why = own ? refuseOwnBot(role, method) : refuseUse(cred, name, role, method)
       if (why) return { content: [{ type: 'text', text: why }], isError: true }
       const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
       try { for (const p of Object.values(files)) makeAssertSendable(live, cfg.stateDir)(p) } catch (e) { return { content: [{ type: 'text', text: String(e instanceof Error ? e.message : e) }], isError: true } }
@@ -208,7 +210,7 @@ const ipc = createIpc({
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接呼叫 API' }], isError: true }
       const name = String(args.credential ?? ''), method = String(args.method ?? 'POST').toUpperCase(), path = String(args.path ?? '')
       const cred = cfg.credentials[name]
-      const why = refuseUse(cred, name, conv.role, path, 'http')
+      const why = refuseUse(cred, name, role, path, 'http')
       const fail = (t: string) => ({ content: [{ type: 'text' as const, text: t }], isError: true })
       if (why) return fail(why)
       const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
@@ -230,7 +232,7 @@ const ipc = createIpc({
       const scope = args.scope === 'all' ? 'all' : 'bot'
       const name = String(args.name ?? '')
       try {
-        const dest = installSkill({ convFolder: conv.folder, role: conv.role, name, scopeDir: scope === 'all' ? cfg.home : botDir(cfg, conv.bot), replace: args.replace === true })
+        const dest = installSkill({ convFolder: conv.folder, role, name, scopeDir: scope === 'all' ? cfg.home : botDir(cfg, conv.bot), replace: args.replace === true })
         const others = db.listConversations().filter(c => c.key !== conv.key && (scope === 'all' || c.bot === conv.bot))
         for (const c of others) db.setRotate(c.key, true)
         void rotate()
@@ -273,7 +275,7 @@ const ipc = createIpc({
     const inboxDir = conv ? join(conv.folder, 'attachments') : join(cfg.home, '.terminal-attachments')
     // sending to another chat on a send grant is a use of it (執行授權)
     const target = String(args.chat_id ?? '')
-    if (conv && target && target !== conv.chat_id && conv.role !== 'owner' && conv.role !== 'admin') {
+    if (conv && target && target !== conv.chat_id && role !== 'owner' && role !== 'admin') {
       for (const g of authz.covering(conv, o => o.some(x => x.kind === 'send' && (x.value === target || x.value === '*')))) {
         await authz.use(conv, g, `${tool} → ${label(target)}: ${String(args.text ?? args.emoji ?? args.file_id ?? '').replace(/\s+/g, ' ').slice(0, 300)}`)
       }
@@ -287,8 +289,8 @@ const ipc = createIpc({
   async onHook(peer, ev) {
     const c = peer.conv ? db.getConversation(peer.conv.key) : null
     if (!c) return {}
-    // progress events ride along (pre/post/stop/...); subagent events are elevation only
-    if (!String(ev.event).startsWith('subagent-')) ipcOnProgress(peer, ev)
+    // progress events ride along (pre/post/stop/...); subagent events and quiet ones are elevation only
+    if (!String(ev.event).startsWith('subagent-') && !ev.quiet) ipcOnProgress(peer, ev)
     const d = await elevation.onHook(c, ev as Record<string, any>)
     if (d.decision) return d
     // power may install packages once they pass review (router/pkgreview.ts)

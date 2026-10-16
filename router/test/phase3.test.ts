@@ -536,3 +536,40 @@ test('authz: removing an approved override by hand (/router perm rm or reset) ma
   expect(reset.reply).toContain('1 筆審核授權一併標為已撤銷')
   expect(db.activeApprovalGrants(from.key)).toEqual([])
 })
+
+test('elevation tickets: an elevated subagent\'s Telegram tool call (bot_api...) runs router-side with the elevated role, once, only for exactly that call', async () => {
+  const { conv, e } = elevHarness()
+  e.onDeliver(conv, OWNER)
+  expect(await e.request(conv, '刪掉 bot 自己的訊息', 'bot_api self deleteMessage')).toContain('#1')
+  await e.decide('elev:1:once', OWNER)
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'S' })
+  const args = { credential: 'self', method: 'deleteMessage', params: { chat_id: '-100555', message_id: 157192 } }
+  // the hook reports the subagent's call before it runs
+  expect(await e.onHook(conv, { event: 'pre', quiet: true, agent_id: 'S', tool_name: 'mcp__plugin_telegram_telegram__bot_api', tool_input: args })).toMatchObject({ decision: 'allow' })
+  expect(e.takeTicket(conv.key, 'bot_api', { params: { message_id: 157192, chat_id: '-100555' }, method: 'deleteMessage', credential: 'self' })).toBe('owner') // key order does not matter
+  expect(e.takeTicket(conv.key, 'bot_api', args)).toBeNull() // one use
+  // the main session's own call (no agent) or another conversation gets nothing
+  await e.onHook(conv, { event: 'pre', quiet: true, tool_name: 'mcp__plugin_telegram_telegram__bot_api', tool_input: args })
+  expect(e.takeTicket(conv.key, 'bot_api', args)).toBeNull()
+  await e.onHook(conv, { event: 'pre', quiet: true, agent_id: 'S', tool_name: 'mcp__plugin_telegram_telegram__bot_api', tool_input: args })
+  expect(e.takeTicket('other', 'bot_api', args)).toBeNull()
+  // revoking the elevation drops its tickets
+  e.drop(1)
+  expect(e.takeTicket(conv.key, 'bot_api', args)).toBeNull()
+  e.stop()
+})
+
+test('cc-hook forwards a subagent\'s Telegram tool call (quiet, for elevation) but not the main session\'s', async () => {
+  const conv = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  const seen: any[] = []
+  const ipc = createIpc({ cfg, db, onCall: async () => ({ content: [] }), identify: () => ({ mode: 'worker', conv, role: 'user' }), onHook: async (_p, ev) => { seen.push(ev); return {} } })
+  const hook = (input: object) => Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', 'pre'], {
+    stdin: new Blob([JSON.stringify({ cwd: conv.folder, tool_name: 'mcp__plugin_telegram_telegram__bot_api', tool_input: { credential: 'self', method: 'getChat' }, ...input })]),
+    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket, CLAUDE_PROJECT_DIR: conv.folder },
+  }).exited
+  await hook({})
+  await hook({ agent_id: 'S' })
+  for (let i = 0; i < 40 && !seen.length; i++) await new Promise(r => setTimeout(r, 25))
+  expect(seen).toEqual([{ event: 'pre', quiet: true, tool_name: 'mcp__plugin_telegram_telegram__bot_api', tool_input: { credential: 'self', method: 'getChat' }, agent_id: 'S' }])
+  ipc.stop()
+}, 30000)

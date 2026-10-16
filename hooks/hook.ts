@@ -26,7 +26,14 @@ function progressEvent(event: string, input: Record<string, any>): Record<string
     case 'pre':
     case 'post': {
       const name = String(input.tool_name ?? '')
-      if (!name || name.startsWith('mcp__plugin_telegram_telegram__')) return null
+      if (!name) return null
+      if (name.startsWith('mcp__plugin_telegram_telegram__')) {
+        // Not a progress line. But a subagent's call has to reach the router:
+        // an elevated one runs the router-side tool (bot_api...) with the
+        // elevated role (router/elevation.ts tickets).
+        if (event === 'pre' && input.agent_id) return { event, quiet: true, tool_name: name, tool_input: input.tool_input ?? {}, ...agent }
+        return null
+      }
       return {
         event, summary: toolSummary(name, input.tool_input), tool_name: name, ...agent,
         // what the elevation check needs; the rest of tool_input stays on this machine

@@ -54,6 +54,14 @@ export interface ElevationDeps {
 
 type Grant = { id: number; role: string; by: string; until: number }
 
+/** Same JSON for the same arguments, whatever the key order. */
+export function stableArgs(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableArgs).join(',')}]`
+  if (v && typeof v === 'object') return `{${Object.keys(v as object).sort().map(k => `${JSON.stringify(k)}:${stableArgs((v as any)[k])}`).join(',')}}`
+  return JSON.stringify(v)
+}
+const TG_TOOL = 'mcp__plugin_telegram_telegram__'
+
 export function createElevation(deps: ElevationDeps) {
   const { db } = deps
   const askTimeout = deps.askTimeoutMs ?? 120_000
@@ -64,6 +72,11 @@ export function createElevation(deps: ElevationDeps) {
   /** agent_id -> conversation and the role it runs with */
   const bound = new Map<string, { conv: string; role: string; id: number }>()
   const timers = new Map<number, ReturnType<typeof setTimeout>>()
+  /** Telegram tools run router-side (bot_api...): an elevated subagent's call,
+   *  seen in its PreToolUse, leaves a one-use ticket the router's tool
+   *  execution picks up to use the elevated role. */
+  const tickets = new Map<string, { role: string; id: number; until: number }>()
+  const ticketKey = (conv: string, tool: string, args: unknown) => `${conv}\u0000${tool}\u0000${stableArgs(args ?? {})}`
 
   const senderOf = (conv: Conversation) => lastSender.get(conv.key) ?? null
   const elevatedSender = (conv: Conversation) => {
@@ -190,6 +203,7 @@ export function createElevation(deps: ElevationDeps) {
             if (!c.ok) return blocked(conv, call, `即使提權為 ${b.role} 也不允許: ${c.why}`, agent)
             const g = db.approvalGrantsFor('elev', b.id).find(x => x.status === 'active')
             if (g) await deps.authz?.use(conv, g, `subagent ${agent} 以 ${b.role} 角色: ${callDetail(call)}`)
+            if (call.tool_name.startsWith(TG_TOOL)) tickets.set(ticketKey(conv.key, call.tool_name.slice(TG_TOOL.length), call.tool_input), { role: b.role, id: b.id, until: Date.now() + 60_000 })
             return { decision: 'allow', reason: `提權 #${b.id}, 以 ${b.role} 角色執行` }
           }
           if (call.tool_name === 'SendMessage' && !elevatedSender(conv)) {
@@ -262,6 +276,17 @@ export function createElevation(deps: ElevationDeps) {
     drop(id: number): void {
       for (const [k, g] of granted) if (g.id === id) granted.delete(k)
       for (const [a, b] of bound) if (b.id === id) bound.delete(a)
+      for (const [k, t] of tickets) if (t.id === id) tickets.delete(k)
+    },
+
+    /** The router is about to run tool(args) for conv: the elevated role, when
+     *  an elevated subagent just asked for exactly this call. One use. */
+    takeTicket(conv: string, tool: string, args: unknown): string | null {
+      const k = ticketKey(conv, tool, args)
+      const t = tickets.get(k)
+      if (!t) return null
+      tickets.delete(k)
+      return t.until > Date.now() ? t.role : null
     },
 
     /** Something refused elsewhere (package review) still belongs in the log. */
