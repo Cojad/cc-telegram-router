@@ -15,13 +15,23 @@
 // content: anything found is removed and the owner told. At most 10 runs per
 // conversation per hour. An action may name a refresh action (internal, not
 // callable by conversations) the router runs once when the output shows the
-// credentials were refused, then it retries.
+// credentials were refused, then it retries. An action may also use an http
+// API credential (http): the script gets the auth header in an env var, the
+// key never reaches the conversation and is scrubbed from what comes back.
+// An argument may need a higher role (args.<name>.roles, e.g. a "longer than
+// 15 minutes" flag): lower roles get refused, which the router's hook turns
+// into an elevation request (router/elevation.ts extraCheck).
 
 import { createHash } from 'crypto'
 import { existsSync, readdirSync, readFileSync, statSync, lstatSync, rmSync } from 'fs'
 import { join, relative, isAbsolute } from 'path'
 
-export type ArgSpec = { pattern?: string; flag?: string }
+export type ArgSpec = {
+  pattern?: string
+  flag?: string
+  /** Only these roles may pass this argument (a flag: set it); others need elevation. */
+  roles?: string[]
+}
 export type Action = {
   /** argv: "scripts/x.sh" resolves inside the skill; "{name}" an argument;
    *  "{name?}" an optional flag argument; "{cred:ENV}" that credential's folder. */
@@ -42,6 +52,9 @@ export type Action = {
   mounts?: string[]
   /** Internal actions only: extra environment variables. */
   env?: Record<string, string>
+  /** env var -> http credential name (router config): the script gets
+   *  $<ENV>_URL (base URL) and $<ENV>_HEADER ("Authorization: Bearer ..."). */
+  http?: Record<string, string>
 }
 export type Manifest = { actions: Record<string, Action> }
 
@@ -75,6 +88,17 @@ export function hashSkill(skillDir: string): string {
     if (!rel.endsWith(' -> link')) h.update(readFileSync(join(skillDir, rel)))
   }
   return h.digest('hex')
+}
+
+/** Why role may not pass these arguments (an argument limited to higher roles), or null. */
+export function argRoleRefusal(a: Action, args: Record<string, unknown>, role: string): string | null {
+  for (const [name, spec] of Object.entries(a.args ?? {})) {
+    if (!spec.roles || spec.roles.includes(role)) continue
+    const v = args[name]
+    const given = spec.flag ? v === true || v === 'true' : v !== undefined && v !== null && v !== ''
+    if (given) return `參數 ${name} 只開放給 ${spec.roles.join(', ')} 角色, 本對話角色 ${role} 要提權`
+  }
+  return null
 }
 
 /** argv for an action, or why the arguments are refused. */

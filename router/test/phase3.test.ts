@@ -259,6 +259,8 @@ function elevHarness(opts: { askTimeoutMs?: number; authz?: boolean } = {}) {
     roleOf: uid => uid === OWNER ? 'owner' : db.getUserRole(uid) ?? 'user',
     settingsAs: (c, role, keep) => applyOverrides(renderSettings(TEMPLATES, role, vars(c.folder)), db.listOverrides(c.key).filter(o => !keep || keep(o))),
     askTimeoutMs: opts.askTimeoutMs ?? 60_000,
+    // as router/main.ts: run_skill with force needs owner or admin (privileged.json args.force.roles)
+    extraCheck: (_c, call, role) => call.tool_name === 'mcp__plugin_telegram_telegram__run_skill' && (call.tool_input.args as any)?.force && !['owner', 'admin'].includes(role) ? `參數 force 只開放給 owner, admin 角色, 本對話角色 ${role} 要提權` : null,
   })
   return { conv, e, sent, edits, editButtons, told, applied, authz, approvals }
 }
@@ -573,3 +575,27 @@ test('cc-hook forwards a subagent\'s Telegram tool call (quiet, for elevation) b
   expect(seen).toEqual([{ event: 'pre', quiet: true, tool_name: 'mcp__plugin_telegram_telegram__bot_api', tool_input: { credential: 'self', method: 'getChat' }, agent_id: 'S' }])
   ipc.stop()
 }, 30000)
+
+test('elevation for a skill argument: run_skill with force from a user conversation asks (owner sender: in the chat, once only); approved, the subagent\'s call runs with the elevated role', async () => {
+  const { conv, e, sent } = elevHarness()
+  const call = { tool_name: 'mcp__plugin_telegram_telegram__run_skill', tool_input: { skill: 'web-instagram', action: 'extract', args: { url: 'https://www.youtube.com/watch?v=1', force: true } } }
+  expect(e.extraCheck(conv, call, 'user')).toBe('參數 force 只開放給 owner, admin 角色, 本對話角色 user 要提權')
+  expect(e.extraCheck(conv, { ...call, tool_input: { ...call.tool_input, args: { url: 'https://www.youtube.com/watch?v=1' } } }, 'user')).toBeNull()
+  // a plain user turn: advice to ask the owner (request_elevation)
+  e.onDeliver(conv, '42')
+  expect((await e.refuse(conv, call, e.extraCheck(conv, call, 'user')!)).reason).toContain('對方同意後呼叫 request_elevation 說明原因')
+  expect(sent).toEqual([])
+  // the owner asked: an in-chat prompt, no 永久允許
+  e.onDeliver(conv, OWNER)
+  expect((await e.refuse(conv, call, e.extraCheck(conv, call, 'user')!)).reason).toContain('router 已在對話裡詢問是否提權 (#1')
+  expect(sent).toHaveLength(1)
+  expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:deny'])
+  expect(sent[0]!.text).toContain('♾️ 不能永久允許: 技能參數的角色限制沒辦法寫成固定規則')
+  expect(await e.decide('elev:1:once', OWNER)).toBe('已提權一次')
+  // the main session may still not; the elevated subagent's call passes and leaves an owner ticket
+  expect((await e.onHook(conv, { event: 'pre', quiet: true, tool_name: call.tool_name, tool_input: call.tool_input })).decision).toBe('deny')
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'V' })
+  expect(await e.onHook(conv, { event: 'pre', quiet: true, agent_id: 'V', tool_name: call.tool_name, tool_input: call.tool_input })).toMatchObject({ decision: 'allow' })
+  expect(e.takeTicket(conv.key, 'run_skill', call.tool_input)).toBe('owner')
+  e.stop()
+})

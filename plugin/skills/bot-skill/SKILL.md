@@ -65,6 +65,8 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能放的位�
 - 對話用 `run_skill` (skill, action, args) 呼叫. router 檢查角色與參數格式 (不經 shell), 在專屬沙箱執行: 只讀得到技能資料夾與 `creds` 指定的憑證資料夾 (路徑放在環境變數), 只寫得到對話資料夾, router 狀態與 $HOME 都看不到.
 - 憑證資料夾在 router 那邊 (`/x/cc/.router/creds/<名稱>`), 由 owner 放入檔案. 腳本要把憑證的工作副本放 `/tmp` (沙箱私有), 不要寫進對話資料夾; router 也會掃描回傳文字與輸出檔, 發現憑證內容就刪除並通知 owner.
 - `auth_failure` 比對到輸出時, router 執行 `refresh` 指定的 internal 動作一次 (只有它能寫憑證資料夾) 再重試; 更新失敗會通知 owner.
+- 動作要呼叫 API (例如 Whisper) 時寫 `"http": { "WHISPER": "openai" }`: 腳本拿到 `$WHISPER_URL` (base URL) 與 `$WHISPER_HEADER` (整行授權標頭, 例如 `Authorization: Bearer ...`), 要寫進 `/tmp` 的檔案再給 `curl -H @檔案`, 不要放命令列; key 出現在輸出會被遮蔽並通知 owner.
+- 某個參數只給較高角色用時寫 `"force": { "flag": "--force", "roles": ["owner", "admin"] }`: 其他角色帶這個參數會被擋, 照一般流程觸發提權申請 (發起者角色夠高就在對話裡問, 不然請對方用 request_elevation); 核准後由 subagent 重新呼叫. 這種限制不能永久允許.
 - 每個對話每小時最多 10 次.
 
 ## 跨 bot 技能

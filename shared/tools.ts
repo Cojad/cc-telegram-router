@@ -151,7 +151,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'run_skill',
-    description: 'Run an approved privileged action of a skill (its privileged.json, e.g. web-instagram extract): the router runs it in its own sandbox with the credentials it needs (cookies...), which never reach you; output files land in your folder. Works for user and power conversations without elevation. args must match the action\'s argument patterns. Limited to 10 runs per hour per conversation.',
+    description: 'Run an approved privileged action of a skill (its privileged.json, e.g. web-instagram extract): the router runs it in its own sandbox with the credentials it needs (cookies...), which never reach you; output files land in your folder. Works for user and power conversations without elevation. args must match the action\'s argument patterns; an argument limited to higher roles (e.g. force for a long video) triggers an elevation request instead. Limited to 10 runs per hour per conversation.',
     inputSchema: {
       type: 'object',
       properties: {

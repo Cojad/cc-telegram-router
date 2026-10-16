@@ -2,7 +2,9 @@
 // a user conversation runs an approved action without elevation, the
 // credentials are usable by the script but never come back, the rest of the
 // machine stays hidden, the skill cannot be changed, a changed skill stops,
-// refused credentials are refreshed once. Keep in sync with plan 10d,
+// refused credentials are refreshed once, an http API key is usable by the
+// script but never comes back, an argument limited to higher roles is refused
+// for lower ones (elevation: phase3.test.ts). Keep in sync with plan 10d,
 // README 「特權技能」 and /telegram:bot-skill.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
@@ -10,8 +12,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { openRouterDb, type RouterDb } from '../db'
-import { buildArgv, hashSkill, secretsIn, scrubOutputs, redact } from '../privskill'
-import { runSkill, type SkillRunDeps } from '../skillrun'
+import { buildArgv, hashSkill, secretsIn, scrubOutputs, redact, argRoleRefusal } from '../privskill'
+import { runSkill, describeActions, type SkillRunDeps } from '../skillrun'
 import type { Conversation } from '../db'
 
 const COOKIE = 'SAPISIDabcdefghijklmnopqrstuvwxyz0123456789'
@@ -176,3 +178,35 @@ test('mounts and env: only for internal (router-run) actions; an action a conver
   const rr = await runSkill(deps, conv, 'user', 'clip', 'extract', { url: 'https://www.youtube.com/watch?v=auth' })
   expect(rr.text).toContain('(憑證被拒, 已自動更新後重試)')
 }, 60000)
+
+test('arg roles: a flag limited to owner and admin is refused for user (it needs elevation), passes for owner; the approval text says so', async () => {
+  writeSkill({ long: { run: ['bash', '-c', 'echo "force=$1"', '_', '{force?}'], args: { force: { flag: '--force', roles: ['owner', 'admin'] } }, roles: ['user', 'owner'] } })
+  db.approveSkill(skill, 'clip', hashSkill(skill), 'owner')
+  const a = { run: [], args: { force: { flag: '--force', roles: ['owner', 'admin'] } } }
+  expect(argRoleRefusal(a, {}, 'user')).toBeNull()
+  expect(argRoleRefusal(a, { force: false }, 'user')).toBeNull()
+  expect(argRoleRefusal(a, { force: true }, 'user')).toBe('參數 force 只開放給 owner, admin 角色, 本對話角色 user 要提權')
+  expect(argRoleRefusal(a, { force: true }, 'admin')).toBeNull()
+  const r = await runSkill(deps, conv, 'user', 'clip', 'long', { force: true })
+  expect(r).toEqual({ ok: false, text: '參數 force 只開放給 owner, admin 角色, 本對話角色 user 要提權. 需要的話告訴對方, 並用 request_elevation 申請提權' })
+  expect((await runSkill(deps, conv, 'user', 'clip', 'long', {})).text).toEndWith('force=')
+  expect((await runSkill(deps, conv, 'owner', 'clip', 'long', { force: true })).text).toContain('force=--force')
+  expect(describeActions(skill)).toContain('long: bash -c echo "force=$1" _ {force?}; 角色 user, owner; 參數 force 限 owner, admin')
+})
+
+test('http credential: the script gets the base URL and auth header in env, the key never comes back, a missing credential refuses the run', async () => {
+  const KEY = 'sk-test0123456789abcdefghijklmnop'
+  writeSkill({ api: { run: ['bash', '-c', 'echo "url=$API_URL"; echo "$API_HEADER" | cut -c1-21; echo "$API_HEADER" > media/h.txt; echo "$API_HEADER"'], http: { API: 'openai' }, roles: ['user'] } })
+  db.approveSkill(skill, 'clip', hashSkill(skill), 'owner')
+  mkdirSync(join(conv.folder, 'media'), { recursive: true })
+  expect((await runSkill(deps, conv, 'user', 'clip', 'api', {})).text).toBe('技能 clip 需要的 API 憑證 openai 不存在或不是 http 憑證, 請 owner 檢查')
+  deps.httpCred = name => name === 'openai' ? { token: KEY, kind: 'http', baseUrl: 'https://api.example.com/', methods: ['/v1/audio/transcriptions'] } : undefined
+  const r = await runSkill(deps, conv, 'user', 'clip', 'api', {})
+  expect(r.text).toContain('url=https://api.example.com')
+  expect(r.text).toContain('Authorization: Bearer ') // the header reached the script
+  expect(r.text).not.toContain(KEY)
+  expect(r.text).toContain('Authorization: Bearer <已遮蔽>')
+  expect(existsSync(join(conv.folder, 'media', 'h.txt'))).toBe(false) // written out: removed
+  expect(told.some(t => t.includes('含有憑證內容'))).toBe(true)
+  expect(describeActions(skill)).toContain('API 憑證 openai')
+})

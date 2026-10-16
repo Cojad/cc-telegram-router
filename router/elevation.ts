@@ -48,6 +48,9 @@ export interface ElevationDeps {
   authz?: Authz
   label(uid: string): string
   log?(msg: string): void
+  /** A further check beyond the role's permission settings (a skill
+   *  argument limited to higher roles): why role may not make this call, or null. */
+  extraCheck?(conv: Conversation, call: Call, role: string): string | null
   askTimeoutMs?: number
   grantTtlMs?: number
 }
@@ -79,6 +82,13 @@ export function createElevation(deps: ElevationDeps) {
   const ticketKey = (conv: string, tool: string, args: unknown) => `${conv}\u0000${tool}\u0000${stableArgs(args ?? {})}`
 
   const senderOf = (conv: Conversation) => lastSender.get(conv.key) ?? null
+  /** Would role be allowed this call: its permission settings, then extraCheck. */
+  const allowedAs = (conv: Conversation, role: string, call: Call) => {
+    const c = checkCall(deps.settingsAs(conv, role), call, conv.folder, role)
+    if (!c.ok) return c
+    const why = deps.extraCheck?.(conv, call, role)
+    return why ? { ok: false as const, why } : c
+  }
   const elevatedSender = (conv: Conversation) => {
     const s = senderOf(conv)
     return s && rank(deps.roleOf(s)) > rank(conv.role) ? s : null
@@ -100,6 +110,7 @@ export function createElevation(deps: ElevationDeps) {
   /** What 永久允許 would add for this call in this conversation. */
   function ruleFor(conv: Conversation, call: Call | null): Rule | { none: string } {
     if (!call) return { none: '主動申請沒有具體的動作, 只能一次一次允許' }
+    if (deps.extraCheck?.(conv, call, conv.role)) return { none: '技能參數的角色限制沒辦法寫成固定規則, 只能一次一次允許' }
     const lay = (s: any, o: Rule['overrides']) => applyOverrides(s, o.map(x => ({ conv: conv.key, ...x })))
     return permanentRule(deps.settingsAs(conv, conv.role), call, conv.folder, lay)
   }
@@ -161,7 +172,7 @@ export function createElevation(deps: ElevationDeps) {
     await record(conv, 'blocked', `⛔ ${conv.key} 被擋: ${action}\n${why}${agent ? ` (subagent ${agent})` : ''}\n發起者 ${who(sender)}`, null)
     const guide = `權限不足 (本對話角色 ${conv.role}): ${why}.`
     const elevated = elevatedSender(conv)
-    if (elevated && checkCall(deps.settingsAs(conv, deps.roleOf(elevated)), call, conv.folder).ok) {
+    if (elevated && allowedAs(conv, deps.roleOf(elevated), call).ok) {
       const pending = db.pendingElevation(conv.key)
       if (pending) return { decision: 'deny', reason: `${guide} 已在對話裡詢問是否提權 (#${pending.id}), 等 <router_status> 的結果; 這段時間不要用越權的方法繞過.` }
       const reason = String(call.tool_input?.description ?? '')
@@ -199,7 +210,7 @@ export function createElevation(deps: ElevationDeps) {
           const call: Call = { tool_name: String(ev.tool_name ?? ''), tool_input: ev.tool_input ?? {} }
           const b = agent ? bound.get(agent) : undefined
           if (b && b.conv === conv.key) {
-            const c = checkCall(deps.settingsAs(conv, b.role), call, conv.folder, b.role)
+            const c = allowedAs(conv, b.role, call)
             if (!c.ok) return blocked(conv, call, `即使提權為 ${b.role} 也不允許: ${c.why}`, agent)
             const g = db.approvalGrantsFor('elev', b.id).find(x => x.status === 'active')
             if (g) await deps.authz?.use(conv, g, `subagent ${agent} 以 ${b.role} 角色: ${callDetail(call)}`)
@@ -210,7 +221,7 @@ export function createElevation(deps: ElevationDeps) {
             const to = String(call.tool_input.to ?? call.tool_input.recipient ?? '')
             if ([...bound.keys()].some(id => to.includes(id))) return { decision: 'deny', reason: '非提權的一輪不能指揮已提權的 subagent' }
           }
-          const c = checkCall(deps.settingsAs(conv, conv.role), call, conv.folder, conv.role)
+          const c = allowedAs(conv, conv.role, call)
           if (!c.ok) return blocked(conv, call, c.why, agent)
           // passes only thanks to an approved override (永久允許 earlier): a use of it
           if (deps.authz) {
@@ -289,8 +300,14 @@ export function createElevation(deps: ElevationDeps) {
       return t.until > Date.now() ? t.role : null
     },
 
+    /** A call refused router-side (a Telegram tool the main session called,
+     *  which no hook sees): log it and ask for elevation like a hook block. */
+    refuse: (conv: Conversation, call: Call, why: string): Promise<HookDecision> => blocked(conv, call, why, undefined),
+
     /** Something refused elsewhere (package review) still belongs in the log. */
     note: (conv: Conversation, kind: ElevLogKind, text: string) => record(conv, kind, text, null),
+
+    extraCheck: (conv: Conversation, call: Call, role: string): string | null => deps.extraCheck?.(conv, call, role) ?? null,
 
     state: () => ({ granted: [...granted.entries()].map(([conv, g]) => ({ conv, ...g })), bound: [...bound.entries()].map(([agent, b]) => ({ agent, ...b })) }),
     stop() { for (const t of timers.values()) clearTimeout(t) },

@@ -30,7 +30,7 @@ import { refuseUse, refuseOwnBot, botApiCall, httpApiCall, takeB64, shorten, DEF
 import { installSkill } from './skills'
 import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
-import { hashSkill, loadManifest } from './privskill'
+import { hashSkill, loadManifest, argRoleRefusal } from './privskill'
 import { createProgress, type ProgressEvent, type Mirror } from './progress'
 import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
@@ -231,6 +231,10 @@ const ipc = createIpc({
     }
     if (tool === 'run_skill') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接執行技能的腳本' }], isError: true }
+      // an argument limited to higher roles (a video over 15 minutes): elevation, as for a hook block
+      const call = { tool_name: 'mcp__plugin_telegram_telegram__run_skill', tool_input: args }
+      const argWhy = elevation.extraCheck(conv, call, role)
+      if (argWhy) return { content: [{ type: 'text', text: (await elevation.refuse(conv, call, argWhy)).reason ?? argWhy }], isError: true }
       const r = await callConv.run(conv.key, () => runSkill(skillDeps, conv, role, String(args.skill ?? ''), String(args.action ?? ''), (args.args ?? {}) as Record<string, unknown>))
       return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
     }
@@ -429,6 +433,7 @@ const skillDeps: SkillRunDeps = {
   db, home: cfg.home, credsRoot: join(cfg.stateDir, 'creds'), userHome: homedir(),
   extraRo: [join(homedir(), '.local', 'bin'), join(homedir(), '.local', 'lib'), join(homedir(), '.deno', 'bin')],
   botDir: b => botDir(cfg, b),
+  httpCred: name => cfg.credentials[name],
   async exec(argv, env, timeoutMs) {
     const p = Bun.spawn(argv, { env, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' })
     const timer = setTimeout(() => p.kill(9), timeoutMs)
@@ -445,6 +450,16 @@ const elevation = createElevation({
   applyPermissions: c => commandDeps.applyPermissions(c),
   roleOf: uid => roleOf(commandDeps, uid),
   settingsAs: (c, role, keep) => applyOverrides(renderSettings(TEMPLATES, role, settingsVars(c)), db.listOverrides(c.key).filter(o => !keep || keep(o))),
+  // a skill argument limited to higher roles (privileged.json args.<name>.roles): elevation, like any other block
+  extraCheck: (c, call, role) => {
+    if (call.tool_name !== 'mcp__plugin_telegram_telegram__run_skill') return null
+    const i = call.tool_input ?? {}
+    try {
+      const dir = skillDirs(skillDeps, c.bot, String(i.skill ?? ''))[0]
+      const a = dir ? loadManifest(dir)?.actions[String(i.action ?? '')] : undefined
+      return a ? argRoleRefusal(a, (i.args ?? {}) as Record<string, unknown>, role) : null
+    } catch { return null }
+  },
 })
 
 const pkgGate = createPkgGate({
