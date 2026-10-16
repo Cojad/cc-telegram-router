@@ -44,7 +44,7 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
 ### 審核按鈕, 撤銷, 執行授權
 
 - 申請 (跨對話傳訊, 套件安裝, 提權) 都是「允許一次 / 永久允許 / 拒絕」, 申請訊息寫明永久允許的範圍: 跨對話是 `send *` (可送往 bot 所在的任何對話), 套件是 `pkg *` (PyPI 與 npm 不用審核, URL 與自訂來源仍審核), 提權是把被擋的那類動作寫成權限覆寫 (`Bash(python3)` 與 `Bash(python3 *)` 一對, 不帶參數的 `hostname` 這類指令也涵蓋; 讀寫某個資料夾, 某個工具或 MCP); 跳出 sandbox 與重導向寫檔不能永久允許.
-- 申請有了結果後, worker 處理結果的那一輪, 進度回覆當初提出申請的那則訊息; 在其他地方按下按鈕時, 那裡也同步一份進度 (開頭標明對話).
+- 申請有了結果後, worker 處理結果的那一輪, 進度回覆當初提出申請的那則訊息; 在其他地方按下按鈕時, 那裡也同步一份進度 (開頭標明對話). 在 worker 終端機打的那一輪提出的申請 (跨對話傳訊, 套件審核, 提權) 沒有對應的 Telegram 訊息, 結果不回覆任何訊息, 也不會綁到上一則.
 - 允許過的申請在審核群組留「🚫 撤銷」按鈕. 每一次動用已核准的權限都記在 `auth_uses` 與「🧾 執行授權」話題, 附工具呼叫內容與撤銷按鈕. 撤銷會移除權限覆寫 (一對 Bash 規則一起移除), 丟掉尚未使用的提權, 輪替 worker 並通知它; 授權出現過的每則訊息 (申請的每一份, 每次使用, 提權紀錄話題裡那則「✅ 提權成功」) 都拿掉按鈕並標「🚫 已撤銷」.
 
 ### 技能與憑證
@@ -198,7 +198,7 @@ bun test router/test
 | 每個角色: 能做的做得到, 不能做的被擋且原因正確 | phase3「five role templates…」「permcheck: each role template…」; 真的 claude 執行: role-live (LIVE=1) |
 | 越權被擋時告訴模型改用不越權的方法, 做不到就問要不要向 owner 申請 | phase3「elevation: a plain user turn is refused with advice…」 |
 | 唯讀白名單的角色用重導向寫檔視為寫入: 擋下, 記錄, 發話者較高時提權 (只能允許一次) | phase3「permcheck: each role template…」「writesFile: …」「elevation: a user conversation writing a file through a redirection…」 |
-| 終端機打的一輪沒有發話者: 只看對話角色, 不在對話裡詢問 | phase3「elevation: a turn typed in the worker's terminal has no sender…」 |
+| 終端機打的一輪沒有發話者: 只看對話角色, 不在對話裡詢問; 它提出的申請不綁上一則 Telegram 訊息 | phase3「elevation: a turn typed in the worker's terminal has no sender…」「request origin: …」 |
 | 發話者角色較高時在對話裡詢問, 120 秒預設拒絕 | phase3「…in-chat 提權執行/拒絕 prompt…」「nobody answers within the time limit…」 |
 | 按下的人角色要夠高, 以他的角色執行; 只有下一個 subagent, 主 session 與其他 subagent 照舊被擋 | phase3「…only a role high enough may approve…」, phase3「cc-hook asks the router…」 |
 | 主動申請 (request_elevation) 送 owner | phase3「request_elevation from a plain user turn…」 |

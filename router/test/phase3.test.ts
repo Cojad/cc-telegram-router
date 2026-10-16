@@ -16,7 +16,7 @@ import { createElevation } from '../elevation'
 import { credRoleRefusal } from '../credentials'
 import { installRefusal, skillScope } from '../skills'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from '../grants'
-import { approvalPlace, noticePlace, type ApprovalDeps } from '../approvals'
+import { approvalPlace, noticePlace, requestOriginNoter, type ApprovalDeps } from '../approvals'
 import { createAuthz } from '../authz'
 import { createIpc } from '../ipc'
 import type { Access } from '../telegram/policy'
@@ -375,6 +375,31 @@ test('elevation: a turn typed in the worker\'s terminal has no sender: only the 
   expect(sent.filter(m => m.chat === conv.chat_id)).toHaveLength(1)
   expect(origins).toEqual([2])
   expect(db.getElevation(2)!.sender).toBe(OWNER)
+  e.stop()
+})
+
+test('request origin: a request from a Telegram turn is tied to the message it answers; one from a terminal turn to none, not the last Telegram message (send grant, package review, elevation)', async () => {
+  const { conv, e, approvals } = elevHarness()
+  const cur = new Map([[conv.key, 321]]) // main.ts currentMsg: the last delivered Telegram message
+  approvals.noteRequest = requestOriginNoter({ db, currentMsg: k => cur.get(k), terminalTurn: k => e.terminalTurn(k) })
+  const g: GrantDeps = { db, approvals, notify() {}, label: id => id }
+  e.onDeliver(conv, '42')
+  await e.onHook(conv, { event: 'prompt', telegram: true })
+  expect(e.terminalTurn(conv.key)).toBe(false)
+  await requestGrant(g, conv, '-100777', 'owner', 'x')
+  expect(db.requestOrigin('grant', 1)).toBe(321)
+  await e.onHook(conv, { event: 'prompt', telegram: false })
+  expect(e.terminalTurn(conv.key)).toBe(true)
+  await requestGrant(g, conv, '-100778', 'owner', 'y')
+  expect(db.requestOrigin('grant', 2)).toBeNull()
+  approvals.noteRequest!('pkg', 7, conv) // as pkgreview.ts does for a review
+  expect(db.requestOrigin('pkg', 7)).toBeNull()
+  expect(await e.request(conv, '要看 /x', 'ls /x')).toContain('#1')
+  expect(db.requestOrigin('elev', 1)).toBeNull()
+  // the next Telegram turn ties again
+  await e.onHook(conv, { event: 'prompt', telegram: true })
+  approvals.noteRequest!('pkg', 8, conv)
+  expect(db.requestOrigin('pkg', 8)).toBe(321)
   e.stop()
 })
 

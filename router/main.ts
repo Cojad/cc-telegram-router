@@ -39,7 +39,7 @@ import { hashSkill, loadManifest, argRoleRefusal } from './privskill'
 import { createProgress, type ProgressEvent, type Mirror } from './progress'
 import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
-import { postNotice, type ApprovalDeps } from './approvals'
+import { postNotice, requestOriginNoter, type ApprovalDeps } from './approvals'
 import { createPkgGate, claudeReviewer } from './pkgreview'
 import { createClassifier, openClassifyStore, decisionsJudge, jevJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER } from './classifier'
 import { newClaimCode, isClaim, initBotSetups, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
@@ -528,10 +528,8 @@ const approvalDeps: ApprovalDeps = {
       ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map(b => ({ text: b.text, callback_data: b.data }))] } } : {}),
     }).then(m => m.message_id, e => { log(`send to ${to.chat_id}: ${e}`); return null })
   },
-  noteRequest(kind, ref, conv) {
-    const mid = currentMsg.get(conv.key)
-    if (mid != null) db.setRequestOrigin(kind, ref, conv.key, mid)
-  },
+  // the message a request answers; none for a terminal turn (elevation.ts)
+  noteRequest: requestOriginNoter({ db, currentMsg: k => currentMsg.get(k), terminalTurn: k => elevation.terminalTurn(k) }),
   async edit(bot, chatId, messageId, text, buttons) {
     await bots.get(bot)?.bot.api.editMessageText(chatId, messageId, text, { reply_markup: { inline_keyboard: buttons?.length ? [buttons.map(b => ({ text: b.text, callback_data: b.data }))] : [] } })
   },

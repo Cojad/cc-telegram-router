@@ -341,6 +341,8 @@ export function createElevation(deps: ElevationDeps) {
     extraCheck: (conv: Conversation, call: Call, role: string): string | null => deps.extraCheck?.(conv, call, role) ?? null,
     /** Who started the conversation's current turn; null for a turn typed in the terminal (event_raw goes by the conversation's role then). */
     senderOf: (conv: Conversation): string | null => senderOf(conv),
+    /** The conversation's current turn was typed in the worker's terminal (no Telegram message). */
+    terminalTurn: (convKey: string): boolean => terminalTurn.has(convKey),
 
     state: () => ({ granted: [...granted.entries()].map(([conv, g]) => ({ conv, ...g })), bound: [...bound.entries()].map(([agent, b]) => ({ agent, ...b })) }),
     stop() { for (const t of timers.values()) clearTimeout(t) },

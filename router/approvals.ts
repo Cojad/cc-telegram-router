@@ -44,6 +44,18 @@ export interface ApprovalDeps {
   noteRequest?(kind: string, ref: number, conv: Conversation): void
 }
 
+/** ApprovalDeps.noteRequest: tie request kind#ref to the Telegram message the
+ *  conversation's current turn answers (its result's progress replies to it).
+ *  A turn typed in the worker's terminal answers none: nothing is tied, not
+ *  even the last Telegram message (elevation.ts knows which turn it is). */
+export function requestOriginNoter(o: { db: RouterDb; currentMsg(conv: string): number | undefined; terminalTurn(conv: string): boolean }): (kind: string, ref: number, conv: Conversation) => void {
+  return (kind, ref, conv) => {
+    if (o.terminalTurn(conv.key)) return
+    const mid = o.currentMsg(conv.key)
+    if (mid != null) o.db.setRequestOrigin(kind, ref, conv.key, mid)
+  }
+}
+
 /** What a router notice to a worker is about, when it answers a request. */
 export type About = { kind: string; ref: number }
 
