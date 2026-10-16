@@ -122,6 +122,7 @@ bun test router/test
 | `router/test/phase3-cred.test.ts` | 憑證的角色與方法限制, Bot API 呼叫 (含上傳), install_skill 的來源, 範圍與檢查, /router cred 與 botapi |
 | `router/test/secrets.test.ts` | 規劃 10b 對話專屬密鑰: 加密與綁定, 遮蔽, /secret 指令 (私訊, 群組, 拒絕, 上限, getMe 驗證, --header), 使用範圍檢查, /router secret; events 遮蔽與一次性 migration, 全域 http 路徑, bot 設定提醒 |
 | `router/test/e2e-secrets.test.ts` | 真的 router + 假 Bot API 與 HTTP API: secretKey 自動產生, 舊 events 遮蔽, 私訊登記與刪訊息, 群組登記與提醒, getMe 驗證, 引用遮蔽, http_api (含 --header) 與 bot_api 使用, 其他對話用不到, list / rm, 加入群組, 初次設定與 setup group 的設定提醒 |
+| `router/test/phase3-privskill.test.ts` | 規劃 10d 特權技能: 參數比對與逐一傳入 (不經 shell), 沙箱的 HOME 與 PATH, 核准與雜湊暫停, 角色與 internal 動作, 憑證不外流 (回傳與寫出的檔案, 通知 owner), 憑證被拒時更新一次再重試, 額外掛載只給 internal 動作, 參數限角色走提權, http API 憑證 |
 | `router/test/phase3-pkg.test.ts` | 規劃 07 套件安裝審核: 指令解析, manifest, 審核快取, 送審與核准, 慢審核, 審核模型的呼叫方式, hook |
 | `router/test/e2e-setup.test.ts` | 真的 router + 假 Bot API, 從沒有 owner 開始: 認領碼, 人設訪談與 bot CLAUDE.md, 審核群組的檢查與話題, 略過 |
 | `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
