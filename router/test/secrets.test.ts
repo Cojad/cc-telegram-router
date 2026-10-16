@@ -245,7 +245,7 @@ test('group privacy notice (柯姊 wording): what on and off mean, the current s
   expect(off).toContain('你目前 Group Privacy 設定: ✅ 關閉 (Bot 可以看到每則群組訊息, 符合建議的設定)')
   expect(privacyNotice({ username: 'x_bot' })).toBe(on) // missing = on
   expect(privacyNotice(null)).toBeNull()
-  for (const s of ['🤖 Bot 之間互傳訊息 (Bot-to-Bot Communication Mode)', '預設關閉. router 沒辦法查到它目前是開是關', '私訊要兩隻 bot 都開啟才能互傳', '包括 /secret 這類指令', '互相回覆停不下來']) expect(B2B_NOTICE).toContain(s)
+  for (const s of ['🤖 Bot 之間互傳訊息 (Bot-to-Bot Communication Mode)', '預設關閉. router 沒辦法查到它目前是開是關', '私訊要兩隻 bot 都開啟才能互傳', '設定方式: 私訊 @BotFather → /setbot2bot → 選這隻 bot → Enable (開啟) 或 Disable (關閉); 也可以在 @BotFather 的 Mini App 裡設定.', '包括 /secret 這類指令', '互相回覆停不下來']) expect(B2B_NOTICE).toContain(s)
 })
 
 test('/router bot add: the reply carries the new bot\'s settings notice (privacy, bot-to-bot); rotate does not', async () => {
