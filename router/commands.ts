@@ -53,6 +53,10 @@ export interface CommandDeps {
   overridesRemoved?(c: Conversation, uid: string): Promise<number>
   /** The effective settings the router would write for this conversation. */
   effectiveSettings(c: Conversation): any
+  /** getMe with a token for /secret set (router/secrets.ts): "@username (id)", or throws why not. */
+  verifyBot(token: string): Promise<string>
+  /** What the owner should know about a bot's settings (router/setup.ts botSettingsNotice). */
+  botNotice?(name: string): string
   /** Credentials for cross-bot skills (router/credentials.ts). */
   creds: {
     /** Validate with getMe, store in config.json; returns "@username (id)". */
@@ -287,7 +291,8 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const token = args[3]
         if (!token) return done(`用法: /router bot ${op} <名稱> <token>`)
         const username = op === 'add' ? await deps.bots.add(name, token) : await deps.bots.rotate(name, token)
-        return done(`${op === 'add' ? `已新增 bot ${name}: @${username}\n私訊 @${username} 任何一句話, 它會帶你完成初次設定 (名字, 個性, 風格, 用途, 審核群組)` : `已更換 bot ${name}: @${username}`}`, { deleteMessage: true })
+        const notice = op === 'add' ? deps.botNotice?.(name) : undefined
+        return done(`${op === 'add' ? `已新增 bot ${name}: @${username}\n私訊 @${username} 任何一句話, 它會帶你完成初次設定 (名字, 個性, 風格, 用途, 審核群組)` : `已更換 bot ${name}: @${username}`}${notice ? `\n\n${notice}` : ''}`, { deleteMessage: true })
       } catch (e) {
         return done(`bot ${op} 失敗: ${e instanceof Error ? e.message : e}`, { deleteMessage: hasToken })
       }

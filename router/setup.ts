@@ -81,3 +81,28 @@ export function describeSetup(s: BotSetup | null, ownerDm: string | undefined): 
     : `owner 私訊 ${ownerDm ?? '(沒有 owner)'}${s?.group_skipped ? ' (已略過群組設定)' : ' (群組尚未設定)'}`
   return [`人設: ${needsPersona(s) ? '尚未完成 (owner 下次私訊時會開始訪談)' : '已完成'}`, `審核與通知: ${place}`].join('\n')
 }
+
+/** Group privacy (getMe can_read_all_group_messages): on, the bot only gets
+ *  commands and replies to it in groups, so mention words ("柯柯") and other
+ *  messages never reach it. null when privacy is off. The two points 柯姊
+ *  wants every owner to see: the change needs the bot re-added to each
+ *  group, and a bot that is a group admin gets everything anyway. */
+export function privacyNotice(me: { username: string; can_read_all_group_messages?: boolean } | null): string | null {
+  if (!me || me.can_read_all_group_messages === true) return null
+  return [
+    `⚠️ @${me.username} 的群組隱私模式 (Group Privacy) 還開著.`,
+    '開著的話, 群組裡 bot 只收得到指令 (/...) 和回覆它的訊息, 收不到提到關鍵字 (例如「柯柯」) 的訊息與其他對話.',
+    `要關掉: 私訊 @BotFather 傳 /setprivacy, 選 @${me.username}, 按 Disable.`,
+    '‼️ 重點 1: 關掉之後, 已經在的群組要把 bot 移出群組再加回來才會生效.',
+    '‼️ 重點 2: bot 是群組管理員的話不受這個限制, 本來就收得到全部訊息.',
+  ].join('\n')
+}
+
+/** Bot-to-Bot Communication Mode (@BotFather): Bot API getMe has no field
+ *  for it, so it cannot be checked, only explained. Wording pending 柯姊. */
+export const B2B_NOTICE = 'ℹ️ (Bot-to-Bot Communication Mode 說明, 待柯姊定稿)'
+
+/** What the owner should know about a bot's settings: privacy (when on) and bot-to-bot. */
+export function botSettingsNotice(me: { username: string; can_read_all_group_messages?: boolean } | null): string {
+  return [privacyNotice(me), B2B_NOTICE].filter(Boolean).join('\n\n')
+}

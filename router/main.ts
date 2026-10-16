@@ -37,7 +37,7 @@ import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
 import { postNotice, type ApprovalDeps } from './approvals'
 import { createPkgGate, claudeReviewer } from './pkgreview'
-import { newClaimCode, isClaim, initBotSetups, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup } from './setup'
+import { newClaimCode, isClaim, initBotSetups, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE } from './setup'
 import { createElevation } from './elevation'
 import { dmLabel } from './commands'
 import { parseRelay, mayRelay, relay, codeBlock, ROUTER_CMDS, type Exec, type RelayCmd } from './relay'
@@ -112,6 +112,8 @@ const HOOKS_DIR = join(cfg.stateDir, 'hooks')
 
 const DB_FILE = join(cfg.stateDir, 'router.db')
 const db = openRouterDb(DB_FILE)
+// Updates logged before every token-carrying command was masked (router/secrets.ts): mask them once.
+{ const n = db.maskEventsOnce('mask-command-tokens-2026-10', maskSecretUpdate); if (n != null) log(`masked tokens in ${n} logged updates`) }
 const store = openStore(DB_FILE)
 const ACCESS_FILE = join(cfg.stateDir, 'access.json')
 const INBOX = join(cfg.stateDir, 'inbox')
@@ -164,6 +166,8 @@ const chats = new Map<string, { type: string; title: string | null }>()
 
 type BotHandle = { cfg: BotConfig; bot: Bot; info: { id: number; username: string; first_name: string } | null }
 const bots = new Map<string, BotHandle>()
+// getMe of each bot (privacy mode: can_read_all_group_messages), from bot add / rotate and polling start
+const meOf = new Map<string, { username: string; can_read_all_group_messages?: boolean }>()
 
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean }
@@ -342,7 +346,7 @@ const ipc = createIpc({
       log(`${conv.bot}: persona saved to ${botDir(cfg, conv.bot)}/CLAUDE.md, ${others.length} other worker(s) marked for rotation`)
       const s = db.getBotSetup(conv.bot)
       if (!s?.approvals_chat && !s?.group_skipped) {
-        setTimeout(() => void approvalDeps.send(conv.bot, { chat_id: conv.chat_id }, GROUP_GUIDE, [{ text: '略過, 用私訊接收', data: `setup:${conv.bot}:skip` }]), 3000)
+        setTimeout(() => void approvalDeps.send(conv.bot, { chat_id: conv.chat_id }, `${GROUP_GUIDE}\n\n${botSettingsNotice(meOf.get(conv.bot) ?? null)}`, [{ text: '略過, 用私訊接收', data: `setup:${conv.bot}:skip` }]), 3000)
       }
       return { content: [{ type: 'text', text: `已儲存人設到 ${botDir(cfg, conv.bot)}/CLAUDE.md, 這隻 bot 的其他對話會在下次叫醒時套用 (這個對話在下次重啟後生效, 現在就照新人設說話即可). router 會接著私訊 owner 審核群組的設定步驟, 你不用再說明.` }] }
     }
@@ -570,7 +574,7 @@ async function setupGroup(bot: string, chatId: string): Promise<string> {
     await approvalDeps.send(bot, { chat_id: chatId, thread_id: approvals }, '這裡會收到權限申請: 跨對話傳訊, 套件安裝, 向 owner 的提權申請. owner 與 admin 可以按允許或拒絕.', [])
     await approvalDeps.send(bot, { chat_id: chatId, thread_id: elevlog }, '提權紀錄: 所有被擋下的動作, 所有提權請求 (主動或被動), 以及提權成功 (附原始請求的連結).', [])
   }
-  return `✅ 審核群組設定完成${reuse ? ' (沿用既有話題)' : ''}: 重要通知與權限申請之後都送到這個群組的話題`
+  return `✅ 審核群組設定完成${reuse ? ' (沿用既有話題)' : ''}: 重要通知與權限申請之後都送到這個群組的話題\n\n${botSettingsNotice(meOf.get(bot) ?? h.info)}`
 }
 
 /** A message gate() delivered: queue it for its conversation and make sure a worker picks it up. */
@@ -622,6 +626,7 @@ const commandDeps: CommandDeps = {
       cfg.bots.push(bc)
       ensureBotDir(cfg, name)
       db.updateBotSetup(name, {})
+      meOf.set(name, me)
       startBot(bc)
       return me.username
     },
@@ -635,6 +640,7 @@ const commandDeps: CommandDeps = {
       cfg.bots.splice(cfg.bots.findIndex(b => b.name === name), 1, bc)
       // Old poller stops first: Telegram allows one getUpdates consumer per bot.
       await old.bot.stop().catch(() => {})
+      meOf.set(name, me)
       startBot(bc)
       return me.username
     },
@@ -666,6 +672,13 @@ const commandDeps: CommandDeps = {
     db.setRotate(c.key, true)
     void rotate()
   },
+  // /secret set of a telegram-bot secret: it has to be a bot token (router/secrets.ts)
+  async verifyBot(token) {
+    const r = await botApiCall({ apiRoot: cfg.apiRoot, token, method: 'getMe', params: {} }).catch(() => ({ ok: false, error_code: 0, description: '連不上 Telegram' }))
+    if (!r.ok || !r.result?.is_bot) throw new Error(r.ok ? '不是 bot' : `${r.error_code ?? ''}: ${r.description}`.replace(/^: /, ''))
+    return `@${r.result.username} (${r.result.id})`
+  },
+  botNotice: name => botSettingsNotice(meOf.get(name) ?? null),
   creds: {
     async add(name, token, methods, addedBy, http) {
       let label: string
@@ -875,6 +888,14 @@ function startBot(bc: BotConfig): BotHandle {
       const conv = db.findConversation(bc.name, String(ctx.chat.id))
       if (conv) db.touchConversation(conv.key, ctx.chat.type === 'private' ? null : title)
     }
+    // Added to a group: tell the owner what this bot's settings mean there
+    // (privacy mode unless it came in as admin, bot-to-bot).
+    const mcm = ctx.myChatMember
+    if (mcm && (mcm.chat.type === 'group' || mcm.chat.type === 'supergroup') && ['left', 'kicked'].includes(mcm.old_chat_member.status) && ['member', 'administrator', 'restricted'].includes(mcm.new_chat_member.status)) {
+      const admin = mcm.new_chat_member.status === 'administrator'
+      const notice = [admin ? null : privacyNotice(meOf.get(bc.name) ?? null), B2B_NOTICE].filter(Boolean).join('\n\n')
+      void postNotice(approvalDeps, bc.name, `➕ @${h.info?.username ?? bc.name} 被加入群組 ${mcm.chat.title ?? mcm.chat.id}${admin ? ' (管理員)' : ''}\n\n${notice}`).catch(e => log(`group join notice: ${e}`))
+    }
     // Buttons: send grants, package reviews, setup. Each settles every copy itself.
     const data = ctx.callbackQuery?.data
     if (data && ctx.from && /^(grant|pkg|elev|setup):/.test(data)) {
@@ -894,7 +915,7 @@ function startBot(bc: BotConfig): BotHandle {
         else {
           commandDeps.setup.skip(bc.name)
           answer = '已略過, 通知與申請都會私訊給你'
-          await ctx.editMessageText(`${GROUP_GUIDE}\n\n${answer}`).catch(() => {})
+          await ctx.editMessageText(`${GROUP_GUIDE}\n\n${botSettingsNotice(meOf.get(bc.name) ?? null)}\n\n${answer}`).catch(() => {})
         }
       }
       await ctx.answerCallbackQuery({ text: answer ?? '' }).catch(() => {})
@@ -955,6 +976,7 @@ function startBot(bc: BotConfig): BotHandle {
       try {
         await bot.start({ onStart: info => {
           h.info = info
+          meOf.set(bc.name, info)
           // The bot itself never appears as a sender in its own updates; record it so /id shows its name.
           db.seePerson({ uid: String(info.id), name: info.first_name, username: info.username, chat_id: null })
           log(`${bc.name}: polling as @${info.username}`)

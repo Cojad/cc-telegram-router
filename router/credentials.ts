@@ -9,10 +9,22 @@ import type { Config, Credential } from './config'
 
 export const DEFAULT_CRED_ROLES = ['owner', 'admin']
 
+/** Why a request path may not be used with an API key, or null. fetch
+ *  resolves dot segments (new URL turns /v1/images/../files into /v1/files),
+ *  so a prefix match on the raw path could be walked out of: "..", ".", their
+ *  %2e forms, an encoded "/" and "\\" are refused, as is "#". */
+export function badPath(path: string): string | null {
+  if (!path.startsWith('/')) return 'path 要以 / 開頭'
+  const p = path.split('?')[0]!
+  if (/\\|#/.test(path) || p.split('/').some(s => s === '..' || s === '.' || /%2e/i.test(s) || /%2f/i.test(s) || /%5c/i.test(s))) return 'path 不能含 .., ., \\, # 或編碼過的 . / \\'
+  return null
+}
+
 /** Why this use is refused, or null when allowed. */
 export function refuseUse(cred: Credential | undefined, name: string, role: string, method: string, kind: 'telegram-bot' | 'http' = 'telegram-bot'): string | null {
   if (!cred) return `沒有名為 ${name} 的憑證 (/router cred list 查看)`
   if ((cred.kind ?? 'telegram-bot') !== kind) return `憑證 ${name} 是 ${cred.kind ?? 'telegram-bot'} 類, 要用 ${cred.kind === 'http' ? 'http_api' : 'bot_api'} 工具`
+  if (kind === 'http') { const bad = badPath(method); if (bad) return bad }
   if (!(cred.roles ?? DEFAULT_CRED_ROLES).includes(role)) return `憑證 ${name} 只開放 ${(cred.roles ?? DEFAULT_CRED_ROLES).join(', ')} 角色的對話使用, 這個對話是 ${role}`
   const allowed = cred.methods.some(m => m === method || (m.endsWith('*') && method.startsWith(m.slice(0, -1))))
   if (!allowed) return `憑證 ${name} 沒有開放 ${method} (允許: ${cred.methods.join(', ') || '(無)'}); owner 可用 /router cred allow ${name} ${method} 加入`

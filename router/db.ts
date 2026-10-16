@@ -78,6 +78,10 @@ export type ElevLogKind = 'blocked' | 'request' | 'approved' | 'denied' | 'expir
 export type ConvSecret = {
   bot: string; chat_id: string; name: string; kind: 'telegram-bot' | 'http'; value: string
   base_url: string | null; allowed: string; added_by: string; created_at: string
+  /** http: header carrying the key and its scheme (null: Authorization, Bearer), as Credential. */
+  header: string | null; scheme: string | null
+  /** telegram-bot: "@username (id)" from getMe at registration. */
+  label: string | null
 }
 
 export type QueueRow = { qid: number; conv: string; params: string; status: 'pending' | 'delivered' | 'acked' }
@@ -168,6 +172,10 @@ export interface RouterDb {
   trackProgress(key: string, chat_id: string, message_id: number): void
   untrackProgress(key: string, message_id: number): void
   orphanProgress(): Array<{ key: string; chat_id: string; message_id: number }>
+  /** Rewrite logged updates that may carry a token (text with /secret or
+   *  /router); returns how many rows changed. Run once by name (migrations
+   *  table): null when it already ran. */
+  maskEventsOnce(name: string, mask: (update: unknown) => unknown): number | null
   setConvSecret(s: ConvSecret): void
   getConvSecret(bot: string, chat_id: string, name: string): ConvSecret | null
   listConvSecrets(bot: string, chat_id: string): ConvSecret[]
@@ -244,6 +252,7 @@ export function openRouterDb(path: string): RouterDb {
       id INTEGER PRIMARY KEY AUTOINCREMENT, conv TEXT NOT NULL, pkgs TEXT NOT NULL, reason TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_by TEXT, decided_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY, at TEXT NOT NULL, changed INTEGER);
     CREATE TABLE IF NOT EXISTS conv_secrets (
       bot TEXT NOT NULL, chat_id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL,
       base_url TEXT, allowed TEXT NOT NULL, added_by TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (bot, chat_id, name)
@@ -253,6 +262,8 @@ export function openRouterDb(path: string): RouterDb {
   // Columns added after Phase 1.
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
   const setupCols = new Set((db.query('PRAGMA table_info(bot_setup)').all() as Array<{ name: string }>).map(c => c.name))
+  const secCols = new Set((db.query('PRAGMA table_info(conv_secrets)').all() as Array<{ name: string }>).map(c => c.name))
+  for (const n of ['header', 'scheme', 'label']) if (!secCols.has(n)) db.exec(`ALTER TABLE conv_secrets ADD COLUMN ${n} TEXT`)
   if (!setupCols.has('elevlog_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN elevlog_topic INTEGER')
   if (!setupCols.has('authuse_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN authuse_topic INTEGER')
   const useCols = new Set((db.query('PRAGMA table_info(auth_uses)').all() as Array<{ name: string }>).map(c => c.name))
@@ -418,9 +429,24 @@ export function openRouterDb(path: string): RouterDb {
     trackProgress: (key, chat_id, id) => { qPAdd.run(key, chat_id, id) },
     untrackProgress: (key, id) => { qPDel.run(key, id) },
     orphanProgress: () => qPAll.all() as Array<{ key: string; chat_id: string; message_id: number }>,
+    maskEventsOnce(name, mask) {
+      if (db.prepare('SELECT 1 FROM migrations WHERE name = ?').get(name)) return null
+      let changed = 0
+      const upd = db.prepare('UPDATE events SET update_json = ? WHERE id = ?')
+      db.transaction(() => {
+        for (const r of db.prepare("SELECT id, update_json FROM events WHERE update_json LIKE '%/secret%' OR update_json LIKE '%/router%'").all() as Array<{ id: number; update_json: string }>) {
+          let v: unknown
+          try { v = JSON.parse(r.update_json) } catch { continue }
+          const out = JSON.stringify(mask(v))
+          if (out !== r.update_json) { upd.run(out, r.id); changed++ }
+        }
+        db.prepare('INSERT INTO migrations (name, at, changed) VALUES (?, ?, ?)').run(name, now(), changed)
+      })()
+      return changed
+    },
     setConvSecret: s => {
-      db.prepare('INSERT OR REPLACE INTO conv_secrets (bot, chat_id, name, kind, value, base_url, allowed, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(s.bot, s.chat_id, s.name, s.kind, s.value, s.base_url, s.allowed, s.added_by, s.created_at)
+      db.prepare('INSERT OR REPLACE INTO conv_secrets (bot, chat_id, name, kind, value, base_url, allowed, header, scheme, label, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(s.bot, s.chat_id, s.name, s.kind, s.value, s.base_url, s.allowed, s.header ?? null, s.scheme ?? null, s.label ?? null, s.added_by, s.created_at)
     },
     getConvSecret: (bot, chat_id, name) => (db.prepare('SELECT * FROM conv_secrets WHERE bot = ? AND chat_id = ? AND name = ?').get(bot, chat_id, name) as ConvSecret | null) ?? null,
     listConvSecrets: (bot, chat_id) => db.prepare('SELECT * FROM conv_secrets WHERE bot = ? AND chat_id = ? ORDER BY name').all(bot, chat_id) as ConvSecret[],

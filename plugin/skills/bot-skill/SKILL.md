@@ -45,7 +45,9 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能裝在哪�
 這個對話自己要用的 token 或 API key (不是給整隻 bot 的技能), 請**使用者自己**在這個對話傳:
 
 - `/secret set <名稱> <token> [方法...]` (Telegram bot token, 沒寫方法就是全部)
-- `/secret set <名稱> <API key> --http <網址> [路徑...]` (一般 API, 結尾 `*` 代表前綴, 沒寫路徑就是全部)
+- `/secret set <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴>] [路徑...]` (一般 API, 結尾 `*` 代表前綴, 沒寫路徑就是全部; 預設 `Authorization: Bearer <key>`, 像 `x-api-key` 這種 API 用 `--header x-api-key`)
+
+bot token 會先用 getMe 驗證, 不是有效的 bot token 就不會存.
 
 router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到 `<已遮蔽>`), 加密存起來, 私訊裡立刻刪掉; 群組裡 bot 沒有刪除權限時會提醒發送者自己刪.
 之後用 `bot_api` 或 `http_api`, credential 填那個名稱: 對話自己的密鑰優先於全域憑證, 不看角色也不用授權, 只能呼叫登記時的方法或網址與路徑.
