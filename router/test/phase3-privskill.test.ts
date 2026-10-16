@@ -79,6 +79,13 @@ test('buildArgv: script paths resolve in the skill, arguments must match, flags 
   expect(buildArgv(a, skill, {}, n => n)).toEqual({ error: '缺少參數 url' })
 })
 
+test('sandbox env: a private HOME, yet Python finds the user\'s packages under the real ~/.local (read-only)', async () => {
+  const { sandboxArgv } = await import('../privskill')
+  const sb = sandboxArgv({ argv: ['true'], skillDir: skill, convFolder: conv.folder, creds: {}, home: '/home/u', extraRo: [] })
+  expect(sb.env).toMatchObject({ HOME: '/tmp', PYTHONUSERBASE: '/home/u/.local', PATH: '/home/u/.local/bin:/usr/local/bin:/usr/bin:/bin' })
+  expect(sb.argv.slice(0, 16)).toEqual(['bwrap', '--die-with-parent', '--unshare-pid', '--new-session', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', '--tmpfs', '/x', '--tmpfs'])
+})
+
 test('secrets: cookie values are found, removed from outputs and masked in text', () => {
   const s = secretsIn([join(dir, 'state', 'creds', 'yt-cookies')])
   expect(s).toEqual([COOKIE])

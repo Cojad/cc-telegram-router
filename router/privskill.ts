@@ -163,6 +163,7 @@ export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: s
   b.push('--bind', o.convFolder, o.convFolder)
   if (existsSync(join(o.convFolder, '.chat'))) b.push('--ro-bind', join(o.convFolder, '.chat'), join(o.convFolder, '.chat'))
   b.push('--chdir', o.convFolder, '--', ...o.argv)
-  const env: Record<string, string> = { PATH: `${o.home}/.local/bin:/usr/local/bin:/usr/bin:/bin`, HOME: '/tmp', LANG: 'C.UTF-8', TMPDIR: '/tmp', ...o.creds, ...o.env }
+  // HOME is a private /tmp; Python still finds the user's packages (websockets...) under the real ~/.local
+  const env: Record<string, string> = { PATH: `${o.home}/.local/bin:/usr/local/bin:/usr/bin:/bin`, HOME: '/tmp', LANG: 'C.UTF-8', TMPDIR: '/tmp', PYTHONUSERBASE: `${o.home}/.local`, ...o.creds, ...o.env }
   return { argv: b, env }
 }
