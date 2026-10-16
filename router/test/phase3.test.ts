@@ -460,9 +460,26 @@ test('authz: send grants and package approvals settle with a revoke button at th
   const [grant] = authz.covering(from, o => o.some(x => x.value === '-100888'))
   await authz.use(from, grant!, 'reply → -100888: hi')
   expect(sent.at(-1)).toMatchObject({ chat: '-100900', thread: 77, buttons: ['grant:1:revoke'] })
+  const useMsg = sent.at(-1)!
+  await authz.use(from, grant!, 'reply → -100888: again')
+  const useMsg2 = sent.at(-1)!
+  const before = edits.length
   expect(await authz.revoke('grant:1:revoke', ADMIN)).toBe('已撤銷')
   expect(db.listOverrides(from.key)).toEqual([])
-  expect(edits.at(-1)!.text).toEndWith(`✅ 已允許一次 (${OWNER})\n🚫 已撤銷 (${ADMIN})`)
+  // every place it showed: both copies of the request and both uses, buttons gone, 已撤銷 added
+  const after = edits.slice(before).map((e, i) => ({ ...e, buttons: editButtons[before + i] }))
+  expect(after.map(e => e.id).sort()).toEqual([...sent.filter(m => m.buttons.includes('grant:1:once') || m.buttons.includes('grant:1:deny')).map(m => m.id), useMsg.id, useMsg2.id].sort())
+  expect(after.every(e => e.buttons!.length === 0 && e.text.endsWith(`🚫 已撤銷 (${ADMIN})`))).toBe(true)
+  expect(after.find(e => e.chat === '-100900' && e.text.includes('跨對話傳訊申請'))!.text).toContain(`✅ 已允許一次 (${OWNER})\n🚫 已撤銷 (${ADMIN})`)
+  expect(after.find(e => e.id === useMsg.id)!.text).toBe(`${useMsg.text}\n\n🚫 已撤銷 (${ADMIN})`)
+  // a stale button pressed later: the messages are tidied again, nothing else changes
+  const n = edits.length
+  expect(await authz.revoke('grant:1:revoke', OWNER)).toBe('這個授權已經撤銷了')
+  expect(edits.length - n).toBe(after.length)
+  expect(editButtons.slice(n).every(b => b.length === 0)).toBe(true)
+  expect(edits.at(-1)!.text).toEndWith(`🚫 已撤銷 (${ADMIN})`) // still says who revoked it
+  // a revoked authorization is not logged as used any more
+  expect(authz.covering(from, () => true)).toEqual([])
 })
 
 // --- 05 目錄: bot 資料夾 ---------------------------------------------------------

@@ -128,8 +128,9 @@ export interface RouterDb {
   approvalGrantsFor(kind: string, ref: number): ApprovalGrant[]
   activeApprovalGrants(conv: string): ApprovalGrant[]
   revokeApprovalGrant(id: number, by: string): boolean
-  addAuthUse(grant: number, conv: string, text: string): void
-  authUses(grant: number): Array<{ ts: string; text: string }>
+  /** One use of an approval; msg: where it was posted (so a revoke can update it). */
+  addAuthUse(grant: number, conv: string, text: string, msg?: { bot: string; chat_id: string; message_id: number }): void
+  authUses(grant: number): Array<{ ts: string; text: string; bot: string | null; chat_id: string | null; message_id: number | null }>
   elevLog(conv: string | null, limit: number): Array<{ ts: string; conv: string; kind: ElevLogKind; text: string; ref: number | null }>
   getBotSetup(bot: string): BotSetup | null
   /** Create the row if missing, then set the given fields. */
@@ -226,6 +227,8 @@ export function openRouterDb(path: string): RouterDb {
   const setupCols = new Set((db.query('PRAGMA table_info(bot_setup)').all() as Array<{ name: string }>).map(c => c.name))
   if (!setupCols.has('elevlog_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN elevlog_topic INTEGER')
   if (!setupCols.has('authuse_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN authuse_topic INTEGER')
+  const useCols = new Set((db.query('PRAGMA table_info(auth_uses)').all() as Array<{ name: string }>).map(c => c.name))
+  for (const [n, t] of [['bot', 'TEXT'], ['chat_id', 'TEXT'], ['message_id', 'INTEGER']]) if (!useCols.has(n!)) db.exec(`ALTER TABLE auth_uses ADD COLUMN ${n} ${t}`)
   for (const [name, type] of [['title', 'TEXT'], ['compact', 'INTEGER'], ['model', 'TEXT'], ['ctx_v', 'INTEGER NOT NULL DEFAULT 1'], ['last_seen', 'TEXT'], ['rotate_pending', 'INTEGER NOT NULL DEFAULT 0']]) {
     if (!cols.has(name)) db.exec(`ALTER TABLE conversations ADD COLUMN ${name} ${type}`)
   }
@@ -344,8 +347,8 @@ export function openRouterDb(path: string): RouterDb {
     approvalGrantsFor: (kind, ref) => db.prepare('SELECT id, kind, ref, conv, choice, overrides, status, revoked_by FROM approval_grants WHERE kind = ? AND ref = ? ORDER BY id').all(kind, ref) as ApprovalGrant[],
     activeApprovalGrants: conv => db.prepare("SELECT id, kind, ref, conv, choice, overrides, status, revoked_by FROM approval_grants WHERE conv = ? AND status = 'active' ORDER BY id").all(conv) as ApprovalGrant[],
     revokeApprovalGrant: (id, by) => db.prepare("UPDATE approval_grants SET status = 'revoked', revoked_by = ?, revoked_at = ? WHERE id = ? AND status = 'active'").run(by, now(), id).changes > 0,
-    addAuthUse: (grant, conv, text) => { db.prepare('INSERT INTO auth_uses (ts, grant_id, conv, text) VALUES (?, ?, ?, ?)').run(now(), grant, conv, text) },
-    authUses: grant => db.prepare('SELECT ts, text FROM auth_uses WHERE grant_id = ? ORDER BY id').all(grant) as Array<{ ts: string; text: string }>,
+    addAuthUse: (grant, conv, text, msg) => { db.prepare('INSERT INTO auth_uses (ts, grant_id, conv, text, bot, chat_id, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)').run(now(), grant, conv, text, msg?.bot ?? null, msg?.chat_id ?? null, msg?.message_id ?? null) },
+    authUses: grant => db.prepare('SELECT ts, text, bot, chat_id, message_id FROM auth_uses WHERE grant_id = ? ORDER BY id').all(grant) as any,
     addElevation: e => Number(db.prepare('INSERT INTO elevations (conv, kind, sender, action, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(e.conv, e.kind, e.sender, e.action, e.reason, now()).lastInsertRowid),
     getElevation: id => (db.prepare('SELECT id, conv, kind, sender, action, reason, status, decided_by, decided_role, created_at FROM elevations WHERE id = ?').get(id) as Elevation | null) ?? null,
     pendingElevation: conv => (db.prepare("SELECT id, conv, kind, sender, action, reason, status, decided_by, decided_role, created_at FROM elevations WHERE conv = ? AND status = 'pending' ORDER BY id DESC LIMIT 1").get(conv) as Elevation | null) ?? null,

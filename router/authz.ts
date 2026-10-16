@@ -10,7 +10,9 @@
 //   revoke: owner or admin presses 🚫 撤銷 (on the settled request or on a
 //           use): the overrides go away, the worker's settings are
 //           rewritten, a still-pending elevation is dropped, and the worker
-//           is told.
+//           is told. Every message the authorization appeared in (each copy
+//           of the request, each use) loses its button and shows 已撤銷;
+//           pressing a stale button tidies them up again.
 
 import type { Conversation, RouterDb, OverrideKind, ApprovalGrant } from './db'
 import { usePlace, mayDecide, revokeButton, type ApprovalDeps, type About } from './approvals'
@@ -41,6 +43,18 @@ function outcomeOf(g: ApprovalGrant): string {
 export function createAuthz(deps: AuthzDeps) {
   const { db } = deps
 
+  /** Everywhere this authorization shows: the request (keeps its outcome) and
+   *  each use in 執行授權. Buttons go, 已撤銷 is added. */
+  async function markRevoked(kind: string, ref: number, g: ApprovalGrant, who: string): Promise<void> {
+    const stamp = `🚫 已撤銷 (${who})`
+    for (const msg of db.approvalMsgs(kind, ref)) {
+      await deps.approvals.edit(msg.bot, msg.chat_id, msg.message_id, `${msg.text}\n\n${outcomeOf(g)}\n${stamp}`, []).catch(() => {})
+    }
+    for (const u of db.authUses(g.id)) {
+      if (u.bot && u.chat_id && u.message_id != null) await deps.approvals.edit(u.bot, u.chat_id, u.message_id, `${u.text}\n\n${stamp}`, []).catch(() => {})
+    }
+  }
+
   return {
     /** An approved request: remember what it added (and the outcome line shown under it). */
     record(kind: string, ref: number, conv: Conversation, choice: string, overrides: Granted, outcome: string): number {
@@ -60,9 +74,9 @@ export function createAuthz(deps: AuthzDeps) {
     /** One use of an authorization: logged, and posted to 執行授權 with a revoke button. */
     async use(conv: Conversation, g: ApprovalGrant, text: string): Promise<void> {
       const line = `🧾 ${KIND_NAME[g.kind] ?? g.kind}授權 (審核 #${g.ref}) 使用於 ${conv.key}${conv.title ? ` (${conv.title})` : ''}\n${text}`
-      db.addAuthUse(g.id, conv.key, line)
       const place = usePlace(db, conv.bot)
-      if (place) await deps.approvals.send(conv.bot, place, line, [revokeButton(g.kind, g.ref)]).catch(() => null)
+      const id = place ? await deps.approvals.send(conv.bot, place, line, [revokeButton(g.kind, g.ref)]).catch(() => null) : null
+      db.addAuthUse(g.id, conv.key, line, id != null && place ? { bot: conv.bot, chat_id: place.chat_id, message_id: id } : undefined)
     },
 
     /** A 🚫 撤銷 press "<kind>:<ref>:revoke". */
@@ -71,8 +85,13 @@ export function createAuthz(deps: AuthzDeps) {
       if (!m) return null
       if (!mayDecide(deps.approvals, uid)) return '只有 owner 或 admin 能撤銷'
       const [kind, ref] = [m[1]!, Number(m[2])]
-      const active = db.approvalGrantsFor(kind, ref).filter(g => g.status === 'active')
-      if (!active.length) return '這個授權已經撤銷了'
+      const all = db.approvalGrantsFor(kind, ref)
+      const active = all.filter(g => g.status === 'active')
+      if (!active.length) {
+        // a stale button (an edit that failed, or a message posted before the revoke finished): tidy up again
+        for (const g of all) await markRevoked(kind, ref, g, deps.label(g.revoked_by ?? uid))
+        return all.length ? '這個授權已經撤銷了' : '找不到這個授權'
+      }
       const who = deps.label(uid)
       for (const g of active) {
         db.revokeApprovalGrant(g.id, uid)
@@ -85,10 +104,7 @@ export function createAuthz(deps: AuthzDeps) {
           deps.notify(conv, `<router_status>\n${KIND_NAME[kind]}授權 (審核 #${ref}) 已被 ${who} 撤銷${o.length ? `: 移除 ${o.map(x => `${x.kind} ${x.value}`).join(', ')}` : ''}. 之後這類動作會再被擋下, 需要的話重新申請.\n</router_status>`, { kind, ref })
         }
         deps.log?.(`revoked ${kind} #${ref} (${g.conv}) by ${uid}`)
-        // the settled request: keep its outcome, add the revocation, drop the button
-        for (const msg of db.approvalMsgs(kind, ref)) {
-          await deps.approvals.edit(msg.bot, msg.chat_id, msg.message_id, `${msg.text}\n\n${outcomeOf(g)}\n🚫 已撤銷 (${who})`, []).catch(() => {})
-        }
+        await markRevoked(kind, ref, g, who)
       }
       return '已撤銷'
     },
