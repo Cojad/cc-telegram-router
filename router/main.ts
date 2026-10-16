@@ -29,6 +29,7 @@ import { importV1Messages } from './importv1'
 import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
 import { newSecretKey, maskSecretUpdate, openSecret, refuseSecret, secretCred, scrubSecret } from './secrets'
 import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
+import { fingerprint, noteStart, STALE_NOTE } from './freshness'
 import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
 import { hashSkill, loadManifest, argRoleRefusal } from './privskill'
@@ -106,6 +107,8 @@ mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 })
 mkdirSync(cfg.home, { recursive: true })
 
 // Templates ship next to the source in dev and next to the binary when deployed.
+// Where workers load the plugin from (deploy/install.sh plugin puts it there)
+const PLUGIN_DIR = join(homedir(), '.claude', 'plugins', 'cache', 'claude-plugins-official', 'telegram', '0.0.7')
 const TEMPLATES = [join(import.meta.dir, '..', 'templates'), join(cfg.stateDir, 'templates')].find(d => existsSync(join(d, 'base-settings.json')))
 if (!TEMPLATES) throw new Error('templates/base-settings.json not found')
 const HOOKS_DIR = join(cfg.stateDir, 'hooks')
@@ -390,7 +393,7 @@ const ipc = createIpc({
   async onCli(text) {
     const owner = cfg.owners[0]
     if (!owner) return 'config 沒有 owners'
-    const out = await runCommand({ bot: cfg.bots[0]!.name, text, senderId: owner, senderName: 'terminal', chatId: owner, chatType: 'private' }, commandDeps)
+    const out = await runCommand({ bot: cfg.bots[0]!.name, text, senderId: owner, senderName: 'terminal', chatId: owner, chatType: 'private', terminal: true }, commandDeps)
     if (!out) return `不是 /router 指令: ${text}`
     for (const l of out.logs) db.addLog(l.conv, l.text)
     out.after?.()
@@ -439,6 +442,13 @@ const supervisor = createSupervisor({
   isConnected: ipc.isConnected,
   waitConnected: ipc.waitConnected,
   settingsPath: settingsFor,
+  // a resumed worker still has the old tool descriptions and skill SOPs in its context: remind it once when they changed
+  onStart: (c, resumed) => {
+    try {
+      const fp = fingerprint([join(PLUGIN_DIR, 'server.js'), join(PLUGIN_DIR, 'skills'), join(cfg.home, '.claude', 'skills'), join(botDir(cfg, c.bot), '.claude', 'skills'), join(c.folder, '.claude', 'skills')])
+      if (noteStart(c.folder, fp, resumed)) { db.addLog(c.key, STALE_NOTE); log(`${c.key}: plugin or skills changed since its last start, reminder queued`) }
+    } catch (e) { log(`${c.key}: freshness check failed: ${e}`) }
+  },
   onWakeFail: c => void postNotice(approvalDeps, c.bot, `⚠️ ${c.key}${c.title ? ` (${c.title})` : ''} 的 worker 叫不醒, 訊息還在佇列裡. 可試 /router session restart ${c.chat_id}`),
 })
 

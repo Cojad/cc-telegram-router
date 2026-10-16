@@ -20,6 +20,8 @@ export interface SupervisorDeps {
   /** Resolves true once the conversation's plugin says hello, false on timeout. */
   waitConnected: (key: string, ms: number) => Promise<boolean>
   settingsPath: (c: Conversation) => string
+  /** Just before a worker is started; resumed: an existing session goes on (router/freshness.ts). */
+  onStart?: (c: Conversation, resumed: boolean) => void
   log?: (msg: string) => void
   connectTimeoutMs?: number
   /** The worker did not connect in time (an important notice for the owner). */
@@ -79,12 +81,14 @@ export function createSupervisor(deps: SupervisorDeps) {
       // nothing is saved any more and the flags must be given again.
       const hasJob = agents.some(a => a.sessionId === c.session_id)
       log(`resume ${c.key} ${c.session_id}${hasJob ? '' : ' (job gone, with flags)'}`)
+      deps.onStart?.(c, true)
       const args = [cfg.claudeBin, '--bg', '--resume', c.session_id, ...(hasJob ? [] : workerArgs(cfg, c, settings))]
       const r = await run(args, c.folder)
       if (r.code !== 0) log(`resume ${c.key} failed: ${r.stderr || r.stdout}`)
       return
     }
     log(`spawn ${c.key}`)
+    deps.onStart?.(c, false)
     const r = await run([cfg.claudeBin, '--bg', ...workerArgs(cfg, c, settings), '--', initPrompt(c)], c.folder)
     const short = parseShortId(r.stdout)
     if (!short) { log(`spawn ${c.key} failed: ${r.stderr || r.stdout}`); return }

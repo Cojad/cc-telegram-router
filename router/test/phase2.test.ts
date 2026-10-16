@@ -501,6 +501,33 @@ test('/router session rotate marks one or all workers (admin skips owner ones) a
   expect((await run('/router status', OWNER))!.reply).toMatch(/ 💤💬🚻 +\d+m前: -100555 \(待輪替\)/) // a group without a title shows its chat id
 })
 
+test('a conversation named by chat id: this bot\'s in Telegram (--bot for another); from the terminal any bot\'s, ambiguous ones ask for --bot; a conversation key works everywhere', async () => {
+  cfg.bots.push({ name: 'router', token: '2:y' })
+  ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  ensureConversation(cfg, db, 'router', '-100555', 'supergroup', () => {})
+  ensureConversation(cfg, db, 'router', '-100777', 'supergroup', () => {})
+  const term = (text: string) => runCommand({ bot: 'cc', text, senderId: OWNER, senderName: 'terminal', chatId: OWNER, chatType: 'private', terminal: true }, deps())
+  // terminal: the only bot with that chat
+  expect((await term('/router session rotate -100777'))!.reply).toStartWith('已標記 1 個 worker 等待輪替: router-group-100777')
+  // several bots have it: no silent pick, the candidates are listed
+  const amb = (await term('/router session rotate -100555'))!.reply
+  expect(amb).toBe('-100555 在 2 隻 bot 都有對話, 請加 --bot <名稱> 或改用對話 key: group-100555 (bot cc), router-group-100555 (bot router)')
+  expect((await term('/router session rotate -100555 --bot router'))!.reply).toStartWith('已標記 1 個 worker 等待輪替: router-group-100555')
+  expect((await term('/router session rotate router-group-100555'))!.reply).toStartWith('已標記 1 個 worker 等待輪替: router-group-100555')
+  expect((await term('/router session rotate -100555 --bot nope'))!.reply).toBe('沒有名為 nope 的 bot (cc, router)')
+  expect((await term('/router chat -100555'))!.reply).toStartWith('-100555 在 2 隻 bot 都有對話')
+  expect((await term('/router chat router-group-100777'))!.reply).toStartWith('router-group-100777')
+  expect((await term('/router perm -100555 show'))!.reply).toStartWith('-100555 在 2 隻 bot 都有對話')
+  expect((await term('/router log -100555'))!.reply).toStartWith('-100555 在 2 隻 bot 都有對話')
+  expect((await term('/router log router-group-100777'))!.reply).toStartWith('[router-group-100777]')
+  expect((await term('/router secret list -100777'))!.reply).toBe('對話 -100777 沒有密鑰')
+  expect((await term('/router secret list -100555'))!.reply).toStartWith('-100555 在 2 隻 bot 都有對話')
+  // Telegram: a chat id is this bot's chat; another bot's needs --bot or the key
+  expect((await run('/router session rotate -100777', OWNER))!.reply).toBe('找不到這個對話')
+  expect((await run('/router session rotate -100777 --bot router', OWNER))!.reply).toStartWith('已標記 1 個 worker 等待輪替: router-group-100777')
+  expect((await run('/router session rotate -100555', OWNER))!.reply).toStartWith('已標記 1 個 worker 等待輪替: group-100555')
+})
+
 test('rotation: idle workers are stopped and unmarked, busy ones wait, stopped ones are just unmarked; a backlog is woken', async () => {
   const a = ensureConversation(cfg, db, 'cc', '-1001', 'supergroup', () => {})
   const b = ensureConversation(cfg, db, 'cc', '-1002', 'supergroup', () => {})

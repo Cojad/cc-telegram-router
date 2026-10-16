@@ -16,6 +16,7 @@ import { makeAssertAllowedChat, makeAssertSendable } from '../guard'
 import { acquireLock } from '../lock'
 import { createIpc } from '../ipc'
 import { createSupervisor, initPrompt, parseShortId, type Runner } from '../supervisor'
+import { fingerprint, noteStart } from '../freshness'
 import { connectRouter } from '../../plugin/client'
 import type { RouterToPlugin } from '../../shared/protocol'
 
@@ -231,8 +232,11 @@ test('wake: first time spawns with the worker flags and records the session; a b
     isConnected: () => connected,
     async waitConnected(_k, ms) { for (let t = 0; t < ms && !connected; t += 10) await sleep(10); return connected },
     settingsPath: () => '/x/cc/.router/sessions/group-100555.json',
+    onStart: (_c, resumed) => starts.push(resumed),
   })
+  const starts: boolean[] = []
   await Promise.all([sup.ensureAwake(conv), sup.ensureAwake(conv), sup.ensureAwake(conv)])
+  expect(starts).toEqual([false])
   const spawns = runs.filter(a => a[1] === '--bg')
   expect(spawns.length).toBe(1)
   expect(spawns[0]).toEqual(expect.arrayContaining(['--name', `tg-${conv.key}`, '--allow-dangerously-skip-permissions', '--setting-sources', 'project,local', '--settings', '--channels', 'plugin:telegram@claude-plugins-official', '--model', 'claude-opus-5-5']))
@@ -249,6 +253,38 @@ test('wake: first time spawns with the worker flags and records the session; a b
   runs.length = 0
   await sup.ensureAwake(db.getConversation(conv.key)!)
   expect(runs.find(a => a[1] === '--bg')).toEqual(expect.arrayContaining(['--resume', 'abc12345-0000', '--settings', '--channels', 'plugin:telegram@claude-plugins-official']))
+  expect(starts).toEqual([false, true, true])
+})
+
+test('freshness: a resumed worker is reminded once when the plugin or a skill it sees changed since its last start; a new session is not', () => {
+  const conv = ensureConversation(cfg, db, 'main', '-100555', 'supergroup', () => {})
+  const plugin = join(dir, 'plugin'), skills = join(conv.folder, '.claude', 'skills')
+  mkdirSync(join(plugin, 'skills', 'doc'), { recursive: true })
+  writeFileSync(join(plugin, 'server.js'), 'v1')
+  writeFileSync(join(plugin, 'skills', 'doc', 'SKILL.md'), 'doc v1')
+  const fp = () => fingerprint([join(plugin, 'server.js'), join(plugin, 'skills'), skills])
+  // a new session records it, nothing to say
+  expect(noteStart(conv.folder, fp(), false)).toBe(false)
+  expect(readFileSync(join(conv.folder, '.chat', 'tools.sha'), 'utf8').trim()).toBe(fp())
+  expect(noteStart(conv.folder, fp(), true)).toBe(false) // resumed, nothing changed
+  // a skill installed into the conversation: the next resume is told, once
+  mkdirSync(join(skills, 'hello'), { recursive: true })
+  writeFileSync(join(skills, 'hello', 'SKILL.md'), 'hi')
+  expect(noteStart(conv.folder, fp(), true)).toBe(true)
+  expect(noteStart(conv.folder, fp(), true)).toBe(false)
+  // a plugin deploy (tool descriptions in server.js, or its skills)
+  writeFileSync(join(plugin, 'server.js'), 'v2')
+  expect(noteStart(conv.folder, fp(), true)).toBe(true)
+  writeFileSync(join(plugin, 'skills', 'doc', 'SKILL.md'), 'doc v2')
+  expect(noteStart(conv.folder, fp(), true)).toBe(true)
+  // venv and friends do not count
+  const before = fp()
+  mkdirSync(join(skills, 'hello', 'venv'), { recursive: true })
+  writeFileSync(join(skills, 'hello', 'venv', 'x.py'), 'x')
+  expect(fp()).toBe(before)
+  // nothing recorded yet (a worker from before this check): a resume is told
+  rmSync(join(conv.folder, '.chat', 'tools.sha'))
+  expect(noteStart(conv.folder, fp(), true)).toBe(true)
 })
 
 test('parseShortId reads the id claude --bg prints', () => {

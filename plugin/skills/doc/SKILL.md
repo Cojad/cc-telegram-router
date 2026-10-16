@@ -101,7 +101,9 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 | `/restart` | 重啟 router, worker 不受影響 |
 | `/router help` | 指令總覽 |
 
-`[chat_id]` 省略時代表目前這個對話.
+`[chat_id]` 省略時代表目前這個對話. `chat_id` 指這隻 bot 的對話, 加 `--bot <名稱>` 指別隻 bot 的; 也可以直接寫對話 key (例如 `router-dm-123`, `/router chat` 列表的第一欄). 終端機的 CLI 會找所有 bot, 多隻 bot 都有同一個 chat_id 時要加 `--bot`.
+
+worker 被輪替或重新叫醒時, 若 plugin 或看得到的技能在上次啟動後改過, 下一則訊息的 `<router_log>` 會附一次提醒: 之前讀過的技能 SOP 與工具說明可能已過時, 用到時重新讀取 (Skill 工具重新載入, ToolSearch 重新取得工具定義).
 
 **在群組裡下列表類指令** (chat, log, role list, access show, config, bot list; status 例外, 直接回在群組), 結果會私訊給下指令的人, 群組只會看到「已私訊給你」. 對方沒私訊過 bot 的話要先私訊一次.
 

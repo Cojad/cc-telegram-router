@@ -20,6 +20,8 @@ export type CommandInput = {
   reply?: { uid: string; messageId: number }
   /** This bot's @username: "/secret@other_bot" is not for it. */
   botUsername?: string
+  /** From the terminal CLI: a chat id may be any bot's conversation. */
+  terminal?: boolean
 }
 /** deleteMessage: the command message carried a token; the caller deletes it
  *  and appends whether that worked to the reply. */
@@ -187,6 +189,7 @@ const HELP = [
   '/router log (所有對話) | log <chat_id> [筆數]',
   '/restart',
   '/id [@username] (回覆某則訊息時查那則): uid, 訊息編號, 對話 id',
+  '指定對話的 chat_id 也可以寫對話 key (例如 router-dm-123, /router chat 列表的第一欄); chat_id 預設指這隻 bot 的對話, 加 --bot <名稱> 指別隻 bot; 終端機會找所有 bot, 多隻都有時要加 --bot',
 ].join('\n')
 
 const CONFIG_KEYS: Record<string, 'string' | 'number' | 'list'> = { model: 'string', autoCompactWindow: 'number', claudeBin: 'string', owners: 'list' }
@@ -224,6 +227,9 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
   const args = m[1] === 'restart' ? ['restart']
     : m[1] === 'id' || m[1] === 'info' ? ['id', ...(m[2] ?? '').trim().split(/\s+/).filter(Boolean)]
     : (m[2] ?? '').trim().split(/\s+/).filter(Boolean)
+  // --bot <名稱>: which bot's conversation a chat id means
+  let botOpt: string | undefined
+  { const at = args.indexOf('--bot'); if (at > 0) { botOpt = args[at + 1]; args.splice(at, 2) } }
   const sub = args[0] ?? 'help'
   const hasToken = (sub === 'bot' && (args[1] === 'add' || args[1] === 'rotate') && args.length >= 4) || (sub === 'cred' && args[1] === 'add' && args.length >= 4)
 
@@ -234,9 +240,21 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     return deny(`/${m[1] === 'restart' ? 'router' : m[1]} 只開放 owner 與 admin, 你的角色是 ${role}`, { deleteMessage: hasToken })
   }
 
-  /** Optional leading chat id; defaults to the current chat. */
-  const target = (i: number): { conv: Conversation | null; rest: string[] } => {
-    if (args[i] && /^-?\d+$/.test(args[i]!)) return { conv: db.findConversation(input.bot, args[i]!), rest: args.slice(i + 1) }
+  /** A conversation named in a command: a conversation key (any bot), or a
+   *  chat id. In Telegram a chat id is this bot's (or --bot's) chat; from the
+   *  terminal it is the only bot that has it, and several ask for --bot. */
+  const isChatRef = (a: string | undefined) => !!a && (/^-?\d+$/.test(a) || !!db.getConversation(a))
+  const findChat = (ref: string): { conv: Conversation | null; error?: string } => {
+    if (!/^-?\d+$/.test(ref)) return { conv: db.getConversation(ref) }
+    if (botOpt) return cfg.bots.some(b => b.name === botOpt) ? { conv: db.findConversation(botOpt, ref) } : { conv: null, error: `沒有名為 ${botOpt} 的 bot (${cfg.bots.map(b => b.name).join(', ')})` }
+    if (!input.terminal) return { conv: db.findConversation(input.bot, ref) }
+    const all = db.listConversations().filter(c => c.chat_id === ref)
+    if (all.length > 1) return { conv: null, error: `${ref} 在 ${all.length} 隻 bot 都有對話, 請加 --bot <名稱> 或改用對話 key: ${all.map(c => `${c.key} (bot ${c.bot})`).join(', ')}` }
+    return { conv: all[0] ?? null }
+  }
+  /** Optional leading conversation; defaults to the current chat. */
+  const target = (i: number): { conv: Conversation | null; rest: string[]; error?: string } => {
+    if (isChatRef(args[i])) return { ...findChat(args[i]!), rest: args.slice(i + 1) }
     return { conv: here, rest: args.slice(i) }
   }
 
@@ -337,12 +355,12 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return `${c.key}${title && title !== c.chat_id ? ` (${title})` : ''}\n  chat_id ${c.chat_id}, role ${c.role}, model ${c.model ?? `${cfg.model} (預設)`}, compact ${c.compact ?? `${cfg.autoCompactWindow} (預設)`}, mention ${mention}, ${deps.sessions.isConnected(c.key) ? '待命中' : '已休眠'}${c.last_seen ? `, 最後活動 ${gmt8(c.last_seen)}` : ''}`
       }
       if (args.length === 1) return done(db.listConversations().map(describe).join('\n') || '還沒有任何對話', { private: true })
-      if (args.length === 2 && /^-?\d+$/.test(args[1]!)) {
-        const c = db.findConversation(input.bot, args[1]!)
-        return done(c ? describe(c) : '找不到這個對話', { private: true })
+      if (args.length === 2 && isChatRef(args[1])) {
+        const { conv: c, error } = findChat(args[1]!)
+        return done(c ? describe(c) : error ?? '找不到這個對話', { private: true })
       }
-      const { conv, rest } = target(1)
-      if (!conv) return done('找不到這個對話 (它還沒有任何訊息進來過)')
+      const { conv, rest, error } = target(1)
+      if (!conv) return done(error ?? '找不到這個對話 (它還沒有任何訊息進來過)')
       if (role === 'admin' && conv.role === 'owner') return deny('admin 不能異動 owner 的角色與權限')
       const [key, value] = rest
       if (key === 'compact') {
@@ -371,8 +389,8 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     }
 
     case 'perm': {
-      const { conv, rest } = target(1)
-      if (!conv) return done('找不到這個對話 (它還沒有任何訊息進來過)')
+      const { conv, rest, error } = target(1)
+      if (!conv) return done(error ?? '找不到這個對話 (它還沒有任何訊息進來過)')
       const [what, op, ...valueParts] = rest
       const value = valueParts.join(' ')
       const summary = (c: Conversation) => {
@@ -483,8 +501,9 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       const op = args[1]
       if (op === 'rotate') {
         const all = args[2] === 'all'
-        const picked = all ? db.listConversations() : [target(2).conv].filter(Boolean) as Conversation[]
-        if (!picked.length) return done('找不到這個對話')
+        const t = all ? null : target(2)
+        const picked = all ? db.listConversations() : [t!.conv].filter(Boolean) as Conversation[]
+        if (!picked.length) return done(t?.error ?? '找不到這個對話')
         const skipped = role === 'admin' ? picked.filter(c => c.role === 'owner') : []
         const marked = picked.filter(c => !skipped.includes(c))
         for (const c of marked) db.setRotate(c.key, true)
@@ -493,8 +512,8 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return done(`已標記 ${marked.length} 個 worker 等待輪替: ${marked.map(c => c.key).join(', ') || '(無)'}\n閒置的會在一分鐘內停掉, 忙碌的等它閒置; 下一則訊息會用新的程式與設定叫醒${note}`, { after: () => deps.sessions.rotateNow() })
       }
       if (op !== 'restart' && op !== 'stop') return done('用法: /router session restart|stop [chat_id] | rotate [chat_id|all]')
-      const { conv } = target(2)
-      if (!conv) return done('找不到這個對話')
+      const { conv, error } = target(2)
+      if (!conv) return done(error ?? '找不到這個對話')
       if (role === 'admin' && conv.role === 'owner' && op === 'stop') return deny('admin 不能異動 owner 的角色與權限')
       if (here?.key !== conv.key) logs.push({ conv: conv.key, text: `${who} ${op === 'restart' ? '重啟' : '停止'}了這個 worker` })
       // Restarting the worker that would carry this reply happens after the reply is sent.
@@ -539,9 +558,10 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
 
     case 'log': {
       // /router log [chat_id] [筆數]: without a chat id, every conversation.
-      const explicit = args[1] && /^-?\d+$/.test(args[1]) && Math.abs(Number(args[1])) > 1000
-      const convs = explicit ? [db.findConversation(input.bot, args[1]!)].filter(Boolean) as Conversation[] : db.listConversations()
-      if (!convs.length) return done(explicit ? '找不到這個對話' : '還沒有任何對話')
+      const explicit = !!args[1] && ((/^-?\d+$/.test(args[1]) && Math.abs(Number(args[1])) > 1000) || !!db.getConversation(args[1]))
+      const found = explicit ? findChat(args[1]!) : null
+      const convs = found ? [found.conv].filter(Boolean) as Conversation[] : db.listConversations()
+      if (!convs.length) return done(found ? found.error ?? '找不到這個對話' : '還沒有任何對話')
       const n = Math.min(Math.max(Number(explicit ? args[2] : args[1]) || (explicit ? 10 : 5), 1), 50)
       const fmt = (r: MessageRecord) => `${gmt8(r.ts).slice(5)} ${r.direction === 'in' ? `← ${r.user_id ?? '?'}` : '→'} ${(r.content ?? '').replace(/\s+/g, ' ').slice(0, 80)}${r.delivered ? '' : ' (未送進 worker)'}`
       const blocks = convs.map(c => {
@@ -617,12 +637,16 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const all = db.convSecretChats()
         return done(all.length ? all.map(r => `${r.bot} ${r.chat_id}: ${r.n} 把`).join('\n') : '沒有任何對話登記密鑰', { private: true })
       }
-      if (!chat || !/^-?\d+$/.test(chat) || (op !== 'list' && op !== 'rm')) return done('用法: /router secret list [chat_id] | rm <chat_id> [名稱]')
+      if (!chat || !isChatRef(chat) || (op !== 'list' && op !== 'rm')) return done('用法: /router secret list [chat_id] | rm <chat_id> [名稱]')
+      // secrets belong to (bot, chat): a known conversation tells which bot
+      const found = findChat(chat)
+      if (found.error) return done(found.error)
+      const [sbot, schat] = found.conv ? [found.conv.bot, found.conv.chat_id] : [botOpt ?? input.bot, chat]
       if (op === 'list') {
-        const list = db.listConvSecrets(input.bot, chat)
+        const list = db.listConvSecrets(sbot, schat)
         return done(list.length ? describeSecrets(list) : `對話 ${chat} 沒有密鑰`, { private: true })
       }
-      const n = db.removeConvSecret(input.bot, chat, args[3] ?? null)
+      const n = db.removeConvSecret(sbot, schat, args[3] ?? null)
       return done(n ? `已移除對話 ${chat} 的${args[3] ? `密鑰 ${args[3]}` : `全部 ${n} 把密鑰`}` : `對話 ${chat} 沒有${args[3] ? `名為 ${args[3]} 的` : ''}密鑰`)
     }
 

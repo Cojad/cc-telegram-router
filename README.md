@@ -26,6 +26,8 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 6. 每個工具呼叫在 PreToolUse 由 hook 問 router, router 依對話角色的 settings 檢查 (`permcheck.ts`). 越權就擋下並告訴模型改用不越權的方法; 發話者角色高於對話時, 直接在對話裡貼出「提權執行 / 拒絕」詢問 (120 秒未回應視為拒絕). 按下的人角色夠高才算數, 之後的第一個 subagent 以他的角色執行.
 7. 「cc /指令」由 router 開一次性的 tmux (`claude attach`) 代打: router 指令直接執行; `/status` `/usage` `/context` `/cost` 有專用報表; 其他指令只取它的輸出交給分身整理; `cc //指令` 直接截當下畫面. 離開前一律關掉留下的選單.
 8. power 對話的套件安裝 (pip, npm, bun...) 由 router 查 registry 資料後交給模型判斷風險, low 直接放行, 其餘送 owner 審核.
+9. 叫醒 worker 時 router 計算 plugin (`server.js`, `skills/`) 與它看得到的三個技能範圍的雜湊, 記在對話的 `.chat/tools.sha`. 接續舊 session (resume) 而雜湊變了 (部署 plugin, 安裝技能), 下一則訊息的 `<router_log>` 附一次提醒, 請它重新讀取技能 SOP 與工具說明 (`router/freshness.ts`). 新 session 不用提醒.
+10. `/router` 指令裡的 `chat_id` 指這隻 bot 的對話, `--bot <名稱>` 指別隻; 對話 key (`router-dm-123`) 到處都能用. 終端機 CLI 會找所有 bot, 多隻都有時列出候選並要求 `--bot`, 不會默默挑一隻.
 
 ### 目錄
 
@@ -113,8 +115,8 @@ bun test router/test
 
 | 檔案 | 對應 |
 |---|---|
-| `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor, plugin MCP, router 離線告知 |
-| `router/test/phase2.test.ts` | 規劃 03 的 /router 指令表與拒絕訊息, 06 chat_context, router_log, hook, 「cc /」代打, 即時進度訊息 |
+| `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor (含 resume 後的說明更新提醒 freshness), plugin MCP, router 離線告知 |
+| `router/test/phase2.test.ts` | 規劃 03 的 /router 指令表與拒絕訊息 (含 chat_id 跨 bot 指定, --bot, 對話 key), 06 chat_context, router_log, hook, 「cc /」代打, 即時進度訊息 |
 | `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, /router 指令不轉給 worker, CLI |
 | `router/test/phase3.test.ts` | 規劃 03, 07: 角色範本, /router perm, 權限檢查, 跨對話傳訊申請, 審核頻道, 提權 (詢問, 核准, 逾時, 主動申請, 紀錄), hook, bot 資料夾與搬遷 |
 | `router/test/phase3-cred.test.ts` | 憑證的角色與方法限制, Bot API 呼叫 (含上傳), install_skill 的來源, 範圍與檢查, /router cred 與 botapi |
