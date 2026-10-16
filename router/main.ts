@@ -41,6 +41,7 @@ import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
 import { postNotice, type ApprovalDeps } from './approvals'
 import { createPkgGate, claudeReviewer } from './pkgreview'
+import { createClassifier, openClassifyStore, decisionsJudge, jevJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER } from './classifier'
 import { newClaimCode, isClaim, initBotSetups, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
 import { createElevation } from './elevation'
 import { dmLabel, personLabel } from './commands'
@@ -418,8 +419,11 @@ const ipc = createIpc({
     if (ev.event === 'pre' && ev.tool_name === 'Bash' && c.role === 'power' && typeof ev.tool_input?.command === 'string') {
       const p = await pkgGate.check(c, ev.tool_input.command)
       if (p.decision === 'deny') await elevation.note(c, 'blocked', `⛔ ${c.key} 套件安裝被擋: ${String(ev.tool_input.command).slice(0, 160)}\n${p.reason}`)
+      else classifier.submit(c, ev as Record<string, any>)
       return p
     }
+    // the rules let it through: stage 1 classifier only records, after the answer (router/classifier.ts)
+    classifier.submit(c, ev as Record<string, any>)
     return d
   },
   onProgress(peer, ev) { ipcOnProgress(peer, ev) },
@@ -596,6 +600,35 @@ const pkgGate = createPkgGate({
   db, approvals: approvalDeps, notify: notifyConversation, label, log, authz,
   review: claudeReviewer({ claudeBin: cfg.claudeBin, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
 })
+
+/** Tool call classifier, stage 1: record only (router/classifier.ts). */
+const classifyStore = openClassifyStore(DB_FILE)
+const classifierCfg = () => cfg.classifier ?? DEFAULT_CLASSIFIER
+const classifier = createClassifier({
+  cfg: classifierCfg,
+  store: classifyStore,
+  judges: {
+    openai: decisionsJudge({ cred: () => cfg.credentials[classifierCfg().openai.credential], cfg: () => classifierCfg().openai }),
+    typesafe: jevJudge({ cred: () => cfg.credentials[classifierCfg().typesafe.credential], cfg: () => classifierCfg().typesafe }),
+    claude: claudeJudge({ claudeBin: cfg.claudeBin, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
+  },
+  // the same held values 10e matches exactly, plus every chat id the router knows
+  maskEnv: c => ({
+    folder: c.folder, routerHome: cfg.home,
+    known: [
+      ...cfg.bots.map(b => ({ value: b.token, label: `bot ${b.name}` })),
+      ...Object.entries(cfg.credentials).map(([n, x]) => ({ value: x.token, label: `credential ${n}` })),
+      ...db.allConvSecrets().flatMap(s => { try { return [{ value: openSecret(cfg.secretKey!, s.bot, s.chat_id, s.name, s.value), label: `secret ${s.name}` }] } catch { return [] } }),
+    ],
+    chatIds: [...new Set([...db.listConversations().map(x => x.chat_id), ...cfg.owners])],
+  }),
+  log,
+})
+{
+  const purge = () => { try { const n = classifier.purge(); if (n) log(`classifier: removed ${n} old records`) } catch (e) { log(`classifier purge: ${e}`) } }
+  purge()
+  setInterval(purge, 86_400_000).unref()
+}
 
 /** Original updates and secrets (router/rawvault.ts, plan 10e). */
 const vault = createVault({
@@ -850,6 +883,7 @@ const commandDeps: CommandDeps = {
     group: setupGroup,
   },
   events: { rawToFile: id => vault.rawToFile(id) },
+  classifier: { report: days => classifierReport(classifyStore, days, new Date(), classifierCfg().enabled), show: id => classifierShow(classifyStore, id) },
   overridesRemoved: (c, uid) => authz.syncRemoved(c, uid),
   effectiveSettings: c => applyOverrides(renderSettings(TEMPLATES, c.role, settingsVars(c)), db.listOverrides(c.key)),
   async sendTo(botName, chatId, text) {

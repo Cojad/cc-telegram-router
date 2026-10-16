@@ -88,6 +88,8 @@ export interface CommandDeps {
   sendTo(bot: string, chatId: string, text: string): Promise<void>
   /** Plan 10e: the plaintext of a masked event into a 600 file (terminal only); returns what to print. */
   events?: { rawToFile(id: number): Promise<string> }
+  /** Tool call classifier, stage 1 (router/classifier.ts): the comparison report and one record. */
+  classifier?: { report(days: number): string; show(id: number): string }
   recentMessages(chatId: string, n: number): MessageRecord[]
   writeConfig(mutate: (raw: Record<string, unknown>) => void): void
   restartRouter(): void
@@ -190,6 +192,7 @@ const HELP = [
   '/router secret handles [chat_id] (原文請求發出的密鑰代號, 不寫就列出全部) | revoke <代號>',
   '/router event raw <event id> (只在終端機: 遮蔽過的原始 update 明文寫進權限 600 的檔案, 只印路徑)',
   '/router botapi <憑證或 bot 名稱> <方法> <JSON 參數> [--file 欄位=/路徑] (只限 owner)',
+  '/router classifier [天數] (工具呼叫分類器的比較報表, 預設 7 天) | classifier show <編號> (只限 owner)',
   '/router config (列出全部) | get <key> | set <key> <值>',
   '/router log (所有對話) | log <chat_id> [筆數]',
   '/restart',
@@ -676,6 +679,19 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       if (!input.terminal || role !== 'owner') return deny('event raw 只在 owner 的終端機執行 (cc-telegram-router cli event raw <id>), 不提供 Telegram 裡的明文')
       if (!deps.events) return done('這個 router 沒有 event_raw')
       return done(await deps.events.rawToFile(Number(args[2])))
+    }
+
+    case 'classifier': {
+      // stage 1 tool call classifier (router/classifier.ts): owner only, the records hold tool arguments
+      if (role !== 'owner') return deny('/router classifier 只開放 owner')
+      if (!deps.classifier) return done('這個 router 沒有分類器')
+      if (args[1] === 'show') {
+        if (!/^\d+$/.test(args[2] ?? '')) return done('用法: /router classifier show <編號>')
+        return done(deps.classifier.show(Number(args[2])), { private: true })
+      }
+      const days = args[1] === undefined ? 7 : /^\d+$/.test(args[1]) && Number(args[1]) >= 1 && Number(args[1]) <= 90 ? Number(args[1]) : null
+      if (days === null) return done('用法: /router classifier [天數 1~90] | classifier show <編號>')
+      return done(deps.classifier.report(days), { private: true })
     }
 
     case 'botapi': {

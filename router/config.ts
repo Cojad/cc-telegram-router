@@ -4,6 +4,7 @@
 
 import { readFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
+import { parseClassifier, type ClassifierConfig } from './classifier'
 
 export type BotConfig = { name: string; token: string }
 
@@ -53,6 +54,8 @@ export type Config = {
   /** Daily refresh of privileged skills' credentials (router/skillrefresh.ts):
    *  "HH:MM" GMT+8, default "05:00"; null when config says "off". */
   skillRefreshAt?: string | null
+  /** Tool call classifier, stage 1 (router/classifier.ts): record only; off when missing. */
+  classifier?: ClassifierConfig
 }
 
 /** config skillRefreshAt: "HH:MM" (GMT+8), "off" (or false) to disable, missing = 05:00. */
@@ -93,5 +96,6 @@ export function loadConfig(path: string): Config {
     credentials: raw.credentials ?? {},
     secretKey: raw.secretKey,
     skillRefreshAt: parseRefreshAt(raw.skillRefreshAt),
+    classifier: parseClassifier(raw.classifier),
   }
 }
