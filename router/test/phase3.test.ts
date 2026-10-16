@@ -599,3 +599,29 @@ test('elevation for a skill argument: run_skill with force from a user conversat
   expect(e.takeTicket(conv.key, 'run_skill', call.tool_input)).toBe('owner')
   e.stop()
 })
+
+test('elevation after a restart: a request asked in the chat expires when its time is up (quietly, if it already was), or gets the rest of its time; a new block then asks anew', async () => {
+  const first = elevHarness()
+  first.e.onDeliver(first.conv, OWNER)
+  await first.e.onHook(first.conv, escape)
+  expect(db.getElevation(1)!.status).toBe('pending')
+  first.e.stop() // the router stops; its timers are gone
+  await new Promise(r => setTimeout(r, 20))
+  // restarted with its time already up: expired at once, the message settled, no worker told
+  const later = elevHarness({ askTimeoutMs: 10 })
+  for (let i = 0; i < 40 && !later.edits.length; i++) await new Promise(r => setTimeout(r, 10))
+  expect(db.getElevation(1)!.status).toBe('expired')
+  expect(later.edits[0]!.text).toEndWith('⌛ 逾時, 預設拒絕')
+  expect(later.told).toEqual([])
+  // a new block asks again instead of pointing at the old request
+  later.e.onDeliver(later.conv, OWNER)
+  expect((await later.e.onHook(later.conv, escape)).reason).toContain('router 已在對話裡詢問是否提權 (#2')
+  later.e.stop()
+  // restarted within its time: still pending, expires (and tells the worker) when the rest runs out
+  const again = elevHarness({ askTimeoutMs: 400 })
+  expect(db.getElevation(2)!.status).toBe('pending')
+  for (let i = 0; i < 60 && !again.told.length; i++) await new Promise(r => setTimeout(r, 20))
+  expect(db.getElevation(2)!.status).toBe('expired')
+  expect(again.told[0]).toContain('逾時沒有回應, 視為拒絕')
+  again.e.stop()
+})

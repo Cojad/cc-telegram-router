@@ -119,6 +119,7 @@ export interface RouterDb {
   addElevation(e: Pick<Elevation, 'conv' | 'kind' | 'sender' | 'action' | 'reason'>): number
   getElevation(id: number): Elevation | null
   pendingElevation(conv: string): Elevation | null
+  pendingElevations(): Elevation[]
   decideElevation(id: number, status: 'approved' | 'denied' | 'expired', by: string | null, role: string | null): boolean
   addElevLog(conv: string, kind: ElevLogKind, text: string, ref: number | null): void
   /** Privileged skills (router/privskill.ts): approvals pin the skill's hash. */
@@ -367,6 +368,7 @@ export function openRouterDb(path: string): RouterDb {
     addElevation: e => Number(db.prepare('INSERT INTO elevations (conv, kind, sender, action, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(e.conv, e.kind, e.sender, e.action, e.reason, now()).lastInsertRowid),
     getElevation: id => (db.prepare('SELECT id, conv, kind, sender, action, reason, status, decided_by, decided_role, created_at FROM elevations WHERE id = ?').get(id) as Elevation | null) ?? null,
     pendingElevation: conv => (db.prepare("SELECT id, conv, kind, sender, action, reason, status, decided_by, decided_role, created_at FROM elevations WHERE conv = ? AND status = 'pending' ORDER BY id DESC LIMIT 1").get(conv) as Elevation | null) ?? null,
+    pendingElevations: () => db.prepare("SELECT id, conv, kind, sender, action, reason, status, decided_by, decided_role, created_at FROM elevations WHERE status = 'pending' ORDER BY id").all() as Elevation[],
     decideElevation: (id, status, by, role) => db.prepare("UPDATE elevations SET status = ?, decided_by = ?, decided_role = ?, decided_at = ? WHERE id = ? AND status = 'pending'").run(status, by, role, now(), id).changes > 0,
     addElevLog: (conv, kind, text, ref) => { db.prepare('INSERT INTO elev_log (ts, conv, kind, text, ref) VALUES (?, ?, ?, ?, ?)').run(now(), conv, kind, text, ref) },
     elevLog: (conv, limit) => (conv

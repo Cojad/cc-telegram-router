@@ -145,7 +145,7 @@ export function createElevation(deps: ElevationDeps) {
     return { id, where: ok ? (inChat ? 'chat' : 'owner') : 'none' }
   }
 
-  async function finish(id: number, status: 'approved' | 'denied' | 'expired', uid: string | null, role: string | null, permanent?: Rule): Promise<void> {
+  async function finish(id: number, status: 'approved' | 'denied' | 'expired', uid: string | null, role: string | null, permanent?: Rule, quiet = false): Promise<void> {
     const e = db.getElevation(id)!
     const conv = db.getConversation(e.conv)
     clearTimeout(timers.get(id)); timers.delete(id)
@@ -157,13 +157,24 @@ export function createElevation(deps: ElevationDeps) {
     if (status === 'approved') {
       granted.set(conv.key, { id, role: role!, by: uid!, until: Date.now() + ttl })
       deps.notify(conv, `<router_status>\n提權 #${id} 已核准 (${who(uid)}): 以 ${role} 角色執行.${permanent ? `\n另外永久允許: 之後可以${permanent.desc}, worker 下次重啟後生效.` : ''}\n用 Agent 工具開「一個」general-purpose subagent 去完成被擋下的工作, prompt 寫清楚要做什麼; subagent 的 Bash 需要跳出 sandbox 時帶 dangerouslyDisableSandbox: true. 只有接下來開的第一個 subagent 有這個權限, ${Math.round(ttl / 60000)} 分鐘內要開始, 它結束就失效. 主 session 自己不要做越權的事.\n</router_status>`, { kind: 'elev', ref: id })
-    } else {
+    } else if (!quiet) {
       deps.notify(conv, `<router_status>\n提權 #${id} ${status === 'denied' ? `被拒絕 (${who(uid)})` : '逾時沒有回應, 視為拒絕'}. 不要用越權的方法繼續; 告訴對方這個請求無法完成.\n</router_status>`, { kind: 'elev', ref: id })
     }
   }
 
   async function expire(id: number): Promise<void> {
     if (db.decideElevation(id, 'expired', null, null)) await finish(id, 'expired', null, null)
+  }
+
+  // Timers live in memory: after a restart, a request asked in the chat gets
+  // what is left of its time, or expires now. Expiring now tells no worker:
+  // the turn that asked is long over. (Requests sent to the owner have no time limit.)
+  for (const p of db.pendingElevations()) {
+    const conv = db.getConversation(p.conv)
+    if (!conv || !db.approvalMsgs('elev', p.id).some(m => m.chat_id === conv.chat_id)) continue
+    const left = Date.parse(p.created_at) + askTimeout - Date.now()
+    if (left > 0) timers.set(p.id, setTimeout(() => void expire(p.id), left))
+    else if (db.decideElevation(p.id, 'expired', null, null)) void finish(p.id, 'expired', null, null, undefined, true).catch(e => deps.log?.(`elevation #${p.id}: ${e}`))
   }
 
   async function blocked(conv: Conversation, call: Call, why: string, agent: string | undefined): Promise<HookDecision> {
