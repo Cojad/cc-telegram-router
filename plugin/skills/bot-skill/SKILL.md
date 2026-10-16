@@ -34,7 +34,7 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能放的位�
    - 在**自己和 bot 的私訊**傳 `/router cred add <名稱> <token> [方法...]`. router 會驗證 token, 立刻刪掉那則訊息, token 只存在 router 設定檔, 不會進到任何對話.
    - token 已經在某個檔案裡: 在終端機執行 `cc-telegram-router cred-import <名稱> <檔案> <變數名> [方法,...]`, 值不會印出來.
    - **不要叫使用者把 token 貼在對話裡**; 對方貼了就提醒他換一把新的, 並改走上面的方式.
-2. 只開放技能需要的 Bot API 方法 (`/router cred allow <名稱> <方法...>`), 預設只有 owner 與 admin 角色的對話能用 (`/router cred roles <名稱> <角色,...>` 可調整).
+2. 只開放技能需要的 Bot API 方法 (`/router cred allow <名稱> <方法...>`), 預設只有 owner 與 admin 角色的對話能用 (`/router cred roles <名稱> <角色,...>` 可調整). 角色不夠的對話呼叫時跟其他越權動作一樣被擋並走提權: 發話者角色較高就在對話裡詢問, 否則可以 request_elevation 向 owner 申請; 只能允許一次, 要長期開放請 owner 調整憑證的角色.
 3. 技能裡用 `bot_api` (credential, method, params, files) 呼叫. 要上傳檔案時, 檔案放在自己資料夾, `files` 寫 `{ "欄位": "/絕對路徑" }`, params 裡用 `attach://欄位` 指到它.
 4. SKILL.md 寫明用到哪個憑證, 哪些方法, 讓之後的人知道要登記什麼.
 

@@ -47,6 +47,26 @@ export function refuseOwnBot(role: string, method: string): string | null {
   return null
 }
 
+/** bot_api / http_api refused only because of the conversation's role (the
+ *  credential's roles, or "self" for owner/admin): an elevation matter like
+ *  any other block. null when the role is fine, or when even the owner would
+ *  be refused (unknown credential, method not allowed): refuseUse answers
+ *  those at call time. */
+export function credRoleRefusal(creds: Record<string, Credential> | undefined, bot: string, tool: string, args: Record<string, unknown>, role: string): string | null {
+  const all = creds ?? {}
+  const name = String(args.credential ?? '')
+  let refuse: (r: string) => string | null
+  if (tool === 'bot_api') {
+    const method = String(args.method ?? '')
+    const own = (name === 'self' || name === bot) && !all[name]
+    refuse = r => own ? refuseOwnBot(r, method) : refuseUse(all[name], name, r, method)
+  } else if (tool === 'http_api') {
+    refuse = r => refuseUse(all[name], name, r, String(args.path ?? ''), 'http')
+  } else return null
+  const why = refuse(role)
+  return why && !refuse('owner') ? why : null
+}
+
 /** "123456:AA...": what a Telegram bot token looks like. */
 export const TOKEN_RE = /\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/
 

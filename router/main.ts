@@ -26,7 +26,7 @@ import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens, 
 import { isCommand, runCommand, roleOf, type CommandDeps, type CommandInput } from './commands'
 import { runCli } from './cli'
 import { importV1Messages } from './importv1'
-import { refuseUse, refuseOwnBot, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
+import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
 import { newSecretKey, maskSecretUpdate, openSecret, refuseSecret, secretCred, scrubSecret } from './secrets'
 import { installSkill } from './skills'
 import { createAuthz } from './authz'
@@ -248,6 +248,10 @@ const ipc = createIpc({
       // "self" (or the bot's own name): this conversation's own bot, for owner/admin
       const own = (name === 'self' || name === conv.bot) && !cfg.credentials[name]
       const cred = own ? { token: cfg.bots.find(b => b.name === conv.bot)!.token, methods: [] } : cfg.credentials[name]
+      // the conversation's role is too low for this credential: elevation, as for a hook block
+      const call = { tool_name: 'mcp__plugin_telegram_telegram__bot_api', tool_input: args }
+      const roleWhy = elevation.extraCheck(conv, call, role)
+      if (roleWhy) return { content: [{ type: 'text', text: (await elevation.refuse(conv, call, roleWhy)).reason ?? roleWhy }], isError: true }
       const why = own ? refuseOwnBot(role, method) : refuseUse(cred, name, role, method)
       if (why) return { content: [{ type: 'text', text: why }], isError: true }
       const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
@@ -263,8 +267,11 @@ const ipc = createIpc({
       const secret = db.getConvSecret(conv.bot, conv.chat_id, name)
       if (secret) return convSecretCall(live, conv, secret, 'http_api', args)
       const cred = cfg.credentials[name]
-      const why = refuseUse(cred, name, role, path, 'http')
       const fail = (t: string) => ({ content: [{ type: 'text' as const, text: t }], isError: true })
+      const call = { tool_name: 'mcp__plugin_telegram_telegram__http_api', tool_input: args }
+      const roleWhy = elevation.extraCheck(conv, call, role)
+      if (roleWhy) return fail((await elevation.refuse(conv, call, roleWhy)).reason ?? roleWhy)
+      const why = refuseUse(cred, name, role, path, 'http')
       if (why) return fail(why)
       const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
       try { for (const p of Object.values(files)) makeAssertSendable(live, cfg.stateDir)(p) } catch (e) { return fail(String(e instanceof Error ? e.message : e)) }
@@ -502,7 +509,14 @@ const elevation = createElevation({
   roleOf: uid => roleOf(commandDeps, uid),
   settingsAs: (c, role, keep) => applyOverrides(renderSettings(TEMPLATES, role, settingsVars(c)), db.listOverrides(c.key).filter(o => !keep || keep(o))),
   // a skill argument limited to higher roles (privileged.json args.<name>.roles): elevation, like any other block
+  // bot_api / http_api with a credential the conversation's role may not use (a conversation's own secret has no role check)
   extraCheck: (c, call, role) => {
+    const tool = call.tool_name.replace(/^mcp__plugin_telegram_telegram__/, '')
+    if (tool === 'bot_api' || tool === 'http_api') {
+      const args = (call.tool_input ?? {}) as Record<string, unknown>
+      if (db.getConvSecret(c.bot, c.chat_id, String(args.credential ?? ''))) return null
+      return credRoleRefusal(cfg.credentials, c.bot, tool, args, role)
+    }
     if (call.tool_name !== 'mcp__plugin_telegram_telegram__run_skill') return null
     const i = call.tool_input ?? {}
     try {

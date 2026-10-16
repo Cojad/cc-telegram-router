@@ -226,7 +226,11 @@ test('credentials end to end: cred-import moves a token from a file into config 
   // router state (config.json holds the tokens) can never be uploaded, not even by an owner conversation
   const leak = await owner.call('bot_api', { credential: 'eagle', method: 'getStickerSet', params: {}, files: { f: join(state, 'config.json') } })
   expect(leak.content[0]!.text).toStartWith('refusing to send router state')
-  expect((await user.call('bot_api', { credential: 'eagle', method: 'getStickerSet', params: {} })).content[0]!.text).toBe('憑證 eagle 只開放 owner, admin 角色的對話使用, 這個對話是 user')
+  // the role is the only problem: refused like any block, with the elevation advice, and logged
+  const low = (await user.call('bot_api', { credential: 'eagle', method: 'getStickerSet', params: {} })).content[0]!.text
+  expect(low).toStartWith('權限不足 (本對話角色 user): 憑證 eagle 只開放 owner, admin 角色的對話使用, 這個對話是 user.')
+  expect(low).toContain('request_elevation')
+  expect(q("SELECT kind FROM elev_log WHERE conv = 'dm-666'").map((r: any) => r.kind)).toContain('blocked')
   owner.close(); user.close()
 }, 30000)
 
@@ -262,6 +266,6 @@ test('bot_api "self": owner and admin conversations call any Bot API method as t
   expect(q("SELECT bot, conv FROM outbound WHERE method = 'deleteMessage' ORDER BY id DESC LIMIT 1")[0]).toEqual({ bot: 'new', conv: 'dm-555' })
   expect((await owner.call('bot_api', { credential: 'new', method: 'getChat', params: { chat_id: 555 } })).isError).toBeFalsy() // the bot's own name works too
   expect((await owner.call('bot_api', { credential: 'self', method: 'getUpdates', params: {} })).content[0]!.text).toBe('getUpdates 會讓 router 收不到訊息或讓 bot 登出, 不開放')
-  expect((await user.call('bot_api', { credential: 'self', method: 'deleteMessage', params: {} })).content[0]!.text).toBe('只有 owner 與 admin 的對話能用這隻 bot 自己的 token, 這個對話是 user')
+  expect((await user.call('bot_api', { credential: 'self', method: 'deleteMessage', params: {} })).content[0]!.text).toStartWith('權限不足 (本對話角色 user): 只有 owner 與 admin 的對話能用這隻 bot 自己的 token, 這個對話是 user.')
   owner.close(); user.close()
 }, 30000)

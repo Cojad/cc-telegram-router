@@ -110,7 +110,9 @@ export function createElevation(deps: ElevationDeps) {
   /** What 永久允許 would add for this call in this conversation. */
   function ruleFor(conv: Conversation, call: Call | null): Rule | { none: string } {
     if (!call) return { none: '主動申請沒有具體的動作, 只能一次一次允許' }
-    if (deps.extraCheck?.(conv, call, conv.role)) return { none: '技能參數的角色限制沒辦法寫成固定規則, 只能一次一次允許' }
+    if (deps.extraCheck?.(conv, call, conv.role)) {
+      return { none: call.tool_name.endsWith('__run_skill') ? '技能參數的角色限制沒辦法寫成固定規則, 只能一次一次允許' : '憑證開放給哪些角色要由 owner 用 /router cred roles 調整, 這裡只能一次一次允許' }
+    }
     const lay = (s: any, o: Rule['overrides']) => applyOverrides(s, o.map(x => ({ conv: conv.key, ...x })))
     return permanentRule(deps.settingsAs(conv, conv.role), call, conv.folder, lay)
   }

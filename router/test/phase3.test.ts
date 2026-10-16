@@ -13,6 +13,7 @@ import { renderSettings, applyOverrides } from '../settings'
 import { runCommand, type CommandDeps } from '../commands'
 import { makeAssertAllowedChat } from '../guard'
 import { createElevation } from '../elevation'
+import { credRoleRefusal } from '../credentials'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from '../grants'
 import { approvalPlace, noticePlace, type ApprovalDeps } from '../approvals'
 import { createAuthz } from '../authz'
@@ -247,7 +248,7 @@ test('permcheck: each role template allows what it lists and blocks the rest, wi
 
 // --- 07 提權 -------------------------------------------------------------------
 
-function elevHarness(opts: { askTimeoutMs?: number; authz?: boolean } = {}) {
+function elevHarness(opts: { askTimeoutMs?: number; authz?: boolean; extraCheck?: Parameters<typeof createElevation>[0]['extraCheck'] } = {}) {
   const conv = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
   const { approvals, sent, edits, editButtons } = fakeApprovals()
   const told: string[] = [], applied: string[] = []
@@ -260,7 +261,7 @@ function elevHarness(opts: { askTimeoutMs?: number; authz?: boolean } = {}) {
     settingsAs: (c, role, keep) => applyOverrides(renderSettings(TEMPLATES, role, vars(c.folder)), db.listOverrides(c.key).filter(o => !keep || keep(o))),
     askTimeoutMs: opts.askTimeoutMs ?? 60_000,
     // as router/main.ts: run_skill with force needs owner or admin (privileged.json args.force.roles)
-    extraCheck: (_c, call, role) => call.tool_name === 'mcp__plugin_telegram_telegram__run_skill' && (call.tool_input.args as any)?.force && !['owner', 'admin'].includes(role) ? `參數 force 只開放給 owner, admin 角色, 本對話角色 ${role} 要提權` : null,
+    extraCheck: opts.extraCheck ?? ((_c, call, role) => call.tool_name === 'mcp__plugin_telegram_telegram__run_skill' && (call.tool_input.args as any)?.force && !['owner', 'admin'].includes(role) ? `參數 force 只開放給 owner, admin 角色, 本對話角色 ${role} 要提權` : null),
   })
   return { conv, e, sent, edits, editButtons, told, applied, authz, approvals }
 }
@@ -598,6 +599,40 @@ test('elevation for a skill argument: run_skill with force from a user conversat
   await e.onHook(conv, { event: 'subagent-start', agent_id: 'V' })
   expect(await e.onHook(conv, { event: 'pre', quiet: true, agent_id: 'V', tool_name: call.tool_name, tool_input: call.tool_input })).toMatchObject({ decision: 'allow' })
   expect(e.takeTicket(conv.key, 'run_skill', call.tool_input)).toBe('owner')
+  e.stop()
+})
+
+test('elevation for a credential: bot_api / http_api refused only for the conversation\'s role asks like any block (admin sender: in the chat); the admin approves, the subagent\'s call runs as admin', async () => {
+  const creds = { routertest: { token: 'k', kind: 'http' as const, baseUrl: 'http://127.0.0.1:1', methods: ['/anything*'], roles: ['owner', 'admin'] } }
+  const pre = 'mcp__plugin_telegram_telegram__'
+  // only the role part: an unknown credential or a path it does not allow is refused at call time, not elevated
+  expect(credRoleRefusal(creds, 'cc', 'http_api', { credential: 'routertest', path: '/anything/ping' }, 'user')).toBe('憑證 routertest 只開放 owner, admin 角色的對話使用, 這個對話是 user')
+  expect(credRoleRefusal(creds, 'cc', 'http_api', { credential: 'routertest', path: '/anything/ping' }, 'admin')).toBeNull()
+  expect(credRoleRefusal(creds, 'cc', 'http_api', { credential: 'routertest', path: '/other' }, 'user')).toBeNull()
+  expect(credRoleRefusal(creds, 'cc', 'http_api', { credential: 'nope', path: '/x' }, 'user')).toBeNull()
+  expect(credRoleRefusal(creds, 'cc', 'bot_api', { credential: 'self', method: 'getChat' }, 'user')).toBe('只有 owner 與 admin 的對話能用這隻 bot 自己的 token, 這個對話是 user')
+  expect(credRoleRefusal(creds, 'cc', 'bot_api', { credential: 'self', method: 'getUpdates' }, 'user')).toBeNull()
+  expect(credRoleRefusal(creds, 'cc', 'reply', { credential: 'routertest' }, 'user')).toBeNull()
+  const { conv, e, sent } = elevHarness({ extraCheck: (c, call, role) => credRoleRefusal(creds, c.bot, call.tool_name.replace(pre, ''), call.tool_input, role) })
+  db.setUserRole('500', 'admin')
+  const call = { tool_name: `${pre}http_api`, tool_input: { credential: 'routertest', method: 'GET', path: '/anything/ping' } }
+  // a plain user turn: advice to ask the owner, logged
+  e.onDeliver(conv, '42')
+  const plain = await e.refuse(conv, call, e.extraCheck(conv, call, 'user')!)
+  expect(plain.reason).toContain('憑證 routertest 只開放 owner, admin 角色的對話使用')
+  expect(plain.reason).toContain('對方同意後呼叫 request_elevation 說明原因')
+  expect(sent).toEqual([])
+  expect(db.elevLog(conv.key, 5).map(l => l.kind)).toEqual(['blocked'])
+  // the admin asked: an in-chat prompt, no 永久允許 (the credential's roles are the place for that)
+  e.onDeliver(conv, '500')
+  expect((await e.refuse(conv, call, e.extraCheck(conv, call, 'user')!)).reason).toContain('router 已在對話裡詢問是否提權 (#1')
+  expect(sent).toHaveLength(1)
+  expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:deny'])
+  expect(sent[0]!.text).toContain('♾️ 不能永久允許: 憑證開放給哪些角色要由 owner 用 /router cred roles 調整')
+  expect(await e.decide('elev:1:once', '500')).toBe('已提權一次')
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'W' })
+  expect(await e.onHook(conv, { event: 'pre', quiet: true, agent_id: 'W', tool_name: call.tool_name, tool_input: call.tool_input })).toMatchObject({ decision: 'allow' })
+  expect(e.takeTicket(conv.key, 'http_api', call.tool_input)).toBe('admin')
   e.stop()
 })
 
