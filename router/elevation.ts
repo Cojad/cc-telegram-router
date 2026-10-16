@@ -184,7 +184,8 @@ export function createElevation(deps: ElevationDeps) {
     const guide = `權限不足 (本對話角色 ${conv.role}): ${why}.`
     const elevated = elevatedSender(conv)
     if (elevated && allowedAs(conv, deps.roleOf(elevated), call).ok) {
-      const pending = db.pendingElevation(conv.key)
+      // one question in the chat at a time; a request waiting for the owner elsewhere does not hold up a new one
+      const pending = db.pendingElevations().find(p => p.conv === conv.key && db.approvalMsgs('elev', p.id).some(m => m.chat_id === conv.chat_id))
       if (pending) return { decision: 'deny', reason: `${guide} 已在對話裡詢問是否提權 (#${pending.id}), 等 <router_status> 的結果; 這段時間不要用越權的方法繞過.` }
       const reason = String(call.tool_input?.description ?? '')
       const { id, where } = await ask(conv, 'passive', action, reason, call)

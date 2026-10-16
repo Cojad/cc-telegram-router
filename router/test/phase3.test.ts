@@ -625,3 +625,14 @@ test('elevation after a restart: a request asked in the chat expires when its ti
   expect(again.told[0]).toContain('逾時沒有回應, 視為拒絕')
   again.e.stop()
 })
+
+test('elevation: a request still waiting for the owner (sent to the owner, no time limit) does not stop a new in-chat question', async () => {
+  const { conv, e, sent } = elevHarness()
+  e.onDeliver(conv, '42')
+  expect(await e.request(conv, '要讀 /x', 'ls /x')).toContain('#1') // a plain user: goes to the owner
+  expect(db.getElevation(1)!.status).toBe('pending')
+  e.onDeliver(conv, OWNER)
+  expect((await e.onHook(conv, escape)).reason).toContain('router 已在對話裡詢問是否提權 (#2')
+  expect(sent.filter(m => m.chat === '-100555')).toHaveLength(1)
+  e.stop()
+})
