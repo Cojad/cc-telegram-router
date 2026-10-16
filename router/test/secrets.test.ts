@@ -237,17 +237,21 @@ test('global http credentials: dot segments and their encodings are refused befo
   expect(badPath('v1/x')).toBe('path 要以 / 開頭')
 })
 
-test('group privacy notice: getMe can_read_all_group_messages true means off (no notice); anything else explains what the bot misses and how to turn it off', () => {
-  expect(privacyNotice({ username: 'x_bot', can_read_all_group_messages: true })).toBeNull()
-  const n = privacyNotice({ username: 'x_bot', can_read_all_group_messages: false })!
-  for (const s of ['@x_bot 的群組隱私模式', '只收得到指令', '「柯柯」', '@BotFather', '/setprivacy', 'Disable', '‼️ 重點 1: 關掉之後, 已經在的群組要把 bot 移出群組再加回來才會生效', '‼️ 重點 2: bot 是群組管理員的話不受這個限制']) expect(n).toContain(s)
-  expect(privacyNotice({ username: 'x_bot' })).toBe(n)
+test('group privacy notice (柯姊 wording): what on and off mean, the current setting from getMe (true = off), how to turn it off, re-add after changing, admins are not limited; the bot-to-bot notice says it cannot be checked', () => {
+  const on = privacyNotice({ username: 'x_bot', can_read_all_group_messages: false })!
+  const off = privacyNotice({ username: 'x_bot', can_read_all_group_messages: true })!
+  for (const n of [on, off]) for (const s of ['🔒 群組隱私模式 (Group Privacy)', '每隻 bot 預設都是開啟的', '用名字叫它 (例如「柯柯」)', '通常要改為關閉', '私訊 @BotFather → /setprivacy → 選這隻 bot → Disable.', '⚠️ 兩件很重要的事:', '1. 改完之後, 要把 bot 從群組移除再重新加入才會生效', '2. 如果 bot 是該群組的管理員, 就不受隱私模式限制']) expect(n).toContain(s)
+  expect(on).toContain('你目前 Group Privacy 設定: ⚠️ 開啟 (ℹ️ Bot 無法看到每則群組訊息, 建議改為關閉)')
+  expect(off).toContain('你目前 Group Privacy 設定: ✅ 關閉 (Bot 可以看到每則群組訊息, 符合建議的設定)')
+  expect(privacyNotice({ username: 'x_bot' })).toBe(on) // missing = on
+  expect(privacyNotice(null)).toBeNull()
+  for (const s of ['🤖 Bot 之間互傳訊息 (Bot-to-Bot Communication Mode)', '預設關閉. router 沒辦法查到它目前是開是關', '私訊要兩隻 bot 都開啟才能互傳', '包括 /secret 這類指令', '互相回覆停不下來']) expect(B2B_NOTICE).toContain(s)
 })
 
 test('/router bot add: the reply carries the new bot\'s settings notice (privacy, bot-to-bot); rotate does not', async () => {
   const me = { username: 'two_bot', can_read_all_group_messages: false }
   expect(botSettingsNotice(me)).toBe(`${privacyNotice(me)}\n\n${B2B_NOTICE}`)
-  expect(botSettingsNotice({ ...me, can_read_all_group_messages: true })).toBe(B2B_NOTICE)
+  expect(botSettingsNotice(null)).toBe(B2B_NOTICE)
   const cdeps = {
     cfg: { owners: [OWNER], bots: [{ name: 'cc', token: '1:routerbot' }], credentials: {} }, db, loadAccess: () => access, verifyBot,
     bots: { add: async () => 'two_bot', rotate: async () => 'two_bot' }, botNotice: () => botSettingsNotice(me),

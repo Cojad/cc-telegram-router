@@ -68,8 +68,9 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
 ### bot 設定提醒
 
 - 新增 bot (`/router bot add`), 新 bot 初次設定 (審核群組說明那則), `/router setup group`, 以及 bot 被加入群組時 (通知送到重要通知話題或 owner 私訊), router 會附上這隻 bot 的設定提醒.
-- 群組隱私模式: getMe 的 `can_read_all_group_messages` 不是 true 就提醒 owner 到 @BotFather `/setprivacy` 關掉, 說明開著時群組裡只收得到指令和回覆 bot 的訊息, 收不到提到關鍵字 (例如「柯柯」) 的訊息. 重點一定寫出: 改完要把 bot 移出群組再加回來才生效; bot 是群組管理員就不受限制 (以管理員身分加入群組時不附這段).
-- Bot-to-Bot Communication Mode (@BotFather 的設定): Bot API 的 getMe 沒有對應欄位, 查不到開了沒, 只附固定說明.
+- 群組隱私模式: 說明開啟與關閉的差別, 依 getMe 的 `can_read_all_group_messages` 顯示目前設定 (true 是關閉, 符合建議; 其他是開啟, 建議關閉), 關閉方式 (@BotFather `/setprivacy`). 重點一定寫出: 改完要把 bot 從群組移除再重新加入才生效; bot 是群組管理員就不受限制 (以管理員身分加入群組時不附這段).
+- Bot-to-Bot Communication Mode (@BotFather 的設定): Bot API 的 getMe 沒有對應欄位, 查不到開了沒, 只附固定說明: 開與關的差別, 以及風險 (router 不分辨發話者是人還是 bot, 其他 bot 的訊息與 /secret 這類指令會照常處理; 可能互相回覆停不下來).
+- 兩段文字由柯姊定稿, 以純文字送出.
 
 ### 審核群組與新 bot 初次設定
 
