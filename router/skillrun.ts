@@ -56,7 +56,9 @@ export async function runSkill(deps: SkillRunDeps, conv: Conversation, role: str
   const once = async (a: Action, a_args: Record<string, unknown>): Promise<RunResult> => {
     const argv = buildArgv(a, dir, a_args, credDir)
     if ('error' in argv) return { code: -1, out: argv.error }
-    const sb = sandboxArgv({ argv, skillDir: dir, convFolder: conv.folder, creds: credEnv(a), home: deps.userHome, extraRo: deps.extraRo, credsWritable: !!a.internal })
+    // only internal (router-run) actions get extra mounts and env: a conversation's actions never see the ssh agent
+    const mounts = a.internal ? (a.mounts ?? []).map(m => m.startsWith('~/') ? join(deps.userHome, m.slice(2)) : m) : []
+    const sb = sandboxArgv({ argv, skillDir: dir, convFolder: conv.folder, creds: credEnv(a), home: deps.userHome, extraRo: [...deps.extraRo, ...mounts], credsWritable: !!a.internal, env: a.internal ? a.env : undefined })
     return deps.exec(sb.argv, sb.env, (a.timeout ?? 600) * 1000)
   }
 
@@ -93,5 +95,5 @@ export async function runSkill(deps: SkillRunDeps, conv: Conversation, role: str
 export function describeActions(dir: string): string {
   const m = loadManifest(dir)
   if (!m) return '(沒有 privileged.json)'
-  return Object.entries(m.actions).map(([n, a]) => `${n}${a.internal ? ' (只由 router 執行)' : ''}: ${a.run.join(' ')}; 角色 ${(a.roles ?? ['owner', 'admin', 'power', 'user']).join(', ')}${a.creds ? `; 憑證 ${Object.values(a.creds).join(', ')}` : ''}`).join('\n')
+  return Object.entries(m.actions).map(([n, a]) => `${n}${a.internal ? ' (只由 router 執行)' : ''}: ${a.run.join(' ')}; 角色 ${(a.roles ?? ['owner', 'admin', 'power', 'user']).join(', ')}${a.creds ? `; 憑證 ${Object.values(a.creds).join(', ')}` : ''}${a.internal && a.mounts?.length ? `; 另外可讀 ${a.mounts.join(', ')}` : ''}`).join('\n')
 }

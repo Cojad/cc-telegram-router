@@ -37,6 +37,11 @@ export type Action = {
   auth_failure?: string
   /** ...then run this internal action once and retry. */
   refresh?: string
+  /** Internal actions only: extra paths visible read-only ("~/" = the user's
+   *  home), e.g. an ssh agent socket and known_hosts to repair a tunnel. */
+  mounts?: string[]
+  /** Internal actions only: extra environment variables. */
+  env?: Record<string, string>
 }
 export type Manifest = { actions: Record<string, Action> }
 

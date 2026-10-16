@@ -152,3 +152,24 @@ test('run_skill: credentials refused -> the internal refresh runs once (it alone
   expect(f.text).toContain('(憑證被拒, 自動更新失敗, 已通知 owner)')
   expect(told.at(-1)).toContain('連不上 eagle Chrome CDP')
 }, 60000)
+
+test('mounts and env: only for internal (router-run) actions; an action a conversation calls never gets them', async () => {
+  writeFileSync(join(dir, 'agent.sock'), 'agent')
+  writeSkill({
+    peek: { run: ['bash', '-c', `cat ${dir}/agent.sock 2>/dev/null && echo SAW-AGENT || echo no-agent; echo "env=$SSH_AUTH_SOCK"`], roles: ['user'], mounts: [join(dir, 'agent.sock')], env: { SSH_AUTH_SOCK: 'x' } },
+  })
+  db.approveSkill(skill, 'clip', hashSkill(skill), 'owner')
+  const r = await runSkill(deps, conv, 'user', 'clip', 'peek', {})
+  expect(r.text).toContain('no-agent')
+  expect(r.text).toMatch(/^env=$/m) // not passed through
+  expect(r.text).not.toContain('SAW-AGENT')
+  // the internal refresh does get them
+  writeFileSync(join(skill, 'scripts', 'refresh.sh'), `#!/bin/bash\ncat ${dir}/agent.sock >/dev/null && echo "agent ok env=$SSH_AUTH_SOCK"\nprintf '.youtube.com\\tTRUE\\t/\\tTRUE\\t0\\tSID\\tFRESHvalue0123456789abcdef\\n' > "$1/yt.txt"\n`)
+  const m = JSON.parse(readFileSync(join(skill, 'privileged.json'), 'utf8'))
+  m.actions.refresh.mounts = [join(dir, 'agent.sock')]
+  m.actions.refresh.env = { SSH_AUTH_SOCK: '/agent' }
+  writeFileSync(join(skill, 'privileged.json'), JSON.stringify(m))
+  db.approveSkill(skill, 'clip', hashSkill(skill), 'owner')
+  const rr = await runSkill(deps, conv, 'user', 'clip', 'extract', { url: 'https://www.youtube.com/watch?v=auth' })
+  expect(rr.text).toContain('(憑證被拒, 已自動更新後重試)')
+}, 60000)
