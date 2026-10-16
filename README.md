@@ -54,6 +54,15 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
 - 特權技能 (技能的 sudo bit): 技能帶 `privileged.json` 列出動作, owner 或 admin 以 `/router skill approve` 核准 (記下檔案雜湊, 改了自動暫停). 對話用 `run_skill` 呼叫, router 以 bwrap 專屬沙箱執行: 只讀技能與憑證資料夾 (`/x/cc/.router/creds/`), 只寫對話資料夾, 隱藏 /x 其他部分與 $HOME; 輸出掃描憑證內容; 憑證被拒時執行 internal 的更新動作一次再重試; 每個對話每小時 10 次. 動作可以帶 http API 憑證 (`http`, 腳本拿到授權標頭的環境變數, key 會從輸出遮蔽); 單一參數可以限定角色 (`args.<名稱>.roles`), 較低角色帶這個參數就照一般流程觸發提權申請.
 - worker 端的 SOP 在 `/telegram:bot-skill`.
 
+### 對話專屬密鑰
+
+- 任何角色的對話都能有自己的 token 或 API key, 不用提權: 在那個對話傳 `/secret set <名稱> <值> [方法...]` (Telegram bot token, 沒寫方法就是全部) 或 `/secret set <名稱> <值> --http <網址> [路徑...]` (一般 API key, 結尾 `*` 代表前綴, 沒寫路徑就是全部). 也可以用 `cc /secret ...`.
+- router 自己處理, 不轉給 worker. 私訊裡立刻刪掉那則訊息; 群組裡任何成員都能登記 (不看角色, 但要是 bot 有開放的群組與發話者), bot 有刪除權限就刪, 沒有就回覆提醒發送者自己刪.
+- 值以 AES-256-GCM 加密存在 `router.db` 的 `conv_secrets` (綁定 bot, 對話, 名稱), 金鑰是 `config.json` 的 `secretKey`, 沒有就在啟動時自動產生. 每個對話最多 20 把, 每把最長 4096 bytes; 名稱 `self` 保留, router 自己的 bot token 不能登記.
+- 值不會出現在任何對話: router_log, events 表, 回覆引用那則訊息時都換成 `<已遮蔽>`, 工具回應裡出現的值換成 `<密鑰>`.
+- worker 照樣用 `bot_api` / `http_api`, credential 填名稱: 先找這個對話自己的密鑰, 再找全域憑證. 不檢查角色, 群組裡也不需要授權 (不進「執行授權」話題), 只檢查登記時的方法或網址與路徑 (路徑不能含 `..` 等). 每次使用記在 `outbound` (bot 欄 `secret:<名稱>`); 回應裡過長的字串截斷, base64 可用 `save_b64` 存進對話資料夾.
+- 管理: `/secret list` (只列名稱, 種類, 範圍), `/secret rm <名稱>`; owner 與 admin 用 `/router secret list [chat_id]` (不寫就列出所有有密鑰的對話) 與 `/router secret rm <chat_id> [名稱]` (不寫名稱就全部移除).
+
 ### 審核群組與新 bot 初次設定
 
 - config 沒有 owners 時, router log 會印出一次性認領碼; 私訊 bot `/start <碼>` 的人成為 owner.
@@ -100,6 +109,8 @@ bun test router/test
 | `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, /router 指令不轉給 worker, CLI |
 | `router/test/phase3.test.ts` | 規劃 03, 07: 角色範本, /router perm, 權限檢查, 跨對話傳訊申請, 審核頻道, 提權 (詢問, 核准, 逾時, 主動申請, 紀錄), hook, bot 資料夾與搬遷 |
 | `router/test/phase3-cred.test.ts` | 憑證的角色與方法限制, Bot API 呼叫 (含上傳), install_skill 的檢查, /router cred 與 botapi |
+| `router/test/secrets.test.ts` | 規劃 10b 對話專屬密鑰: 加密與綁定, 遮蔽, /secret 指令 (私訊, 群組, 拒絕, 上限), 使用範圍檢查, /router secret |
+| `router/test/e2e-secrets.test.ts` | 真的 router + 假 Bot API 與 HTTP API: secretKey 自動產生, 私訊登記與刪訊息, 群組登記與提醒, 引用遮蔽, http_api 與 bot_api 使用, 其他對話用不到, list / rm |
 | `router/test/phase3-pkg.test.ts` | 規劃 07 套件安裝審核: 指令解析, manifest, 審核快取, 送審與核准, 慢審核, 審核模型的呼叫方式, hook |
 | `router/test/e2e-setup.test.ts` | 真的 router + 假 Bot API, 從沒有 owner 開始: 認領碼, 人設訪談與 bot CLAUDE.md, 審核群組的檢查與話題, 略過 |
 | `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
@@ -141,6 +152,18 @@ bun test router/test
 | 三選一按鈕與永久允許的範圍 | phase3 grants 兩條, 「永久允許 runs it this time…」; phase3-pkg「永久允許 lets the conversation…」 |
 | 撤銷與執行授權 | phase3「authz: …」三條; phase3-pkg「installing an approved package is a use…」 |
 | 跨 bot 技能的憑證, 技能範圍 | phase3-cred 全部; e2e-setup「credentials end to end…」; phase4「/telegram:bot-skill…」 |
+
+### 10b 對話專屬密鑰驗收對照
+
+| 驗收項目 | 測試 |
+|---|---|
+| 存在 router.db conv_secrets, 值加密 (AES-256-GCM), 金鑰在 config.json, 沒有就產生 | secrets「seal/open…」; e2e-secrets「the router generates config.json secretKey…」「DM: a user registers…」 |
+| 每個對話最多 20 把, 每把最長 4 KB | secrets「/secret set refusals…」 |
+| 私訊登記: router 處理不轉給 worker, 訊息立刻刪除, log 裡值遮蔽 | e2e-secrets「DM: a user registers…」; secrets「masking…」 |
+| 群組登記: 任何成員, 不看角色; 有權限就刪, 沒有就提醒 | secrets「/secret in a group…」; e2e-secrets「group: any member registers…」 |
+| 使用: bot_api / http_api 先找對話密鑰再找全域憑證, 不檢查角色, 群組不需授權, 只檢查網址與路徑或方法 | secrets「refuseSecret…」; e2e-secrets「DM: …」(user 對話使用, 其他對話用不到)「group: …」(無 auth_uses) |
+| 每次使用寫 router.db, 回應截斷, 回傳內容遮蔽密鑰值 | e2e-secrets「DM: …」(outbound secret:img, 截斷, `<密鑰>`)「group: …」 |
+| 管理: /secret list / rm, owner 與 admin 的 /router secret list / rm | secrets「/secret set in a DM…」「/router secret list|rm…」; e2e-secrets「list and rm…」 |
 
 ### Phase 4 驗收對照
 

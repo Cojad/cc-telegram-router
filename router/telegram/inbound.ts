@@ -9,6 +9,7 @@ import type { Message, ReactionTypeEmoji } from 'grammy/types'
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import type { Access, GateResult, InboundContext } from './policy'
 import type { Store } from './store'
+import { maskSecretText } from '../secrets'
 
 // handleInbound needs one thing gate()/isMentioned() never touch: a way to
 // send the "pairing required" reply. Kept as its own extension of
@@ -127,7 +128,9 @@ export type ReplyMeta = {
 // already sitting in the <channel> tag's meta on arrival.
 export function buildReplyMeta(replyTo: Message | undefined): ReplyMeta {
   if (!replyTo) return {}
-  const text = replyTo.text ?? replyTo.caption
+  // a reply to a /secret set the bot could not delete must not carry the value
+  const raw = replyTo.text ?? replyTo.caption
+  const text = raw != null ? maskSecretText(raw) : raw
   const attachment = extractAttachmentMeta(replyTo)
   return {
     reply_to_message_id: String(replyTo.message_id),

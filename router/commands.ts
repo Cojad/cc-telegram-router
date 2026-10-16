@@ -9,6 +9,7 @@ import type { Access } from './telegram/policy'
 import type { MessageRecord } from './telegram/store'
 import { gmt8, maskTokens } from './context'
 import { describeCreds } from './credentials'
+import { SECRET_RE, runSecretCommand, describeSecrets } from './secrets'
 
 export const ROLES = ['owner', 'admin', 'power', 'user', 'guest'] as const
 
@@ -17,12 +18,14 @@ export type CommandInput = {
   messageId?: number
   /** The message this command replies to, if any (target for /id and role). */
   reply?: { uid: string; messageId: number }
+  /** This bot's @username: "/secret@other_bot" is not for it. */
+  botUsername?: string
 }
 /** deleteMessage: the command message carried a token; the caller deletes it
  *  and appends whether that worked to the reply. */
 /** private: the reply lists other conversations or people; in a group it
  *  goes to the sender's DM instead. */
-export type CommandOutput = { reply: string; private?: boolean; deleteMessage?: boolean; logs: Array<{ conv: string; text: string }>; after?: () => void }
+export type CommandOutput = { reply: string; private?: boolean; deleteMessage?: boolean; deleteLabel?: string; logs: Array<{ conv: string; text: string }>; after?: () => void }
 
 export interface CommandDeps {
   cfg: Config
@@ -85,7 +88,7 @@ export interface CommandDeps {
 const COMMAND_RE = /^\/(router|restart|id|info)(?:@\w+)?(?:\s+([\s\S]*))?$/
 
 export function isCommand(text: string | undefined): boolean {
-  return !!text && COMMAND_RE.test(text.trim())
+  return !!text && (COMMAND_RE.test(text.trim()) || SECRET_RE.test(text.trim()))
 }
 
 /** "柯姊(@Cojad)", "柯姊", "@Cojad" or the bare uid. */
@@ -174,6 +177,7 @@ const HELP = [
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
   '/router skill list | approve <技能> | revoke <技能> (技能的特權動作: 核准後 user 與 power 對話也能執行, 憑證不外流)',
   '/router cred list | add <名稱> <token> [方法...] (owner 或 admin 的私訊) | allow|disallow <名稱> <方法...> | roles <名稱> <角色,...> | rm <名稱> | reload',
+  '/router secret list [chat_id] (不寫就列出所有有密鑰的對話) | rm <chat_id> [名稱] (不寫名稱就全部移除): 各對話用 /secret 登記的密鑰',
   '/router botapi <憑證或 bot 名稱> <方法> <JSON 參數> [--file 欄位=/路徑] (只限 owner)',
   '/router config (列出全部) | get <key> | set <key> <值>',
   '/router log (所有對話) | log <chat_id> [筆數]',
@@ -193,6 +197,8 @@ function parseCompact(v: string | undefined): number | null | undefined {
 }
 
 export async function runCommand(input: CommandInput, deps: CommandDeps): Promise<CommandOutput | null> {
+  // /secret: any role, in any chat the router serves (router/secrets.ts)
+  if (SECRET_RE.test(input.text.trim())) return runSecretCommand(input, deps)
   const m = COMMAND_RE.exec(input.text.trim())
   if (!m) return null
   const { cfg, db } = deps
@@ -596,6 +602,21 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       }
       if (op === 'rm') { deps.creds.update(name!, null); return done(`已移除憑證 ${name}`) }
       return done('用法: /router cred list | add | allow | disallow | roles | rm | reload')
+    }
+
+    case 'secret': {
+      const op = args[1] ?? 'list', chat = args[2]
+      if (op === 'list' && !chat) {
+        const all = db.convSecretChats()
+        return done(all.length ? all.map(r => `${r.bot} ${r.chat_id}: ${r.n} 把`).join('\n') : '沒有任何對話登記密鑰', { private: true })
+      }
+      if (!chat || !/^-?\d+$/.test(chat) || (op !== 'list' && op !== 'rm')) return done('用法: /router secret list [chat_id] | rm <chat_id> [名稱]')
+      if (op === 'list') {
+        const list = db.listConvSecrets(input.bot, chat)
+        return done(list.length ? describeSecrets(list) : `對話 ${chat} 沒有密鑰`, { private: true })
+      }
+      const n = db.removeConvSecret(input.bot, chat, args[3] ?? null)
+      return done(n ? `已移除對話 ${chat} 的${args[3] ? `密鑰 ${args[3]}` : `全部 ${n} 把密鑰`}` : `對話 ${chat} 沒有${args[3] ? `名為 ${args[3]} 的` : ''}密鑰`)
     }
 
     case 'botapi': {

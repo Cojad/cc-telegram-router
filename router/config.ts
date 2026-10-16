@@ -48,6 +48,8 @@ export type Config = {
   /** Bot API base URL; only tests point this elsewhere. */
   apiRoot?: string
   credentials: Record<string, Credential>
+  /** base64 AES-256 key for conversation secrets (router/secrets.ts); generated at startup when missing. */
+  secretKey?: string
 }
 
 export function defaultConfigPath(argv: string[], execPath: string): string {
@@ -77,5 +79,6 @@ export function loadConfig(path: string): Config {
     claudeBin: raw.claudeBin ?? 'claude',
     apiRoot: raw.apiRoot,
     credentials: raw.credentials ?? {},
+    secretKey: raw.secretKey,
   }
 }

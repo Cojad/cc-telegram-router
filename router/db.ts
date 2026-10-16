@@ -73,6 +73,13 @@ export type ApprovalGrant = { id: number; kind: string; ref: number; conv: strin
 
 export type ElevLogKind = 'blocked' | 'request' | 'approved' | 'denied' | 'expired'
 
+/** Conversation secrets (router/secrets.ts): value is sealed (AES-256-GCM),
+ *  allowed is a JSON list of Bot API methods or URL paths ("*" = all). */
+export type ConvSecret = {
+  bot: string; chat_id: string; name: string; kind: 'telegram-bot' | 'http'; value: string
+  base_url: string | null; allowed: string; added_by: string; created_at: string
+}
+
 export type QueueRow = { qid: number; conv: string; params: string; status: 'pending' | 'delivered' | 'acked' }
 export type LogRow = { id: number; conv: string; ts: string; text: string; qid: number | null }
 
@@ -161,6 +168,13 @@ export interface RouterDb {
   trackProgress(key: string, chat_id: string, message_id: number): void
   untrackProgress(key: string, message_id: number): void
   orphanProgress(): Array<{ key: string; chat_id: string; message_id: number }>
+  setConvSecret(s: ConvSecret): void
+  getConvSecret(bot: string, chat_id: string, name: string): ConvSecret | null
+  listConvSecrets(bot: string, chat_id: string): ConvSecret[]
+  /** Every conversation that has secrets, with their count. */
+  convSecretChats(): Array<{ bot: string; chat_id: string; n: number }>
+  /** name null: all of the conversation's secrets. Returns how many went. */
+  removeConvSecret(bot: string, chat_id: string, name: string | null): number
   close(): void
 }
 
@@ -229,6 +243,10 @@ export function openRouterDb(path: string): RouterDb {
     CREATE TABLE IF NOT EXISTS pkg_requests (
       id INTEGER PRIMARY KEY AUTOINCREMENT, conv TEXT NOT NULL, pkgs TEXT NOT NULL, reason TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_by TEXT, decided_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS conv_secrets (
+      bot TEXT NOT NULL, chat_id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL,
+      base_url TEXT, allowed TEXT NOT NULL, added_by TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (bot, chat_id, name)
     );
     CREATE TABLE IF NOT EXISTS progress_msgs (key TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (key, message_id));
   `)
@@ -400,6 +418,16 @@ export function openRouterDb(path: string): RouterDb {
     trackProgress: (key, chat_id, id) => { qPAdd.run(key, chat_id, id) },
     untrackProgress: (key, id) => { qPDel.run(key, id) },
     orphanProgress: () => qPAll.all() as Array<{ key: string; chat_id: string; message_id: number }>,
+    setConvSecret: s => {
+      db.prepare('INSERT OR REPLACE INTO conv_secrets (bot, chat_id, name, kind, value, base_url, allowed, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(s.bot, s.chat_id, s.name, s.kind, s.value, s.base_url, s.allowed, s.added_by, s.created_at)
+    },
+    getConvSecret: (bot, chat_id, name) => (db.prepare('SELECT * FROM conv_secrets WHERE bot = ? AND chat_id = ? AND name = ?').get(bot, chat_id, name) as ConvSecret | null) ?? null,
+    listConvSecrets: (bot, chat_id) => db.prepare('SELECT * FROM conv_secrets WHERE bot = ? AND chat_id = ? ORDER BY name').all(bot, chat_id) as ConvSecret[],
+    convSecretChats: () => db.prepare('SELECT bot, chat_id, count(*) n FROM conv_secrets GROUP BY bot, chat_id ORDER BY bot, chat_id').all() as any,
+    removeConvSecret: (bot, chat_id, name) => name == null
+      ? db.prepare('DELETE FROM conv_secrets WHERE bot = ? AND chat_id = ?').run(bot, chat_id).changes
+      : db.prepare('DELETE FROM conv_secrets WHERE bot = ? AND chat_id = ? AND name = ?').run(bot, chat_id, name).changes,
     close: () => db.close(),
   }
 }

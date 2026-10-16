@@ -40,6 +40,17 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能放的位�
 
 `/router cred list` 可以看有哪些憑證 (只列名稱, 對應的 bot 或網址, 方法或路徑, 角色, 不會顯示 token).
 
+### 對話專屬密鑰 (任何角色都能用)
+
+這個對話自己要用的 token 或 API key (不是給整隻 bot 的技能), 請**使用者自己**在這個對話傳:
+
+- `/secret set <名稱> <token> [方法...]` (Telegram bot token, 沒寫方法就是全部)
+- `/secret set <名稱> <API key> --http <網址> [路徑...]` (一般 API, 結尾 `*` 代表前綴, 沒寫路徑就是全部)
+
+router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到 `<已遮蔽>`), 加密存起來, 私訊裡立刻刪掉; 群組裡 bot 沒有刪除權限時會提醒發送者自己刪.
+之後用 `bot_api` 或 `http_api`, credential 填那個名稱: 對話自己的密鑰優先於全域憑證, 不看角色也不用授權, 只能呼叫登記時的方法或網址與路徑.
+回應裡出現的值會換成 `<密鑰>`. 使用者用 `/secret list` 看有哪些, `/secret rm <名稱>` 移除. 這只是**建議使用者自己去下指令**, 不要叫他把值貼給你.
+
 ### 一般 API key (OpenAI 之類)
 
 不是 Telegram bot 的 key 也一樣存成 router 的憑證, 種類是 http: 由 owner 在終端機

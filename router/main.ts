@@ -16,7 +16,7 @@ import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFil
 import { basename, dirname, join } from 'path'
 import { defaultConfigPath, loadConfig, type BotConfig } from './config'
 import { acquireLock } from './lock'
-import { openRouterDb, type Conversation } from './db'
+import { openRouterDb, type Conversation, type ConvSecret } from './db'
 import { ensureConversation, ensureBotDir, botDir, convFolder, migrateConversation, findByFolder } from './conversations'
 import { writeSessionSettings, renderSettings, applyOverrides } from './settings'
 import { createSupervisor, bunRunner } from './supervisor'
@@ -27,6 +27,7 @@ import { isCommand, runCommand, roleOf, type CommandDeps, type CommandInput } fr
 import { runCli } from './cli'
 import { importV1Messages } from './importv1'
 import { refuseUse, refuseOwnBot, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
+import { newSecretKey, maskSecretUpdate, openSecret, refuseSecret, secretCred, scrubSecret } from './secrets'
 import { installSkill } from './skills'
 import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
@@ -129,6 +130,14 @@ function writeConfig(mutate: (raw: Record<string, unknown>) => void): void {
   renameSync(tmp, configPath)
 }
 
+// Conversation secrets are sealed with this key (router/secrets.ts).
+if (!cfg.secretKey) {
+  const k = newSecretKey()
+  writeConfig(r => { r.secretKey = k })
+  cfg.secretKey = k
+  log('generated config.json secretKey for conversation secrets')
+}
+
 initBotSetups(db, cfg.bots.map(b => b.name))
 for (const b of cfg.bots) ensureBotDir(cfg, b.name)
 const ctxFile = (c: Conversation) => writeContextFile(cfg, c)
@@ -156,6 +165,44 @@ const chats = new Map<string, { type: string; title: string | null }>()
 type BotHandle = { cfg: BotConfig; bot: Bot; info: { id: number; username: string; first_name: string } | null }
 const bots = new Map<string, BotHandle>()
 
+
+type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean }
+
+/** bot_api / http_api with the conversation's own secret (router/secrets.ts):
+ *  no role check and no authorization, only its methods or URL and paths;
+ *  logged in router.db (outbound, bot "secret:<名稱>"); the value is scrubbed
+ *  from whatever goes back to the worker; long strings cut, base64 can be saved. */
+async function convSecretCall(live: Peer, conv: Conversation, s: ConvSecret, tool: 'bot_api' | 'http_api', args: Record<string, unknown>): Promise<ToolResult> {
+  const fail = (t: string): ToolResult => ({ content: [{ type: 'text', text: t }], isError: true })
+  const http = tool === 'http_api'
+  const method = http ? String(args.method ?? 'POST').toUpperCase() : String(args.method ?? '')
+  const path = String(args.path ?? '')
+  const why = refuseSecret(s, http ? path : method, http ? 'http' : 'telegram-bot')
+  if (why) return fail(why)
+  let value: string
+  try { value = openSecret(cfg.secretKey!, s.bot, s.chat_id, s.name, s.value) } catch { return fail(`密鑰 ${s.name} 解不開 (router 的 secretKey 換過?), 請重新 /secret set`) }
+  const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
+  try { for (const p of Object.values(files)) makeAssertSendable(live, cfg.stateDir)(p) } catch (e) { return fail(String(e instanceof Error ? e.message : e)) }
+  const label = `secret:${s.name}`
+  if (!http) {
+    const params = (args.params ?? {}) as Record<string, unknown>
+    const res = await botApiCall({ apiRoot: cfg.apiRoot, token: value, method, params, files }).catch(e => ({ ok: false, description: String(e) }))
+    const out = scrubSecret(JSON.stringify(shorten(res)), value)
+    db.logApiCall(label, method, { params: shorten(params), files }, JSON.parse(out), res.ok ? null : `${res.error_code ?? ''}: ${scrubSecret(String(res.description), value)}`, conv.key)
+    return { content: [{ type: 'text', text: out }], isError: !res.ok }
+  }
+  const save = args.save_b64 as { at?: string; to?: string } | undefined
+  const dest = save?.to ? (save.to.startsWith('/') ? save.to : join(conv.folder, save.to)) : null
+  if (dest && (!dest.startsWith(conv.folder + '/') || dest.startsWith(join(conv.folder, '.chat') + '/'))) return fail('save_b64.to 要在這個對話的資料夾裡 (不能是 .chat)')
+  const res = await httpApiCall({ cred: secretCred(s, value), method, path, json: args.json, form: args.form as Record<string, unknown> | undefined, files }).catch(e => ({ status: 0, body: String(e) }))
+  let body = res.body
+  if (dest && save?.at && res.status < 300) {
+    const t = takeB64(body, save.at)
+    if (t.bytes) { mkdirSync(dirname(dest), { recursive: true }); writeFileSync(dest, t.bytes); body = { saved: dest, bytes: t.bytes.length, response: t.body } }
+  }
+  db.logApiCall(label, `${method} ${path}`, { json: shorten(args.json), form: shorten(args.form), files }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
+  return { content: [{ type: 'text', text: scrubSecret(JSON.stringify({ status: res.status, body: shorten(body) }), value) }], isError: res.status === 0 || res.status >= 300 }
+}
 
 /** Live progress events from a worker's hooks (router/progress.ts). */
 function ipcOnProgress(peer: Peer, ev: Record<string, unknown>): void {
@@ -196,6 +243,8 @@ const ipc = createIpc({
     if (tool === 'bot_api') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cc-telegram-router cli botapi' }], isError: true }
       const name = String(args.credential ?? ''), method = String(args.method ?? '')
+      const secret = db.getConvSecret(conv.bot, conv.chat_id, name)
+      if (secret) return convSecretCall(live, conv, secret, 'bot_api', args)
       // "self" (or the bot's own name): this conversation's own bot, for owner/admin
       const own = (name === 'self' || name === conv.bot) && !cfg.credentials[name]
       const cred = own ? { token: cfg.bots.find(b => b.name === conv.bot)!.token, methods: [] } : cfg.credentials[name]
@@ -211,6 +260,8 @@ const ipc = createIpc({
     if (tool === 'http_api') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接呼叫 API' }], isError: true }
       const name = String(args.credential ?? ''), method = String(args.method ?? 'POST').toUpperCase(), path = String(args.path ?? '')
+      const secret = db.getConvSecret(conv.bot, conv.chat_id, name)
+      if (secret) return convSecretCall(live, conv, secret, 'http_api', args)
       const cred = cfg.credentials[name]
       const why = refuseUse(cred, name, role, path, 'http')
       const fail = (t: string) => ({ content: [{ type: 'text' as const, text: t }], isError: true })
@@ -684,7 +735,8 @@ async function answerCommand(bot: Bot, input: CommandInput & { messageId: number
     // Say what actually happened: in a group the bot can only delete
     // other people's messages when it is an admin there.
     const ok = await bot.api.deleteMessage(chatId, messageId).then(() => true, e => { log(`delete command message failed: ${e}`); return false })
-    reply += ok ? '\n已刪除含 token 的訊息' : '\n⚠️ 無法刪除含 token 的訊息 (bot 沒有刪除權限), 請手動刪除'
+    const what = out.deleteLabel ?? '含 token 的訊息'
+    reply += ok ? `\n已刪除${what}` : `\n⚠️ 無法刪除${what} (bot 沒有刪除權限), 請${out.deleteLabel ? '自己刪掉那則訊息' : '手動刪除'}`
   }
   // Listings name other conversations and people: in a group they go to
   // the sender's DM, the group only hears that they were sent.
@@ -710,7 +762,7 @@ async function handleRelay(botName: string, chatId: string, chatType: string, se
   const reply = (text: string, md = false) => api.sendMessage(chatId, text, { ...replyOpts, ...(md ? { parse_mode: 'MarkdownV2' as const } : {}) }).catch(e => log(`relay reply failed: ${e}`))
   // the router's own commands are answered as if typed directly
   if (!rel.raw && ROUTER_CMDS.has(rel.cmd)) {
-    await answerCommand(bot, { bot: botName, text: `${rel.cmd}${rel.args ? ' ' + rel.args : ''}`, senderId, senderName, chatId, chatType, messageId })
+    await answerCommand(bot, { bot: botName, text: `${rel.cmd}${rel.args ? ' ' + rel.args : ''}`, senderId, senderName, chatId, chatType, messageId, botUsername: bots.get(botName)?.info?.username })
     return
   }
   const role = roleOf(commandDeps, senderId)
@@ -786,7 +838,7 @@ function startBot(bc: BotConfig): BotHandle {
     }
   })
   bot.use(async (ctx, next) => {
-    db.logEvent(bc.name, ctx.update)
+    db.logEvent(bc.name, maskSecretUpdate(ctx.update))
     if (ctx.from) notePerson(bot, ctx.from, ctx.chat ? String(ctx.chat.id) : null)
     if (ctx.chat) {
       const title = ctx.chat.type === 'private'
@@ -850,7 +902,7 @@ function startBot(bc: BotConfig): BotHandle {
       const input = {
         bot: bc.name, text: text!, senderId,
         senderName: ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name,
-        chatId: String(chatId), chatType: ctx.chat.type, messageId,
+        chatId: String(chatId), chatType: ctx.chat.type, messageId, botUsername: h.info?.username,
         ...(replied?.from ? { reply: { uid: String(replied.from.id), messageId: replied.message_id } } : {}),
       }
       void answerCommand(bot, input).catch(e => log(`command failed: ${e}`))

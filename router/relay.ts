@@ -28,7 +28,7 @@ export type RelayOut =
 const RELAY_RE = /^(?:cc|柯柯)\s*(\/\/?)([a-z][\w-]*)(?:\s+([\s\S]*))?$/i
 
 /** These belong to the router: answered as if typed directly, never sent to a terminal. */
-export const ROUTER_CMDS = new Set(['/router', '/restart', '/id', '/info'])
+export const ROUTER_CMDS = new Set(['/router', '/restart', '/id', '/info', '/secret'])
 /** Commands with a dedicated report (scripts / parsers below). */
 export const DEDICATED = new Set(['/status', '/usage', '/context', '/cost'])
 

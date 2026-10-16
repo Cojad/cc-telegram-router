@@ -120,11 +120,11 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'bot_api',
-    description: 'Call the Telegram Bot API. credential "self": as this bot itself, any method (e.g. deleteMessage, pinChatMessage, getChat), owner and admin conversations only (getUpdates/setWebhook/deleteWebhook/logOut/close are blocked). Any other name: a credential the owner stored in the router (cross-bot skills, e.g. another bot\'s sticker set), checked against its roles and methods. The token never reaches you. files maps a form field to an absolute path inside your folder (use "attach://<field>" in params to refer to it). See /telegram:bot-skill.',
+    description: 'Call the Telegram Bot API. credential "self": as this bot itself, any method (e.g. deleteMessage, pinChatMessage, getChat), owner and admin conversations only (getUpdates/setWebhook/deleteWebhook/logOut/close are blocked). Any other name: this conversation\'s own secret (registered by a user with /secret set in this chat; any role, only the methods given then) if there is one, else a credential the owner stored in the router (cross-bot skills, e.g. another bot\'s sticker set), checked against its roles and methods. The token never reaches you. files maps a form field to an absolute path inside your folder (use "attach://<field>" in params to refer to it). See /telegram:bot-skill.',
     inputSchema: {
       type: 'object',
       properties: {
-        credential: { type: 'string', description: '"self" for this bot, or a credential name (/router cred list)' },
+        credential: { type: 'string', description: '"self" for this bot, a secret of this conversation (/secret list), or a credential name (/router cred list)' },
         method: { type: 'string', description: 'Bot API method, e.g. addStickerToSet' },
         params: { type: 'object', description: 'Method parameters' },
         files: { type: 'object', description: 'Form field -> absolute file path to upload' },
@@ -134,7 +134,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'http_api',
-    description: 'Call an HTTP API (e.g. OpenAI image generation) with an API-key credential the owner stored in the router; the key never reaches you. path must be one the credential allows. json for a JSON body, or form + files (field -> absolute path in your folder) for multipart. save_b64 {at: "data.0.b64_json", to: "stickers/raw.png"} writes a base64 field of the response to a file in your folder instead of returning it. See /telegram:bot-skill.',
+    description: 'Call an HTTP API (e.g. OpenAI image generation) with this conversation\'s own secret (/secret set <名稱> <key> --http <網址> [路徑...] in this chat; any role, only that URL and those paths) or else an API-key credential the owner stored in the router; the key never reaches you (it is replaced with <密鑰> in responses). path must be one the credential allows. json for a JSON body, or form + files (field -> absolute path in your folder) for multipart. save_b64 {at: "data.0.b64_json", to: "stickers/raw.png"} writes a base64 field of the response to a file in your folder instead of returning it. See /telegram:bot-skill.',
     inputSchema: {
       type: 'object',
       properties: {
