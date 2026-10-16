@@ -12,7 +12,7 @@ export const RANK: Record<string, number> = { guest: 0, user: 1, power: 2, admin
 export const rank = (role: string | null | undefined) => RANK[role ?? ''] ?? 1
 
 export type Call = { tool_name: string; tool_input: Record<string, any> }
-export type Check = { ok: true } | { ok: false; why: string }
+export type Check = { ok: true } | { ok: false; why: string; redirect?: true }
 
 type Rule = { tool: string; spec?: string }
 function parseRule(r: string): Rule {
@@ -57,6 +57,34 @@ export function subcommands(cmd: string): string[] {
   return cmd.split(/&&|\|\||[;|\n]/).map(s => s.trim()).filter(Boolean)
 }
 
+const NULL_DEVS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr'])
+
+/** Does a simple command write a file through a redirection (>, >>, &>, >|,
+ *  <>, >(...))? Claude Code does not let a read-only allow rule such as
+ *  Bash(echo *) cover it, so neither does the router. Quoted text, escaped
+ *  characters, >/dev/null and fd copies (2>&1) do not count; a command
+ *  substitution inside double quotes is looked into. */
+export function writesFile(cmd: string): boolean {
+  const s = cmd.replace(/\\[\s\S]/g, '__')
+    .replace(/'[^']*'/g, "''")
+    .replace(/"([^"]*)"/g, (_m, inner: string) => /\$\(|`/.test(inner) ? ` ${inner} ` : '""')
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== '>') continue
+    let j = i + 1
+    if (s[j] === '(') return true
+    if (s[j] === '>') j++
+    if (s[j] === '|') j++
+    let fdCopy = false
+    if (s[j] === '&') { fdCopy = true; j++ }
+    while (s[j] === ' ' || s[j] === '\t') j++
+    let target = ''
+    while (j < s.length && !/[\s;&|<>()]/.test(s[j]!)) target += s[j++]
+    if (fdCopy ? !/^(\d+|-)$/.test(target) : !NULL_DEVS.has(target)) return true
+    i = j - 1
+  }
+  return false
+}
+
 /** "ls *" matches "ls -la /x"; in Bash rules * spans anything, slashes included. */
 function bashMatches(spec: string, cmd: string): boolean {
   return new RegExp(`^${spec.split('*').map(x => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 's').test(cmd)
@@ -83,6 +111,9 @@ export function checkCall(settings: any, call: Call, folder: string, role = 'thi
     for (const s of subs) if (deny.some(r => r.tool === 'Bash' && (!r.spec || bashMatches(r.spec, s)))) return { ok: false, why: `${role} 禁止這個指令: ${s.slice(0, 80)}` }
     if (allow.some(r => r.tool === 'Bash' && !r.spec)) return { ok: true }
     if (!allow.some(r => r.tool === 'Bash')) return { ok: false, why: `${role} 不能使用 Bash` }
+    // only read-only commands are allowed: one that writes a file through a redirection is not read-only
+    const writes = subs.find(writesFile)
+    if (writes) return { ok: false, why: `${role} 的 Bash 只能跑唯讀指令, 這個用重導向寫入檔案: ${writes.slice(0, 80)}`, redirect: true }
     const bad = subs.find(s => !allow.some(r => r.tool === 'Bash' && r.spec && bashMatches(r.spec, s)))
     return bad ? { ok: false, why: `${role} 的 Bash 只能跑唯讀指令, 這個不在允許範圍: ${bad.slice(0, 80)}` } : { ok: true }
   }
@@ -132,6 +163,8 @@ export function permanentRule(settings: any, call: Call, folder: string, lay: (s
   let r: Rule | null = null
   if (tool === 'Bash') {
     if (i.dangerouslyDisableSandbox) return { none: '跳出 sandbox 沒辦法寫成固定規則, 只能一次一次允許' }
+    const c = checkCall(settings, call, folder)
+    if (!c.ok && c.redirect) return { none: '用重導向 (>, >>) 寫入檔案沒辦法寫成固定規則, 只能一次一次允許; 要長期開放請 owner 調整對話角色' }
     const cmds = [...new Set(subcommands(String(i.command ?? ''))
       .filter(s => !checkCall(settings, { tool_name: 'Bash', tool_input: { command: s } }, folder).ok)
       .map(s => s.split(/\s+/).find(w => !/^\w+=/.test(w) && w !== 'sudo') ?? ''))].filter(Boolean)

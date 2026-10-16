@@ -8,7 +8,11 @@
 //   2. If the person whose message started this turn has a higher role than
 //      the conversation (the delivery carries sender_role and elevated), the
 //      router also asks right there in the chat: 「提權執行」 or 「拒絕」,
-//      refused by default after 120 seconds (passive request).
+//      refused by default after 120 seconds (passive request). A turn typed
+//      in the worker's terminal (its prompt hook says no Telegram message)
+//      has no sender: only the conversation's role counts and nothing is
+//      asked in the chat, until the next Telegram message starts a turn; a
+//      message delivered during a terminal turn waits for its own turn.
 //   3. The prompt offers 允許一次 / 永久允許 / 拒絕. Whoever presses must have
 //      a role above the conversation's that allows the blocked call; the
 //      elevation then runs with *their* role, bound to the next subagent the
@@ -70,6 +74,8 @@ export function createElevation(deps: ElevationDeps) {
   const askTimeout = deps.askTimeoutMs ?? 120_000
   const ttl = deps.grantTtlMs ?? 600_000
   const lastSender = new Map<string, string>()
+  /** conversations whose current turn was typed in the terminal (prompt hook, telegram false) */
+  const terminalTurn = new Set<string>()
   /** approved, waiting for the worker's next subagent */
   const granted = new Map<string, Grant>()
   /** agent_id -> conversation and the role it runs with */
@@ -81,7 +87,7 @@ export function createElevation(deps: ElevationDeps) {
   const tickets = new Map<string, { role: string; id: number; until: number }>()
   const ticketKey = (conv: string, tool: string, args: unknown) => `${conv}\u0000${tool}\u0000${stableArgs(args ?? {})}`
 
-  const senderOf = (conv: Conversation) => lastSender.get(conv.key) ?? null
+  const senderOf = (conv: Conversation) => terminalTurn.has(conv.key) ? null : lastSender.get(conv.key) ?? null
   /** Would role be allowed this call: its permission settings, then extraCheck. */
   const allowedAs = (conv: Conversation, role: string, call: Call) => {
     const c = checkCall(deps.settingsAs(conv, role), call, conv.folder, role)
@@ -211,6 +217,10 @@ export function createElevation(deps: ElevationDeps) {
     async onHook(conv: Conversation, ev: Record<string, any>): Promise<HookDecision> {
       const agent: string | undefined = ev.agent_id || undefined
       switch (ev.event) {
+        // a turn starts: from a Telegram message (its delivery named the sender) or typed in the terminal
+        case 'prompt':
+          if (ev.telegram) terminalTurn.delete(conv.key); else terminalTurn.add(conv.key)
+          return {}
         case 'subagent-start': {
           const g = granted.get(conv.key)
           if (g && agent && g.until > Date.now()) {

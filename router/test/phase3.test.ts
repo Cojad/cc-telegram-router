@@ -8,7 +8,7 @@ import { join } from 'path'
 import type { Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
 import { ensureConversation, findByFolder } from '../conversations'
-import { checkCall } from '../permcheck'
+import { checkCall, writesFile } from '../permcheck'
 import { renderSettings, applyOverrides } from '../settings'
 import { runCommand, type CommandDeps } from '../commands'
 import { makeAssertAllowedChat } from '../guard'
@@ -225,6 +225,13 @@ test('permcheck: each role template allows what it lists and blocks the rest, wi
   expect(checkCall(user, bash('cat notes.txt | grep x'), f).ok).toBe(true)
   expect(checkCall(user, bash('ls && rm -rf x'), f, 'user')).toEqual({ ok: false, why: 'user 的 Bash 只能跑唯讀指令, 這個不在允許範圍: rm -rf x' })
   expect(checkCall(user, bash('find . -exec rm {} ;'), f, 'user')).toMatchObject({ ok: false, why: expect.stringContaining('禁止這個指令') })
+  // a read-only rule (Bash(echo *)) never covers writing a file through a redirection, as in Claude Code
+  expect(checkCall(user, bash('echo hi > notes.txt'), f, 'user')).toEqual({ ok: false, why: 'user 的 Bash 只能跑唯讀指令, 這個用重導向寫入檔案: echo hi > notes.txt', redirect: true })
+  expect(checkCall(user, bash('ls && cat a.txt >> b.txt'), f, 'user')).toMatchObject({ ok: false, why: expect.stringContaining('重導向寫入檔案: cat a.txt >> b.txt') })
+  expect(checkCall(user, bash('echo x | tee out.txt'), f, 'user')).toMatchObject({ ok: false, why: expect.stringContaining('不在允許範圍: tee out.txt') })
+  expect(checkCall(user, bash('grep -r x . 2>/dev/null'), f).ok).toBe(true)
+  expect(checkCall(user, bash('ls missing 2>&1 | head -5'), f).ok).toBe(true)
+  expect(checkCall(user, bash('echo "a > b" \'c >> d\''), f).ok).toBe(true) // quoted: not a redirection
   expect(checkCall(user, file('Read', `${f}/a.txt`), f).ok).toBe(true)
   expect(checkCall(user, file('Read', 'notes/a.txt'), f).ok).toBe(true) // relative to the folder
   expect(checkCall(user, file('Read', '/etc/passwd'), f, 'user')).toEqual({ ok: false, why: 'user 不能讀取允許範圍外的路徑: /etc/passwd' })
@@ -235,6 +242,7 @@ test('permcheck: each role template allows what it lists and blocks the rest, wi
   expect(checkCall(user, { tool_name: 'Agent', tool_input: {} }, f).ok).toBe(true) // unknown to the checker: left to Claude Code
   const power = as('power')
   expect(checkCall(power, bash('python3 x.py && rm y'), f).ok).toBe(true)
+  expect(checkCall(power, bash('echo hi > notes.txt'), f).ok).toBe(true) // power runs any Bash (in the sandbox)
   expect(checkCall(power, bash('ls /x', { dangerouslyDisableSandbox: true }), f, 'power')).toEqual({ ok: false, why: 'power 的 Bash 只能在 sandbox 裡執行, 不能跳出 sandbox' })
   const guest = as('guest')
   expect(checkCall(guest, { tool_name: 'WebFetch', tool_input: { url: 'https://x' } }, f, 'guest')).toEqual({ ok: false, why: 'guest 不能使用 WebFetch' })
@@ -245,6 +253,29 @@ test('permcheck: each role template allows what it lists and blocks the rest, wi
   const more = applyOverrides(renderSettings(TEMPLATES, 'user', vars(f)), [{ conv: 'g', kind: 'path-read', value: '/x/data' }, { conv: 'g', kind: 'mcp', value: 'claude-in-chrome' }])
   expect(checkCall(more, file('Read', '/x/data/a.csv'), f).ok).toBe(true)
   expect(checkCall(more, { tool_name: 'mcp__claude-in-chrome__navigate', tool_input: {} }, f).ok).toBe(true)
+})
+
+test('writesFile: output redirections to a file count; quotes, escapes, /dev/null and fd copies do not; a command substitution in double quotes is looked into', () => {
+  for (const c of ['echo hi > a', 'echo hi>a', 'cat a >> b', 'echo x &> log', 'ls 1>out', 'echo x >&out.txt', 'cat <> f', 'echo x >', 'diff <(ls) >(cat)', 'echo "$(date > t)"', 'cat <<EOF > f'])
+    expect([c, writesFile(c)]).toEqual([c, true])
+  for (const c of ['ls -la', 'ls 2>/dev/null', 'ls >/dev/null 2>&1', 'echo x >&2', 'grep ">" a.html', "echo '>> a'", 'echo a \\> b', 'echo "$(date)"', 'cat a 2>&-'])
+    expect([c, writesFile(c)]).toEqual([c, false])
+})
+
+test('elevation: a user conversation writing a file through a redirection is blocked (logged) and, with the owner asking, offered elevation, once only', async () => {
+  const { conv, e, sent } = elevHarness()
+  e.onDeliver(conv, OWNER)
+  const d = await e.onHook(conv, { event: 'pre', tool_name: 'Bash', tool_input: { command: 'echo hi > notes.txt', description: '寫筆記' } })
+  expect(d.decision).toBe('deny')
+  expect(d.reason).toContain('router 已在對話裡詢問是否提權 (#1,')
+  expect(d.reason).toStartWith('權限不足 (本對話角色 user): user 的 Bash 只能跑唯讀指令, 這個用重導向寫入檔案: echo hi > notes.txt.')
+  expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:deny'])
+  expect(sent[0]!.text).toContain('♾️ 不能永久允許: 用重導向 (>, >>) 寫入檔案沒辦法寫成固定規則, 只能一次一次允許; 要長期開放請 owner 調整對話角色.')
+  expect(db.elevLog(conv.key, 5).map(l => l.kind).reverse()).toEqual(['blocked', 'request'])
+  expect(await e.decide('elev:1:once', OWNER)).toBe('已提權一次')
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'W' })
+  expect(await e.onHook(conv, { event: 'pre', tool_name: 'Bash', tool_input: { command: 'echo hi > notes.txt' }, agent_id: 'W' })).toEqual({ decision: 'allow', reason: '提權 #1, 以 owner 角色執行' })
+  e.stop()
 })
 
 // --- 07 提權 -------------------------------------------------------------------
@@ -314,6 +345,30 @@ test('elevation: a higher-role sender gets an in-chat 提權執行/拒絕 prompt
   expect(await e.onHook(conv, { event: 'pre', tool_name: 'SendMessage', tool_input: { to: 'A' } })).toMatchObject({ decision: 'deny' })
   await e.onHook(conv, { event: 'subagent-stop', agent_id: 'A' })
   expect((await e.onHook(conv, { ...escape, agent_id: 'A' })).decision).toBe('deny')
+  e.stop()
+})
+
+test('elevation: a turn typed in the worker\'s terminal has no sender: only the conversation\'s role counts, nothing is asked in the chat, even right after an owner\'s Telegram message; the next Telegram turn asks again', async () => {
+  const { conv, e, sent } = elevHarness()
+  e.onDeliver(conv, OWNER)
+  expect(await e.onHook(conv, { event: 'prompt', telegram: false })).toEqual({})
+  const plain = '權限不足 (本對話角色 user): user 的 Bash 只能在 sandbox 裡執行, 不能跳出 sandbox. 請改用不越權的方法完成.'
+  expect((await e.onHook(conv, escape)).reason).toStartWith(plain)
+  expect((await e.onHook(conv, { ...escape, agent_id: 'T' })).reason).toStartWith(plain) // its subagents too
+  // an owner's message delivered meanwhile waits for its own turn
+  e.onDeliver(conv, OWNER)
+  expect((await e.onHook(conv, escape)).reason).toStartWith(plain)
+  expect(sent).toEqual([])
+  expect(db.pendingElevations()).toEqual([])
+  expect(db.elevLog(conv.key, 5).every(l => l.kind === 'blocked' && l.text.endsWith('發起者 (不明)'))).toBe(true)
+  // an active request from a terminal turn goes to the owner, not into the chat
+  expect(await e.request(conv, '要看 /x', 'ls /x')).toBe('已向 bot owner 申請提權 (#1), 結果會以 <router_status> 通知')
+  expect(sent.filter(m => m.chat === conv.chat_id)).toEqual([])
+  db.decideElevation(1, 'denied', OWNER, null)
+  // the owner's Telegram message starts its turn: asked in the chat
+  await e.onHook(conv, { event: 'prompt', telegram: true })
+  expect((await e.onHook(conv, escape)).reason).toContain('router 已在對話裡詢問是否提權 (#2,')
+  expect(sent.filter(m => m.chat === conv.chat_id)).toHaveLength(1)
   e.stop()
 })
 
