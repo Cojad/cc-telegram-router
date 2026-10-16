@@ -35,6 +35,15 @@ const api = Bun.serve({
     const body = req.headers.get('content-type')?.includes('json') ? await req.json() : {}
     calls.push({ method, body, token })
     const ok = (result: unknown) => Response.json({ ok: true, result })
+    // a second bot (bot add): its poller's own getMe is slow, its updates empty
+    if (token.startsWith('456:')) {
+      if (method === 'getMe') {
+        if (calls.filter(c => c.method === 'getMe' && c.token === token).length > 1) await sleep(3000)
+        return ok({ id: 456, is_bot: true, first_name: 'Two', username: 'two_bot' })
+      }
+      if (method === 'getUpdates') { await sleep(200); return ok([]) }
+      return ok(true)
+    }
     switch (method) {
       case 'getMe': return ok({ id: 1, is_bot: true, first_name: 'cc', username: 'cc_bot' })
       case 'getUpdates':
@@ -266,4 +275,15 @@ test('「cc /router status」is answered as the router command itself: never typ
   expect(String(answer.body.text)).toStartWith('router 已運作')
   const after = readFileSync(argLog, 'utf8').slice(before.length)
   expect(after).not.toContain('attach') // no terminal was opened
+}, 15000)
+
+test('bot add answers once its getMe is in: bot list right after shows the new bot, never @? (id 0), even before its poller has started', async () => {
+  const from = { id: 111, is_bot: false, first_name: 'O', username: 'owner' }
+  laterUpdates.push({ update_id: 80, message: { message_id: 90, date: now, chat: { id: 111, type: 'private' }, from, text: '/router bot add two 456:TWOTWOTWOTWOTWOTWOTWOTWOTWOTWOTWO00' } })
+  const added = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('已新增 bot two')))
+  expect(added.body.text).toStartWith('已新增 bot two: @two_bot\n')
+  // the new bot's poller is still waiting on its own (slow) getMe
+  laterUpdates.push({ update_id: 81, message: { message_id: 91, date: now, chat: { id: 111, type: 'private' }, from, text: '/router bot list' } })
+  const list = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('cc: @')))
+  expect(list.body.text).toBe('cc: @cc_bot (id 1, cc)\ntwo: @two_bot (id 456, Two)')
 }, 15000)

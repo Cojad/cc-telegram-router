@@ -50,6 +50,18 @@ export type Config = {
   credentials: Record<string, Credential>
   /** base64 AES-256 key for conversation secrets (router/secrets.ts); generated at startup when missing. */
   secretKey?: string
+  /** Daily refresh of privileged skills' credentials (router/skillrefresh.ts):
+   *  "HH:MM" GMT+8, default "05:00"; null when config says "off". */
+  skillRefreshAt?: string | null
+}
+
+/** config skillRefreshAt: "HH:MM" (GMT+8), "off" (or false) to disable, missing = 05:00. */
+export function parseRefreshAt(v: unknown): string | null {
+  if (v === undefined || v === null) return '05:00'
+  if (v === false || v === 'off') return null
+  const m = typeof v === 'string' ? /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(v.trim()) : null
+  if (!m) throw new Error(`skillRefreshAt 要是 "HH:MM" (GMT+8) 或 "off", 收到 ${JSON.stringify(v)}`)
+  return `${m[1]!.padStart(2, '0')}:${m[2]}`
 }
 
 export function defaultConfigPath(argv: string[], execPath: string): string {
@@ -80,5 +92,6 @@ export function loadConfig(path: string): Config {
     apiRoot: raw.apiRoot,
     credentials: raw.credentials ?? {},
     secretKey: raw.secretKey,
+    skillRefreshAt: parseRefreshAt(raw.skillRefreshAt),
   }
 }

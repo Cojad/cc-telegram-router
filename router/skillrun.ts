@@ -37,6 +37,30 @@ export function skillDirs(deps: Pick<SkillRunDeps, 'home' | 'botDir'>, bot: stri
   return [join(deps.botDir(bot), '.claude', 'skills', skill), join(deps.home, '.claude', 'skills', skill)].filter(d => existsSync(join(d, 'privileged.json')))
 }
 
+const credDir = (deps: Pick<SkillRunDeps, 'credsRoot'>, name: string) => { const d = join(deps.credsRoot, name); mkdirSync(d, { recursive: true, mode: 0o700 }); return d }
+/** env var -> credential folder of an action. */
+export const credEnv = (deps: Pick<SkillRunDeps, 'credsRoot'>, a: Action) => Object.fromEntries(Object.entries(a.creds ?? {}).map(([env, name]) => [env, credDir(deps, name)]))
+const httpCreds = (deps: Pick<SkillRunDeps, 'httpCred'>, a: Action) => Object.entries(a.http ?? {}).map(([env, name]) => ({ env, name, cred: deps.httpCred?.(name) }))
+
+/** One action in its own sandbox, the conversation (or router) folder
+ *  writable: shared by run_skill and the daily refresh (router/skillrefresh.ts).
+ *  Only internal (router-run) actions get extra mounts and env, and write
+ *  their credential folders: a conversation's actions never see the ssh agent. */
+export async function runAction(deps: Omit<SkillRunDeps, 'notifyOwner'>, dir: string, a: Action, args: Record<string, unknown>, folder: string): Promise<RunResult> {
+  const http = httpCreds(deps, a)
+  const missing = http.find(h => h.cred?.kind !== 'http' || !h.cred.baseUrl)
+  if (missing) return { code: -1, out: `需要的 API 憑證 ${missing.name} 不存在或不是 http 憑證` }
+  const argv = buildArgv(a, dir, args, name => credDir(deps, name))
+  if ('error' in argv) return { code: -1, out: argv.error }
+  const httpEnv: Record<string, string> = Object.fromEntries(http.flatMap(({ env, cred }) => [
+    [`${env}_URL`, cred!.baseUrl!.replace(/\/+$/, '')],
+    [`${env}_HEADER`, `${cred!.header ?? 'Authorization'}: ${`${cred!.scheme ?? 'Bearer'} ${cred!.token}`.trim()}`],
+  ]))
+  const mounts = a.internal ? (a.mounts ?? []).map(m => m.startsWith('~/') ? join(deps.userHome, m.slice(2)) : m) : []
+  const sb = sandboxArgv({ argv, skillDir: dir, convFolder: folder, creds: credEnv(deps, a), home: deps.userHome, extraRo: [...deps.extraRo, ...mounts], credsWritable: !!a.internal, env: { ...(a.internal ? a.env : {}), ...httpEnv } })
+  return deps.exec(sb.argv, sb.env, (a.timeout ?? 600) * 1000)
+}
+
 export async function runSkill(deps: SkillRunDeps, conv: Conversation, role: string, skill: string, actionName: string, args: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
   const { db } = deps
   const dir = skillDirs(deps, conv.bot, skill)[0]
@@ -56,24 +80,10 @@ export async function runSkill(deps: SkillRunDeps, conv: Conversation, role: str
   const used = db.skillRunsSince(conv.key, new Date(Date.now() - 3_600_000).toISOString())
   if (used >= RUNS_PER_HOUR) { db.addSkillRun(conv.key, skill, actionName, 'refused'); return { ok: false, text: `這個對話一小時內已經用了 ${used} 次特權技能, 上限 ${RUNS_PER_HOUR} 次, 請稍後再試` } }
 
-  const credDir = (name: string) => { const d = join(deps.credsRoot, name); mkdirSync(d, { recursive: true, mode: 0o700 }); return d }
-  const credEnv = (a: Action) => Object.fromEntries(Object.entries(a.creds ?? {}).map(([env, name]) => [env, credDir(name)]))
-  const httpCreds = (a: Action) => Object.entries(a.http ?? {}).map(([env, name]) => ({ env, name, cred: deps.httpCred?.(name) }))
-  for (const h of [...httpCreds(action), ...(action.refresh && manifest.actions[action.refresh] ? httpCreds(manifest.actions[action.refresh]!) : [])]) {
+  for (const h of [...httpCreds(deps, action), ...(action.refresh && manifest.actions[action.refresh] ? httpCreds(deps, manifest.actions[action.refresh]!) : [])]) {
     if (h.cred?.kind !== 'http' || !h.cred.baseUrl) return { ok: false, text: `技能 ${skill} 需要的 API 憑證 ${h.name} 不存在或不是 http 憑證, 請 owner 檢查` }
   }
-  const httpEnv = (a: Action): Record<string, string> => Object.fromEntries(httpCreds(a).flatMap(({ env, cred }) => [
-    [`${env}_URL`, cred!.baseUrl!.replace(/\/+$/, '')],
-    [`${env}_HEADER`, `${cred!.header ?? 'Authorization'}: ${`${cred!.scheme ?? 'Bearer'} ${cred!.token}`.trim()}`],
-  ]))
-  const once = async (a: Action, a_args: Record<string, unknown>): Promise<RunResult> => {
-    const argv = buildArgv(a, dir, a_args, credDir)
-    if ('error' in argv) return { code: -1, out: argv.error }
-    // only internal (router-run) actions get extra mounts and env: a conversation's actions never see the ssh agent
-    const mounts = a.internal ? (a.mounts ?? []).map(m => m.startsWith('~/') ? join(deps.userHome, m.slice(2)) : m) : []
-    const sb = sandboxArgv({ argv, skillDir: dir, convFolder: conv.folder, creds: credEnv(a), home: deps.userHome, extraRo: [...deps.extraRo, ...mounts], credsWritable: !!a.internal, env: { ...(a.internal ? a.env : {}), ...httpEnv(a) } })
-    return deps.exec(sb.argv, sb.env, (a.timeout ?? 600) * 1000)
-  }
+  const once = (a: Action, a_args: Record<string, unknown>) => runAction(deps, dir, a, a_args, conv.folder)
 
   const start = Date.now()
   let r = await once(action, args)
@@ -91,8 +101,8 @@ export async function runSkill(deps: SkillRunDeps, conv: Conversation, role: str
     }
   }
   // nothing that holds a credential goes back to the conversation
-  const creds = Object.values({ ...credEnv(action), ...(action.refresh && manifest.actions[action.refresh] ? credEnv(manifest.actions[action.refresh]!) : {}) })
-  const secrets = [...secretsIn(creds), ...httpCreds(action).map(h => h.cred!.token).filter(t => t.length >= 16)]
+  const creds = Object.values({ ...credEnv(deps, action), ...(action.refresh && manifest.actions[action.refresh] ? credEnv(deps, manifest.actions[action.refresh]!) : {}) })
+  const secrets = [...secretsIn(creds), ...httpCreds(deps, action).map(h => h.cred?.token ?? '').filter(t => t.length >= 16)]
   const removed = scrubOutputs(conv.folder, start - 1000, secrets)
   const red = redact(r.out, secrets)
   if (removed.length || red.hit) {

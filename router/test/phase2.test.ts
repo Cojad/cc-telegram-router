@@ -10,6 +10,7 @@ import type { Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
 import { ensureConversation, findByFolder } from '../conversations'
 import { runCommand, isCommand, type CommandDeps, type CommandInput } from '../commands'
+import { awaitBotInfo } from '../botinfo'
 import { buildContext, renderContext, renderLogs, maskTokens, gmt8 } from '../context'
 import type { Access } from '../telegram/policy'
 
@@ -82,6 +83,12 @@ test('admin may run commands but may not make anyone owner nor touch an owner', 
 
 test('bot list for admin; token commands only in the owner DM, and a token message is always deleted', async () => {
   expect((await run('/router bot list', ADMIN))!.reply).toBe('cc: @cc_bot (id 42, 柯柯)')
+  // a bot whose getMe is not in yet (its poller just starting): 讀取中, not @? (id 0)
+  const d = deps()
+  d.bots.list = async () => [{ name: 'cc', id: 42, username: 'cc_bot', first_name: '柯柯' }, { name: 'two', id: null, username: null, first_name: null }]
+  const both = await runCommand({ bot: 'cc', text: '/router bot list', senderId: ADMIN, senderName: 'a', chatId: ADMIN, chatType: 'private' } as CommandInput, d)
+  expect(both!.reply).toBe('cc: @cc_bot (id 42, 柯柯)\ntwo: 讀取中 (bot 資訊還沒取得, 稍後再試)')
+  expect((await runCommand({ bot: 'cc', text: '/router status', senderId: ADMIN, senderName: 'a', chatId: ADMIN, chatType: 'private' } as CommandInput, d))!.reply).toContain('\ntwo (讀取中)\n')
   const inGroup = (await run('/router bot add x 123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', OWNER, GROUP))!
   expect(inGroup.reply).toBe('⛔ /router bot add 只能在 owner 私訊使用; token 曾出現在群組, 建議 /router bot rotate')
   expect(inGroup.deleteMessage).toBe(true)
@@ -651,3 +658,24 @@ test('relay: a worker already stuck on a view is brought back to the prompt firs
   const keys = seen.filter(s => s.args[1] === 'send-keys').map(s => s.args[4])
   expect(keys).toEqual(['Escape', '/cost', 'Escape']) // healed, ran, closed — never two Escs in a row
 }, 20000)
+
+test('bot info not in yet: getMe again 30 seconds later, then every 30 seconds until it works; stops once the info is in or the bot is gone', async () => {
+  const slept: number[] = []
+  let calls = 0, info: { id: number; username: string; first_name: string } | null = null
+  const logs: string[] = []
+  await awaitBotInfo({
+    ready: () => !!info, current: () => true,
+    getMe: async () => { if (++calls < 3) throw new Error('Network request failed'); return { id: 42, username: 'cc_bot', first_name: '柯柯' } },
+    set: me => { info = me }, log: m => logs.push(m), sleep: async ms => { slept.push(ms) },
+  })
+  expect(slept).toEqual([30_000, 30_000, 30_000])
+  expect(calls).toBe(3)
+  expect(info).toEqual({ id: 42, username: 'cc_bot', first_name: '柯柯' })
+  expect(logs).toEqual(['getMe failed (1): Error: Network request failed; retry in 30s', 'getMe failed (2): Error: Network request failed; retry in 30s'])
+  // the poller got it first: no getMe at all
+  let n = 0
+  await awaitBotInfo({ ready: () => true, current: () => true, getMe: async () => { n++; return info! }, set: () => {}, log: () => {}, sleep: async () => {} })
+  // removed or rotated meanwhile: stop
+  await awaitBotInfo({ ready: () => false, current: () => false, getMe: async () => { n++; return info! }, set: () => {}, log: () => {}, sleep: async () => {} })
+  expect(n).toBe(0)
+})

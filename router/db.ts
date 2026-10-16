@@ -188,6 +188,8 @@ export interface RouterDb {
   listSkillApprovals(): Array<{ dir: string; skill: string; hash: string; approved_by: string; at: string }>
   addSkillRun(conv: string, skill: string, action: string, status: string): void
   skillRunsSince(conv: string, sinceIso: string): number
+  /** When conv last ran skill with this status (ISO), or null: the daily refresh's catch-up. */
+  lastSkillRunAt(conv: string, skill: string, status: string): string | null
   /** The Telegram message a conversation was handling when it made request kind#ref. */
   setRequestOrigin(kind: string, ref: number, conv: string, message_id: number): void
   requestOrigin(kind: string, ref: number): number | null
@@ -493,6 +495,7 @@ export function openRouterDb(path: string): RouterDb {
     listSkillApprovals: () => db.prepare('SELECT dir, skill, hash, approved_by, at FROM skill_approvals ORDER BY skill').all() as any,
     addSkillRun: (conv, skill, action, status) => { db.prepare('INSERT INTO skill_runs (ts, conv, skill, action, status) VALUES (?, ?, ?, ?, ?)').run(now(), conv, skill, action, status) },
     skillRunsSince: (conv, since) => (db.prepare("SELECT count(*) n FROM skill_runs WHERE conv = ? AND ts > ? AND status != 'refused'").get(conv, since) as { n: number }).n,
+    lastSkillRunAt: (conv, skill, status) => (db.prepare('SELECT max(ts) ts FROM skill_runs WHERE conv = ? AND skill = ? AND status = ?').get(conv, skill, status) as { ts: string | null }).ts,
     setRequestOrigin: (kind, ref, conv, mid) => { db.prepare('INSERT OR REPLACE INTO request_origin (kind, ref, conv, message_id) VALUES (?, ?, ?, ?)').run(kind, ref, conv, mid) },
     requestOrigin: (kind, ref) => ((db.prepare('SELECT message_id FROM request_origin WHERE kind = ? AND ref = ?').get(kind, ref) as { message_id: number } | null)?.message_id) ?? null,
     addApprovalGrant: g => Number(db.prepare('INSERT INTO approval_grants (kind, ref, conv, choice, overrides, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(g.kind, g.ref, g.conv, g.choice, g.overrides, now()).lastInsertRowid),

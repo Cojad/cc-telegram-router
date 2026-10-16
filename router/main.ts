@@ -33,6 +33,8 @@ import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
 import { fingerprint, noteStart, STALE_NOTE } from './freshness'
 import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
+import { scheduleRefresh } from './skillrefresh'
+import { awaitBotInfo } from './botinfo'
 import { hashSkill, loadManifest, argRoleRefusal } from './privskill'
 import { createProgress, type ProgressEvent, type Mirror } from './progress'
 import { rotateTick } from './rotate'
@@ -717,7 +719,7 @@ const commandDeps: CommandDeps = {
   cfg, db, loadAccess, saveAccess, writeConfig, startedAt,
   bots: {
     async list() {
-      return [...bots.values()].map(h => ({ name: h.cfg.name, id: h.info?.id ?? 0, username: h.info?.username ?? '?', first_name: h.info?.first_name ?? '?' }))
+      return [...bots.values()].map(h => ({ name: h.cfg.name, id: h.info?.id ?? null, username: h.info?.username ?? null, first_name: h.info?.first_name ?? null }))
     },
     async add(name, token) {
       if (bots.has(name)) throw new Error(`已經有名為 ${name} 的 bot`)
@@ -728,7 +730,7 @@ const commandDeps: CommandDeps = {
       ensureBotDir(cfg, name)
       db.updateBotSetup(name, {})
       meOf.set(name, me)
-      startBot(bc)
+      startBot(bc).info = me
       return me.username
     },
     async rotate(name, token) {
@@ -742,7 +744,7 @@ const commandDeps: CommandDeps = {
       // Old poller stops first: Telegram allows one getUpdates consumer per bot.
       await old.bot.stop().catch(() => {})
       meOf.set(name, me)
-      startBot(bc)
+      startBot(bc).info = me
       return me.username
     },
     async remove(name) {
@@ -1123,6 +1125,13 @@ function startBot(bc: BotConfig): BotHandle {
       }
     }
   })()
+  // bot list and status show 讀取中 until the info is in: getMe again every 30s (router/botinfo.ts)
+  void awaitBotInfo({
+    ready: () => !!h.info, current: () => bots.get(bc.name) === h,
+    getMe: () => bot.api.getMe(),
+    set: me => { h.info ??= me; if (!meOf.has(bc.name)) meOf.set(bc.name, me) },
+    log: m => log(`${bc.name}: ${m}`),
+  })
   return h
 }
 
@@ -1201,6 +1210,15 @@ setInterval(() => void rotate(), 60_000).unref()
 // After a router restart, give already-running workers a moment to
 // reconnect before deciding they need waking.
 setTimeout(sweepBacklog, 15_000).unref()
+// Privileged skills' credentials refreshed daily (router/skillrefresh.ts); at start, those not refreshed in 24 hours.
+if (cfg.skillRefreshAt) {
+  const sched = scheduleRefresh({
+    ...skillDeps, stateDir: cfg.stateDir,
+    botOf: dir => cfg.bots.find(b => dir.startsWith(botDir(cfg, b.name) + '/'))?.name ?? cfg.bots[0]!.name,
+    notify: (bot, text) => void postNotice(approvalDeps, bot, text).catch(e => log(`skill refresh notice: ${e}`)),
+  }, cfg.skillRefreshAt)
+  log(`skill refresh: daily at ${cfg.skillRefreshAt} GMT+8, next ${gmt8(new Date(sched.next()))}`)
+}
 
 let stopping = false
 async function shutdown(sig: string, respawn = false) {

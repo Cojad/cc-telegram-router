@@ -35,7 +35,8 @@ export interface CommandDeps {
   loadAccess(): Access
   saveAccess(a: Access): void
   bots: {
-    list(): Promise<Array<{ name: string; id: number; username: string; first_name: string }>>
+    /** id, username, first_name are null until the bot's getMe is in (shown as 讀取中). */
+    list(): Promise<Array<{ name: string; id: number | null; username: string | null; first_name: string | null }>>
     add(name: string, token: string): Promise<string>
     rotate(name: string, token: string): Promise<string>
     remove(name: string): Promise<void>
@@ -142,7 +143,7 @@ const MAX_BOTS = 5
 export function renderStatus(
   now: number,
   startedAt: Date,
-  bots: Array<{ name: string; username: string; first_name: string }>,
+  bots: Array<{ name: string; username: string | null; first_name: string | null }>,
   convs: Conversation[],
   o: { isConnected(key: string): boolean; label(c: Conversation): string; backlog(c: Conversation): number },
 ): string {
@@ -156,7 +157,7 @@ export function renderStatus(
   // "ago" is right-aligned in a column at least 6 wide ("12h34m").
   const width = Math.max(6, ...groups.flatMap(g => g.list.map(c => ago(now - lastAt(c)).length)))
   for (const { b, list } of groups) {
-    out.push('', `${b.first_name}(@${b.username})`)
+    out.push('', b.username ? `${b.first_name}(@${b.username})` : `${b.name} (讀取中)`)
     if (!list.length) out.push(' (還沒有對話)')
     for (const c of list) {
       const extra = [o.backlog(c) ? `待送 ${o.backlog(c)}` : '', c.rotate_pending ? '待輪替' : ''].filter(Boolean)
@@ -295,7 +296,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       const op = args[1]
       if (op === 'list') {
         const bots = await deps.bots.list()
-        return done(bots.map(b => `${b.name}: @${b.username} (id ${b.id}, ${b.first_name})`).join('\n') || '沒有 bot', { private: true })
+        return done(bots.map(b => b.username ? `${b.name}: @${b.username} (id ${b.id}, ${b.first_name})` : `${b.name}: 讀取中 (bot 資訊還沒取得, 稍後再試)`).join('\n') || '沒有 bot', { private: true })
       }
       if (op !== 'add' && op !== 'rotate' && op !== 'remove') return done('用法: /router bot list | add <名稱> <token> | rotate <名稱> <token> | remove <名稱>')
       const inOwnerDm = role === 'owner' && input.chatType === 'private' && input.chatId === input.senderId
