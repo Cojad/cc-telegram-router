@@ -177,7 +177,7 @@ test('SessionStart hook puts the chat_context back after compact', async () => {
 
 // --- 「cc /」relay (plan 01 待驗證 1) -------------------------------------
 
-import { parseRelay, mayRelay, codeBlock, relay, stripChrome, afterEcho, parseCost, parseContext } from '../relay'
+import { parseRelay, mayRelay, codeBlock, relay, stripChrome, afterEcho, parseCost, parseContext, atPrompt } from '../relay'
 
 test('relay syntax, who may relay, and MarkdownV2 code block escaping', () => {
   expect(parseRelay('cc /status')).toEqual({ cmd: '/status', args: '', raw: false })
@@ -199,7 +199,8 @@ test('relay syntax, who may relay, and MarkdownV2 code block escaping', () => {
 })
 
 const FIX = (n: string) => readFileSync(join(import.meta.dir, 'fixtures', n), 'utf8')
-const BOX = '─'.repeat(40) + '\n❯ \n' + '─'.repeat(40) + '\n  ⏵⏵ don\'t ask on (shift+tab to cycle)\n' + '\n'.repeat(8)
+// like the real one: the top border carries the session name
+const BOX = '─'.repeat(40) + ' tg-dm-1 ─\n❯ \n' + '─'.repeat(40) + '\n  ⏵⏵ don\'t ask on (shift+tab to cycle) · ← for agents\n' + '\n'.repeat(8)
 const IDLE = '● done\n\n' + BOX
 
 /** A fake terminal: the screen each command leaves, Esc closes a view. */
@@ -278,6 +279,11 @@ test('screen helpers: input box and status bar dropped; output cut after the las
   expect(stripChrome('a\nb\n\n' + IDLE.replace('● done\n\n', ''))).toEqual(['a', 'b'])
   expect(afterEcho('❯ /x\nold\n❯ /x\nnew 1\nnew 2\n' + IDLE, '/x')).toEqual(['new 1', 'new 2', '● done'])
   expect(afterEcho('nothing here\n' + IDLE, '/x')).toBeNull()
+  // the real screen (input box border with the session name): at the prompt, box dropped
+  const real = FIX('relay-context.txt')
+  expect(atPrompt(real)).toBe(true)
+  expect(stripChrome(real).at(-1)!.trim()).toMatch(/tokens$/)
+  expect(atPrompt('Usage\nEsc to cancel\n')).toBe(false)
   expect(parseCost(['no session here'])).toBeNull()
   expect(parseContext(['no usage'])).toBeNull()
 })

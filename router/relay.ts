@@ -71,6 +71,8 @@ export async function settle(capture: () => Promise<string>, quietMs: number, ma
 // --- reading the screen -------------------------------------------------------
 
 const RULE = /^[\s─━▔▁]+$/
+/** The input box's top border carries the session name: "──── tg-dm-1 ─". */
+const BOX_RULE = /^\s*[─━]{8,}/
 /** The last n non-blank-tail lines of a screen (a 50-row pane ends in blank rows). */
 export function bottom(screen: string, n = 15): string {
   const lines = screen.split('\n')
@@ -84,7 +86,7 @@ export const MENU_RE = /Esc to (cancel|close|go back|exit)|Enter to (confirm|sel
 /** At the input prompt: the ❯ line inside the input box near the bottom, no menu or view open. */
 export function atPrompt(screen: string): boolean {
   const lines = bottom(screen, 8).split('\n').map(l => l.replace(/\s+$/, ''))
-  return !MENU_RE.test(bottom(screen)) && lines.some((l, i) => i > 0 && /^❯/.test(l.trim()) && RULE.test(lines[i - 1]!))
+  return !MENU_RE.test(bottom(screen)) && lines.some((l, i) => i > 0 && /^❯/.test(l.trim()) && BOX_RULE.test(lines[i - 1]!))
 }
 
 /** The screen without the input box and status bar at the bottom. */
@@ -93,7 +95,7 @@ export function stripChrome(screen: string): string[] {
   // the input box: a rule line, the ❯ prompt, a rule line, then status lines
   let end = lines.length
   for (let i = lines.length - 1; i >= 1; i--) {
-    if (lines[i]!.trim() === '❯' && RULE.test(lines[i - 1]!)) { end = i - 1; break }
+    if (lines[i]!.trim() === '❯' && BOX_RULE.test(lines[i - 1]!)) { end = i - 1; break }
   }
   const kept = lines.slice(0, end)
   while (kept.length && (!kept.at(-1)!.trim() || RULE.test(kept.at(-1)!))) kept.pop()
