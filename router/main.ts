@@ -259,7 +259,8 @@ const ipc = createIpc({
       const params = (args.params ?? {}) as Record<string, unknown>
       const res = await botApiCall({ apiRoot: cfg.apiRoot, token: cred!.token, method, params, files }).catch(e => ({ ok: false, description: String(e) }))
       db.logApiCall(own ? conv.bot : `cred:${name}`, method, { params, files }, res, res.ok ? null : `${res.error_code ?? ''}: ${res.description}`, conv.key)
-      return { content: [{ type: 'text', text: maskTokens(JSON.stringify(res)) }], isError: !res.ok }
+      // an API may echo what it was sent: the token never goes back to the worker
+      return { content: [{ type: 'text', text: scrubSecret(JSON.stringify(res), cred!.token) }], isError: !res.ok }
     }
     if (tool === 'http_api') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接呼叫 API' }], isError: true }
@@ -285,7 +286,8 @@ const ipc = createIpc({
         if (t.bytes) { mkdirSync(dirname(dest), { recursive: true }); writeFileSync(dest, t.bytes); body = { saved: dest, bytes: t.bytes.length, response: t.body } }
       }
       db.logApiCall(`cred:${name}`, `${method} ${path}`, { json: shorten(args.json), form: args.form, files }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
-      return { content: [{ type: 'text', text: JSON.stringify({ status: res.status, body: shorten(body) }) }], isError: res.status === 0 || res.status >= 300 }
+      // an API may echo the auth header (httpbin /anything does): the key never goes back to the worker
+      return { content: [{ type: 'text', text: scrubSecret(JSON.stringify({ status: res.status, body: shorten(body) }), cred!.token) }], isError: res.status === 0 || res.status >= 300 }
     }
     if (tool === 'run_skill') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接執行技能的腳本' }], isError: true }
