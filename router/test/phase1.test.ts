@@ -330,3 +330,17 @@ test('router offline: sends say not sent, reads say no data and let Claude choos
   expect(notes).toHaveLength(1)
   await client.close(); again.ipc.stop()
 }, 30000)
+
+test('plugin calls: a router that does not answer times out after callTimeoutMs; run_skill (a long skill action) waits longer', async () => {
+  const server = Bun.listen({ unix: cfg.socket, socket: { data() {} } }) // accepts, never answers
+  const client = connectRouter({ socketPath: cfg.socket, hello: { t: 'hello', project_dir: dir, pid: 1 }, onMessage() {}, callTimeoutMs: 50, toolTimeoutMs: { run_skill: 400 } })
+  await sleep(50)
+  let skillDone = false
+  const skill = client.call('run_skill', { skill: 's', action: 'a' }).then(r => { skillDone = true; return r })
+  const r = await client.call('reply', { chat_id: '1', text: 'x' })
+  expect(r).toMatchObject({ isError: true, content: [{ text: 'reply: router did not answer in 0.05s' }] })
+  await sleep(150)
+  expect(skillDone).toBe(false)
+  expect((await skill).content[0]!.text).toBe('run_skill: router did not answer in 0.4s')
+  client.close(); server.stop(true)
+})
