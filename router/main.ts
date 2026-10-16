@@ -82,7 +82,7 @@ if (credAt > 0) {
   raw.credentials[name] = { ...(raw.credentials[name] ?? {}), token, label, ...(baseUrl ? { kind: 'http', baseUrl } : {}), methods: methods ? methods.split(',') : (raw.credentials[name]?.methods ?? []), roles: raw.credentials[name]?.roles ?? DEFAULT_CRED_ROLES, addedBy: raw.credentials[name]?.addedBy ?? 'terminal' }
   writeFileSync(configPath + '.tmp', JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 })
   renameSync(configPath + '.tmp', configPath)
-  console.log(`已存入憑證 ${name}: ${label}, 方法 ${raw.credentials[name].methods.join(', ') || '(無)'}`)
+  console.log(`已存入憑證 ${name}: ${label}, ${baseUrl ? '路徑' : '方法'} ${raw.credentials[name].methods.join(', ') || '(無)'}`)
   if (existsSync(cfg.socket)) await runCli(cfg.socket, ['cred', 'reload'])
   process.exit(0)
 }

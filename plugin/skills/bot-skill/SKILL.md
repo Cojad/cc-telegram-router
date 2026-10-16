@@ -36,7 +36,15 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能放的位�
 3. 技能裡用 `bot_api` (credential, method, params, files) 呼叫. 要上傳檔案時, 檔案放在自己資料夾, `files` 寫 `{ "欄位": "/絕對路徑" }`, params 裡用 `attach://欄位` 指到它.
 4. SKILL.md 寫明用到哪個憑證, 哪些方法, 讓之後的人知道要登記什麼.
 
-`/router cred list` 可以看有哪些憑證 (只列名稱, 對應的 bot, 方法, 角色, 不會顯示 token).
+`/router cred list` 可以看有哪些憑證 (只列名稱, 對應的 bot 或網址, 方法或路徑, 角色, 不會顯示 token).
+
+### 一般 API key (OpenAI 之類)
+
+不是 Telegram bot 的 key 也一樣存成 router 的憑證, 種類是 http: 由 owner 在終端機
+`cc-telegram-router cred-import <名稱> <檔案> <變數名> <路徑,...> --http <網址>` 登記, 只開放需要的路徑
+(結尾 `*` 代表前綴). 技能裡用 `http_api` (credential, path, json 或 form + files) 呼叫; 回應裡的 base64
+大檔 (例如產生的圖) 用 `save_b64` `{ "at": "data.0.b64_json", "to": "相對路徑" }` 直接存進自己資料夾,
+不要讓它回到對話裡.
 
 ## 跨 bot 技能
 
@@ -47,7 +55,8 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能放的位�
 腳本 (bash, python) 呼叫不到 MCP 工具, 所以:
 
 - 腳本負責產生檔案 (產圖, 轉檔, 整理資料), 輸出檔案路徑.
-- 需要 Telegram 的步驟由你呼叫工具: 送訊息用 `reply`, 送貼圖用 `send_sticker`, 用憑證的操作用 `bot_api`.
+- 需要 Telegram 的步驟由你呼叫工具: 送訊息用 `reply`, 送貼圖用 `send_sticker`, 用憑證的操作用 `bot_api`; 一般 API 用 `http_api`.
+- 放在「這隻 bot」或「全部 bot」範圍的技能, 腳本對所有角色的對話都是唯讀可執行 (sandbox 允許讀, 不能改); 需要的 Python 套件裝在自己資料夾 (例如 `pip install --target ./.pylib <套件>` 再設 `PYTHONPATH=./.pylib`).
 - 終端機的 session 沒有這些工具: owner 在終端機用 `cc-telegram-router cli botapi <憑證> <方法> '<JSON>' [--file 欄位=/路徑]`.
 
 ## 檢查清單

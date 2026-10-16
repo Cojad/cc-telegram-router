@@ -235,7 +235,7 @@ test('http credentials end to end: cred-import --http stores an API key; http_ap
   const p = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cred-import', 'openai', join(dir, 'openai.env'), 'OPENAI_API_KEY', '/v1/images/generations', '--http', `http://127.0.0.1:${api.port}`], { stdout: 'pipe', stderr: 'pipe' })
   const out = await new Response(p.stdout).text()
   expect(await p.exited).toBe(0)
-  expect(out).toContain(`已存入憑證 openai: http http://127.0.0.1:${api.port}`)
+  expect(out).toContain(`已存入憑證 openai: http http://127.0.0.1:${api.port}, 路徑 /v1/images/generations`)
   expect(out).not.toContain('sk-test-123')
   const owner = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-555'), pid: 31 }, onMessage(m) { if (m.t === 'deliver') owner.send({ t: 'ack', qid: m.qid }) } })
   await until(() => owner.state().kind === 'ready')
