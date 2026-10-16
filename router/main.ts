@@ -26,7 +26,7 @@ import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens }
 import { isCommand, runCommand, roleOf, type CommandDeps } from './commands'
 import { runCli } from './cli'
 import { importV1Messages } from './importv1'
-import { refuseUse, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
+import { refuseUse, refuseOwnBot, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
 import { installSkill } from './skills'
 import { createAuthz } from './authz'
 import { createProgress, type ProgressEvent, type Mirror } from './progress'
@@ -192,14 +192,16 @@ const ipc = createIpc({
     if (tool === 'bot_api') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cc-telegram-router cli botapi' }], isError: true }
       const name = String(args.credential ?? ''), method = String(args.method ?? '')
-      const cred = cfg.credentials[name]
-      const why = refuseUse(cred, name, conv.role, method)
+      // "self" (or the bot's own name): this conversation's own bot, for owner/admin
+      const own = (name === 'self' || name === conv.bot) && !cfg.credentials[name]
+      const cred = own ? { token: cfg.bots.find(b => b.name === conv.bot)!.token, methods: [] } : cfg.credentials[name]
+      const why = own ? refuseOwnBot(conv.role, method) : refuseUse(cred, name, conv.role, method)
       if (why) return { content: [{ type: 'text', text: why }], isError: true }
       const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
       try { for (const p of Object.values(files)) makeAssertSendable(live, cfg.stateDir)(p) } catch (e) { return { content: [{ type: 'text', text: String(e instanceof Error ? e.message : e) }], isError: true } }
       const params = (args.params ?? {}) as Record<string, unknown>
       const res = await botApiCall({ apiRoot: cfg.apiRoot, token: cred!.token, method, params, files }).catch(e => ({ ok: false, description: String(e) }))
-      db.logApiCall(`cred:${name}`, method, { params, files }, res, res.ok ? null : `${res.error_code ?? ''}: ${res.description}`, conv.key)
+      db.logApiCall(own ? conv.bot : `cred:${name}`, method, { params, files }, res, res.ok ? null : `${res.error_code ?? ''}: ${res.description}`, conv.key)
       return { content: [{ type: 'text', text: maskTokens(JSON.stringify(res)) }], isError: !res.ok }
     }
     if (tool === 'http_api') {

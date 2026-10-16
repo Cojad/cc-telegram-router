@@ -26,6 +26,8 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能放的位�
 
 ## 技能需要 token 時
 
+用的是**這隻 bot 自己**: 不用登記, `bot_api` 的 credential 填 `self` 即可 (只限 owner 與 admin 的對話; getUpdates 等會打斷 router 收訊的方法不開放). 以下是**別的 bot 或外部服務**的 token.
+
 **token 永遠不寫進技能, 也不放在對話讀得到的 .env.** 一律存成 router 的憑證, 用 `bot_api` 工具呼叫:
 
 1. 請 owner (或 admin) 登記憑證, 二擇一:

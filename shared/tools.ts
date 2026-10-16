@@ -120,11 +120,11 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'bot_api',
-    description: 'Call the Telegram Bot API with a credential the owner stored in the router (cross-bot skills, e.g. managing another bot\'s sticker set). The token never reaches you; the router checks your conversation\'s role and the method against the credential. files maps a form field to an absolute path inside your folder (use "attach://<field>" in params to refer to it). See /telegram:bot-skill.',
+    description: 'Call the Telegram Bot API. credential "self": as this bot itself, any method (e.g. deleteMessage, pinChatMessage, getChat), owner and admin conversations only (getUpdates/setWebhook/deleteWebhook/logOut/close are blocked). Any other name: a credential the owner stored in the router (cross-bot skills, e.g. another bot\'s sticker set), checked against its roles and methods. The token never reaches you. files maps a form field to an absolute path inside your folder (use "attach://<field>" in params to refer to it). See /telegram:bot-skill.',
     inputSchema: {
       type: 'object',
       properties: {
-        credential: { type: 'string', description: 'Credential name (ask the owner, or /router cred list)' },
+        credential: { type: 'string', description: '"self" for this bot, or a credential name (/router cred list)' },
         method: { type: 'string', description: 'Bot API method, e.g. addStickerToSet' },
         params: { type: 'object', description: 'Method parameters' },
         files: { type: 'object', description: 'Form field -> absolute file path to upload' },

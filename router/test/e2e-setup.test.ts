@@ -249,3 +249,19 @@ test('http credentials end to end: cred-import --http stores an API key; http_ap
   owner.close()
 }, 30000)
 
+
+test('bot_api "self": owner and admin conversations call any Bot API method as their own bot; others are refused; methods that would break the router are blocked', async () => {
+  const owner = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-555'), pid: 41 }, onMessage(m) { if (m.t === 'deliver') owner.send({ t: 'ack', qid: m.qid }) } })
+  const user = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-666'), pid: 42 }, onMessage(m) { if (m.t === 'deliver') user.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => owner.state().kind === 'ready' && user.state().kind === 'ready')
+  const r = await owner.call('bot_api', { credential: 'self', method: 'deleteMessage', params: { chat_id: 555, message_id: 157192 } })
+  expect(r.isError).toBeFalsy()
+  const hit = calls.filter(c => c.method === 'deleteMessage').at(-1)!
+  expect(hit.token).toBe('123:test')
+  expect(hit.body).toEqual({ chat_id: 555, message_id: 157192 })
+  expect(q("SELECT bot, conv FROM outbound WHERE method = 'deleteMessage' ORDER BY id DESC LIMIT 1")[0]).toEqual({ bot: 'new', conv: 'dm-555' })
+  expect((await owner.call('bot_api', { credential: 'new', method: 'getChat', params: { chat_id: 555 } })).isError).toBeFalsy() // the bot's own name works too
+  expect((await owner.call('bot_api', { credential: 'self', method: 'getUpdates', params: {} })).content[0]!.text).toBe('getUpdates 會讓 router 收不到訊息或讓 bot 登出, 不開放')
+  expect((await user.call('bot_api', { credential: 'self', method: 'deleteMessage', params: {} })).content[0]!.text).toBe('只有 owner 與 admin 的對話能用這隻 bot 自己的 token, 這個對話是 user')
+  owner.close(); user.close()
+}, 30000)

@@ -35,6 +35,18 @@ export async function botApiCall(o: { apiRoot?: string; token: string; method: s
   return r.json()
 }
 
+/** Methods a worker may never call with the router's own bot token: they
+ *  would take the updates away from the router or log the bot out. */
+export const ROUTER_ONLY_METHODS = new Set(['getUpdates', 'setWebhook', 'deleteWebhook', 'logOut', 'close'])
+
+/** bot_api with credential "self" (or the bot's own name): owner and admin
+ *  conversations may call any Bot API method as their own bot. */
+export function refuseOwnBot(role: string, method: string): string | null {
+  if (role !== 'owner' && role !== 'admin') return `只有 owner 與 admin 的對話能用這隻 bot 自己的 token, 這個對話是 ${role}`
+  if (ROUTER_ONLY_METHODS.has(method)) return `${method} 會讓 router 收不到訊息或讓 bot 登出, 不開放`
+  return null
+}
+
 /** "123456:AA...": what a Telegram bot token looks like. */
 export const TOKEN_RE = /\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/
 
