@@ -9,7 +9,7 @@
 // lands the message in the router queue instead of a Claude Code session.
 
 import { AsyncLocalStorage } from 'async_hooks'
-import { Bot, GrammyError } from 'grammy'
+import { Bot, GrammyError, InputFile } from 'grammy'
 import { randomBytes } from 'crypto'
 import { spawn } from 'child_process'
 import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFileSync, realpathSync } from 'fs'
@@ -22,8 +22,8 @@ import { writeSessionSettings, renderSettings, applyOverrides } from './settings
 import { createSupervisor, bunRunner } from './supervisor'
 import { createIpc, type Peer } from './ipc'
 import { makeAssertAllowedChat, makeAssertSendable } from './guard'
-import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens } from './context'
-import { isCommand, runCommand, roleOf, type CommandDeps } from './commands'
+import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens, gmt8 } from './context'
+import { isCommand, runCommand, roleOf, type CommandDeps, type CommandInput } from './commands'
 import { runCli } from './cli'
 import { importV1Messages } from './importv1'
 import { refuseUse, refuseOwnBot, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
@@ -37,7 +37,7 @@ import { createPkgGate, claudeReviewer } from './pkgreview'
 import { newClaimCode, isClaim, initBotSetups, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup } from './setup'
 import { createElevation } from './elevation'
 import { dmLabel } from './commands'
-import { parseRelay, mayRelay, relay, codeBlock, type Exec } from './relay'
+import { parseRelay, mayRelay, relay, codeBlock, ROUTER_CMDS, type Exec, type RelayCmd } from './relay'
 import { homedir } from 'os'
 import { openStore } from './telegram/store'
 import { readAccessFile, gate as policyGate, dmCommandGate as policyDmCommandGate, type Access, type InboundContext } from './telegram/policy'
@@ -605,18 +605,56 @@ const exec: Exec = async (args, env) => {
   return { code: await p.exited, stdout }
 }
 
-async function handleRelay(botName: string, chatId: string, chatType: string, senderId: string, senderName: string, messageId: number, rel: { cmd: string; args: string }): Promise<void> {
-  const api = bots.get(botName)!.bot.api
-  const reply = (text: string, md = false) => api.sendMessage(chatId, text, {
-    reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
-    ...(md ? { parse_mode: 'MarkdownV2' as const } : {}),
-  }).catch(e => log(`relay reply failed: ${e}`))
+/** Run a /router (or /restart, /id) command and send its reply: listings to
+ *  the sender's DM when asked in a group, long ones in parts. Also used for
+ *  「cc /router ...」. */
+async function answerCommand(bot: Bot, input: CommandInput & { messageId: number }): Promise<void> {
+  const chatId = input.chatId, messageId = input.messageId, senderId = input.senderId
+  const out = await runCommand(input, commandDeps)
+  if (!out) return
+  for (const l of out.logs) db.addLog(l.conv, l.text)
+  let reply = out.reply
+  if (out.deleteMessage) {
+    // Say what actually happened: in a group the bot can only delete
+    // other people's messages when it is an admin there.
+    const ok = await bot.api.deleteMessage(chatId, messageId).then(() => true, e => { log(`delete command message failed: ${e}`); return false })
+    reply += ok ? '\n已刪除含 token 的訊息' : '\n⚠️ 無法刪除含 token 的訊息 (bot 沒有刪除權限), 請手動刪除'
+  }
+  // Listings name other conversations and people: in a group they go to
+  // the sender's DM, the group only hears that they were sent.
+  const toDm = out.private && input.chatType !== 'private'
+  const target = toDm ? senderId : String(chatId)
+  // Long listings (log, chat) can exceed Telegram's 4096 per message.
+  const parts = chunk(toDm ? `(${input.text.trim()} 的結果, 來自群組 ${chats.get(String(chatId))?.title ?? chatId})\n${reply}` : reply, 4000, 'newline')
+  let sent = true
+  for (let i = 0; i < parts.length && sent; i++) {
+    sent = await bot.api.sendMessage(target, parts[i]!, !toDm && i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {})
+      .then(() => true, e => { log(`command reply failed: ${e}`); return false })
+  }
+  if (toDm) {
+    await bot.api.sendMessage(chatId, sent ? '已私訊給你' : '⛔ 這個指令的結果只會私訊給你, 但我私訊不到你. 請先私訊我一次 (例如 /start) 再試', { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } }).catch(e => log(`command reply failed: ${e}`))
+  }
+  out.after?.()
+}
+
+async function handleRelay(botName: string, chatId: string, chatType: string, senderId: string, senderName: string, messageId: number, rel: RelayCmd): Promise<void> {
+  const bot = bots.get(botName)!.bot
+  const api = bot.api
+  const replyOpts = { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } }
+  const reply = (text: string, md = false) => api.sendMessage(chatId, text, { ...replyOpts, ...(md ? { parse_mode: 'MarkdownV2' as const } : {}) }).catch(e => log(`relay reply failed: ${e}`))
+  // the router's own commands are answered as if typed directly
+  if (!rel.raw && ROUTER_CMDS.has(rel.cmd)) {
+    await answerCommand(bot, { bot: botName, text: `${rel.cmd}${rel.args ? ' ' + rel.args : ''}`, senderId, senderName, chatId, chatType, messageId })
+    return
+  }
   const role = roleOf(commandDeps, senderId)
   const conv = db.findConversation(botName, chatId)
   const who = `${senderName}(${role})`
-  if (!mayRelay(role, rel.cmd, chatType)) {
-    const why = `⛔ 代打 ${rel.cmd} 只開放 owner 與 admin${chatType === 'private' ? '' : ' (群組裡所有人都能用 /status 與 /usage)'}, 你的角色是 ${role}`
-    if (conv) db.addLog(conv.key, `${who} cc ${rel.cmd} → ${why}`)
+  const shown = `${rel.raw ? '/' : ''}${rel.cmd}${rel.args ? ' ' + rel.args : ''}`
+  // a raw screenshot shows what the report scripts filter out (email, session id): owner/admin only
+  if (!mayRelay(role, rel.raw ? '//' : rel.cmd, chatType)) {
+    const why = `⛔ 代打 ${shown} 只開放 owner 與 admin${chatType === 'private' ? '' : ' (群組裡所有人都能用 cc /status 與 cc /usage)'}, 你的角色是 ${role}`
+    if (conv) db.addLog(conv.key, `${who} cc ${shown} → ${why}`)
     await reply(why)
     return
   }
@@ -625,11 +663,31 @@ async function handleRelay(botName: string, chatId: string, chatType: string, se
     await supervisor.ensureAwake(conv)
     const job = await supervisor.liveJob(db.getConversation(conv.key)!)
     if (!job) { await reply('叫不醒這個對話的 worker'); return }
-    const out = await callConv.run(conv.key, () => relay({ exec, stateDir: cfg.stateDir, claudeBin: cfg.claudeBin, scriptsDir: join(homedir(), '.claude', 'bin') }, job.id, rel.cmd, rel.args))
-    db.addLog(conv.key, `${who} 代打 ${rel.cmd}${rel.args ? ' ' + rel.args : ''}`)
-    await reply(codeBlock(out), true)
+    if (!rel.raw && job.status === 'busy') { await reply(`這個對話的分身正在處理中, 等這一輪結束再試 (要看當下的畫面可以用 cc /${rel.cmd})`); return }
+    const out = await callConv.run(conv.key, () => relay({ exec, stateDir: cfg.stateDir, claudeBin: cfg.claudeBin, scriptsDir: join(homedir(), '.claude', 'bin'), now: () => gmt8(new Date()) }, job.id, rel))
+    db.addLog(conv.key, `${who} 代打 ${shown}`)
+    if (out.kind === 'text') { await reply(codeBlock(out.text), true); return }
+    if (out.kind === 'photo') {
+      const caption = codeBlock(out.text)
+      const fits = caption.length <= 1000
+      await api.sendPhoto(chatId, new InputFile(out.path), { ...replyOpts, ...(fits ? { caption, parse_mode: 'MarkdownV2' as const } : {}) }).catch(e => log(`relay photo failed: ${e}`))
+      if (!fits) await reply(caption, true)
+      return
+    }
+    // anything else: the worker tidies the cut-out output up and replies (v1 style)
+    replyNext.set(conv.key, messageId)
+    const since = new Date().toISOString()
+    notifyConversation(conv, `<relay_result cmd="${rel.cmd}" message_id="${messageId}">\n${who} 用「cc ${shown}」代打了這個指令, router 已在終端機執行完. 下面是畫面上這個指令的輸出 (已去掉前後的對話內容):\n\n${out.output}\n\n用 /telegram:format 整理成簡短易讀的回覆 (重點與數字, 需要對齊的放 code block), reply_to ${messageId}. 不要原封貼畫面, 也不要再執行一次這個指令.\n</relay_result>`)
+    setTimeout(() => {
+      const replied = db.recentOutbound(conv.key, 30).some(r => {
+        if (r.ts <= since || r.method !== 'sendMessage') return false
+        const p = JSON.parse(r.payload_json ?? '{}')
+        return String(p.chat_id) === chatId && !String(p.text ?? '').startsWith('🤔')
+      })
+      if (!replied) void reply(codeBlock(`(分身沒有在 90 秒內整理, 以下是 ${shown} 的原始輸出)\n\n${out.output}`), true)
+    }, 90_000)
   } catch (e) {
-    await reply(`代打 ${rel.cmd} 失敗: ${e}`)
+    await reply(`代打 ${shown} 失敗: ${e}`)
   }
 }
 
@@ -729,33 +787,7 @@ function startBot(bc: BotConfig): BotHandle {
         chatId: String(chatId), chatType: ctx.chat.type, messageId,
         ...(replied?.from ? { reply: { uid: String(replied.from.id), messageId: replied.message_id } } : {}),
       }
-      void (async () => {
-        const out = await runCommand(input, commandDeps)
-        if (!out) return
-        for (const l of out.logs) db.addLog(l.conv, l.text)
-        let reply = out.reply
-        if (out.deleteMessage) {
-          // Say what actually happened: in a group the bot can only delete
-          // other people's messages when it is an admin there.
-          const ok = await bot.api.deleteMessage(chatId, messageId).then(() => true, e => { log(`delete command message failed: ${e}`); return false })
-          reply += ok ? '\n已刪除含 token 的訊息' : '\n⚠️ 無法刪除含 token 的訊息 (bot 沒有刪除權限), 請手動刪除'
-        }
-        // Listings name other conversations and people: in a group they go to
-        // the sender's DM, the group only hears that they were sent.
-        const toDm = out.private && input.chatType !== 'private'
-        const target = toDm ? senderId : String(chatId)
-        // Long listings (log, chat) can exceed Telegram's 4096 per message.
-        const parts = chunk(toDm ? `(${input.text.trim()} 的結果, 來自群組 ${chats.get(String(chatId))?.title ?? chatId})\n${reply}` : reply, 4000, 'newline')
-        let sent = true
-        for (let i = 0; i < parts.length && sent; i++) {
-          sent = await bot.api.sendMessage(target, parts[i]!, !toDm && i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {})
-            .then(() => true, e => { log(`command reply failed: ${e}`); return false })
-        }
-        if (toDm) {
-          await bot.api.sendMessage(chatId, sent ? '已私訊給你' : '⛔ 這個指令的結果只會私訊給你, 但我私訊不到你. 請先私訊我一次 (例如 /start) 再試', { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } }).catch(e => log(`command reply failed: ${e}`))
-        }
-        out.after?.()
-      })().catch(e => log(`command failed: ${e}`))
+      void answerCommand(bot, input).catch(e => log(`command failed: ${e}`))
       return
     }
     await next()

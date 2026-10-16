@@ -103,7 +103,18 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 
 ## 「cc /xxx」代打 slash command
 
-在訊息開頭打 `cc /status`, `cc /usage`, `cc /compact` 等, router 會替這個對話的 worker 在它的終端機打入該指令並回傳畫面. owner 與 admin 可以代打任何指令; 群組裡所有人都能用 `cc /status` 與 `cc /usage`.
+在訊息開頭打 `cc /指令` (或 `柯柯 /指令`), router 會替這個對話的分身處理:
+
+| 打法 | 結果 |
+|---|---|
+| `cc /router ...`, `cc /restart`, `cc /id` | 直接當 router 指令執行, 跟打 `/router ...` 一樣 |
+| `cc /status`, `cc /usage` | 專用報表 (濾掉 email, session id 等私人欄位) |
+| `cc /context` | 這個 session 的 context 用量表 加 甜甜圈圖 |
+| `cc /cost` | 這個 session 的花費, 時間, 各模型用量 |
+| `cc /其他指令` (例如 `/compact`, `/model opus`) | router 在終端機執行, 只取這個指令的輸出交給分身整理後回覆; 不是 Claude Code 的指令會直接說明; 分身 90 秒內沒整理就送原始輸出 |
+| `cc //指令` | 開一次性的終端機執行, 直接送出當下畫面 (截圖); 上面有專用處理的指令打 `//` 也照 `/` 的方式處理 |
+
+不論哪一種, 離開前都會把留在畫面上的選單或檢視關掉, 分身不會被卡住. owner 與 admin 可以代打任何指令; 群組裡所有人都能用 `cc /status` 與 `cc /usage`; `cc //` 截圖只限 owner 與 admin. 分身正在處理時, `cc /` 會請你稍後再試 (`cc //` 照樣截圖).
 
 ## 即時進度訊息
 

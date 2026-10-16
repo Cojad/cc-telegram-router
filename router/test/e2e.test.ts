@@ -232,3 +232,13 @@ test('a listing in a group goes to the sender\'s DM; the group only hears it was
   const people = q("SELECT uid, name, username FROM people WHERE uid = '111'")
   expect(people).toEqual([{ uid: '111', name: 'O', username: 'owner' }])
 }, 15000)
+
+test('「cc /router status」is answered as the router command itself: never typed into a worker terminal', async () => {
+  const from = { id: 111, is_bot: false, first_name: 'O', username: 'owner' }
+  const before = existsSync(argLog) ? readFileSync(argLog, 'utf8') : ''
+  laterUpdates.push({ update_id: 30, message: { message_id: 60, date: now, chat: { id: 111, type: 'private' }, from, text: 'cc /router status' } })
+  const answer = await until(() => calls.find(c => c.method === 'sendMessage' && c.body.reply_parameters?.message_id === 60))
+  expect(String(answer.body.text)).toStartWith('router 已運作')
+  const after = readFileSync(argLog, 'utf8').slice(before.length)
+  expect(after).not.toContain('attach') // no terminal was opened
+}, 15000)

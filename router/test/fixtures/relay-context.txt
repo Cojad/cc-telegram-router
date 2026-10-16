@@ -1,0 +1,37 @@
+● Earlier reply in this conversation.
+✻ Worked for 20s · done 1:18 AM
+
+❯ /context
+  ⎿  Context Usage
+     ⛀ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛀ ⛁ ⛁   Opus 5.5
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶   claude-opus-5-5
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   100.6k/750k tokens (13%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 4.9k tokens (0.7%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 22.1k tokens (2.9%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP tools: 1.4k tokens (0.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions: 1.2k tokens (0.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝   ⛁ Memory files: 4.6k tokens (0.6%)
+                           ⛁ Skills: 3k tokens (0.4%)
+                           ⛁ Messages: 63.5k tokens (8.5%)
+                           ⛶ Free space: 616.4k (82.2%)
+                           ⛝ Autocompact buffer: 33k tokens (4.4%)
+
+     Auto-compact window: 750k tokens
+
+     MCP tools · /mcp (loaded on-demand)
+     └ 191 tools · 1.4k tokens
+
+     Memory files · /memory
+     └ 3 files · 4.6k tokens
+
+     Skills · /skills
+     └ 22 skills · 3k tokens
+
+     /context all to expand
+                                                                                                                                                                                                 100754 tokens
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── tg-dm-1234567890 ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · ← for agents

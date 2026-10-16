@@ -3,7 +3,7 @@
 // Keep in sync with those sections.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { Config } from '../config'
@@ -177,12 +177,17 @@ test('SessionStart hook puts the chat_context back after compact', async () => {
 
 // --- 「cc /」relay (plan 01 待驗證 1) -------------------------------------
 
-import { parseRelay, mayRelay, codeBlock, relay } from '../relay'
+import { parseRelay, mayRelay, codeBlock, relay, stripChrome, afterEcho, parseCost, parseContext } from '../relay'
 
 test('relay syntax, who may relay, and MarkdownV2 code block escaping', () => {
-  expect(parseRelay('cc /status')).toEqual({ cmd: '/status', args: '' })
-  expect(parseRelay('柯柯 /model opus')).toEqual({ cmd: '/model', args: 'opus' })
-  expect(parseRelay('CC/usage')).toEqual({ cmd: '/usage', args: '' })
+  expect(parseRelay('cc /status')).toEqual({ cmd: '/status', args: '', raw: false })
+  expect(parseRelay('柯柯 /model opus')).toEqual({ cmd: '/model', args: 'opus', raw: false })
+  expect(parseRelay('CC/usage')).toEqual({ cmd: '/usage', args: '', raw: false })
+  expect(parseRelay('cc //config')).toEqual({ cmd: '/config', args: '', raw: true })
+  // a command with its own "/" handling gets it even when asked with "//"
+  expect(parseRelay('cc //status')).toEqual({ cmd: '/status', args: '', raw: false })
+  expect(parseRelay('cc //context')).toEqual({ cmd: '/context', args: '', raw: false })
+  expect(parseRelay('cc //router status')).toEqual({ cmd: '/router', args: 'status', raw: false })
   expect(parseRelay('cc 你好')).toBeNull()
   expect(parseRelay('/router status')).toBeNull()
   expect(mayRelay('owner', '/model', 'private')).toBe(true)
@@ -193,26 +198,87 @@ test('relay syntax, who may relay, and MarkdownV2 code block escaping', () => {
   expect(codeBlock('a`b\\c (x).')).toBe('```\na\\`b\\\\c (x).\n```')
 })
 
-test('relay drives a hidden tmux on the router socket dir and always cleans up', async () => {
+const FIX = (n: string) => readFileSync(join(import.meta.dir, 'fixtures', n), 'utf8')
+const BOX = '─'.repeat(40) + '\n❯ \n' + '─'.repeat(40) + '\n  ⏵⏵ don\'t ask on (shift+tab to cycle)\n' + '\n'.repeat(8)
+const IDLE = '● done\n\n' + BOX
+
+/** A fake terminal: the screen each command leaves, Esc closes a view. */
+function fakeTmux(screens: Record<string, string>) {
   const seen: Array<{ args: string[]; env?: Record<string, string> }> = []
-  let captures = 0
+  let screen = IDLE
   const exec = async (args: string[], env?: Record<string, string>) => {
     seen.push({ args, env })
-    if (args[1] === 'capture-pane') { captures++; return { code: 0, stdout: captures < 2 ? '' : '❯ \nModel: opus\n▔▔▔▔\n' } }
+    if (args[0] === 'tmux' && args[1] === 'capture-pane') return { code: 0, stdout: screen }
+    if (args[0] === 'tmux' && args[1] === 'send-keys') {
+      const key = args[4]!
+      if (key === 'Escape') screen = IDLE
+      else screen = screens[key.split(' ')[0]!] ?? IDLE
+      return { code: 0, stdout: '' }
+    }
+    if (args[0] === 'sh') return { code: 0, stdout: '' } // the chart script
     return { code: 0, stdout: args[0]!.endsWith('tg-status-report.sh') ? 'Version: 2.1\n' : '' }
   }
-  const out = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s' }, 'abcd1234', '/status', '')
-  expect(out).toBe('Version: 2.1')
-  expect(seen.every(s => s.env?.TMUX_TMPDIR === join(dir, 'tmux'))).toBe(true)
+  return { exec, seen }
+}
+
+test('relay: /status and /usage use the report scripts; the one-off tmux runs on the router socket dir and always goes away', async () => {
+  const { exec, seen } = fakeTmux({})
+  const out = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s' }, 'abcd1234', { cmd: '/status', args: '', raw: false })
+  expect(out).toEqual({ kind: 'text', text: 'Version: 2.1' })
+  expect(seen.every(s => s.args[0] !== 'tmux' || s.env?.TMUX_TMPDIR === join(dir, 'tmux'))).toBe(true)
   expect(seen.find(s => s.args[1] === 'new-session')!.args).toContain('claude attach abcd1234')
-  expect(seen.find(s => s.args[0] === '/s/tg-status-report.sh')!.args).toEqual(['/s/tg-status-report.sh', 'relay-abcd1234'])
   expect(seen.at(-1)!.args).toEqual(['tmux', 'kill-session', '-t', 'relay-abcd1234'])
-  captures = 1
-  const gen = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 50 }, 'abcd1234', '/model', 'opus')
-  expect(gen).toBe('❯\nModel: opus')
-  expect(seen.some(s => s.args[1] === 'send-keys' && s.args.includes('/model opus'))).toBe(true)
-  expect(seen.some(s => s.args[1] === 'send-keys' && s.args.includes('Escape'))).toBe(false) // nothing to close
-}, 15000)
+})
+
+test('relay /context: only its own output, as a table of the session\'s categories plus a donut chart', async () => {
+  const { exec, seen } = fakeTmux({ '/context': FIX('relay-context.txt') })
+  const out = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 30, outDir: dir, now: () => '2026-10-16 09:40' }, 'abcd1234', { cmd: '/context', args: '', raw: false })
+  expect(out.kind).toBe('photo')
+  const text = (out as any).text as string
+  expect(text).toStartWith('📊 Context 用量 (2026-10-16 09:40)\nclaude-opus-5-5: 100.6k / 750k (13%)')
+  expect(text).toContain('Messages')
+  expect(text).toContain('63.5k')
+  expect(text).toContain('自動壓縮門檻 750k · MCP 工具 191 個 · 記憶檔 3 個 · 技能 22 個')
+  expect(text).not.toContain('Earlier reply') // nothing from before the command
+  const chart = seen.find(s => s.args[0] === 'sh')!
+  expect(chart.args.slice(-2)).toEqual(['/s/tg-context-chart.py', join(dir, 'context-abcd1234.png')])
+  expect(JSON.parse(chart.env!.TG_CHART_JSON!)).toMatchObject({ total_tokens: 750000, used_tokens: 100600, pct_used: 13, model: 'claude-opus-5-5' })
+})
+
+test('relay /cost: just this session\'s section of the view, in Chinese; the view is closed before leaving', async () => {
+  const { exec, seen } = fakeTmux({ '/cost': FIX('relay-cost.txt') })
+  const out = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 30 }, 'abcd1234', { cmd: '/cost', args: '', raw: false })
+  expect(out.kind).toBe('text')
+  const text = (out as any).text as string
+  expect(text).toStartWith('💵 這個 session 的用量\n\n總花費: $3.15\nAPI 時間: 4m 33s\n實際經過時間: 1h 53m 3s')
+  expect(text).toContain('各模型用量:\n     claude-opus-5-5:')
+  expect(text).not.toContain('Current week') // the account's weekly limits are /usage's job
+  const keys = seen.filter(s => s.args[1] === 'send-keys').map(s => s.args[4])
+  expect(keys).toEqual(['/cost', 'Escape']) // left on the view: closed
+  expect(seen.at(-1)!.args[1]).toBe('kill-session')
+})
+
+test('relay: an unknown command is said so (no screen); other commands hand their cut-out output to the worker; cc //x sends the screen as it is', async () => {
+  const unknown = '● earlier\n❯ /router status\n● Unknown command: /router\n' + BOX
+  const compact = '● earlier chat\n❯ /compact\n  ⎿  Compacted. ctrl+o to see full summary\n' + BOX
+  const model = 'Select model\n ❯ 1. Opus 5.5\n   2. Fable 5.1\nEnter to confirm · Esc to exit\n'
+  const { exec, seen } = fakeTmux({ '/router': unknown, '/compact': compact, '/model': model })
+  const deps = { exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 30 }
+  expect(await relay(deps, 'w', { cmd: '/router', args: 'status', raw: false })).toEqual({ kind: 'text', text: '/router 不是 Claude Code 的指令. 要看終端機的畫面可以用 cc //router' })
+  expect(await relay(deps, 'w', { cmd: '/compact', args: '', raw: false })).toEqual({ kind: 'handoff', output: '⎿  Compacted. ctrl+o to see full summary' })
+  const shot = await relay(deps, 'w', { cmd: '/model', args: '', raw: true })
+  expect(shot).toEqual({ kind: 'text', text: model.trim() })
+  // the picker was left open by the screenshot: closed before leaving
+  expect(seen.filter(s => s.args[1] === 'send-keys').map(s => s.args[4]).slice(-2)).toEqual(['/model', 'Escape'])
+})
+
+test('screen helpers: input box and status bar dropped; output cut after the last echo', () => {
+  expect(stripChrome('a\nb\n\n' + IDLE.replace('● done\n\n', ''))).toEqual(['a', 'b'])
+  expect(afterEcho('❯ /x\nold\n❯ /x\nnew 1\nnew 2\n' + IDLE, '/x')).toEqual(['new 1', 'new 2', '● done'])
+  expect(afterEcho('nothing here\n' + IDLE, '/x')).toBeNull()
+  expect(parseCost(['no session here'])).toBeNull()
+  expect(parseContext(['no usage'])).toBeNull()
+})
 
 // --- listing commands -------------------------------------------------------
 
