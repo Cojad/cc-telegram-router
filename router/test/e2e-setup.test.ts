@@ -31,6 +31,8 @@ const api = Bun.serve({
     const type = req.headers.get('content-type') ?? ''
     const body = type.includes('json') ? await req.json() : type.includes('multipart') ? Object.fromEntries([...(await req.formData()).entries()].map(([k, v]) => [k, typeof v === 'string' ? v : `<file ${v.size}>`])) : {}
     calls.push({ method, body, token })
+    // a stand-in for an HTTP API credential (http_api): OpenAI-like image generation
+    if (new URL(req.url).pathname.startsWith('/v1/')) { calls.push({ method: `http ${new URL(req.url).pathname}`, body: { auth: req.headers.get('authorization') } }); return Response.json({ data: [{ b64_json: Buffer.from('PNGDATA').toString('base64') }] }) }
     const ok = (result: unknown) => Response.json({ ok: true, result })
     switch (method) {
       case 'getMe': return ok({ id: 1, is_bot: true, first_name: 'new', username: 'new_bot' })
@@ -226,5 +228,24 @@ test('credentials end to end: cred-import moves a token from a file into config 
   expect(leak.content[0]!.text).toStartWith('refusing to send router state')
   expect((await user.call('bot_api', { credential: 'eagle', method: 'getStickerSet', params: {} })).content[0]!.text).toBe('憑證 eagle 只開放 owner, admin 角色的對話使用, 這個對話是 user')
   owner.close(); user.close()
+}, 30000)
+
+test('http credentials end to end: cred-import --http stores an API key; http_api calls it with the key in a header and saves the base64 image into the conversation folder', async () => {
+  writeFileSync(join(dir, 'openai.env'), 'OPENAI_API_KEY=sk-test-123\n')
+  const p = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cred-import', 'openai', join(dir, 'openai.env'), 'OPENAI_API_KEY', '/v1/images/generations', '--http', `http://127.0.0.1:${api.port}`], { stdout: 'pipe', stderr: 'pipe' })
+  const out = await new Response(p.stdout).text()
+  expect(await p.exited).toBe(0)
+  expect(out).toContain(`已存入憑證 openai: http http://127.0.0.1:${api.port}`)
+  expect(out).not.toContain('sk-test-123')
+  const owner = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-555'), pid: 31 }, onMessage(m) { if (m.t === 'deliver') owner.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => owner.state().kind === 'ready')
+  const r = await owner.call('http_api', { credential: 'openai', path: '/v1/images/generations', json: { prompt: 'whale' }, save_b64: { at: 'data.0.b64_json', to: 'stickers/raw.png' } })
+  expect(r.isError).toBeFalsy()
+  expect(JSON.parse(r.content[0]!.text)).toEqual({ status: 200, body: { saved: join(dir, 'bot123', 'dm-555', 'stickers', 'raw.png'), bytes: 7, response: { data: [{ b64_json: '<已存檔, 7 bytes>' }] } } })
+  expect(readFileSync(join(dir, 'bot123', 'dm-555', 'stickers', 'raw.png'), 'utf8')).toBe('PNGDATA')
+  expect(calls.find(c => c.method === 'http /v1/images/generations')!.body.auth).toBe('Bearer sk-test-123')
+  expect((await owner.call('http_api', { credential: 'openai', path: '/v1/chat/completions', json: {} })).content[0]!.text).toContain('沒有開放 /v1/chat/completions')
+  expect((await owner.call('http_api', { credential: 'openai', path: '/v1/images/generations', json: {}, save_b64: { at: 'data.0.b64_json', to: '/etc/x.png' } })).content[0]!.text).toBe('save_b64.to 要在這個對話的資料夾裡 (不能是 .chat)')
+  owner.close()
 }, 30000)
 

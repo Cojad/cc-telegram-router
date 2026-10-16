@@ -10,8 +10,17 @@ export type BotConfig = { name: string; token: string }
 /** A token for cross-bot skills (router/credentials.ts); never shown to workers. */
 export type Credential = {
   token: string
-  /** Bot API methods it may be used for. */
+  /** telegram-bot (default): a bot token used through bot_api; http: an API
+   *  key used through http_api against baseUrl. */
+  kind?: 'telegram-bot' | 'http'
+  /** Bot API methods it may be used for; for http, the allowed request paths
+   *  (exact, or ending in * for a prefix). */
   methods: string[]
+  /** http: e.g. https://api.openai.com */
+  baseUrl?: string
+  /** http: header carrying the key (default Authorization) and its scheme (default Bearer; "" for the bare key). */
+  header?: string
+  scheme?: string
   /** Conversation roles that may use it; default owner and admin. */
   roles?: string[]
   /** "@username (id)" from getMe when it was added. */

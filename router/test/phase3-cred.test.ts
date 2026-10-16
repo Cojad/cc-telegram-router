@@ -120,3 +120,30 @@ test('/router botapi: owner only; JSON params and --file uploads', async () => {
   expect((await run(d, '/router botapi eagle getStickerSet {"name": "s"} --file sticker=/tmp/a.webp', OWNER))!.reply).toBe('{"ok":true,"result":{"name":"eagle","method":"getStickerSet"}}')
   expect((await run(d, '/router botapi eagle getStickerSet not-json', OWNER))!.reply).toBe('參數要是 JSON 物件, 例如 {"name":"my_set"}')
 })
+
+test('http credentials: the key goes in a header (never to the worker); JSON or multipart; allowed paths (exact or prefix*); base64 can be cut out to a file; long strings are shortened', async () => {
+  const { httpApiCall, takeB64, shorten } = await import('../credentials')
+  const seen: Array<{ path: string; auth: string | null; type: string; body: string }> = []
+  const api = Bun.serve({ port: 0, async fetch(req) {
+    seen.push({ path: new URL(req.url).pathname, auth: req.headers.get('authorization'), type: req.headers.get('content-type') ?? '', body: await req.text() })
+    return Response.json({ data: [{ b64_json: Buffer.from('PNGDATA').toString('base64') }] })
+  } })
+  try {
+    const cred = { token: 'sk-test', kind: 'http' as const, baseUrl: `http://127.0.0.1:${api.port}/`, methods: ['/v1/images/generations', '/v1/files/*'] }
+    expect(refuseUse(cred, 'openai', 'owner', '/v1/images/generations', 'http')).toBeNull()
+    expect(refuseUse(cred, 'openai', 'owner', '/v1/files/abc', 'http')).toBeNull()
+    expect(refuseUse(cred, 'openai', 'owner', '/v1/chat/completions', 'http')).toContain('沒有開放 /v1/chat/completions')
+    expect(refuseUse(cred, 'openai', 'owner', 'getMe')).toBe('憑證 openai 是 http 類, 要用 http_api 工具')
+    const r = await httpApiCall({ cred, method: 'POST', path: '/v1/images/generations', json: { prompt: 'whale' } })
+    expect(seen[0]).toMatchObject({ path: '/v1/images/generations', auth: 'Bearer sk-test', type: 'application/json', body: '{"prompt":"whale"}' })
+    writeFileSync(join(dir, 'ref.png'), 'REFIMG')
+    await httpApiCall({ cred, method: 'POST', path: '/v1/images/generations', form: { prompt: 'same whale' }, files: { image: join(dir, 'ref.png') } })
+    expect(seen[1]!.type).toStartWith('multipart/form-data')
+    expect(seen[1]!.body).toContain('REFIMG')
+    const t = takeB64(r.body, 'data.0.b64_json')
+    expect(t.bytes!.toString()).toBe('PNGDATA')
+    expect(t.body).toEqual({ data: [{ b64_json: '<已存檔, 7 bytes>' }] })
+    expect(takeB64({ x: 1 }, 'data.0.b64_json').bytes).toBeNull()
+    expect(shorten({ a: 'x'.repeat(5000) }).a).toEndWith('…(5000 字元, 已截斷)')
+  } finally { api.stop(true) }
+})

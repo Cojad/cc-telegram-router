@@ -133,6 +133,23 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'http_api',
+    description: 'Call an HTTP API (e.g. OpenAI image generation) with an API-key credential the owner stored in the router; the key never reaches you. path must be one the credential allows. json for a JSON body, or form + files (field -> absolute path in your folder) for multipart. save_b64 {at: "data.0.b64_json", to: "stickers/raw.png"} writes a base64 field of the response to a file in your folder instead of returning it. See /telegram:bot-skill.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        credential: { type: 'string' },
+        method: { type: 'string', description: 'GET or POST (default POST)' },
+        path: { type: 'string', description: 'e.g. /v1/images/generations' },
+        json: { type: 'object' },
+        form: { type: 'object' },
+        files: { type: 'object' },
+        save_b64: { type: 'object', properties: { at: { type: 'string' }, to: { type: 'string' } } },
+      },
+      required: ['credential', 'path'],
+    },
+  },
+  {
     name: 'install_skill',
     description: 'Owner/admin conversations only: install a skill you wrote in <your folder>/.claude/skills/<name>/ so every conversation of this bot (scope "bot") or of every bot (scope "all") gets it. Skills must not contain tokens. See /telegram:bot-skill.',
     inputSchema: {

@@ -26,7 +26,7 @@ import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens }
 import { isCommand, runCommand, roleOf, type CommandDeps } from './commands'
 import { runCli } from './cli'
 import { importV1Messages } from './importv1'
-import { refuseUse, botApiCall, DEFAULT_CRED_ROLES } from './credentials'
+import { refuseUse, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
 import { installSkill } from './skills'
 import { createAuthz } from './authz'
 import { createProgress, type ProgressEvent, type Mirror } from './progress'
@@ -62,16 +62,24 @@ if (cliAt > 0) process.exit(await runCli(cfg.socket, process.argv.slice(cliAt + 
 // being printed (router/credentials.ts). Tells a running router to reload.
 const credAt = process.argv.indexOf('cred-import')
 if (credAt > 0) {
-  const [name, file, varName, methods] = process.argv.slice(credAt + 1)
-  if (!name || !file || !varName) { console.error('用法: cc-telegram-router cred-import <名稱> <env 檔> <變數> [方法,...]'); process.exit(2) }
+  const rest = process.argv.slice(credAt + 1)
+  const httpAt = rest.indexOf('--http')
+  const baseUrl = httpAt >= 0 ? rest[httpAt + 1] : undefined
+  if (httpAt >= 0) rest.splice(httpAt, 2)
+  const [name, file, varName, methods] = rest
+  if (!name || !file || !varName || (httpAt >= 0 && !baseUrl)) { console.error('用法: cc-telegram-router cred-import <名稱> <env 檔> <變數> [方法或路徑,...] [--http <baseUrl>]'); process.exit(2) }
   const line = readFileSync(file, 'utf8').split('\n').find(l => l.startsWith(`${varName}=`))
   const token = line?.slice(varName.length + 1).trim().replace(/^["']|["']$/g, '')
   if (!token) { console.error(`${file} 裡沒有 ${varName}`); process.exit(1) }
-  const me = await new Bot(token, cfg.apiRoot ? { client: { apiRoot: cfg.apiRoot } } : undefined).api.getMe().catch(e => { console.error(`token 驗證失敗: ${e}`); process.exit(1) })
-  const label = `@${me.username} (${me.id})`
+  let label: string
+  if (baseUrl) label = `http ${baseUrl}`
+  else {
+    const me = await new Bot(token, cfg.apiRoot ? { client: { apiRoot: cfg.apiRoot } } : undefined).api.getMe().catch(e => { console.error(`token 驗證失敗: ${e}`); process.exit(1) })
+    label = `@${me.username} (${me.id})`
+  }
   const raw = JSON.parse(readFileSync(configPath, 'utf8'))
   raw.credentials ??= {}
-  raw.credentials[name] = { ...(raw.credentials[name] ?? {}), token, label, methods: methods ? methods.split(',') : (raw.credentials[name]?.methods ?? []), roles: raw.credentials[name]?.roles ?? DEFAULT_CRED_ROLES, addedBy: raw.credentials[name]?.addedBy ?? 'terminal' }
+  raw.credentials[name] = { ...(raw.credentials[name] ?? {}), token, label, ...(baseUrl ? { kind: 'http', baseUrl } : {}), methods: methods ? methods.split(',') : (raw.credentials[name]?.methods ?? []), roles: raw.credentials[name]?.roles ?? DEFAULT_CRED_ROLES, addedBy: raw.credentials[name]?.addedBy ?? 'terminal' }
   writeFileSync(configPath + '.tmp', JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 })
   renameSync(configPath + '.tmp', configPath)
   console.log(`已存入憑證 ${name}: ${label}, 方法 ${raw.credentials[name].methods.join(', ') || '(無)'}`)
@@ -192,6 +200,27 @@ const ipc = createIpc({
       const res = await botApiCall({ apiRoot: cfg.apiRoot, token: cred!.token, method, params, files }).catch(e => ({ ok: false, description: String(e) }))
       db.logApiCall(`cred:${name}`, method, { params, files }, res, res.ok ? null : `${res.error_code ?? ''}: ${res.description}`, conv.key)
       return { content: [{ type: 'text', text: maskTokens(JSON.stringify(res)) }], isError: !res.ok }
+    }
+    if (tool === 'http_api') {
+      if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接呼叫 API' }], isError: true }
+      const name = String(args.credential ?? ''), method = String(args.method ?? 'POST').toUpperCase(), path = String(args.path ?? '')
+      const cred = cfg.credentials[name]
+      const why = refuseUse(cred, name, conv.role, path, 'http')
+      const fail = (t: string) => ({ content: [{ type: 'text' as const, text: t }], isError: true })
+      if (why) return fail(why)
+      const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
+      try { for (const p of Object.values(files)) makeAssertSendable(live, cfg.stateDir)(p) } catch (e) { return fail(String(e instanceof Error ? e.message : e)) }
+      const save = args.save_b64 as { at?: string; to?: string } | undefined
+      const dest = save?.to ? (save.to.startsWith('/') ? save.to : join(conv.folder, save.to)) : null
+      if (dest && (!dest.startsWith(conv.folder + '/') || dest.startsWith(join(conv.folder, '.chat') + '/'))) return fail('save_b64.to 要在這個對話的資料夾裡 (不能是 .chat)')
+      const res = await httpApiCall({ cred: cred!, method, path, json: args.json, form: args.form as Record<string, unknown> | undefined, files }).catch(e => ({ status: 0, body: String(e) }))
+      let body = res.body
+      if (dest && save?.at && res.status < 300) {
+        const t = takeB64(body, save.at)
+        if (t.bytes) { mkdirSync(dirname(dest), { recursive: true }); writeFileSync(dest, t.bytes); body = { saved: dest, bytes: t.bytes.length, response: t.body } }
+      }
+      db.logApiCall(`cred:${name}`, `${method} ${path}`, { json: shorten(args.json), form: args.form, files }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
+      return { content: [{ type: 'text', text: JSON.stringify({ status: res.status, body: shorten(body) }) }], isError: res.status === 0 || res.status >= 300 }
     }
     if (tool === 'install_skill') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接把技能放進對應的 .claude/skills' }], isError: true }
