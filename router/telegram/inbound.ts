@@ -319,6 +319,8 @@ export function createHandleInbound(deps: InboundDeps) {
           // tag attributes, which are strings regardless. Matching that
           // keeps this the only uniformly-typed object in the codebase.
           ...(ctx.message?.rich_message ? { rich_message: 'true' } : {}),
+          // channel posts: who signed it (a display name only, not an identity)
+          ...(ctx.message?.author_signature ? { author_signature: ctx.message.author_signature } : {}),
           ...replyMeta,
           ...(imagePath ? { image_path: imagePath } : {}),
           ...(attachment ? {

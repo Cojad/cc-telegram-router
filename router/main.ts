@@ -38,7 +38,7 @@ import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
 import { postNotice, type ApprovalDeps } from './approvals'
 import { createPkgGate, claudeReviewer } from './pkgreview'
-import { newClaimCode, isClaim, initBotSetups, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE } from './setup'
+import { newClaimCode, isClaim, initBotSetups, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
 import { createElevation } from './elevation'
 import { dmLabel } from './commands'
 import { parseRelay, mayRelay, relay, codeBlock, ROUTER_CMDS, type Exec, type RelayCmd } from './relay'
@@ -923,6 +923,10 @@ function startBot(bc: BotConfig): BotHandle {
       const notice = [admin ? null : privacyNotice(meOf.get(bc.name) ?? null), B2B_NOTICE].filter(Boolean).join('\n\n')
       void postNotice(approvalDeps, bc.name, `➕ @${h.info?.username ?? bc.name} 被加入群組 ${mcm.chat.title ?? mcm.chat.id}${admin ? ' (管理員)' : ''}\n\n${notice}`).catch(e => log(`group join notice: ${e}`))
     }
+    // Added to a broadcast channel (only possible as an administrator): how to let its posts in.
+    if (mcm && mcm.chat.type === 'channel' && ['left', 'kicked'].includes(mcm.old_chat_member.status) && mcm.new_chat_member.status === 'administrator') {
+      void postNotice(approvalDeps, bc.name, channelJoinNotice(h.info?.username ?? bc.name, mcm.chat, mcm.new_chat_member)).catch(e => log(`channel join notice: ${e}`))
+    }
     // Buttons: send grants, package reviews, setup. Each settles every copy itself.
     const data = ctx.callbackQuery?.data
     if (data && ctx.from && /^(grant|pkg|elev|setup):/.test(data)) {
@@ -958,6 +962,14 @@ function startBot(bc: BotConfig): BotHandle {
       if (!a.allowFrom.includes(uid)) { a.allowFrom.push(uid); saveAccess(a) }
       log(`owner claimed by ${uid}`)
       await ctx.reply('✅ 你現在是這個 router 的 owner. 傳任何一句話給我, 我們從 bot 的名字與個性開始設定.').catch(() => {})
+      return
+    }
+    // A channel post has no person behind it (the sender is the channel), and
+    // a post is public to every subscriber: /router, /secret and 「cc /」 are
+    // neither answered nor forwarded to the worker (the update stays in events, masked).
+    const post = ctx.channelPost
+    if (post && (isCommand(post.text ?? post.caption) || parseRelay(post.text))) {
+      log(`${bc.name}: command in channel ${post.chat.id} ignored`)
       return
     }
     const text = ctx.message?.text

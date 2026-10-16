@@ -28,6 +28,7 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 8. power 對話的套件安裝 (pip, npm, bun...) 由 router 查 registry 資料後交給模型判斷風險, low 直接放行, 其餘送 owner 審核.
 9. 叫醒 worker 時 router 計算 plugin (`server.js`, `skills/`) 與它看得到的三個技能範圍的雜湊, 記在對話的 `.chat/tools.sha`. 接續舊 session (resume) 而雜湊變了 (部署 plugin, 安裝技能), 下一則訊息的 `<router_log>` 附一次提醒, 請它重新讀取技能 SOP 與工具說明 (`router/freshness.ts`). 新 session 不用提醒.
 10. `/router` 指令裡的 `chat_id` 指這隻 bot 的對話, `--bot <名稱>` 指別隻; 對話 key (`router-dm-123`) 到處都能用. 終端機 CLI 會找所有 bot, 多隻都有時列出候選並要求 `--bot`, 不會默默挑一隻.
+11. 廣播頻道: 頻道貼文 (`channel_post`) 沒有 `from`, 發話者是頻道本身 (`sender_chat`, 有簽名時附 `author_signature`). transport 把它包成一般訊息的形狀 (`inboundView`, 發話者 id 是頻道的 chat id) 走同一條 gate 管線: 頻道跟群組一樣列在 `access.json` 的 `groups` (`/router access group add <chat_id>`), 預設要 mention. 對話是 `channel-<id>`, 角色 guest; 以 chat id 當發話者時角色一律 guest, 所以不會觸發對話內提權. 頻道裡的 `/router`, `/secret`, `cc /` 不處理也不轉給 worker; `edited_channel_post` 只進 events; 討論群組收到的貼文副本 (`is_automatic_forward`) 丟掉, 討論群組本身是一般群組對話. bot 被設為頻道管理員時通知 owner 頻道 chat_id 與放行指令.
 
 ### 目錄
 
@@ -128,6 +129,8 @@ bun test router/test
 | `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
 | `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行, 驗證 Claude Code 實際放行與擋下的事 |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |
+| `router/test/channel.test.ts` | 頻道 (運作方式 11): 頻道貼文包成訊息形狀 (inboundView), gate 的放行與 mention, 討論群組的自動副本, guest 角色 (對話與發話者), 加入頻道的通知, /telegram:doc 的頻道一節 |
+| `router/test/e2e-channel.test.ts` | 真的 router + 假 Bot API 送 channel_post: events, 放行清單與 mention, channel-<id> 對話 (guest), author_signature 與附件, worker 以新貼文回覆原貼文且不能送往別處, 頻道裡的指令不處理, 編輯過的貼文, 討論群組副本, 加入頻道通知, /router access group add 放行新頻道 |
 
 ### Phase 1 驗收對照
 
@@ -182,6 +185,19 @@ bun test router/test
 | events 表遮蔽 /secret, /router cred add, /router bot add/rotate; 舊資料一次性遮蔽, 只印筆數 | secrets「events masking covers…」「one-time events migration…」; e2e-secrets「the router generates config.json secretKey…」 |
 | 全域 http 憑證路徑擋 .., ., %2e, \ | secrets「global http credentials: dot segments…」 |
 | bot add, 初次設定, setup group, 加入群組時的隱私模式提醒 (重新加入才生效, 管理員不受限) 與 bot-to-bot 說明 | secrets「group privacy notice…」「/router bot add: …」; e2e-secrets「added to a group…」「bot settings notices on first-run…」 |
+
+### 頻道驗收對照
+
+| 驗收項目 | 測試 |
+|---|---|
+| 頻道貼文 (含 edited_channel_post) 都寫進 events, /secret 值遮蔽 | e2e-channel「every channel update is in events…」「commands posted in a channel…」 |
+| 只有 access.json groups 裡的頻道會送進 worker, 預設要 mention, --no-mention 全送 | channel「gate: a channel must be in access.json groups…」; e2e-channel「every channel update…」「/router access group add lets a new channel in」 |
+| 對話 channel-<id>, 角色 guest, 發話者 guest, 不觸發提權 | channel「roles: …」; e2e-channel「every channel update…」「the channel worker sees sender_role guest…」 |
+| worker 以新貼文回覆原貼文, 不能送往其他對話 | e2e-channel「the channel worker sees sender_role guest and replies…」 |
+| 頻道裡的 /router, /secret, cc / 不回應也不轉給 worker; 編輯過的貼文不送 | e2e-channel「commands posted in a channel…」 |
+| 討論群組是一般群組對話, 貼文副本不送 | channel「gate: the discussion group drops…」; e2e-channel「every channel update…」 |
+| bot 被設為頻道管理員時通知 owner chat_id 與放行方式 | channel「channelJoinNotice: …」; e2e-channel「made a channel administrator…」 |
+| 實際頻道: 建頻道, 加 bot 為管理員, 發貼文 | 上線實測 (測試帳號) |
 
 ### Phase 4 驗收對照
 

@@ -1,6 +1,6 @@
 ---
 name: doc
-description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, 角色與權限, 提權, 套件安裝審核, 審核群組與新 bot 初次設定, 「cc /」代打, 即時進度訊息. 有人問「怎麼設定角色」「怎麼查 uid」「/router 怎麼用」「為什麼被擋」「怎麼提權」「這個 bot 能做什麼」時使用.
+description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, 角色與權限, 提權, 套件安裝審核, 審核群組與新 bot 初次設定, 頻道, 「cc /」代打, 即時進度訊息. 有人問「怎麼設定角色」「怎麼查 uid」「/router 怎麼用」「為什麼被擋」「怎麼提權」「這個 bot 能做什麼」時使用.
 ---
 
 # cc-telegram-router 使用說明
@@ -57,6 +57,16 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 
 任何角色的對話都能有自己的密鑰: 使用者在這個對話傳 `/secret set <名稱> <值> [方法...]` 或 `/secret set <名稱> <值> --http <網址> [路徑...]`, router 加密保存並刪掉那則訊息 (群組沒有刪除權限時提醒發送者刪), worker 用 `bot_api` / `http_api` 填那個名稱使用, 不看角色也不用授權, 值不會進到對話. `/secret list` 看有哪些, `/secret rm <名稱>` 移除; owner 與 admin 用 `/router secret list|rm <chat_id>` 管理任何對話的密鑰.
 
+## 頻道
+
+bot 也能接 Telegram 廣播頻道 (channel). 頻道貼文沒有個人發話者 (發話者就是頻道本身, 有開簽名時另附簽名), 所以:
+
+- bot 要是頻道管理員才收得到貼文 (被加為管理員時, owner 會收到一則附頻道 chat_id 的通知). owner 或 admin 用 `/router access group add <頻道 chat_id>` 放行 (跟群組同一份清單); 預設貼文要 @bot (或符合 mentionPatterns) 才處理, 加 `--no-mention` 或 `/router chat <chat_id> mention off` 處理全部貼文.
+- 每個頻道是一個對話 `channel-<id>`, 角色 `guest` (只能對話). 發話者角色一律 guest, 所以頻道裡不會出現提權詢問; 簽名 (`author_signature`) 只是顯示名稱, 不對應任何人的角色.
+- worker 以新貼文回覆 (回覆原貼文), bot 需要「發布訊息」權限.
+- 頻道裡不接受 `/router`, `/secret` 與 `cc /` (不會回應, 也不會轉給 worker); 編輯過的貼文不會再送一次.
+- 頻道的討論群組是另一個對話 (`group-<id>`, 照一般群組放行); 頻道貼文自動轉進討論群組的副本不會送進群組的 worker.
+
 ## 審核群組與新 bot 初次設定
 
 - 重要通知 (新對話, worker 叫不醒) 與權限申請預設私訊 owner. owner 可以建一個開了話題的 supergroup, 把 bot 設為管理員並勾選「管理話題」, 在群組裡下 `/router setup group`, 之後改送到群組的「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」「🧾 執行授權」四個話題 (已設定過的群組再下一次會補上缺的話題).
@@ -89,8 +99,8 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 | `/router chat` | 列出所有對話的角色, 模型, compact, mention, 待命中/已休眠, 最後活動 |
 | `/router chat [chat_id] compact <750k\|1m\|auto>` | 調整自動壓縮門檻 (worker 會重啟) |
 | `/router chat [chat_id] model <模型>` | 換模型 (worker 會重啟) |
-| `/router chat [chat_id] mention <on\|off>` | 群組是否要提到 bot 才回應 |
-| `/router access show \| pair <code> \| allow <uid> \| remove <uid> \| group add <chat_id> \| group rm <chat_id> \| policy <...>` | 誰能跟 bot 說話 |
+| `/router chat [chat_id] mention <on\|off>` | 群組或頻道是否要提到 bot 才回應 |
+| `/router access show \| pair <code> \| allow <uid> \| remove <uid> \| group add <chat_id> \| group rm <chat_id> \| policy <...>` | 誰能跟 bot 說話 (group add 也用來放行頻道) |
 | `/router session restart\|stop [chat_id]` | 重啟或停止某個對話的 worker |
 | `/router session rotate [chat_id\|all]` | 標記 worker 等待輪替: 閒置的一分鐘內停掉, 忙碌的等它閒置; 下一則訊息會用新的程式與設定叫醒. 更新 plugin 或設定後用 |
 | `/router perm [chat_id] show \| role <角色> \| tool allow\|deny\|rm <規則> \| path read\|write\|rm <路徑> \| net allow\|rm <網域> \| mcp allow\|rm <名稱> \| send allow\|rm <chat_id> \| pkg allow\|rm <pypi\|npm:名稱> \| reset` | 調整對話的角色與權限覆寫, 回覆會列出變更; worker 閒置時重啟套用 |

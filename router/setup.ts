@@ -122,3 +122,14 @@ export const B2B_NOTICE = [
 export function botSettingsNotice(me: { username: string; can_read_all_group_messages?: boolean } | null): string {
   return [privacyNotice(me), B2B_NOTICE].filter(Boolean).join('\n\n')
 }
+
+/** The bot was made an administrator of a broadcast channel: its posts reach
+ *  the router but go nowhere until the channel is allowed. */
+export function channelJoinNotice(botUsername: string, chat: { id: number; title?: string }, member: { can_post_messages?: boolean }): string {
+  return [
+    `📣 @${botUsername} 被加入頻道 ${chat.title ?? chat.id} (管理員), chat_id ${chat.id}`,
+    `要讓頻道貼文送進分身: /router access group add ${chat.id} (預設貼文要 @${botUsername} 才處理, 加 --no-mention 處理全部貼文).`,
+    '頻道貼文沒有個人發話者, 這個對話的角色是 guest (只能對話); 頻道裡不接受 /router, /secret 與 cc / 指令.',
+    member.can_post_messages ? '分身會以新貼文回覆 (回覆原貼文).' : '⚠️ bot 沒有「發布訊息」權限, 分身無法在頻道回覆; 要回覆請在頻道管理員設定打開.',
+  ].join('\n')
+}

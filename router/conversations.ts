@@ -27,7 +27,9 @@ export function convKey(cfg: Pick<Config, 'bots'>, bot: string, chat_id: string,
   return bot === cfg.bots[0]!.name ? base : `${bot}-${base}`
 }
 
+/** owner's DM: owner; a broadcast channel: guest (its posts come from the channel, not a person); else user. */
 export function defaultRole(cfg: Pick<Config, 'owners'>, type: ConvType, chat_id: string): string {
+  if (type === 'channel') return 'guest'
   return type === 'dm' && cfg.owners.includes(chat_id) ? 'owner' : 'user'
 }
 

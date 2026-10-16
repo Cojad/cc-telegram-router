@@ -38,6 +38,10 @@ export type InboundContext = {
     entities?: InboundEntity[]
     caption_entities?: InboundEntity[]
     reply_to_message?: { message_id: number; text?: string; caption?: string; from?: { id: number; username?: string } }
+    /** Channel posts: the signature of the admin who posted, when the channel shows signatures. */
+    author_signature?: string
+    /** In a channel's discussion group: Telegram's own copy of a channel post. */
+    is_automatic_forward?: boolean
     /** Bot API 10.x "Rich Message" — content lives in `.blocks`, not `.text`.
      *  isMentioned() falls back to flattening this when text/caption are
      *  both absent. Found live (2026-09-15): every rich_message from
@@ -191,10 +195,26 @@ export function gate(
     if (!policy) return { action: 'drop' }
     const groupAllowFrom = policy.allowFrom ?? []
     const requireMention = policy.requireMention ?? true
+    // A channel's discussion group gets Telegram's own copy of every channel
+    // post; the channel itself is its own conversation, so the copy is not
+    // handled a second time here.
+    if (ctx.message?.is_automatic_forward) return { action: 'drop' }
     if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
       return { action: 'drop' }
     }
     if (requireMention && !isMentioned(ctx, botUsername, access.mentionPatterns)) {
+      return { action: 'drop' }
+    }
+    return { action: 'deliver', access }
+  }
+
+  // Broadcast channel (transport.ts inboundView: the sender is the channel).
+  // Allowed the same way as a group, in access.groups; mention required
+  // unless the entry says otherwise.
+  if (chatType === 'channel') {
+    const policy = access.groups[String(ctx.chat!.id)]
+    if (!policy) return { action: 'drop' }
+    if ((policy.requireMention ?? true) && !isMentioned(ctx, botUsername, access.mentionPatterns)) {
       return { action: 'drop' }
     }
     return { action: 'deliver', access }
