@@ -590,6 +590,21 @@ test('progress: a turn answering a request replies to the message that asked, an
   expect(ops[1]).toStartWith('send -100900 7 55 #84 ↪ G')
 })
 
+test('relay: a view still loading (no key hint yet) is closed too; a busy worker gets no keys at all', async () => {
+  const loading = 'Usage\n  Loading usage…\n' + '\n'.repeat(10)
+  const { exec, seen } = fakeTmux({ '/cost': loading })
+  const out = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 30 }, 'w', { cmd: '/cost', args: '', raw: false })
+  expect(out.kind).toBe('text')
+  expect(seen.filter(s => s.args[1] === 'send-keys').map(s => s.args[4])).toEqual(['/cost', 'Escape'])
+  const busy = '● Working…\n✻ Thinking… (esc to interrupt)\n' + BOX
+  const b = fakeTmux({})
+  const busyExec = async (args: string[], env?: Record<string, string>) => args[1] === 'capture-pane' ? { code: 0, stdout: busy } : b.exec(args, env)
+  expect(await relay({ exec: busyExec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 30 }, 'w', { cmd: '/compact', args: '', raw: false })).toEqual({ kind: 'text', text: '分身正在處理中, 等這一輪結束再試 (要看當下的畫面可以用 cc //compact)' })
+  const shot = await relay({ exec: busyExec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 30 }, 'w', { cmd: '/model', args: '', raw: true })
+  expect((shot as any).text).toStartWith('(分身正在處理中, /model 沒有執行; 以下是當下的畫面)')
+  expect(b.seen.filter(s => s.args[1] === 'send-keys')).toEqual([]) // nothing typed, no Esc
+}, 30000)
+
 test('relay: a worker already stuck on a view is brought back to the prompt first; Escs are a second apart and stop at the prompt', async () => {
   const stuck = 'Usage\n  Current week  11% used\nEsc to cancel\n' + '\n'.repeat(10)
   const { exec, seen } = fakeTmux({ '/cost': FIX('relay-cost.txt') })

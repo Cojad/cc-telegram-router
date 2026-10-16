@@ -80,6 +80,9 @@ export function bottom(screen: string, n = 15): string {
   return lines.slice(-n).join('\n')
 }
 
+/** The worker is mid-turn: Esc would interrupt it, never press it then. */
+export const BUSY_RE = /esc to interrupt/i
+
 /** A menu or view waiting for a key (Esc closes it). */
 export const MENU_RE = /Esc to (cancel|close|go back|exit)|Enter to (confirm|select)|^\s*❯\s*\d+\.\s/im
 
@@ -211,12 +214,14 @@ export async function relay(deps: RelayDeps, workerId: string, r: RelayCmd): Pro
   await tmux('kill-session', '-t', name)
   await tmux('new-session', '-d', '-s', name, '-x', '160', '-y', '50', `${deps.claudeBin} attach ${workerId}`)
   /** Back to the input prompt: one Esc at a time, a second apart (two quick
-   *  Escs at the prompt open the rewind menu), until the prompt shows. */
+   *  Escs at the prompt open the rewind menu), until the prompt shows. Any
+   *  screen that is not the prompt gets an Esc (a view still loading has no
+   *  hint yet), except while the worker is busy: Esc would interrupt it. */
   const toPrompt = async (): Promise<boolean> => {
     for (let i = 0; i < 5; i++) {
       const s = await visible()
       if (atPrompt(s)) return true
-      if (!MENU_RE.test(bottom(s))) return false
+      if (BUSY_RE.test(bottom(s))) return false
       await tmux('send-keys', '-t', name, 'Escape')
       await sleep(1000)
     }
@@ -227,8 +232,14 @@ export async function relay(deps: RelayDeps, workerId: string, r: RelayCmd): Pro
     for (let t = 0; t < 15_000 && !ready; t += 300) {
       await sleep(300)
       const s = await visible()
+      // mid-turn: never type or press Esc into it
+      if (BUSY_RE.test(bottom(s))) {
+        return r.raw
+          ? { kind: 'text', text: `(分身正在處理中, ${r.cmd} 沒有執行; 以下是當下的畫面)\n\n${stripChrome(s).slice(-45).join('\n')}` }
+          : { kind: 'text', text: `分身正在處理中, 等這一輪結束再試 (要看當下的畫面可以用 cc /${r.cmd})` }
+      }
       // a menu or view left open (by anything): close it first, it blocks the worker
-      ready = atPrompt(s) || (MENU_RE.test(bottom(s)) && await toPrompt())
+      ready = atPrompt(s) || (t >= 1500 && !BUSY_RE.test(bottom(s)) && await toPrompt())
     }
     if (!ready) return { kind: 'text', text: '連不上這個 worker 的畫面' }
     if (!r.raw && (r.cmd === '/status' || r.cmd === '/usage')) {
@@ -239,7 +250,9 @@ export async function relay(deps: RelayDeps, workerId: string, r: RelayCmd): Pro
     await tmux('send-keys', '-t', name, r.args ? `${r.cmd} ${r.args}` : r.cmd, 'Enter')
     // Some commands run for a while (/compact summarises the whole
     // conversation): wait until the screen stops changing instead of a fixed delay.
-    const screen = await settle(r.raw ? visible : withScroll, deps.settleMs ?? 3000, deps.maxWaitMs ?? 120_000)
+    let screen = await settle(r.raw ? visible : withScroll, deps.settleMs ?? 3000, deps.maxWaitMs ?? 120_000)
+    // views (/cost...) load in stages: read them once their key hint shows
+    if (r.cmd === '/cost') for (let t = 0; t < 10_000 && !MENU_RE.test(bottom(screen)); t += 500) { await sleep(500); screen = await withScroll() }
     if (r.raw) return { kind: 'text', text: stripChrome(screen).slice(-45).join('\n') || `${r.cmd} 沒有輸出` }
     if (/Unknown command:/.test(bottom(screen))) {
       return { kind: 'text', text: `${r.cmd} 不是 Claude Code 的指令. 要看終端機的畫面可以用 cc /${r.cmd}` }
