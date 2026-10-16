@@ -185,6 +185,25 @@ test('grants: owner mode goes to the approvals place; only owner/admin decide; a
   expect(await requestGrant(g, from, '-100777', 'owner', 'x')).toBe('已經可以送往 -100777, 直接送出即可')
 })
 
+test('grants: a target request whose target is the approvals group (or the owner DM) is one copy, decided by owner or admin; the request and the worker say so', async () => {
+  const from = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  db.updateBotSetup('cc', { approvals_chat: '-100900', approvals_topic: 7, notices_topic: 5 })
+  const { approvals, sent } = fakeApprovals()
+  const g: GrantDeps = { db, approvals, notify() {}, label: id => id }
+  expect(await requestGrant(g, from, '-100900', 'target', '回報到審核群組')).toBe('目標對話就是審核處 (審核群組), 只送了一份申請, 由 owner 或 admin 決定 (#1), 決定後會通知你')
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toMatchObject({ chat: '-100900', thread: 7, buttons: ['grant:1:once', 'grant:1:always', 'grant:1:deny'] })
+  expect(sent[0]!.text).toContain('目標對話就是這裡 (審核群組), 只有這一份申請, 由 owner 或 admin 決定.')
+  expect(sent[0]!.text).not.toContain('也已在目標對話詢問')
+  expect(db.getGrant(1)!.mode).toBe('owner')
+  expect(await decideGrant(g, 'grant:1:once', '42', '-100900')).toBe('你不能決定這個申請') // a member of the group is not the target's say here
+  expect(await decideGrant(g, 'grant:1:once', ADMIN, '-100900')).toBe('✅ 已允許一次')
+  // no approvals group: the approvals place is the owner DM
+  db.updateBotSetup('cc', { approvals_chat: null, approvals_topic: null, notices_topic: null })
+  expect(await requestGrant(g, from, OWNER, 'target', 'x')).toBe('目標對話就是審核處 (owner 私訊), 只送了一份申請, 由 owner 或 admin 決定 (#2), 決定後會通知你')
+  expect(sent.at(-1)!.text).toContain('目標對話就是這裡 (owner 私訊), 只有這一份申請, 由 owner 或 admin 決定.')
+})
+
 test('grants: target mode asks the target chat and the owner at once; the first press decides and both copies show it; a denial grants nothing', async () => {
   const from = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
   const { approvals, sent, edits } = fakeApprovals()

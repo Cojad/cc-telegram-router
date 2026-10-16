@@ -9,10 +9,13 @@
 // row); 永久允許 (owner/admin only, not offered in the target chat) lets the
 // conversation send to any chat the bot is in (send *). Every copy of the
 // request gets the outcome written under it, and the requesting worker hears
-// it as a <router_status> message.
+// it as a <router_status> message. When the target of a target request is
+// the approvals place itself (the approvals group, or the owner's DM), it is
+// an owner request: one copy, owner or admin decides, and the request and
+// the worker are told so.
 
 import type { Conversation, RouterDb } from './db'
-import { postApproval, settleApproval, mayDecide, parseChoice, CHOICE_WORD, type ApprovalDeps, type About } from './approvals'
+import { postApproval, settleApproval, mayDecide, parseChoice, approvalPlace, CHOICE_WORD, type ApprovalDeps, type About } from './approvals'
 import type { Authz } from './authz'
 
 /** The send overrides allow chat_id: listed, or send * and the bot is in it. */
@@ -35,6 +38,11 @@ export async function requestGrant(deps: GrantDeps, from: Conversation, target: 
   const sends = db.listOverrides(from.key).filter(o => o.kind === 'send').map(o => o.value)
   if (sends.includes(target) || sends.includes('*')) return `已經可以送往 ${target}, 直接送出即可`
   if (!deps.approvals.owners[0]) return '沒有設定 owner, 無法申請'
+  // the target is where owner and admin decide anyway: one copy, theirs to decide
+  const place = approvalPlace(db, deps.approvals.owners, from.bot)
+  const atApprovals = mode === 'target' && place?.chat_id === target
+  const placeName = db.getBotSetup(from.bot)?.approvals_chat ? '審核群組' : 'owner 私訊'
+  if (atApprovals) mode = 'owner'
   const id = db.addGrant({ from_conv: from.key, target, mode, reason })
   deps.approvals.noteRequest?.('grant', id, from)
   const who = `${from.key}${from.title ? ` (${from.title})` : ''}`
@@ -43,6 +51,7 @@ export async function requestGrant(deps: GrantDeps, from: Conversation, target: 
     `${who} 想送訊息到 ${deps.label(target)}`,
     `理由: ${reason}`,
     ...(mode === 'target' ? ['(也已在目標對話詢問, 先按的人決定)'] : []),
+    ...(atApprovals ? [`目標對話就是這裡 (${placeName}), 只有這一份申請, 由 owner 或 admin 決定.`] : []),
     `✅ 允許一次: 把 ${target} 加進這個對話的傳送白名單 (之後送往這個對話不用再問).`,
     `♾️ 永久允許的範圍: ${from.key} 之後可以送訊息到 bot 所在的任何對話, 不用再申請 (權限覆寫 send *).`,
     `撤銷: /router perm ${from.chat_id} send rm ${target} 或 send rm *`,
@@ -50,6 +59,7 @@ export async function requestGrant(deps: GrantDeps, from: Conversation, target: 
   const extra = mode === 'target' ? [{ place: { chat_id: target }, text: `📨 ${who} 想傳訊息到這個對話 (#${id})\n理由: ${reason}\n✅ 允許一次: 之後 ${from.key} 都可以傳訊息到這個對話.\n要接受嗎?` }] : []
   const reached = await postApproval(deps.approvals, from.bot, 'grant', id, ownerText, extra)
   if (!reached.length) return '審核頻道與目標對話都送不到, 申請沒有送出'
+  if (atApprovals) return `目標對話就是審核處 (${placeName}), 只送了一份申請, 由 owner 或 admin 決定 (#${id}), 決定後會通知你`
   if (mode === 'owner') return `已向 owner 申請 (#${id}), 決定後會通知你`
   const inTarget = reached.some(p => p.chat_id === target)
   return inTarget ? `已在目標對話詢問, 也同步給 owner (#${id}), 決定後會通知你` : `無法在 ${target} 詢問 (bot 可能不在那個對話), 已改由 owner 決定 (#${id})`

@@ -39,11 +39,11 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 
 ## 套件安裝審核 (power 對話)
 
-pip, uv, poetry, npm, bun, yarn, pnpm, npx, uvx 的安裝指令會先由 router 查 PyPI/npm 的資料, 交給模型判斷風險: low 直接放行 (結果快取一週); medium, high, 審核失敗, 或從 URL, 本機路徑, 自訂來源安裝, 一律送 owner 審核. 核准後該對話之後都能安裝那些套件; owner 也可以直接用 `/router perm [chat_id] pkg allow pypi:名稱`.
+pip, uv, poetry, npm, bun, yarn, pnpm, npx, uvx 的安裝指令會先由 router 查 PyPI/npm 的資料, 交給模型判斷風險: low 直接放行 (結果快取一週); medium, high, 審核失敗, 或從 URL, 本機路徑, 自訂來源安裝 (含 `--index-url`, `--extra-index-url`, `--find-links`, `--registry` 這類改變來源的選項), 一律送 owner 審核. 選項的值 (例如 `--only-binary :all:`) 不算套件. 核准後該對話之後都能安裝那些套件; owner 也可以直接用 `/router perm [chat_id] pkg allow pypi:名稱`.
 
 ## 跨對話傳訊
 
-worker 要送訊息到別的對話會被擋, 它可以用 request_send_grant 申請: 向 owner 申請 (永久有效), 或請目標對話同意 (同時也會送給 owner, 先按的人決定).
+worker 要送訊息到別的對話會被擋, 它可以用 request_send_grant 申請: 向 owner 申請 (永久有效), 或請目標對話同意 (同時也會送給 owner, 先按的人決定). 目標對話就是審核群組 (或 owner 私訊) 時只有一份申請, 由 owner 或 admin 決定.
 
 例外: 群組裡有人要 bot 私訊回覆他 (例如「明天早上九點私訊提醒我天氣」), 群組的 worker 用 reply 送到那個人的私訊 (chat_id 是他的 user id), 並帶 `on_behalf_of` = 他在群組裡提出要求的那則訊息. router 確認那則訊息是他傳的就放行, 不用申請, 也沒有時間限制; 私訊開頭會自動加一行「(回覆你在群組「X」的訊息: …)」. 只能回到提出要求的那個人, 對方也要曾經私訊過 bot.
 

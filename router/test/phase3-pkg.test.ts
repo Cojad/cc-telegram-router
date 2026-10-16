@@ -50,6 +50,36 @@ test('parseInstall: manifests and sources the review cannot judge', () => {
   expect(parseInstall('npm i x --registry=https://evil.example')!.unusual).toEqual(['registry https://evil.example'])
 })
 
+test('parseInstall: an option\'s value is never a package (pip --only-binary :all:, npm --omit dev...); options that change the source make it a custom source; --with, --from, --spec, -p name packages', () => {
+  const p = (cmd: string) => { const r = parseInstall(cmd)!; return [...r.pkgs.map(x => `${x.eco}:${x.name}`), ...r.unusual.map(u => `other:${u}`)] }
+  expect(p('pip install --only-binary :all: --target pydeps hello-pypi-demo')).toEqual(['pypi:hello-pypi-demo'])
+  expect(p('pip install --no-binary=:none: --progress-bar off --cache-dir /tmp/c --timeout 30 --upgrade-strategy eager rich')).toEqual(['pypi:rich'])
+  expect(p('pip install -C editable_mode=compat --config-settings x=y --root-user-action ignore six')).toEqual(['pypi:six'])
+  expect(p('uv pip install --index-strategy unsafe-best-match --prerelease allow --python-platform linux httpx')).toEqual(['pypi:httpx'])
+  expect(p('uv add --optional cli --group dev -m "python_version>\'3.9\'" typer')).toEqual(['pypi:typer'])
+  expect(p('poetry add -G dev -E socks requests')).toEqual(['pypi:requests'])
+  expect(p('npm i --omit dev --loglevel warn --install-strategy nested zod')).toEqual(['npm:zod'])
+  expect(p('bun add --cwd web --backend copyfile lodash')).toEqual(['npm:lodash'])
+  expect(p('npm i --omit=dev')).toEqual([])
+  expect(parseInstall('npm i --omit dev')!.manifests).toEqual([{ eco: 'npm', path: 'package.json' }]) // no package named: package.json
+  // options that change where packages come from: the owner decides
+  expect(p('pip install --extra-index-url https://pkgs.example/simple foo')).toEqual(['pypi:foo', 'other:index https://pkgs.example/simple'])
+  expect(p('pip install -f ./wheels --trusted-host pkgs.example foo')).toEqual(['pypi:foo', 'other:index ./wheels', 'other:index pkgs.example'])
+  expect(p('uv add --default-index https://pkgs.example/simple foo')).toEqual(['pypi:foo', 'other:index https://pkgs.example/simple'])
+  expect(p('poetry add --source internal foo')).toEqual(['pypi:foo', 'other:index internal'])
+  expect(p('pipx install --pip-args="--index-url https://evil.example" foo')).toEqual(['pypi:foo', 'other:index --index-url https://evil.example'])
+  expect(p('npm i --userconfig ./npmrc x')).toEqual(['npm:x', 'other:registry ./npmrc'])
+  expect(p('npm i --@corp:registry=https://npm.corp.example @corp/ui')).toEqual(['npm:@corp/ui', 'other:registry https://npm.corp.example'])
+  // option values that are packages of their own
+  expect(p('uvx --from httpie http GET example.com')).toEqual(['pypi:httpie'])
+  expect(p('uvx --with rich --python 3.12 ruff check .')).toEqual(['pypi:rich', 'pypi:ruff'])
+  expect(p('pipx run --spec black==24.1 black .')).toEqual(['pypi:black'])
+  expect(p('uv tool run --from httpie http GET example.com')).toEqual(['pypi:httpie'])
+  expect(p('pipx run cowsay -t hi')).toEqual(['pypi:cowsay']) // its own arguments are not packages
+  expect(p('npx -p typescript tsc --init')).toEqual(['npm:typescript'])
+  expect(p('npx --package=cowsay -y cowsay hi')).toEqual(['npm:cowsay'])
+})
+
 test('INSTALL_HINT: the hook only forwards commands that might install', () => {
   for (const c of ['pip install x', 'python3 -m pip install x', 'npm i x', 'bunx y', 'uv add z']) expect(INSTALL_HINT.test(c)).toBe(true)
   for (const c of ['ls', 'python3 run.py', 'cat notes.txt']) expect(INSTALL_HINT.test(c)).toBe(false)
@@ -127,6 +157,17 @@ test('pkg gate: medium/high or unknown sources are refused and go to the approva
   expect(told[0]).toContain('套件安裝審核 #1 ✅ 已允許一次')
   expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value).sort()).toEqual(['other:git+https://x/y.git', 'pypi:reqeusts'])
   expect(await gate.check(conv, 'pip install requests reqeusts git+https://x/y.git')).toEqual({})
+})
+
+test('pkg gate: an option value is not sent for review nor written as an override (pip --only-binary :all: --target pydeps)', async () => {
+  const review = judge({ 'hello-pypi-demo': 'medium' })
+  const { conv, gate, sent } = harness(review)
+  const cmd = 'pip install --only-binary :all: --target pydeps hello-pypi-demo'
+  expect((await gate.check(conv, cmd)).reason).toBe('已送 owner 審核 (#1): pypi:hello-pypi-demo. 決定後會通知你, 到時再重新安裝')
+  expect(sent[0]!.text).not.toContain(':all:')
+  expect(await gate.decide('pkg:1:once', ADMIN)).toBe('✅ 已允許一次')
+  expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value)).toEqual(['pypi:hello-pypi-demo'])
+  expect(await gate.check(conv, cmd)).toEqual({})
 })
 
 test('pkg gate: a denial is reported and installs nothing new; a failed review counts as medium', async () => {

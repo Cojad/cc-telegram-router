@@ -14,23 +14,54 @@ export type Install = { pkgs: Pkg[]; manifests: Array<{ eco: Eco; path: string }
 /** Cheap test the hook runs on every Bash command before asking the router. */
 export const INSTALL_HINT = /\b(pip3?|pipx|uv|uvx|poetry|pdm|npm|npx|bun|bunx|yarn|pnpm)\b/
 
+/** Shell words, quotes removed; a quote may sit inside a word (--pip-args="--index-url x"). */
 function words(segment: string): string[] {
-  const out: string[] = []
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(segment))) out.push(m[1] ?? m[2] ?? m[3]!)
-  return out
+  return (segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []).map(w => w.replace(/"([^"]*)"|'([^']*)'/g, (_m, d, q) => d ?? q))
 }
 
-/** npx/uvx run one package: keep the flags before it and the package itself, not its own arguments. */
-function firstArg(args: string[]): string[] {
-  const i = args.findIndex(a => !a.startsWith('-'))
-  return i < 0 ? args : args.slice(0, i + 1)
+
+// Options that take a value (the next word, or --x=value): the value is never a package.
+// pip, pipx, uv pip / add / tool, poetry, pdm.
+const PIP_VALUE_FLAGS = new Set([
+  '-c', '--constraint', '-t', '--target', '--prefix', '--root', '--python', '-p', '--platform', '--python-version', '--implementation', '--abi', '--src',
+  '--group', '-G', '--extra', '-E', '--extras', '--optional',
+  '--only-binary', '--no-binary', '--progress-bar', '--upgrade-strategy', '--log', '--log-file', '--cache-dir', '--cert', '--client-cert', '--proxy', '--retries',
+  '--timeout', '--exists-action', '--global-option', '--build-option', '-C', '--config-settings', '--config-setting', '--report', '--root-user-action',
+  '--keyring-provider', '--use-feature', '--use-deprecated', '--suffix',
+  '--index-strategy', '--resolution', '--prerelease', '--link-mode', '--torch-backend', '--python-platform', '--exclude-newer', '-P', '--upgrade-package',
+  '--reinstall-package', '--no-binary-package', '--no-build-package', '--rev', '--tag', '--branch', '--marker', '-m', '--script', '--package', '--directory', '--project',
+])
+// Options whose value is a package of its own (uvx --from x, uv/uvx --with y, pipx run --spec z).
+const PIP_PKG_FLAGS = new Set(['--with', '--from', '--spec'])
+// Options that change where packages come from: the whole install goes to the owner (custom source).
+const PIP_INDEX_FLAGS = new Set(['-i', '--index-url', '--extra-index-url', '-f', '--find-links', '--index', '--default-index', '--trusted-host', '--source', '--pip-args'])
+// npm, npx, bun, bunx, yarn, pnpm.
+const NPM_VALUE_FLAGS = new Set([
+  '--prefix', '-C', '--cwd', '--dir', '--tag', '--workspace', '-w', '--filter', '-c', '--call', '--omit', '--include', '--install-strategy', '--cache', '--cache-dir',
+  '--save-prefix', '--loglevel', '--before', '--os', '--cpu', '--libc', '--linker', '--backend', '--network-concurrency', '--concurrency',
+])
+const NPM_PKG_FLAGS = new Set(['-p', '--package'])
+const NPM_SOURCE_FLAGS = new Set(['--registry', '--userconfig', '--globalconfig', '--config'])
+
+/** Does this option take the next word as its value? */
+function takesValue(eco: Eco, flag: string): boolean {
+  return eco === 'pypi'
+    ? PIP_VALUE_FLAGS.has(flag) || PIP_PKG_FLAGS.has(flag) || PIP_INDEX_FLAGS.has(flag) || ['-r', '--requirement', '-e', '--editable'].includes(flag)
+    : NPM_VALUE_FLAGS.has(flag) || NPM_PKG_FLAGS.has(flag) || NPM_SOURCE_FLAGS.has(flag) || /^--@[^:]+:registry$/.test(flag)
 }
 
-const PIP_VALUE_FLAGS = new Set(['-c', '--constraint', '-t', '--target', '--prefix', '--root', '--python', '-p', '--platform', '--python-version', '--implementation', '--abi', '--src', '--group', '--extra', '--with'])
-const PIP_INDEX_FLAGS = new Set(['-i', '--index-url', '--extra-index-url', '-f', '--find-links', '--index'])
-const NPM_VALUE_FLAGS = new Set(['--prefix', '-C', '--cwd', '--registry', '--tag', '--workspace', '-w', '--filter'])
+/** npx/uvx run one package: keep the options before it (with their values)
+ *  and the package itself, not its own arguments. When an option named the
+ *  package (uvx --from x cmd, npx -p x cmd), the first word is a command. */
+function firstArg(eco: Eco, args: string[]): string[] {
+  const named = (a: string) => (eco === 'pypi' ? ['--from', '--spec'] : [...NPM_PKG_FLAGS]).includes(a.split('=')[0]!)
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!
+    if (!a.startsWith('-')) return args.slice(0, args.slice(0, i).some(named) ? i : i + 1)
+    if (!a.includes('=') && takesValue(eco, a)) i++
+  }
+  return args
+}
 
 function pypiName(spec: string): string | null {
   const m = /^([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?\s*([<>=!~;@].*)?$/.exec(spec)
@@ -40,6 +71,14 @@ function pypiName(spec: string): string | null {
 function npmName(spec: string): string | null {
   const m = /^(@[a-z0-9][\w.-]*\/[\w.-]+|[a-z0-9][\w.-]*)(@.*)?$/i.exec(spec)
   return m ? m[1]!.toLowerCase() : null
+}
+
+/** One package spec: a registry package, or something the review cannot judge (URL, path). */
+function addSpec(res: Install, eco: Eco, a: string): void {
+  if (/^(git\+|https?:|file:|\.|\/|~)/.test(a) || a.includes('/') && !a.startsWith('@')) { res.unusual.push(a); return }
+  const name = eco === 'pypi' ? pypiName(a) : npmName(a)
+  if (name) res.pkgs.push({ eco, name })
+  else res.unusual.push(a)
 }
 
 /** Parse every install in a command line; null when there is none. */
@@ -53,17 +92,19 @@ export function parseInstall(command: string): Install | null {
     if (w[0] && /^python[\d.]*$/.test(w[0]) && w[1] === '-m') w = w.slice(2)
     const [tool, sub] = [w[0]?.split('/').pop() ?? '', w[1]]
     let eco: Eco | null = null, rest: string[] = []
-    if ((tool === 'pip' || tool === 'pip3' || tool === 'pipx') && (sub === 'install' || sub === 'run')) { eco = 'pypi'; rest = w.slice(2) }
+    if ((tool === 'pip' || tool === 'pip3' || tool === 'pipx') && sub === 'install') { eco = 'pypi'; rest = w.slice(2) }
+    else if (tool === 'pipx' && sub === 'run') { eco = 'pypi'; rest = firstArg('pypi', w.slice(2)) }
     else if (tool === 'uv' && w[1] === 'pip' && w[2] === 'install') { eco = 'pypi'; rest = w.slice(3) }
-    else if (tool === 'uv' && (sub === 'add' || (sub === 'tool' && (w[2] === 'install' || w[2] === 'run')))) { eco = 'pypi'; rest = w.slice(sub === 'tool' ? 3 : 2) }
+    else if (tool === 'uv' && (sub === 'add' || (sub === 'tool' && w[2] === 'install'))) { eco = 'pypi'; rest = w.slice(sub === 'tool' ? 3 : 2) }
+    else if (tool === 'uv' && sub === 'tool' && w[2] === 'run') { eco = 'pypi'; rest = firstArg('pypi', w.slice(3)) }
     else if (tool === 'uv' && sub === 'sync') { found = true; res.manifests.push({ eco: 'pypi', path: 'pyproject.toml' }); continue }
-    else if (tool === 'uvx') { eco = 'pypi'; rest = firstArg(w.slice(1)) }
+    else if (tool === 'uvx') { eco = 'pypi'; rest = firstArg('pypi', w.slice(1)) }
     else if ((tool === 'poetry' || tool === 'pdm') && sub === 'add') { eco = 'pypi'; rest = w.slice(2) }
     else if ((tool === 'poetry' || tool === 'pdm') && sub === 'install') { found = true; res.manifests.push({ eco: 'pypi', path: 'pyproject.toml' }); continue }
     else if (tool === 'npm' && ['install', 'i', 'in', 'add', 'isntall', 'ci', 'exec'].includes(sub ?? '')) { eco = 'npm'; rest = w.slice(2) }
     else if ((tool === 'bun' || tool === 'pnpm') && ['add', 'install', 'i', 'x', 'dlx'].includes(sub ?? '')) { eco = 'npm'; rest = w.slice(2) }
     else if (tool === 'yarn' && (sub === 'add' || sub === 'install' || sub === 'dlx' || sub === undefined)) { eco = 'npm'; rest = w.slice(2) }
-    else if (tool === 'npx' || tool === 'bunx') { eco = 'npm'; rest = firstArg(w.slice(1)) }
+    else if (tool === 'npx' || tool === 'bunx') { eco = 'npm'; rest = firstArg('npm', w.slice(1)) }
     if (!eco) continue
     found = true
     let named = 0
@@ -74,14 +115,14 @@ export function parseInstall(command: string): Install | null {
       if (eco === 'pypi' && (flag === '-r' || flag === '--requirement')) { const v = inline ?? rest[++i]; if (v) res.manifests.push({ eco, path: v }); continue }
       if (eco === 'pypi' && (flag === '-e' || flag === '--editable')) { res.unusual.push(`editable ${inline ?? rest[++i] ?? ''}`.trim()); continue }
       if (eco === 'pypi' && PIP_INDEX_FLAGS.has(flag)) { res.unusual.push(`index ${inline ?? rest[++i] ?? ''}`.trim()); continue }
-      if (eco === 'npm' && flag === '--registry') { res.unusual.push(`registry ${inline ?? rest[++i] ?? ''}`.trim()); continue }
+      // a scoped registry (--@scope:registry=url) too
+      if (eco === 'npm' && (NPM_SOURCE_FLAGS.has(flag) || /^--@[^:]+:registry$/.test(flag))) { res.unusual.push(`registry ${inline ?? rest[++i] ?? ''}`.trim()); continue }
       if ((eco === 'pypi' ? PIP_VALUE_FLAGS : NPM_VALUE_FLAGS).has(flag)) { if (inline === undefined) i++; continue }
-      if (a.startsWith('-')) continue
+      let spec = a
+      if ((eco === 'pypi' ? PIP_PKG_FLAGS : NPM_PKG_FLAGS).has(flag)) { const v = inline ?? rest[++i]; if (!v) continue; spec = v }
+      else if (a.startsWith('-')) continue
       named++
-      if (/^(git\+|https?:|file:|\.|\/|~)/.test(a) || a.includes('/') && !a.startsWith('@')) { res.unusual.push(a); continue }
-      const name = eco === 'pypi' ? pypiName(a) : npmName(a)
-      if (name) res.pkgs.push({ eco, name })
-      else res.unusual.push(a)
+      addSpec(res, eco, spec)
     }
     // bare npm/bun/yarn/pnpm install installs package.json
     if (eco === 'npm' && !named && !['x', 'dlx', 'exec'].includes(sub ?? '') && tool !== 'npx' && tool !== 'bunx') res.manifests.push({ eco, path: 'package.json' })
