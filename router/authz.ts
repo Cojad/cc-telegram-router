@@ -79,6 +79,23 @@ export function createAuthz(deps: AuthzDeps) {
       db.addAuthUse(g.id, conv.key, line, id != null && place ? { bot: conv.bot, chat_id: place.chat_id, message_id: id } : undefined)
     },
 
+    /** Overrides were removed by hand (/router perm rm or reset): an
+     *  authorization none of whose overrides is left counts as revoked, and
+     *  its messages say so. Returns how many. */
+    async syncRemoved(conv: Conversation, uid: string): Promise<number> {
+      const left = new Set(db.listOverrides(conv.key).map(o => `${o.kind}\u0000${o.value}`))
+      let n = 0
+      for (const g of db.activeApprovalGrants(conv.key)) {
+        const o = overridesOf(g)
+        if (!o.length || o.some(x => left.has(`${x.kind}\u0000${x.value}`))) continue
+        db.revokeApprovalGrant(g.id, uid)
+        if (g.kind === 'elev') deps.dropElevation?.(g.ref)
+        await markRevoked(g.kind, g.ref, g, `${deps.label(uid)}, 用 /router perm 移除`)
+        n++
+      }
+      return n
+    },
+
     /** A 🚫 撤銷 press "<kind>:<ref>:revoke". */
     async revoke(data: string, uid: string): Promise<string | null> {
       const m = /^(grant|pkg|elev):(\d+):revoke$/.exec(data)

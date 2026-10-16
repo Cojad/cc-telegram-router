@@ -511,3 +511,28 @@ test('bot folders: <home>/bot<id>/<type>-<chat>; an old <home>/<key> conversatio
   expect(findByFolder(db, join(moved.folder, 'memory'))?.key).toBe('dm-7')
   expect(findByFolder(db, old)).toBeNull()
 })
+
+test('authz: removing an approved override by hand (/router perm rm or reset) marks that authorization revoked and updates its messages; partly removed stays active', async () => {
+  const from = ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
+  db.updateBotSetup('cc', { approvals_chat: '-100900', approvals_topic: 7, authuse_topic: 77 })
+  const { approvals, edits, editButtons } = fakeApprovals()
+  const authz = createAuthz({ db, approvals, notify() {}, label: u => `u${u}`, applyPermissions() {} })
+  const g: GrantDeps = { db, approvals, notify() {}, label: id => id, authz }
+  await requestGrant(g, from, '-100777', 'owner', 'x')
+  await decideGrant(g, 'grant:1:once', OWNER, '-100900')
+  const d = { ...deps(), overridesRemoved: (c: any, uid: string) => authz.syncRemoved(c, uid) } as CommandDeps
+  const before = edits.length
+  const r = (await runCommand({ bot: 'cc', text: '/router perm -100555 send rm -100777', senderId: OWNER, senderName: 'x', chatId: OWNER, chatType: 'private' }, d))!
+  expect(r.reply).toContain('移除 send -100777; 對應的審核授權一併標為已撤銷')
+  expect(db.approvalGrantsFor('grant', 1)[0]!.status).toBe('revoked')
+  expect(edits.slice(before).at(-1)!.text).toEndWith(`🚫 已撤銷 (u${OWNER}, 用 /router perm 移除)`)
+  expect(editButtons.slice(before).every(b => b.length === 0)).toBe(true)
+  // reset: every authorization of the conversation goes with it
+  await requestGrant(g, from, '-100778', 'owner', 'y')
+  await decideGrant(g, 'grant:2:once', OWNER, '-100900')
+  db.addOverride({ conv: from.key, kind: 'net', value: 'example.com' }) // set by hand, not from an approval
+  const reset = (await runCommand({ bot: 'cc', text: '/router perm -100555 reset', senderId: OWNER, senderName: 'x', chatId: OWNER, chatType: 'private' }, d))!
+  expect(reset.reply).toContain('清掉 2 筆覆寫')
+  expect(reset.reply).toContain('1 筆審核授權一併標為已撤銷')
+  expect(db.activeApprovalGrants(from.key)).toEqual([])
+})

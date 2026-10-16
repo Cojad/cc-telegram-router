@@ -79,7 +79,10 @@ function deps(store: { added: any[]; config: Record<string, any> }): CommandDeps
   return {
     cfg, db, loadAccess: () => ({ dmPolicy: 'allowlist', allowFrom: [], groups: {}, pending: {} }) as any, saveAccess() {},
     creds: {
-      async add(name, token, methods, by) { if (!token.includes(':')) throw new Error('getMe: 401 Unauthorized'); cfg.credentials[name] = { token, methods, roles: ['owner', 'admin'], label: '@eagle_bot (99)', addedBy: by }; store.added.push(name); return '@eagle_bot (99)' },
+      async add(name, token, methods, by, http) {
+        if (http) { cfg.credentials[name] = { token, methods, roles: ['owner', 'admin'], label: `http ${http.baseUrl}`, kind: 'http', baseUrl: http.baseUrl, addedBy: by }; return `http ${http.baseUrl}` }
+        if (!token.includes(':')) throw new Error('getMe: 401 Unauthorized'); cfg.credentials[name] = { token, methods, roles: ['owner', 'admin'], label: '@eagle_bot (99)', addedBy: by }; store.added.push(name); return '@eagle_bot (99)'
+      },
       update(name, change) { if (change) change(cfg.credentials[name]!); else delete cfg.credentials[name] },
       reload: () => Object.keys(cfg.credentials).length,
       async call(name, method) { return { ok: true, result: { name, method } } },
@@ -147,3 +150,20 @@ test('http credentials: the key goes in a header (never to the worker); JSON or 
     expect(shorten({ a: 'x'.repeat(5000) }).a).toEndWith('…(5000 字元, 已截斷)')
   } finally { api.stop(true) }
 })
+
+test('/router cred add --http: owner or admin add an API key from their own DM; the message is deleted and the key never reaches a worker log', async () => {
+  const d = deps({ added: [], config: {} })
+  const KEY = 'sk-live-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345'
+  db.insertConversation({ key: 'dm-500', bot: 'cc', chat_id: ADMIN, type: 'dm', folder: join(dir, 'dm-500'), role: 'admin', session_id: null, created_at: new Date().toISOString() })
+  const r = (await run(d, `/router cred add openai ${KEY} --http https://api.openai.com /v1/images/generations /v1/images/edits`, ADMIN))!
+  expect(r.deleteMessage).toBe(true)
+  expect(r.reply).toBe('已加入憑證 openai: http https://api.openai.com\n路徑: /v1/images/generations, /v1/images/edits\n角色: owner, admin\nAPI key 只存在 router 設定檔, worker 用 http_api 工具使用')
+  expect(cfg.credentials.openai).toMatchObject({ kind: 'http', baseUrl: 'https://api.openai.com', methods: ['/v1/images/generations', '/v1/images/edits'], addedBy: ADMIN })
+  expect(r.logs).toHaveLength(1)
+  expect(r.logs[0]!.text).toContain('/router cred add openai <已遮蔽> --http')
+  expect(JSON.stringify(r)).not.toContain(KEY)
+  expect((await run(d, `/router cred add x ${KEY} --http not-a-url`, OWNER))!.reply).toBe('--http 後面要接網址, 例如 --http https://api.openai.com')
+  expect((await run(d, `/router cred add x ${KEY} --http https://a.example v1/x`, OWNER))!.reply).toContain('路徑要以 / 開頭')
+  expect((await run(d, `/router cred add y ${KEY} --http https://a.example /x`, '777'))!.reply).toContain('只開放 owner 與 admin') // user role
+})
+

@@ -208,7 +208,7 @@ test('bot rotate (owner DM): the poller moves to the new token, the token messag
   expect(JSON.parse(readFileSync(join(state, 'config.json'), 'utf8')).bots[0].token).toBe(NEW)
   // the token is in events (kept as is) but never in what the worker saw
   expect(delivered.join('\n')).not.toContain('ROTATEDROTATED')
-  expect(delivered.join('\n')).toContain('123:…ED00')
+  expect(delivered.join('\n')).toContain('/router bot rotate cc <已遮蔽>') // the whole token is left out of the log
   client.close()
 }, 20000)
 

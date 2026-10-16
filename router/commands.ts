@@ -46,12 +46,14 @@ export interface CommandDeps {
   applySettings(c: Conversation, opts: { dropJob: boolean }): Promise<void>
   /** Permissions changed: rewrite settings/context now, rotate the worker (stop when idle). */
   applyPermissions(c: Conversation): void
+  /** Overrides were removed by hand: authorizations left with none count as revoked (router/authz.ts). */
+  overridesRemoved?(c: Conversation, uid: string): Promise<number>
   /** The effective settings the router would write for this conversation. */
   effectiveSettings(c: Conversation): any
   /** Credentials for cross-bot skills (router/credentials.ts). */
   creds: {
     /** Validate with getMe, store in config.json; returns "@username (id)". */
-    add(name: string, token: string, methods: string[], addedBy: string): Promise<string>
+    add(name: string, token: string, methods: string[], addedBy: string, http?: { baseUrl: string }): Promise<string>
     /** Change a stored credential (methods, roles) or remove it (null). */
     update(name: string, change: ((c: import('./config').Credential) => void) | null): void
     /** Re-read credentials from config.json (after cred-import in the terminal). */
@@ -192,8 +194,12 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
   const cmdText = input.text.trim()
   const logs: Array<{ conv: string; text: string }> = []
   const who = `${input.senderName}(${role})`
+  // the log reaches the worker: never with a token or API key in it
+  const words = cmdText.split(/\s+/)
+  const secretAt = /^\/router(@\w+)?$/.test(words[0] ?? '') && ((words[1] === 'cred' && words[2] === 'add') || (words[1] === 'bot' && (words[2] === 'add' || words[2] === 'rotate'))) ? 4 : -1
+  const shown = secretAt > 0 && words[secretAt] ? words.map((w, i) => i === secretAt ? '<已遮蔽>' : w).join(' ') : cmdText
   const done = (reply: string, extra: Partial<CommandOutput> = {}): CommandOutput => {
-    if (here) logs.push({ conv: here.key, text: `${who} ${cmdText} → ${reply.split('\n')[0]}` })
+    if (here) logs.push({ conv: here.key, text: `${who} ${shown} → ${reply.split('\n')[0]}` })
     return { reply, logs, ...extra }
   }
   const deny = (reason: string, extra: Partial<CommandOutput> = {}) => done(`⛔ ${reason}`, extra)
@@ -385,7 +391,8 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       }
       if (what === 'reset') {
         const n = db.clearOverrides(conv.key)
-        return changed(`清掉 ${n} 筆覆寫, 回到 ${conv.role} 的預設`)
+        const revoked = await deps.overridesRemoved?.(conv, input.senderId) ?? 0
+        return changed(`清掉 ${n} 筆覆寫, 回到 ${conv.role} 的預設${revoked ? `; ${revoked} 筆審核授權一併標為已撤銷` : ''}`)
       }
       const kinds: Record<string, { add: Record<string, OverrideKind>; rm: OverrideKind[] }> = {
         tool: { add: { allow: 'tool-allow', deny: 'tool-deny' }, rm: ['tool-allow', 'tool-deny'] },
@@ -401,7 +408,9 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       if (what === 'pkg' && !/^((pypi|npm|other):\S+|\*)$/.test(value)) return done('套件寫成 pypi:名稱 或 npm:名稱, 例如 pypi:requests; * 代表不用審核')
       if (op === 'rm') {
         const n = db.removeOverride(conv.key, k.rm, value)
-        return n ? changed(`移除 ${what} ${value}`) : done(`${conv.key} 沒有 ${what} ${value} 這筆覆寫`)
+        if (!n) return done(`${conv.key} 沒有 ${what} ${value} 這筆覆寫`)
+        const revoked = await deps.overridesRemoved?.(conv, input.senderId) ?? 0
+        return changed(`移除 ${what} ${value}${revoked ? `; 對應的審核授權一併標為已撤銷` : ''}`)
       }
       const kind = k.add[op]
       if (!kind) return done(`${what} 只能用 ${[...Object.keys(k.add), 'rm'].join(', ')}`)
@@ -533,14 +542,22 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const inOwnDm = input.chatType === 'private' && input.chatId === input.senderId
         if (!inOwnDm) return deny(`/router cred add 只能在你自己和 bot 的私訊使用${hasToken && input.chatType !== 'private' ? '; token 曾出現在群組, 請到發 token 的地方換一把新的' : ''}`, { deleteMessage: hasToken })
         const token = args[3]
-        if (!name || !token || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) return done('用法: /router cred add <名稱 (小寫英數)> <token> [方法...]', { deleteMessage: hasToken })
+        if (!name || !token || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) return done('用法: /router cred add <名稱 (小寫英數)> <token> [方法...] 或 /router cred add <名稱> <API key> --http <網址> [路徑...]', { deleteMessage: hasToken })
         if (cfg.credentials?.[name] && role !== 'owner') return deny(`已經有名為 ${name} 的憑證, 只有 owner 能取代`, { deleteMessage: true })
+        const rest = args.slice(4)
+        const httpAt = rest.indexOf('--http')
+        const baseUrl = httpAt >= 0 ? rest[httpAt + 1] : undefined
+        if (httpAt >= 0 && !/^https?:\/\/\S+$/.test(baseUrl ?? '')) return done('--http 後面要接網址, 例如 --http https://api.openai.com', { deleteMessage: true })
+        const methods = httpAt >= 0 ? rest.filter((_, i) => i !== httpAt && i !== httpAt + 1) : rest
+        if (baseUrl && methods.some(m => !m.startsWith('/'))) return done('API key 的路徑要以 / 開頭, 例如 /v1/images/generations (結尾 * 代表前綴)', { deleteMessage: true })
         try {
-          const label = await deps.creds.add(name, token, args.slice(4), input.senderId)
-          return done(`已加入憑證 ${name}: ${label}
-方法: ${args.slice(4).join(', ') || '(還沒有, 用 /router cred allow 加入)'}
-角色: owner, admin
-token 只存在 router 設定檔, worker 用 bot_api 工具使用`, { deleteMessage: true })
+          const label = await deps.creds.add(name, token, methods, input.senderId, baseUrl ? { baseUrl } : undefined)
+          return done([
+            `已加入憑證 ${name}: ${label}`,
+            `${baseUrl ? '路徑' : '方法'}: ${methods.join(', ') || '(還沒有, 用 /router cred allow 加入)'}`,
+            '角色: owner, admin',
+            `${baseUrl ? 'API key' : 'token'} 只存在 router 設定檔, worker 用 ${baseUrl ? 'http_api' : 'bot_api'} 工具使用`,
+          ].join('\n'), { deleteMessage: true })
         } catch (e) {
           return done(`cred add 失敗: ${e instanceof Error ? e.message : e}`, { deleteMessage: true })
         }

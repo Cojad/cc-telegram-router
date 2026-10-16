@@ -547,10 +547,11 @@ const commandDeps: CommandDeps = {
     void rotate()
   },
   creds: {
-    async add(name, token, methods, addedBy) {
-      const me = await new Bot(token, apiOpts()).api.getMe()
-      const label = `@${me.username} (${me.id})`
-      const c = { token, label, methods, roles: DEFAULT_CRED_ROLES, addedBy }
+    async add(name, token, methods, addedBy, http) {
+      let label: string
+      if (http) label = `http ${http.baseUrl}`
+      else { const me = await new Bot(token, apiOpts()).api.getMe(); label = `@${me.username} (${me.id})` }
+      const c = { token, label, methods, roles: DEFAULT_CRED_ROLES, addedBy, ...(http ? { kind: 'http' as const, baseUrl: http.baseUrl } : {}) }
       writeConfig(r => { r.credentials = { ...(r.credentials as object ?? {}), [name]: c } })
       cfg.credentials[name] = c
       return label
@@ -581,6 +582,7 @@ const commandDeps: CommandDeps = {
     resetPersona(bot) { db.updateBotSetup(bot, { persona_done: 0 }) },
     group: setupGroup,
   },
+  overridesRemoved: (c, uid) => authz.syncRemoved(c, uid),
   effectiveSettings: c => applyOverrides(renderSettings(TEMPLATES, c.role, settingsVars(c)), db.listOverrides(c.key)),
   async sendTo(botName, chatId, text) {
     await bots.get(botName)?.bot.api.sendMessage(chatId, text)
