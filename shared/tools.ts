@@ -150,6 +150,19 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'run_skill',
+    description: 'Run an approved privileged action of a skill (its privileged.json, e.g. web-instagram extract): the router runs it in its own sandbox with the credentials it needs (cookies...), which never reach you; output files land in your folder. Works for user and power conversations without elevation. args must match the action\'s argument patterns. Limited to 10 runs per hour per conversation.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        skill: { type: 'string' },
+        action: { type: 'string' },
+        args: { type: 'object', description: 'Action arguments, e.g. {"url": "https://..."}' },
+      },
+      required: ['skill', 'action'],
+    },
+  },
+  {
     name: 'install_skill',
     description: 'Owner/admin conversations only: install a skill you wrote in <your folder>/.claude/skills/<name>/ so every conversation of this bot (scope "bot") or of every bot (scope "all") gets it. Skills must not contain tokens. See /telegram:bot-skill.',
     inputSchema: {

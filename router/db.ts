@@ -121,6 +121,13 @@ export interface RouterDb {
   pendingElevation(conv: string): Elevation | null
   decideElevation(id: number, status: 'approved' | 'denied' | 'expired', by: string | null, role: string | null): boolean
   addElevLog(conv: string, kind: ElevLogKind, text: string, ref: number | null): void
+  /** Privileged skills (router/privskill.ts): approvals pin the skill's hash. */
+  approveSkill(dir: string, skill: string, hash: string, by: string): void
+  skillApproval(dir: string): { skill: string; hash: string; approved_by: string; at: string } | null
+  revokeSkill(dir: string): boolean
+  listSkillApprovals(): Array<{ dir: string; skill: string; hash: string; approved_by: string; at: string }>
+  addSkillRun(conv: string, skill: string, action: string, status: string): void
+  skillRunsSince(conv: string, sinceIso: string): number
   /** The Telegram message a conversation was handling when it made request kind#ref. */
   setRequestOrigin(kind: string, ref: number, conv: string, message_id: number): void
   requestOrigin(kind: string, ref: number): number | null
@@ -207,6 +214,8 @@ export function openRouterDb(path: string): RouterDb {
       id INTEGER PRIMARY KEY AUTOINCREMENT, conv TEXT NOT NULL, kind TEXT NOT NULL, sender TEXT, action TEXT NOT NULL, reason TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending', decided_by TEXT, decided_role TEXT, created_at TEXT NOT NULL, decided_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS skill_approvals (dir TEXT PRIMARY KEY, skill TEXT NOT NULL, hash TEXT NOT NULL, approved_by TEXT NOT NULL, at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS skill_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, conv TEXT NOT NULL, skill TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS request_origin (kind TEXT NOT NULL, ref INTEGER NOT NULL, conv TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (kind, ref));
     CREATE TABLE IF NOT EXISTS approval_grants (
       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, ref INTEGER NOT NULL, conv TEXT NOT NULL, choice TEXT NOT NULL,
@@ -341,6 +350,12 @@ export function openRouterDb(path: string): RouterDb {
     clearOverrides: conv => qOvClear.run(conv).changes,
     setRotate: (key, on) => { qRotSet.run(on ? 1 : 0, key) },
     rotatePending: () => qRotAll.all() as Conversation[],
+    approveSkill: (dir, skill, hash, by) => { db.prepare('INSERT OR REPLACE INTO skill_approvals (dir, skill, hash, approved_by, at) VALUES (?, ?, ?, ?, ?)').run(dir, skill, hash, by, now()) },
+    skillApproval: dir => (db.prepare('SELECT skill, hash, approved_by, at FROM skill_approvals WHERE dir = ?').get(dir) as any) ?? null,
+    revokeSkill: dir => db.prepare('DELETE FROM skill_approvals WHERE dir = ?').run(dir).changes > 0,
+    listSkillApprovals: () => db.prepare('SELECT dir, skill, hash, approved_by, at FROM skill_approvals ORDER BY skill').all() as any,
+    addSkillRun: (conv, skill, action, status) => { db.prepare('INSERT INTO skill_runs (ts, conv, skill, action, status) VALUES (?, ?, ?, ?, ?)').run(now(), conv, skill, action, status) },
+    skillRunsSince: (conv, since) => (db.prepare("SELECT count(*) n FROM skill_runs WHERE conv = ? AND ts > ? AND status != 'refused'").get(conv, since) as { n: number }).n,
     setRequestOrigin: (kind, ref, conv, mid) => { db.prepare('INSERT OR REPLACE INTO request_origin (kind, ref, conv, message_id) VALUES (?, ?, ?, ?)').run(kind, ref, conv, mid) },
     requestOrigin: (kind, ref) => ((db.prepare('SELECT message_id FROM request_origin WHERE kind = ? AND ref = ?').get(kind, ref) as { message_id: number } | null)?.message_id) ?? null,
     addApprovalGrant: g => Number(db.prepare('INSERT INTO approval_grants (kind, ref, conv, choice, overrides, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(g.kind, g.ref, g.conv, g.choice, g.overrides, now()).lastInsertRowid),

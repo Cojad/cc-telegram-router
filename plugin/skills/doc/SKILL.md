@@ -47,6 +47,8 @@ worker 要送訊息到別的對話會被擋, 它可以用 request_send_grant 申
 
 ## 技能與憑證
 
+技能可以有特權動作 (像 sudo): owner 或 admin 用 `/router skill approve <技能>` 核准後, user 與 power 對話也能用 `run_skill` 執行, 需要的 cookie 等憑證由 router 在專屬沙箱裡交給腳本, 對話拿不到; 技能檔案被改就自動暫停. `/router skill list` 看狀態. 細節見 /telegram:bot-skill.
+
 owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 Bot API (例如刪除訊息, 置頂, 查群組資訊): `bot_api` 的 credential 填 `self`, 不用另外登記. getUpdates, setWebhook, deleteWebhook, logOut, close 會讓 router 收不到訊息, 不開放; 其他角色不能用.
 
 做技能, 或技能需要 token / 要操作另一隻 bot 時, 先讀 `/telegram:bot-skill`. 重點: token 不寫進技能, 由 owner 或 admin 在私訊用 `/router cred add` 登記成 router 的憑證, worker 用 `bot_api` 工具使用 (一般 API key 由 owner 在終端機登記, 用 `http_api`); owner 與 admin 的對話可以用 `install_skill` 把技能裝成整隻 bot 或全部 bot 共用.

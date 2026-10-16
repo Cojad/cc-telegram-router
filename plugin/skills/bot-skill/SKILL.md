@@ -48,6 +48,25 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能放的位�
 大檔 (例如產生的圖) 用 `save_b64` `{ "at": "data.0.b64_json", "to": "相對路徑" }` 直接存進自己資料夾,
 不要讓它回到對話裡.
 
+## 特權動作 (技能的 sudo bit)
+
+技能要用到 user 或 power 對話拿不到的東西 (cookie, 沙箱外的檔案), 又希望這些對話不用提權就能用時, 在技能資料夾加 `privileged.json`, 列出動作 (像 sudoers):
+
+```json
+{ "actions": {
+  "extract": { "run": ["bash", "scripts/extract.sh", "{url}", "{force?}"],
+               "args": { "url": { "pattern": "https://(www\\.)?youtube\\.com/\\S+" }, "force": { "flag": "--force" } },
+               "roles": ["owner", "admin", "power", "user"], "creds": { "COOKIE_DIR": "my-cookies" },
+               "timeout": 900, "auth_failure": "reason=auth", "refresh": "refresh" },
+  "refresh": { "run": ["python3", "scripts/refresh.py", "{cred:COOKIE_DIR}"], "creds": { "COOKIE_DIR": "my-cookies" }, "internal": true } } }
+```
+
+- 技能要裝在這隻 bot 或全部 bot 範圍, 由 owner 或 admin 用 `/router skill approve <技能>` 核准; 核准會記下檔案雜湊, 之後改了任何檔案都自動暫停, 要重新核准.
+- 對話用 `run_skill` (skill, action, args) 呼叫. router 檢查角色與參數格式 (不經 shell), 在專屬沙箱執行: 只讀得到技能資料夾與 `creds` 指定的憑證資料夾 (路徑放在環境變數), 只寫得到對話資料夾, router 狀態與 $HOME 都看不到.
+- 憑證資料夾在 router 那邊 (`/x/cc/.router/creds/<名稱>`), 由 owner 放入檔案. 腳本要把憑證的工作副本放 `/tmp` (沙箱私有), 不要寫進對話資料夾; router 也會掃描回傳文字與輸出檔, 發現憑證內容就刪除並通知 owner.
+- `auth_failure` 比對到輸出時, router 執行 `refresh` 指定的 internal 動作一次 (只有它能寫憑證資料夾) 再重試; 更新失敗會通知 owner.
+- 每個對話每小時最多 10 次.
+
 ## 跨 bot 技能
 
 要操作另一隻 bot 的資源 (例如只有建立者能修改的貼圖包) 就是跨 bot 技能: 那隻 bot 的 token 照上面登記成憑證, 方法只開放需要的那幾個. 憑證只用來管理資源, 不拿來以那隻 bot 的身分發言. 這類技能通常放「全部 bot」範圍, 由 owner 或 admin 安裝.

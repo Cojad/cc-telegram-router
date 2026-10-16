@@ -61,6 +61,12 @@ export interface CommandDeps {
     /** Owner: call the Bot API with a credential or one of the router's own bots. */
     call(name: string, method: string, params: Record<string, unknown>, files: Record<string, string>): Promise<unknown>
   }
+  /** Privileged skill actions (router/skillrun.ts). */
+  skills: {
+    list(bot: string): string
+    approve(bot: string, name: string, by: string): string
+    revoke(bot: string, name: string): string
+  }
   /** First-run setup of a bot (router/setup.ts). */
   setup: {
     describe(bot: string): string
@@ -166,6 +172,7 @@ const HELP = [
   '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒)',
   '/router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
+  '/router skill list | approve <技能> | revoke <技能> (技能的特權動作: 核准後 user 與 power 對話也能執行, 憑證不外流)',
   '/router cred list | add <名稱> <token> [方法...] (owner 或 admin 的私訊) | allow|disallow <名稱> <方法...> | roles <名稱> <角色,...> | rm <名稱> | reload',
   '/router botapi <憑證或 bot 名稱> <方法> <JSON 參數> [--file 欄位=/路徑] (只限 owner)',
   '/router config (列出全部) | get <key> | set <key> <值>',
@@ -529,6 +536,15 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return `[${c.key}${c.title ? ` ${c.title}` : ''}]\n${rows.map(fmt).join('\n') || '(沒有紀錄)'}`
       })
       return done(blocks.join('\n\n'), { private: true })
+    }
+
+    case 'skill': {
+      const op = args[1] ?? 'list', name = args[2]
+      if (op === 'list') return done(deps.skills.list(input.bot))
+      if (!name) return done('用法: /router skill list | approve <技能> | revoke <技能>')
+      if (op === 'approve') return done(deps.skills.approve(input.bot, name, `${input.senderName} ${input.senderId}`))
+      if (op === 'revoke') return done(deps.skills.revoke(input.bot, name))
+      return done('用法: /router skill list | approve <技能> | revoke <技能>')
     }
 
     case 'cred': {

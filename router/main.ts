@@ -12,7 +12,7 @@ import { AsyncLocalStorage } from 'async_hooks'
 import { Bot, GrammyError, InputFile } from 'grammy'
 import { randomBytes } from 'crypto'
 import { spawn } from 'child_process'
-import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFileSync, realpathSync } from 'fs'
+import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFileSync, realpathSync, readdirSync } from 'fs'
 import { basename, dirname, join } from 'path'
 import { defaultConfigPath, loadConfig, type BotConfig } from './config'
 import { acquireLock } from './lock'
@@ -29,6 +29,8 @@ import { importV1Messages } from './importv1'
 import { refuseUse, refuseOwnBot, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
 import { installSkill } from './skills'
 import { createAuthz } from './authz'
+import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
+import { hashSkill, loadManifest } from './privskill'
 import { createProgress, type ProgressEvent, type Mirror } from './progress'
 import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
@@ -227,6 +229,11 @@ const ipc = createIpc({
       db.logApiCall(`cred:${name}`, `${method} ${path}`, { json: shorten(args.json), form: args.form, files }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
       return { content: [{ type: 'text', text: JSON.stringify({ status: res.status, body: shorten(body) }) }], isError: res.status === 0 || res.status >= 300 }
     }
+    if (tool === 'run_skill') {
+      if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接執行技能的腳本' }], isError: true }
+      const r = await callConv.run(conv.key, () => runSkill(skillDeps, conv, role, String(args.skill ?? ''), String(args.action ?? ''), (args.args ?? {}) as Record<string, unknown>))
+      return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
+    }
     if (tool === 'install_skill') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接把技能放進對應的 .claude/skills' }], isError: true }
       const scope = args.scope === 'all' ? 'all' : 'bot'
@@ -417,6 +424,22 @@ const authz = createAuthz({
 
 const grantDeps: GrantDeps = { db, approvals: approvalDeps, notify: notifyConversation, label, authz }
 
+/** Privileged skill actions (router/skillrun.ts): sandboxed, credentials never reach the worker. */
+const skillDeps: SkillRunDeps = {
+  db, home: cfg.home, credsRoot: join(cfg.stateDir, 'creds'), userHome: homedir(),
+  extraRo: [join(homedir(), '.local', 'bin')],
+  botDir: b => botDir(cfg, b),
+  async exec(argv, env, timeoutMs) {
+    const p = Bun.spawn(argv, { env, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' })
+    const timer = setTimeout(() => p.kill(9), timeoutMs)
+    const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
+    clearTimeout(timer)
+    return { code: await p.exited, out: `${out}${err ? `\n${err}` : ''}`.trim() }
+  },
+  notifyOwner: (c, text) => void postNotice(approvalDeps, c.bot, text),
+  log,
+}
+
 const elevation = createElevation({
   db, approvals: approvalDeps, notify: notifyConversation, label, log, authz,
   applyPermissions: c => commandDeps.applyPermissions(c),
@@ -578,6 +601,34 @@ const commandDeps: CommandDeps = {
       const res = await botApiCall({ apiRoot: cfg.apiRoot, token, method, params, files })
       db.logApiCall(`cred:${name}`, method, { params, files }, res, res.ok ? null : `${res.error_code ?? ''}: ${res.description}`, 'terminal')
       return res
+    },
+  },
+  skills: {
+    list(bot) {
+      const rows: string[] = []
+      for (const [scope, base] of [['這隻 bot', botDir(cfg, bot)], ['全部 bot', cfg.home]] as const) {
+        const root = join(base, '.claude', 'skills')
+        if (!existsSync(root)) continue
+        for (const name of readdirSync(root)) {
+          const dir = join(root, name)
+          if (!loadManifest(dir)) continue
+          const a = db.skillApproval(dir)
+          const state = !a ? '未核准' : a.hash === hashSkill(dir) ? `已核准 (${a.approved_by})` : '核准後被改過, 暫停中'
+          rows.push(`${name} (${scope}): ${state}`)
+        }
+      }
+      return rows.join('\n') || '沒有帶 privileged.json 的技能'
+    },
+    approve(bot, name, by) {
+      const dir = skillDirs({ home: cfg.home, botDir: b => botDir(cfg, b) }, bot, name)[0]
+      if (!dir) return `找不到帶 privileged.json 的技能 ${name} (只看這隻 bot 與全部 bot 範圍)`
+      try { loadManifest(dir) } catch (e) { return `privileged.json 有誤: ${e instanceof Error ? e.message : e}` }
+      db.approveSkill(dir, name, hashSkill(dir), by)
+      return `已核准技能 ${name} 的特權動作 (${dir}):\n${describeActions(dir)}\n之後檔案若被改動會自動暫停, 需要重新核准`
+    },
+    revoke(bot, name) {
+      const dir = skillDirs({ home: cfg.home, botDir: b => botDir(cfg, b) }, bot, name)[0]
+      return dir && db.revokeSkill(dir) ? `已撤銷技能 ${name} 的特權動作` : `技能 ${name} 沒有核准紀錄`
     },
   },
   setup: {
