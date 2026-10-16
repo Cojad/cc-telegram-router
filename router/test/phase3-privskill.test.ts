@@ -83,6 +83,9 @@ test('sandbox env: a private HOME, yet Python finds the user\'s packages under t
   const { sandboxArgv } = await import('../privskill')
   const sb = sandboxArgv({ argv: ['true'], skillDir: skill, convFolder: conv.folder, creds: {}, home: '/home/u', extraRo: [] })
   expect(sb.env).toMatchObject({ HOME: '/tmp', PYTHONUSERBASE: '/home/u/.local', PATH: '/home/u/.local/bin:/usr/local/bin:/usr/bin:/bin' })
+  // a bin dir made visible (deno for yt-dlp) is on PATH as well, so a script finds it with $HOME hidden
+  const withDeno = sandboxArgv({ argv: ['true'], skillDir: skill, convFolder: conv.folder, creds: {}, home: '/home/u', extraRo: ['/home/u/.local/bin', '/home/u/.local/lib', '/home/u/.deno/bin'] })
+  expect(withDeno.env.PATH).toBe('/home/u/.local/bin:/home/u/.deno/bin:/usr/local/bin:/usr/bin:/bin')
   expect(sb.argv.slice(0, 16)).toEqual(['bwrap', '--die-with-parent', '--unshare-pid', '--new-session', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', '--tmpfs', '/x', '--tmpfs'])
 })
 

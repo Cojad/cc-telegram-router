@@ -168,7 +168,9 @@ export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: s
   b.push('--bind', o.convFolder, o.convFolder)
   if (existsSync(join(o.convFolder, '.chat'))) b.push('--ro-bind', join(o.convFolder, '.chat'), join(o.convFolder, '.chat'))
   b.push('--chdir', o.convFolder, '--', ...o.argv)
-  // HOME is a private /tmp; Python still finds the user's packages (websockets...) under the real ~/.local
-  const env: Record<string, string> = { PATH: `${o.home}/.local/bin:/usr/local/bin:/usr/bin:/bin`, HOME: '/tmp', LANG: 'C.UTF-8', TMPDIR: '/tmp', PYTHONUSERBASE: `${o.home}/.local`, ...o.creds, ...o.env }
+  // HOME is a private /tmp; Python still finds the user's packages (websockets...) under the real ~/.local.
+  // Other bin dirs made visible (e.g. ~/.deno/bin, which yt-dlp needs for YouTube's JS challenge) go on PATH too.
+  const bins = [`${o.home}/.local/bin`, ...(o.extraRo ?? []).filter(p => p.endsWith('/bin') && p !== `${o.home}/.local/bin`)]
+  const env: Record<string, string> = { PATH: [...bins, '/usr/local/bin', '/usr/bin', '/bin'].join(':'), HOME: '/tmp', LANG: 'C.UTF-8', TMPDIR: '/tmp', PYTHONUSERBASE: `${o.home}/.local`, ...o.creds, ...o.env }
   return { argv: b, env }
 }

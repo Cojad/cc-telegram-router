@@ -427,7 +427,7 @@ const grantDeps: GrantDeps = { db, approvals: approvalDeps, notify: notifyConver
 /** Privileged skill actions (router/skillrun.ts): sandboxed, credentials never reach the worker. */
 const skillDeps: SkillRunDeps = {
   db, home: cfg.home, credsRoot: join(cfg.stateDir, 'creds'), userHome: homedir(),
-  extraRo: [join(homedir(), '.local', 'bin'), join(homedir(), '.local', 'lib')],
+  extraRo: [join(homedir(), '.local', 'bin'), join(homedir(), '.local', 'lib'), join(homedir(), '.deno', 'bin')],
   botDir: b => botDir(cfg, b),
   async exec(argv, env, timeoutMs) {
     const p = Bun.spawn(argv, { env, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' })
