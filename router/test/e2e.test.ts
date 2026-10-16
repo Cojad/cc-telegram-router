@@ -142,6 +142,31 @@ test('a plugin for the conversation gets the queued message, and its reply goes 
   expect(q("SELECT count(*) n FROM outbound WHERE method = 'getUpdates'")[0].n).toBe(0)
 }, 15000)
 
+test('a group worker answers the asker in their DM (reply on_behalf_of their group message): no grant, the DM says which group; anyone else is refused', async () => {
+  const g = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'group-100777'), pid: 3 }, onMessage(m) { if (m.t === 'deliver') g.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => g.state().kind === 'ready')
+  // message 11 in the group came from 222: their DM is fine, with a heading naming the group and the message
+  const ok = await g.call('reply', { chat_id: '222', text: '明天的天氣預報', on_behalf_of: '11', reply_to: '11' })
+  expect(ok.isError).toBeFalsy()
+  const sent = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.chat_id) === '222'))
+  expect(sent.body.text).toBe('(回覆你在群組「G」的訊息: hi group)\n\n明天的天氣預報')
+  expect(sent.body.reply_parameters).toBeUndefined() // the group message id means nothing in the DM
+  // not the asker, or no such message: refused, nothing sent
+  for (const [chat_id, on_behalf_of] of [['111', '11'], ['222', '999']]) {
+    const r = await g.call('reply', { chat_id, text: `wrong ${chat_id} ${on_behalf_of}`, on_behalf_of })
+    expect(r.isError).toBe(true)
+    expect(String(r.content[0].text)).toContain('只能回到提出要求的那個人的私訊')
+  }
+  expect(calls.some(c => String(c.body?.text).startsWith('wrong'))).toBe(false)
+  // markdownv2: the heading is escaped
+  await g.call('reply', { chat_id: '222', text: '*hi*', format: 'markdownv2', on_behalf_of: '11' })
+  const md = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.chat_id) === '222' && String(c.body.text).endsWith('*hi*')))
+  expect(md.body.text).toStartWith('\\(回覆你在群組「G」的訊息: hi group\\)')
+  // no authorization use is logged for it
+  expect(q("SELECT count(*) n FROM auth_uses")[0].n).toBe(0)
+  g.close()
+}, 15000)
+
 test('a /router command is answered by the router, not forwarded, and the next delivery carries router_log', async () => {
   const delivered: string[] = []
   const client = connectRouter({

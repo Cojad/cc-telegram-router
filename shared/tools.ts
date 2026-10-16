@@ -16,6 +16,10 @@ export const TOOL_DEFINITIONS = [
           type: 'string',
           description: 'Message ID to thread under. Use message_id from the inbound <channel> block.',
         },
+        on_behalf_of: {
+          type: 'string',
+          description: 'From a group: message_id of the message in this group that asked for a DM answer. chat_id is then that sender\'s user id (their DM with the bot); no grant needed, no time limit (e.g. a reminder tomorrow). The router adds a first line saying which group and message it answers. Only the person who sent that message can be the target.',
+        },
         files: {
           type: 'array',
           items: { type: 'string' },

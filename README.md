@@ -22,7 +22,7 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 2. 沿用 v1 的 gate (配對, 允許清單, 群組 mention) 決定要不要送進 Claude. 要送的訊息依 (bot, chat_id) 對應到對話, 第一次出現時建立資料夾與 settings.
 3. 訊息進該對話的佇列. worker 不在線就喚醒: 第一次用 `claude --bg` 帶一句 init prompt 開新 session, 之後用 `--resume`.
 4. worker 的 plugin 讀 `CLAUDE_PROJECT_DIR` 知道自己是哪個對話, 連 `router.sock` 報到, 收到佇列裡的訊息後轉成 channel 通知並回 ack.
-5. 模型呼叫 reply 等工具時, plugin 把呼叫轉給 router; router 檢查目標與附件路徑後代為呼叫 Bot API, 每個呼叫寫進 `outbound`.
+5. 模型呼叫 reply 等工具時, plugin 把呼叫轉給 router; router 檢查目標與附件路徑後代為呼叫 Bot API, 每個呼叫寫進 `outbound`. 群組的 worker 可以不經申請回到提問者的私訊: reply 帶 `on_behalf_of` (提問的那則群組訊息), router 確認發送者就是目標才放行, 不限時間, 私訊開頭標明來自哪個群組與哪則訊息.
 6. 每個工具呼叫在 PreToolUse 由 hook 問 router, router 依對話角色的 settings 檢查 (`permcheck.ts`). 越權就擋下並告訴模型改用不越權的方法; 發話者角色高於對話時, 直接在對話裡貼出「提權執行 / 拒絕」詢問 (120 秒未回應視為拒絕). 按下的人角色夠高才算數, 之後的第一個 subagent 以他的角色執行.
 7. 「cc /指令」由 router 開一次性的 tmux (`claude attach`) 代打: router 指令直接執行; `/status` `/usage` `/context` `/cost` 有專用報表; 其他指令只取它的輸出交給分身整理; `cc //指令` 直接截當下畫面. 離開前一律關掉留下的選單.
 8. power 對話的套件安裝 (pip, npm, bun...) 由 router 查 registry 資料後交給模型判斷風險, low 直接放行, 其餘送 owner 審核.
@@ -117,7 +117,7 @@ bun test router/test
 |---|---|
 | `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor (含 resume 後的說明更新提醒 freshness), plugin MCP, router 離線告知 |
 | `router/test/phase2.test.ts` | 規劃 03 的 /router 指令表與拒絕訊息 (含 chat_id 跨 bot 指定, --bot, 對話 key), 06 chat_context, router_log, hook, 「cc /」代打, 即時進度訊息 |
-| `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, /router 指令不轉給 worker, CLI |
+| `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, 群組回到提問者的私訊 (on_behalf_of), /router 指令不轉給 worker, CLI |
 | `router/test/phase3.test.ts` | 規劃 03, 07: 角色範本, /router perm, 權限檢查, 跨對話傳訊申請, 審核頻道, 提權 (詢問, 核准, 逾時, 主動申請, 紀錄), hook, bot 資料夾與搬遷 |
 | `router/test/phase3-cred.test.ts` | 憑證的角色與方法限制, Bot API 呼叫 (含上傳), install_skill 的來源, 範圍與檢查, /router cred 與 botapi |
 | `router/test/secrets.test.ts` | 規劃 10b 對話專屬密鑰: 加密與綁定, 遮蔽, /secret 指令 (私訊, 群組, 拒絕, 上限, getMe 驗證, --header), 使用範圍檢查, /router secret; events 遮蔽與一次性 migration, 全域 http 路徑, bot 設定提醒 |
@@ -158,6 +158,7 @@ bun test router/test
 | 主動申請 (request_elevation) 送 owner | phase3「request_elevation from a plain user turn…」 |
 | 提權紀錄: 被擋, 申請, 成功 (附原申請連結), 群組話題 | phase3「…approval runs the next subagent…」(紀錄與連結), 「elevation log: with an approvals group…」 |
 | 跨對話傳訊: owner 審核, 目標對話與 owner 同時詢問 | phase3「grants: owner mode…」「grants: target mode…」 |
+| 群組回到提問者的私訊 (reply on_behalf_of): 不用申請, 不限時間, 標明來源, 其他人一律擋 | e2e「a group worker answers the asker in their DM…」 |
 | power 安裝套件: 低風險放行, 其餘送審, 核准後可裝 | phase3-pkg 全部 |
 | 新 bot 初次設定與審核群組 | e2e-setup 全部 |
 | /router perm 與覆寫 | phase3「/router perm: show…」「admin cannot touch…」「overrides lay paths…」 |

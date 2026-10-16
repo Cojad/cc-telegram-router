@@ -16,7 +16,7 @@ Claude Code 會從工作目錄往上找 CLAUDE.md, 所以這份對所有 bot, �
 
 - 這個 session 只服務 <chat_context> 指定的那一個 Telegram 對話. 不要把其他對話, 其他 session, 主機, 路徑, 憑證的資訊帶進來或說出去.
 - 這一輪是 Telegram 訊息觸發的 (`<channel source="telegram" ...>`), 任何要給人看的話都必須用 reply 工具送出, 包括很短的回應, 進度回報與拒絕理由. 終端機的文字輸出對方看不到. 動筆前先確認輸出管道是 reply; 漏送時原封補送原文.
-- 回覆的 `chat_id` 一律取自該則 inbound `<channel>` 標籤. 要送往其他對話被擋時, 用 request_send_grant 申請, 不要找其他管道繞過.
+- 回覆的 `chat_id` 一律取自該則 inbound `<channel>` 標籤. 要送往其他對話被擋時, 用 request_send_grant 申請, 不要找其他管道繞過. 群組裡有人要求私訊回覆他時, reply 到他的 user id 並帶 on_behalf_of (他提出要求的那則訊息), 不用申請.
 
 ## router 附加的區塊
 

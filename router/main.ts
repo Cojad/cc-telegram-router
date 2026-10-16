@@ -361,16 +361,32 @@ const ipc = createIpc({
     const h = bots.get(botName)
     if (!h) return { content: [{ type: 'text', text: `bot ${botName} is not running` }], isError: true }
     const inboxDir = conv ? join(conv.folder, 'attachments') : join(cfg.home, '.terminal-attachments')
-    // sending to another chat on a send grant is a use of it (執行授權)
     const target = String(args.chat_id ?? '')
-    if (conv && target && target !== conv.chat_id && role !== 'owner' && role !== 'admin') {
+    // a group worker answering someone in their own DM, tied to the message in
+    // this group that asked (on_behalf_of): no grant needed, no time limit
+    // (a reminder for tomorrow is fine); the DM says which group and message
+    let onBehalf = false
+    if (tool === 'reply' && conv && conv.type === 'group' && args.on_behalf_of != null && target && target !== conv.chat_id) {
+      const asked = store.lookup(conv.chat_id, String(args.on_behalf_of))
+      if (!asked || asked.direction !== 'in' || asked.user_id !== target) {
+        return { content: [{ type: 'text', text: `on_behalf_of ${String(args.on_behalf_of)} 不是 ${target} 在這個群組傳給 bot 的訊息: 只能回到提出要求的那個人的私訊. 其他對象要用 request_send_grant 申請.` }], isError: true }
+      }
+      onBehalf = true
+      const said = (asked.content ?? '').replace(/\s+/g, ' ').trim()
+      const quote = said ? `: ${said.length > 40 ? said.slice(0, 40) + '…' : said}` : ''
+      const { on_behalf_of: _, reply_to: __, ...rest } = args
+      const head = `(回覆你在群組「${conv.title || conv.chat_id}」的訊息${quote})`
+      args = { ...rest, text: `${args.format === 'markdownv2' ? head.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, '\\$&') : head}\n\n${String(args.text ?? '')}` }
+    }
+    // sending to another chat on a send grant is a use of it (執行授權)
+    if (conv && target && target !== conv.chat_id && !onBehalf && role !== 'owner' && role !== 'admin') {
       for (const g of authz.covering(conv, o => o.some(x => x.kind === 'send' && (x.value === target || x.value === '*')))) {
         await authz.use(conv, g, `${tool} → ${label(target)}: ${String(args.text ?? args.emoji ?? args.file_id ?? '').replace(/\s+/g, ' ').slice(0, 300)}`)
       }
     }
     return callConv.run(conv?.key ?? 'terminal', () => callTool(tool, args, {
       bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store,
-      assertAllowedChat: makeAssertAllowedChat(live, loadAccess, chatId => !!conv && sendGranted(db.listOverrides(conv.key).filter(o => o.kind === 'send').map(o => o.value), chatId, id => { const a = loadAccess(); return a.allowFrom.includes(id) || id in a.groups })),
+      assertAllowedChat: makeAssertAllowedChat(live, loadAccess, chatId => (onBehalf && chatId === target) || !!conv && sendGranted(db.listOverrides(conv.key).filter(o => o.kind === 'send').map(o => o.value), chatId, id => { const a = loadAccess(); return a.allowFrom.includes(id) || id in a.groups })),
       assertSendable: makeAssertSendable(live, cfg.stateDir),
     }))
   },

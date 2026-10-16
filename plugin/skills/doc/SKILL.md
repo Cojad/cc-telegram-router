@@ -45,6 +45,8 @@ pip, uv, poetry, npm, bun, yarn, pnpm, npx, uvx 的安裝指令會先由 router 
 
 worker 要送訊息到別的對話會被擋, 它可以用 request_send_grant 申請: 向 owner 申請 (永久有效), 或請目標對話同意 (同時也會送給 owner, 先按的人決定).
 
+例外: 群組裡有人要 bot 私訊回覆他 (例如「明天早上九點私訊提醒我天氣」), 群組的 worker 用 reply 送到那個人的私訊 (chat_id 是他的 user id), 並帶 `on_behalf_of` = 他在群組裡提出要求的那則訊息. router 確認那則訊息是他傳的就放行, 不用申請, 也沒有時間限制; 私訊開頭會自動加一行「(回覆你在群組「X」的訊息: …)」. 只能回到提出要求的那個人, 對方也要曾經私訊過 bot.
+
 ## 技能與憑證
 
 技能可以有特權動作 (像 sudo): owner 或 admin 用 `/router skill approve <技能>` 核准後, user 與 power 對話也能用 `run_skill` 執行, 需要的 cookie 等憑證由 router 在專屬沙箱裡交給腳本, 對話拿不到; 技能檔案被改就自動暫停. `/router skill list` 看狀態. 細節見 /telegram:bot-skill.
