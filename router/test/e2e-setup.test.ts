@@ -160,6 +160,34 @@ test('approvals group: refused until it is a supergroup with topics and the bot 
   expect(calls.filter(c => c.method === 'createForumTopic')).toHaveLength(4)
 }, 20000)
 
+test('a decision on a request: the turn it starts shows progress as a reply to the message that asked, and mirrored in the approvals topic under the pressed request', async () => {
+  const U = { id: 666, is_bot: false, first_name: 'U', username: 'u' }
+  const askId = mid
+  dm(U, '請幫我送訊息到 -100777')
+  const worker = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-666'), pid: 21 }, onMessage(m) { if (m.t === 'deliver') worker.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => worker.state().kind === 'ready')
+  await until(() => q(`SELECT count(*) n FROM queue WHERE conv = 'dm-666' AND status = 'acked' AND params LIKE '%-100777%'`)[0].n === 1)
+  const r = await worker.call('request_send_grant', { chat_id: '-100777', mode: 'owner', reason: 'test' })
+  const gid = Number(/#(\d+)/.exec(r.content[0]!.text)![1])
+  const req = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith(`🔐 跨對話傳訊申請 #${gid}`)))
+  expect(req.body.message_thread_id).toBe(42)
+  const reqMsgId = 900 + calls.indexOf(req) + 1
+  updates.push({ update_id: mid, callback_query: { id: `cb${mid++}`, from: OWNER, chat_instance: 'x', data: `grant:${gid}:once`, message: { message_id: reqMsgId, message_thread_id: 42, is_topic_message: true, date: now, chat: { id: -100900, type: 'supergroup', is_forum: true }, text: req.body.text } } })
+  await until(() => q(`SELECT status FROM grants WHERE id = ${gid}`)[0].status === 'approved')
+  // the worker's next turn (the router notice) starts: what its hook reports
+  const hook = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', 'prompt'], {
+    stdin: new Blob([JSON.stringify({ prompt: '<channel source="plugin:telegram:telegram" chat_id="666" user="router"><router_status>…</router_status></channel>' })]),
+    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: join(dir, 'bot123', 'dm-666') },
+  })
+  await hook.exited
+  const own = await until(() => calls.find(c => c.method === 'sendMessage' && Number(c.body.chat_id) === 666 && c.body.text === '🤔 思考中…'))
+  expect(own.body.reply_parameters.message_id).toBe(askId)
+  const mirror = await until(() => calls.find(c => c.method === 'sendMessage' && Number(c.body.chat_id) === -100900 && String(c.body.text).includes('🤔 思考中…')))
+  expect(mirror.body).toMatchObject({ message_thread_id: 42, reply_parameters: { message_id: reqMsgId } })
+  expect(mirror.body.text).toStartWith('↪ @u:U (dm-666) 收到結果, 處理中:')
+  worker.close()
+}, 30000)
+
 test('skip: only the owner may press it; afterwards everything goes to the owner DM; /router setup shows the state', async () => {
   const press = (from: typeof OWNER) => updates.push({ update_id: mid, callback_query: { id: `cb${mid++}`, from, chat_instance: 'x', data: 'setup:new:skip', message: { message_id: 1, date: now, chat: { id: 555, type: 'private' }, text: 'guide' } } })
   press({ id: 666, is_bot: false, first_name: 'U', username: 'u' })

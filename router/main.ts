@@ -29,7 +29,7 @@ import { importV1Messages } from './importv1'
 import { refuseUse, botApiCall, DEFAULT_CRED_ROLES } from './credentials'
 import { installSkill } from './skills'
 import { createAuthz } from './authz'
-import { createProgress, type ProgressEvent } from './progress'
+import { createProgress, type ProgressEvent, type Mirror } from './progress'
 import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
 import { postNotice, type ApprovalDeps } from './approvals'
@@ -151,7 +151,12 @@ function ipcOnProgress(peer: Peer, ev: Record<string, unknown>): void {
   const c = peer.conv
   if (!c) return
   if (ev.event === 'stop' || (ev.event === 'prompt' && ev.telegram)) log(`progress ${c.key} ${ev.event}`)
-  void callConv.run(c.key, () => progress.handle(c.key, c.chat_id, ev as ProgressEvent)).catch(e => log(`progress ${c.key}: ${e}`))
+  let replyTo: number | undefined, mirrors: Mirror[] | undefined
+  if (ev.event === 'prompt' && ev.telegram) {
+    replyTo = replyNext.get(c.key); replyNext.delete(c.key)
+    mirrors = pendingMirrors.get(c.key); pendingMirrors.delete(c.key)
+  }
+  void callConv.run(c.key, () => progress.handle(c.key, c.chat_id, ev as ProgressEvent, { replyTo, mirrors })).catch(e => log(`progress ${c.key}: ${e}`))
 }
 
 const ipc = createIpc({
@@ -281,6 +286,7 @@ const ipc = createIpc({
     const logs = renderLogs(db.bindLogs(key, qid))
     if (logs) parts.push(logs)
     const who = elevation.onDeliver(c, params.meta.user_id)
+    if (params.meta.message_id && params.meta.user !== 'router') currentMsg.set(key, Number(params.meta.message_id))
     if (c.type === 'dm' && cfg.owners.includes(c.chat_id) && params.meta.user_id === c.chat_id && needsPersona(db.getBotSetup(c.bot))) parts.push(bootstrapNote(c.bot))
     return {
       content: parts.length ? `${parts.join('\n')}\n${params.content}` : params.content,
@@ -290,12 +296,19 @@ const ipc = createIpc({
 })
 
 // Live "🤔 思考中…" message per Telegram-triggered turn (v1 hooks, now router-owned).
+// Mirrors can go to an approvals group, which is no conversation: find its bot by setup.
 const progressBot = (chatId: string) => {
   const c = db.listConversations().find(x => x.chat_id === chatId)
-  return bots.get(c?.bot ?? cfg.bots[0]!.name)?.bot.api
+  const viaSetup = c ? null : cfg.bots.find(b => db.getBotSetup(b.name)?.approvals_chat === chatId)
+  return bots.get(c?.bot ?? viaSetup?.name ?? cfg.bots[0]!.name)?.bot.api
 }
 const progress = createProgress({
-  async send(chatId, text) { return (await progressBot(chatId)?.sendMessage(chatId, text))?.message_id ?? null },
+  async send(chatId, text, o) {
+    return (await progressBot(chatId)?.sendMessage(chatId, text, {
+      ...(o?.thread ? { message_thread_id: o.thread } : {}),
+      ...(o?.replyTo ? { reply_parameters: { message_id: o.replyTo, allow_sending_without_reply: true } } : {}),
+    }))?.message_id ?? null
+  },
   async edit(chatId, id, text) { await progressBot(chatId)?.editMessageText(chatId, id, text) },
   async remove(chatId, id) { await progressBot(chatId)?.deleteMessage(chatId, id) },
   track: (key, chatId, id) => db.trackProgress(key, chatId, id),
@@ -311,7 +324,26 @@ const supervisor = createSupervisor({
 })
 
 /** Put a router-originated message in front of a conversation's worker. */
-function notifyConversation(c: Conversation, text: string): void {
+/** The Telegram message each conversation is handling (set as messages are delivered). */
+const currentMsg = new Map<string, number>()
+/** Conversations whose next turn answers a request: its progress replies to the message that asked. */
+const replyNext = new Map<string, number>()
+/** Where the button being handled was pressed (callback handler), for mirrored progress. */
+const decisionOrigin = new AsyncLocalStorage<Omit<Mirror, 'label'>>()
+const pendingMirrors = new Map<string, Mirror[]>()
+
+/** Put a router-originated message in front of a conversation's worker.
+ *  about: it answers request kind#ref, so the turn it starts shows its
+ *  progress as a reply to the message that led to the request. */
+function notifyConversation(c: Conversation, text: string, about?: { kind: string; ref: number }): void {
+  const origin = about ? db.requestOrigin(about.kind, about.ref) : null
+  if (origin != null && !progress.active(c.key)) replyNext.set(c.key, origin)
+  // pressed in another chat (approvals group, target chat): mirror the progress there too
+  const pressed = decisionOrigin.getStore()
+  if (pressed && pressed.chatId !== c.chat_id) {
+    const m: Mirror = { ...pressed, label: `↪ ${c.type === 'dm' ? dmLabel(db, c.chat_id) : (c.title ?? c.key)} (${c.key}) 收到結果, 處理中:` }
+    if (!progress.attach(c.key, m)) pendingMirrors.set(c.key, [...(pendingMirrors.get(c.key) ?? []), m])
+  }
   db.enqueue(c.key, { content: text, meta: { chat_id: c.chat_id, user: 'router', ts: new Date().toISOString() } })
   if (ipc.isConnected(c.key)) ipc.pushQueue(c.key)
   else void supervisor.ensureAwake(c)
@@ -327,6 +359,10 @@ const approvalDeps: ApprovalDeps = {
       ...(to.thread_id ? { message_thread_id: to.thread_id } : {}),
       ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map(b => ({ text: b.text, callback_data: b.data }))] } } : {}),
     }).then(m => m.message_id, e => { log(`send to ${to.chat_id}: ${e}`); return null })
+  },
+  noteRequest(kind, ref, conv) {
+    const mid = currentMsg.get(conv.key)
+    if (mid != null) db.setRequestOrigin(kind, ref, conv.key, mid)
   },
   async edit(bot, chatId, messageId, text, buttons) {
     await bots.get(bot)?.bot.api.editMessageText(chatId, messageId, text, { reply_markup: { inline_keyboard: buttons?.length ? [buttons.map(b => ({ text: b.text, callback_data: b.data }))] : [] } })
@@ -604,12 +640,17 @@ function startBot(bc: BotConfig): BotHandle {
     const data = ctx.callbackQuery?.data
     if (data && ctx.from && /^(grant|pkg|elev|setup):/.test(data)) {
       const uid = String(ctx.from.id)
-      let answer: string | null = null
-      if (data.endsWith(':revoke')) answer = await authz.revoke(data, uid)
-      else if (data.startsWith('grant:')) answer = await decideGrant(grantDeps, data, uid, String(ctx.chat?.id ?? ''))
-      else if (data.startsWith('pkg:')) answer = await pkgGate.decide(data, uid)
-      else if (data.startsWith('elev:')) answer = await elevation.decide(data, uid)
-      else if (data === `setup:${bc.name}:skip`) {
+      let answer = null as string | null
+      // the request message that was pressed: the turn this decision starts mirrors its progress there
+      const pressed = ctx.callbackQuery!.message
+      const origin = { chatId: String(ctx.chat?.id ?? ''), ...(pressed && 'message_thread_id' in pressed && pressed.message_thread_id ? { thread: pressed.message_thread_id } : {}), ...(pressed ? { replyTo: pressed.message_id } : {}) }
+      await decisionOrigin.run(origin, async () => {
+        if (data.endsWith(':revoke')) answer = await authz.revoke(data, uid)
+        else if (data.startsWith('grant:')) answer = await decideGrant(grantDeps, data, uid, String(ctx.chat?.id ?? ''))
+        else if (data.startsWith('pkg:')) answer = await pkgGate.decide(data, uid)
+        else if (data.startsWith('elev:')) answer = await elevation.decide(data, uid)
+      })
+      if (data === `setup:${bc.name}:skip`) {
         if (!cfg.owners.includes(uid)) answer = '只有 owner 能決定'
         else {
           commandDeps.setup.skip(bc.name)

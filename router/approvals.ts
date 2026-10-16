@@ -5,7 +5,7 @@
 // chats (e.g. the target conversation of a send grant as well); every copy
 // is recorded so the outcome is written onto all of them.
 
-import type { RouterDb } from './db'
+import type { Conversation, RouterDb } from './db'
 
 export type Place = { chat_id: string; thread_id?: number }
 export type Button = { text: string; data: string }
@@ -40,7 +40,12 @@ export interface ApprovalDeps {
   send(bot: string, to: Place, text: string, buttons: Button[]): Promise<number | null>
   /** Replace a message's text; buttons replace its keyboard (none = removed). */
   edit(bot: string, chat_id: string, message_id: number, text: string, buttons?: Button[]): Promise<void>
+  /** A request kind#ref was just made by conv (to find the message that led to it later). */
+  noteRequest?(kind: string, ref: number, conv: Conversation): void
 }
+
+/** What a router notice to a worker is about, when it answers a request. */
+export type About = { kind: string; ref: number }
 
 export function approvalPlace(db: RouterDb, owners: string[], bot: string): Place | null {
   const s = db.getBotSetup(bot)

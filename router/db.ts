@@ -121,6 +121,9 @@ export interface RouterDb {
   pendingElevation(conv: string): Elevation | null
   decideElevation(id: number, status: 'approved' | 'denied' | 'expired', by: string | null, role: string | null): boolean
   addElevLog(conv: string, kind: ElevLogKind, text: string, ref: number | null): void
+  /** The Telegram message a conversation was handling when it made request kind#ref. */
+  setRequestOrigin(kind: string, ref: number, conv: string, message_id: number): void
+  requestOrigin(kind: string, ref: number): number | null
   addApprovalGrant(g: Pick<ApprovalGrant, 'kind' | 'ref' | 'conv' | 'choice' | 'overrides'>): number
   approvalGrantsFor(kind: string, ref: number): ApprovalGrant[]
   activeApprovalGrants(conv: string): ApprovalGrant[]
@@ -203,6 +206,7 @@ export function openRouterDb(path: string): RouterDb {
       id INTEGER PRIMARY KEY AUTOINCREMENT, conv TEXT NOT NULL, kind TEXT NOT NULL, sender TEXT, action TEXT NOT NULL, reason TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending', decided_by TEXT, decided_role TEXT, created_at TEXT NOT NULL, decided_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS request_origin (kind TEXT NOT NULL, ref INTEGER NOT NULL, conv TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (kind, ref));
     CREATE TABLE IF NOT EXISTS approval_grants (
       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, ref INTEGER NOT NULL, conv TEXT NOT NULL, choice TEXT NOT NULL,
       overrides TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT
@@ -334,6 +338,8 @@ export function openRouterDb(path: string): RouterDb {
     clearOverrides: conv => qOvClear.run(conv).changes,
     setRotate: (key, on) => { qRotSet.run(on ? 1 : 0, key) },
     rotatePending: () => qRotAll.all() as Conversation[],
+    setRequestOrigin: (kind, ref, conv, mid) => { db.prepare('INSERT OR REPLACE INTO request_origin (kind, ref, conv, message_id) VALUES (?, ?, ?, ?)').run(kind, ref, conv, mid) },
+    requestOrigin: (kind, ref) => ((db.prepare('SELECT message_id FROM request_origin WHERE kind = ? AND ref = ?').get(kind, ref) as { message_id: number } | null)?.message_id) ?? null,
     addApprovalGrant: g => Number(db.prepare('INSERT INTO approval_grants (kind, ref, conv, choice, overrides, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(g.kind, g.ref, g.conv, g.choice, g.overrides, now()).lastInsertRowid),
     approvalGrantsFor: (kind, ref) => db.prepare('SELECT id, kind, ref, conv, choice, overrides, status, revoked_by FROM approval_grants WHERE kind = ? AND ref = ? ORDER BY id').all(kind, ref) as ApprovalGrant[],
     activeApprovalGrants: conv => db.prepare("SELECT id, kind, ref, conv, choice, overrides, status, revoked_by FROM approval_grants WHERE conv = ? AND status = 'active' ORDER BY id").all(conv) as ApprovalGrant[],

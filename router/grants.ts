@@ -12,7 +12,7 @@
 // it as a <router_status> message.
 
 import type { Conversation, RouterDb } from './db'
-import { postApproval, settleApproval, mayDecide, parseChoice, CHOICE_WORD, type ApprovalDeps } from './approvals'
+import { postApproval, settleApproval, mayDecide, parseChoice, CHOICE_WORD, type ApprovalDeps, type About } from './approvals'
 import type { Authz } from './authz'
 
 /** The send overrides allow chat_id: listed, or send * and the bot is in it. */
@@ -24,7 +24,7 @@ export interface GrantDeps {
   db: RouterDb
   approvals: ApprovalDeps
   /** Tell the requesting worker (queued like a message, wakes it if needed). */
-  notify(conv: Conversation, text: string): void
+  notify(conv: Conversation, text: string, about?: About): void
   label(chatOrUid: string): string
   /** Remembers what an approval granted (revoke, 執行授權). */
   authz?: Authz
@@ -36,6 +36,7 @@ export async function requestGrant(deps: GrantDeps, from: Conversation, target: 
   if (sends.includes(target) || sends.includes('*')) return `已經可以送往 ${target}, 直接送出即可`
   if (!deps.approvals.owners[0]) return '沒有設定 owner, 無法申請'
   const id = db.addGrant({ from_conv: from.key, target, mode, reason })
+  deps.approvals.noteRequest?.('grant', id, from)
   const who = `${from.key}${from.title ? ` (${from.title})` : ''}`
   const ownerText = [
     `🔐 跨對話傳訊申請 #${id}`,
@@ -75,6 +76,6 @@ export async function decideGrant(deps: GrantDeps, data: string, uid: string, ch
   if (p.choice !== 'deny' && from) deps.authz?.record('grant', g.id, from, p.choice, [{ kind: 'send', value }], outcome)
   await settleApproval(deps.approvals, 'grant', g.id, outcome, p.choice !== 'deny')
   const scope = p.choice === 'always' ? ', 之後送往 bot 所在的任何對話都不用再申請' : p.choice === 'once' ? `, 現在可以送往 ${deps.label(g.target)}` : ''
-  if (from) deps.notify(from, `<router_status>\n跨對話傳訊申請 #${g.id} ${word} (${deps.label(uid)})${scope}.\n</router_status>`)
+  if (from) deps.notify(from, `<router_status>\n跨對話傳訊申請 #${g.id} ${word} (${deps.label(uid)})${scope}.\n</router_status>`, { kind: 'grant', ref: g.id })
   return word
 }

@@ -3,7 +3,10 @@
 // the Telegram message: "🤔 思考中…" when a Telegram-triggered turn starts, one
 // line per tool call (▶ rewritten in place to ✅), compaction lines, "✅ 完成"
 // at Stop, then deleted after a few seconds. Edits are throttled so a burst of
-// tool calls does not hit Telegram's per-chat edit limit.
+// tool calls does not hit Telegram's per-chat edit limit. A turn started by
+// the outcome of a request (approved, denied, revoked) replies to the message
+// that led to the request, so whoever asked sees it carry on, and a copy goes
+// where the button was pressed (Mirror) (柯姊 2026-10-16).
 
 export type ProgressEvent =
   | { event: 'prompt'; telegram: boolean }
@@ -11,8 +14,13 @@ export type ProgressEvent =
   | { event: 'compact-pre' | 'compact-post'; trigger: string }
   | { event: 'stop' }
 
+/** A second copy of the progress where someone pressed the approve/deny/revoke
+ *  button that started this turn (柯姊 2026-10-16), so they see the
+ *  conversation working. label names the conversation. */
+export type Mirror = { chatId: string; thread?: number; replyTo?: number; label: string }
+
 export interface ProgressApi {
-  send(chatId: string, text: string): Promise<number | null>
+  send(chatId: string, text: string, opts?: { thread?: number; replyTo?: number }): Promise<number | null>
   edit(chatId: string, messageId: number, text: string): Promise<void>
   remove(chatId: string, messageId: number): Promise<void>
   /** Remember / forget a live progress message outside this process, so one
@@ -21,7 +29,8 @@ export interface ProgressApi {
   untrack?(key: string, messageId: number): void
 }
 
-type State = { chatId: string; messageId: number | null; lines: string[]; head: string; timer: ReturnType<typeof setTimeout> | null; dirty: boolean; starting: Promise<void> | null }
+type Target = { chatId: string; messageId: number | null; label?: string; starting: Promise<void> | null }
+type State = { targets: Target[]; lines: string[]; head: string; timer: ReturnType<typeof setTimeout> | null; dirty: boolean }
 
 const MAX_LINES = 25
 
@@ -30,14 +39,24 @@ export function createProgress(api: ProgressApi, opts: { throttleMs?: number; de
   const deleteAfter = opts.deleteAfterMs ?? 5000
   const states = new Map<string, State>()
 
-  const render = (s: State) => (s.lines.length ? `${s.head}\n\n${s.lines.join('\n')}` : s.head).slice(0, 4000)
+  const render = (s: State, t: Target) => {
+    const body = s.lines.length ? `${s.head}\n\n${s.lines.join('\n')}` : s.head
+    return (t.label ? `${t.label}\n${body}` : body).slice(0, 4000)
+  }
+
+  function open(key: string, s: State, t: Target, where?: { thread?: number; replyTo?: number }): void {
+    t.starting = api.send(t.chatId, render(s, t), where && (where.thread || where.replyTo) ? { ...(where.thread ? { thread: where.thread } : {}), ...(where.replyTo ? { replyTo: where.replyTo } : {}) } : undefined)
+      .then(id => { t.messageId = id; if (id != null) api.track?.(key, t.chatId, id) }, () => { t.messageId = null })
+      .finally(() => { t.starting = null })
+    s.targets.push(t)
+  }
 
   async function flush(s: State): Promise<void> {
     s.timer = null
-    if (s.starting) await s.starting
-    if (!s.dirty || s.messageId == null) return
+    await Promise.all(s.targets.map(t => t.starting))
+    if (!s.dirty) return
     s.dirty = false
-    await api.edit(s.chatId, s.messageId, render(s)).catch(() => {})
+    await Promise.all(s.targets.filter(t => t.messageId != null).map(t => api.edit(t.chatId, t.messageId!, render(s, t)).catch(() => {})))
   }
   function schedule(s: State): void {
     s.dirty = true
@@ -47,24 +66,28 @@ export function createProgress(api: ProgressApi, opts: { throttleMs?: number; de
   async function finish(key: string, s: State): Promise<void> {
     states.delete(key)
     if (s.timer) { clearTimeout(s.timer); s.timer = null }
-    if (s.starting) await s.starting
-    if (s.messageId == null) return
     s.head = '✅ 完成'
     s.dirty = true
     await flush(s)
-    const id = s.messageId
-    setTimeout(() => void api.remove(s.chatId, id).catch(() => {}).finally(() => api.untrack?.(key, id)), deleteAfter)
+    for (const t of s.targets) {
+      const id = t.messageId
+      if (id == null) continue
+      setTimeout(() => void api.remove(t.chatId, id).catch(() => {}).finally(() => api.untrack?.(key, id)), deleteAfter)
+    }
   }
 
   return {
-    async handle(key: string, chatId: string, ev: ProgressEvent): Promise<void> {
-      let s = states.get(key)
+    /** opts.replyTo: the conversation's own progress replies to that message;
+     *  opts.mirrors: copies elsewhere (see Mirror). */
+    async handle(key: string, chatId: string, ev: ProgressEvent, opts: { replyTo?: number; mirrors?: Mirror[] } = {}): Promise<void> {
+      const s = states.get(key)
       if (ev.event === 'prompt') {
         if (s) await finish(key, s)
         if (!ev.telegram) return
-        const st: State = { chatId, messageId: null, lines: [], head: '🤔 思考中…', timer: null, dirty: false, starting: null }
-        st.starting = api.send(chatId, st.head).then(id => { st.messageId = id; if (id != null) api.track?.(key, chatId, id) }, () => { st.messageId = null }).finally(() => { st.starting = null })
+        const st: State = { targets: [], lines: [], head: '🤔 思考中…', timer: null, dirty: false }
         states.set(key, st)
+        open(key, st, { chatId, messageId: null, starting: null }, { replyTo: opts.replyTo })
+        for (const m of opts.mirrors ?? []) open(key, st, { chatId: m.chatId, messageId: null, label: m.label, starting: null }, m)
         return
       }
       if (!s) return // not a Telegram-triggered turn
@@ -82,6 +105,13 @@ export function createProgress(api: ProgressApi, opts: { throttleMs?: number; de
       }
       s.lines = s.lines.slice(-MAX_LINES)
       schedule(s)
+    },
+    /** Add a mirror to the turn already running for this conversation. False when none is. */
+    attach(key: string, m: Mirror): boolean {
+      const s = states.get(key)
+      if (!s) return false
+      open(key, s, { chatId: m.chatId, messageId: null, label: m.label, starting: null }, m)
+      return true
     },
     active: (key: string) => states.has(key),
     /** Delete progress messages a previous router process left behind. */

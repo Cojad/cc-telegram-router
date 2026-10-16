@@ -23,7 +23,7 @@
 
 import type { Conversation, RouterDb, ElevLogKind } from './db'
 import { checkCall, describeCall, rank, permanentRule, type Call, type Rule } from './permcheck'
-import { postApproval, settleApproval, logPlace, messageLink, buttons, parseChoice, CHOICE_WORD, type ApprovalDeps } from './approvals'
+import { postApproval, settleApproval, logPlace, messageLink, buttons, parseChoice, CHOICE_WORD, type ApprovalDeps, type About } from './approvals'
 import { applyOverrides } from './settings'
 import type { Authz } from './authz'
 
@@ -41,7 +41,7 @@ export interface ElevationDeps {
   /** Effective settings this conversation would have under another role
    *  (keep: which of its overrides to lay on; default all). */
   settingsAs(conv: Conversation, role: string, keep?: (o: { kind: string; value: string }) => boolean): any
-  notify(conv: Conversation, text: string): void
+  notify(conv: Conversation, text: string, about?: About): void
   /** Overrides changed: rewrite settings, rotate the worker. */
   applyPermissions(conv: Conversation): void
   /** Remembers what an approval granted, logs each use (revoke, 執行授權). */
@@ -96,6 +96,7 @@ export function createElevation(deps: ElevationDeps) {
     const sender = senderOf(conv)
     const inChat = !!elevatedSender(conv)
     const id = db.addElevation({ conv: conv.key, kind, sender, action: call ? JSON.stringify(call) : action, reason })
+    deps.approvals.noteRequest?.('elev', id, conv)
     const rule = ruleFor(conv, call)
     const text = [
       `🔐 提權請求 #${id}${kind === 'active' ? ' (主動申請)' : ''}`,
@@ -131,9 +132,9 @@ export function createElevation(deps: ElevationDeps) {
     await record(conv, status, `${status === 'approved' ? `✅ 提權成功${permanent ? ' (永久允許)' : ''}` : status === 'denied' ? '❌ 提權被拒' : '⌛ 提權逾時'} #${id} ${conv.key}${status === 'approved' ? `: 由 ${who(uid)} 核准, 以 ${role} 角色執行` : ''}${permanent ? `\n永久允許: ${permanent.desc} (權限覆寫 ${permanent.overrides.map(o => `${o.kind} ${o.value}`).join(', ')})` : ''}\n原始請求: ${linkOf(id)}`, id)
     if (status === 'approved') {
       granted.set(conv.key, { id, role: role!, by: uid!, until: Date.now() + ttl })
-      deps.notify(conv, `<router_status>\n提權 #${id} 已核准 (${who(uid)}): 以 ${role} 角色執行.${permanent ? `\n另外永久允許: 之後可以${permanent.desc}, worker 下次重啟後生效.` : ''}\n用 Agent 工具開「一個」general-purpose subagent 去完成被擋下的工作, prompt 寫清楚要做什麼; subagent 的 Bash 需要跳出 sandbox 時帶 dangerouslyDisableSandbox: true. 只有接下來開的第一個 subagent 有這個權限, ${Math.round(ttl / 60000)} 分鐘內要開始, 它結束就失效. 主 session 自己不要做越權的事.\n</router_status>`)
+      deps.notify(conv, `<router_status>\n提權 #${id} 已核准 (${who(uid)}): 以 ${role} 角色執行.${permanent ? `\n另外永久允許: 之後可以${permanent.desc}, worker 下次重啟後生效.` : ''}\n用 Agent 工具開「一個」general-purpose subagent 去完成被擋下的工作, prompt 寫清楚要做什麼; subagent 的 Bash 需要跳出 sandbox 時帶 dangerouslyDisableSandbox: true. 只有接下來開的第一個 subagent 有這個權限, ${Math.round(ttl / 60000)} 分鐘內要開始, 它結束就失效. 主 session 自己不要做越權的事.\n</router_status>`, { kind: 'elev', ref: id })
     } else {
-      deps.notify(conv, `<router_status>\n提權 #${id} ${status === 'denied' ? `被拒絕 (${who(uid)})` : '逾時沒有回應, 視為拒絕'}. 不要用越權的方法繼續; 告訴對方這個請求無法完成.\n</router_status>`)
+      deps.notify(conv, `<router_status>\n提權 #${id} ${status === 'denied' ? `被拒絕 (${who(uid)})` : '逾時沒有回應, 視為拒絕'}. 不要用越權的方法繼續; 告訴對方這個請求無法完成.\n</router_status>`, { kind: 'elev', ref: id })
     }
   }
 

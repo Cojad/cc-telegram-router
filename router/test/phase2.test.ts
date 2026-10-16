@@ -487,3 +487,31 @@ test('people are backfilled from the event log for anyone not yet in the table, 
   expect(db.getPerson('137438526')).toMatchObject({ name: '🦅 柯姊❤️ Cojad', username: 'Cojad', last_chat_id: '-100555' })
   expect(db.getPerson('600')!.name).toBe('Known') // already known: untouched
 })
+
+test('progress: a turn answering a request replies to the message that asked, and is mirrored where the button was pressed (labelled); both go away together; a running turn gets the mirror attached', async () => {
+  const ops: string[] = []
+  let n = 80
+  const p = createProgress({
+    async send(chat, text, o) { const id = ++n; ops.push(`send ${chat} ${o?.thread ?? '-'} ${o?.replyTo ?? '-'} #${id} ${text}`); return id },
+    async edit(chat, id, text) { ops.push(`edit ${chat} #${id} ${text}`) },
+    async remove(chat, id) { ops.push(`remove ${chat} #${id}`) },
+  }, { throttleMs: 20, deleteAfterMs: 20 })
+  const m = { chatId: '-100900', thread: 7, replyTo: 55, label: '↪ G (group-1) 收到結果, 處理中:' }
+  await p.handle('g', '-1', { event: 'prompt', telegram: true }, { replyTo: 12, mirrors: [m] })
+  await p.handle('g', '-1', { event: 'pre', summary: 'Bash: ls' })
+  await sleepMs(60)
+  await p.handle('g', '-1', { event: 'stop' })
+  await sleepMs(60)
+  expect(ops[0]).toBe('send -1 - 12 #81 🤔 思考中…')
+  expect(ops[1]).toBe('send -100900 7 55 #82 ↪ G (group-1) 收到結果, 處理中:\n🤔 思考中…')
+  expect(ops).toContain('edit -1 #81 🤔 思考中…\n\n▶ Bash: ls')
+  expect(ops).toContain('edit -100900 #82 ↪ G (group-1) 收到結果, 處理中:\n✅ 完成\n\n▶ Bash: ls')
+  expect(ops.filter(o => o.startsWith('remove'))).toEqual(['remove -1 #81', 'remove -100900 #82'])
+  ops.length = 0
+  expect(p.attach('g', m)).toBe(false)
+  await p.handle('g', '-1', { event: 'prompt', telegram: true })
+  expect(ops[0]).toBe('send -1 - - #83 🤔 思考中…') // an ordinary turn: no reply
+  expect(p.attach('g', m)).toBe(true)
+  await sleepMs(10)
+  expect(ops[1]).toStartWith('send -100900 7 55 #84 ↪ G')
+})

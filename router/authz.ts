@@ -13,7 +13,7 @@
 //           is told.
 
 import type { Conversation, RouterDb, OverrideKind, ApprovalGrant } from './db'
-import { usePlace, mayDecide, revokeButton, type ApprovalDeps } from './approvals'
+import { usePlace, mayDecide, revokeButton, type ApprovalDeps, type About } from './approvals'
 
 export type Granted = Array<{ kind: OverrideKind; value: string }>
 type Stored = { o: Granted; outcome: string }
@@ -22,7 +22,7 @@ export interface AuthzDeps {
   db: RouterDb
   approvals: ApprovalDeps
   applyPermissions(conv: Conversation): void
-  notify(conv: Conversation, text: string): void
+  notify(conv: Conversation, text: string, about?: About): void
   label(uid: string): string
   /** An elevation request was revoked: forget its pending or bound subagent. */
   dropElevation?(ref: number): void
@@ -82,7 +82,7 @@ export function createAuthz(deps: AuthzDeps) {
         if (kind === 'elev') deps.dropElevation?.(ref)
         if (conv) {
           if (o.length) deps.applyPermissions(conv)
-          deps.notify(conv, `<router_status>\n${KIND_NAME[kind]}授權 (審核 #${ref}) 已被 ${who} 撤銷${o.length ? `: 移除 ${o.map(x => `${x.kind} ${x.value}`).join(', ')}` : ''}. 之後這類動作會再被擋下, 需要的話重新申請.\n</router_status>`)
+          deps.notify(conv, `<router_status>\n${KIND_NAME[kind]}授權 (審核 #${ref}) 已被 ${who} 撤銷${o.length ? `: 移除 ${o.map(x => `${x.kind} ${x.value}`).join(', ')}` : ''}. 之後這類動作會再被擋下, 需要的話重新申請.\n</router_status>`, { kind, ref })
         }
         deps.log?.(`revoked ${kind} #${ref} (${g.conv}) by ${uid}`)
         // the settled request: keep its outcome, add the revocation, drop the button

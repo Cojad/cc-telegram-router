@@ -14,7 +14,7 @@
 
 import type { Conversation, RouterDb } from './db'
 import { parseInstall, readManifest, type Pkg } from './packages'
-import { postApproval, settleApproval, mayDecide, parseChoice, CHOICE_WORD, type ApprovalDeps } from './approvals'
+import { postApproval, settleApproval, mayDecide, parseChoice, CHOICE_WORD, type ApprovalDeps, type About } from './approvals'
 import type { HookDecision } from './elevation'
 import type { Authz } from './authz'
 
@@ -30,7 +30,7 @@ export interface PkgDeps {
   db: RouterDb
   approvals: ApprovalDeps
   review: Reviewer
-  notify(conv: Conversation, text: string): void
+  notify(conv: Conversation, text: string, about?: About): void
   label(uid: string): string
   log?(msg: string): void
   /** How long the hook may be held waiting for a review. */
@@ -78,6 +78,7 @@ export function createPkgGate(deps: PkgDeps) {
       ...unusual.map(u => `${u} [無法自動審核: URL, 本機路徑或自訂來源]`),
     ].join('\n')
     const id = db.addPkgRequest({ conv: conv.key, pkgs: JSON.stringify(items), reason })
+    deps.approvals.noteRequest?.('pkg', id, conv)
     open.set(sig, id)
     const passed = vs.filter(v => v.risk === 'low').map(v => key(v))
     const text = [
@@ -148,7 +149,7 @@ export function createPkgGate(deps: PkgDeps) {
     if (added.length && conv) deps.authz?.record('pkg', r.id, conv, p.choice, added.map(value => ({ kind: 'pkg' as const, value })), outcome)
     await settleApproval(deps.approvals, 'pkg', r.id, outcome, added.length > 0)
     const scope = p.choice === 'always' ? ', 之後安裝 PyPI 與 npm 的套件都不用審核, 現在可以重新安裝了' : p.choice === 'once' ? ', 現在可以重新安裝了' : ''
-    if (conv) deps.notify(conv, `<router_status>\n套件安裝審核 #${r.id} ${word} (${deps.label(uid)}): ${items.join(', ')}${scope}.\n</router_status>`)
+    if (conv) deps.notify(conv, `<router_status>\n套件安裝審核 #${r.id} ${word} (${deps.label(uid)}): ${items.join(', ')}${scope}.\n</router_status>`, { kind: 'pkg', ref: r.id })
     return word
   }
 
