@@ -81,6 +81,12 @@ export function bottom(screen: string, n = 15): string {
 /** A menu or view waiting for a key (Esc closes it). */
 export const MENU_RE = /Esc to (cancel|close|go back|exit)|Enter to (confirm|select)|^\s*❯\s*\d+\.\s/im
 
+/** At the input prompt: the ❯ line inside the input box near the bottom, no menu or view open. */
+export function atPrompt(screen: string): boolean {
+  const lines = bottom(screen, 8).split('\n').map(l => l.replace(/\s+$/, ''))
+  return !MENU_RE.test(bottom(screen)) && lines.some((l, i) => i > 0 && /^❯/.test(l.trim()) && RULE.test(lines[i - 1]!))
+}
+
 /** The screen without the input box and status bar at the bottom. */
 export function stripChrome(screen: string): string[] {
   const lines = screen.split('\n').map(l => l.replace(/\s+$/, ''))
@@ -202,11 +208,25 @@ export async function relay(deps: RelayDeps, workerId: string, r: RelayCmd): Pro
   const withScroll = () => tmux('capture-pane', '-p', '-t', name, '-S', '-200').then(x => x.stdout)
   await tmux('kill-session', '-t', name)
   await tmux('new-session', '-d', '-s', name, '-x', '160', '-y', '50', `${deps.claudeBin} attach ${workerId}`)
+  /** Back to the input prompt: one Esc at a time, a second apart (two quick
+   *  Escs at the prompt open the rewind menu), until the prompt shows. */
+  const toPrompt = async (): Promise<boolean> => {
+    for (let i = 0; i < 5; i++) {
+      const s = await visible()
+      if (atPrompt(s)) return true
+      if (!MENU_RE.test(bottom(s))) return false
+      await tmux('send-keys', '-t', name, 'Escape')
+      await sleep(1000)
+    }
+    return atPrompt(await visible())
+  }
   try {
     let ready = false
     for (let t = 0; t < 15_000 && !ready; t += 300) {
       await sleep(300)
-      ready = (await visible()).includes('❯')
+      const s = await visible()
+      // a menu or view left open (by anything): close it first, it blocks the worker
+      ready = atPrompt(s) || (MENU_RE.test(bottom(s)) && await toPrompt())
     }
     if (!ready) return { kind: 'text', text: '連不上這個 worker 的畫面' }
     if (!r.raw && (r.cmd === '/status' || r.cmd === '/usage')) {
@@ -238,13 +258,8 @@ export async function relay(deps: RelayDeps, workerId: string, r: RelayCmd): Pro
     }
     return { kind: 'handoff', output: dedent(lines) || `(${r.cmd} 沒有輸出)` }
   } finally {
-    // never leave the worker on a menu or a view: close them, then leave
-    for (let i = 0; i < 5; i++) {
-      const s = await visible()
-      if (!MENU_RE.test(bottom(s))) break
-      await tmux('send-keys', '-t', name, 'Escape')
-      await sleep(600)
-    }
+    // never leave the worker on a menu or a view: back to the prompt, then leave
+    await toPrompt().catch(() => false)
     await tmux('kill-session', '-t', name)
   }
 }

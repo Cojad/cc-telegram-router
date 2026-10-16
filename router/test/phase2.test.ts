@@ -583,3 +583,19 @@ test('progress: a turn answering a request replies to the message that asked, an
   await sleepMs(10)
   expect(ops[1]).toStartWith('send -100900 7 55 #84 ↪ G')
 })
+
+test('relay: a worker already stuck on a view is brought back to the prompt first; Escs are a second apart and stop at the prompt', async () => {
+  const stuck = 'Usage\n  Current week  11% used\nEsc to cancel\n' + '\n'.repeat(10)
+  const { exec, seen } = fakeTmux({ '/cost': FIX('relay-cost.txt') })
+  // start on a leftover view: the fake closes it on Escape
+  let isStuck = true
+  const wrapped = async (args: string[], env?: Record<string, string>) => {
+    if (isStuck && args[1] === 'send-keys' && args[4] === 'Escape') isStuck = false
+    if (isStuck && args[1] === 'capture-pane') return { code: 0, stdout: stuck }
+    return exec(args, env)
+  }
+  const out = await relay({ exec: wrapped, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 30 }, 'w', { cmd: '/cost', args: '', raw: false })
+  expect((out as any).text).toStartWith('💵 這個 session 的用量')
+  const keys = seen.filter(s => s.args[1] === 'send-keys').map(s => s.args[4])
+  expect(keys).toEqual(['Escape', '/cost', 'Escape']) // healed, ran, closed — never two Escs in a row
+}, 20000)
