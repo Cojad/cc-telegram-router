@@ -36,25 +36,6 @@ const MESSAGE_ENVELOPE_KEYS = new Set([
   'entities',
 ])
 
-/** grammY keeps a channel post in ctx.channelPost (ctx.message is undefined)
- *  and the post has no `from`: the sender is the channel itself
- *  (sender_chat), signed with author_signature when the channel shows
- *  signatures. Present it in the message shape so the same
- *  handleInbound/gate pipeline handles it; the sender is the channel (its
- *  chat id, negative), never a person, so it can only ever be a guest
- *  (commands.ts roleOf). Anything else passes through unchanged. */
-export function inboundView(ctx: Context): HandleInboundContext {
-  const post = ctx.channelPost
-  if (!post) return ctx as unknown as HandleInboundContext
-  const sc = post.sender_chat ?? post.chat
-  return {
-    chat: post.chat,
-    from: { id: sc.id, ...('username' in sc && sc.username ? { username: sc.username } : {}) },
-    message: post,
-    reply: text => ctx.reply(text),
-  }
-}
-
 export interface TransportDeps {
   bot: Bot
   mcp: Pick<Server, 'notification' | 'setNotificationHandler'>
@@ -212,14 +193,14 @@ export function registerTransport(deps: TransportDeps): void {
     }
   })
 
-  bot.on(['message:text', 'channel_post:text'], async ctx => {
-    await handleInbound(inboundView(ctx), ctx.msg.text, undefined)
+  bot.on('message:text', async ctx => {
+    await handleInbound(ctx, ctx.message.text, undefined)
   })
 
-  bot.on(['message:photo', 'channel_post:photo'], async ctx => {
-    const caption = ctx.msg.caption ?? '(photo)'
+  bot.on('message:photo', async ctx => {
+    const caption = ctx.message.caption ?? '(photo)'
     // Largest size is last in the array.
-    const photos = ctx.msg.photo
+    const photos = ctx.message.photo
     const best = photos[photos.length - 1]
     // Eager download is deferred until after the gate approves — any user
     // can send photos, and we don't want to burn API quota or fill the
@@ -229,7 +210,7 @@ export function registerTransport(deps: TransportDeps): void {
     // live (2026-09-16, Cojad): an undelivered photo had no file_id on
     // record at all, so unlike those other types it could never be fetched
     // later via download_attachment once the moment passed.
-    await handleInbound(inboundView(ctx), caption, async () => {
+    await handleInbound(ctx, caption, async () => {
       try {
         const file = await ctx.api.getFile(best.file_id)
         if (!file.file_path) return undefined
@@ -252,11 +233,11 @@ export function registerTransport(deps: TransportDeps): void {
     })
   })
 
-  bot.on(['message:document', 'channel_post:document'], async ctx => {
-    const doc = ctx.msg.document
+  bot.on('message:document', async ctx => {
+    const doc = ctx.message.document
     const name = safeName(doc.file_name)
-    const text = ctx.msg.caption ?? `(document: ${name ?? 'file'})`
-    await handleInbound(inboundView(ctx), text, undefined, {
+    const text = ctx.message.caption ?? `(document: ${name ?? 'file'})`
+    await handleInbound(ctx, text, undefined, {
       kind: 'document',
       file_id: doc.file_id,
       size: doc.file_size,
@@ -265,10 +246,10 @@ export function registerTransport(deps: TransportDeps): void {
     })
   })
 
-  bot.on(['message:voice', 'channel_post:voice'], async ctx => {
-    const voice = ctx.msg.voice
-    const text = ctx.msg.caption ?? '(voice message)'
-    await handleInbound(inboundView(ctx), text, undefined, {
+  bot.on('message:voice', async ctx => {
+    const voice = ctx.message.voice
+    const text = ctx.message.caption ?? '(voice message)'
+    await handleInbound(ctx, text, undefined, {
       kind: 'voice',
       file_id: voice.file_id,
       size: voice.file_size,
@@ -276,11 +257,11 @@ export function registerTransport(deps: TransportDeps): void {
     })
   })
 
-  bot.on(['message:audio', 'channel_post:audio'], async ctx => {
-    const audio = ctx.msg.audio
+  bot.on('message:audio', async ctx => {
+    const audio = ctx.message.audio
     const name = safeName(audio.file_name)
-    const text = ctx.msg.caption ?? `(audio: ${safeName(audio.title) ?? name ?? 'audio'})`
-    await handleInbound(inboundView(ctx), text, undefined, {
+    const text = ctx.message.caption ?? `(audio: ${safeName(audio.title) ?? name ?? 'audio'})`
+    await handleInbound(ctx, text, undefined, {
       kind: 'audio',
       file_id: audio.file_id,
       size: audio.file_size,
@@ -289,10 +270,10 @@ export function registerTransport(deps: TransportDeps): void {
     })
   })
 
-  bot.on(['message:video', 'channel_post:video'], async ctx => {
-    const video = ctx.msg.video
-    const text = ctx.msg.caption ?? '(video)'
-    await handleInbound(inboundView(ctx), text, undefined, {
+  bot.on('message:video', async ctx => {
+    const video = ctx.message.video
+    const text = ctx.message.caption ?? '(video)'
+    await handleInbound(ctx, text, undefined, {
       kind: 'video',
       file_id: video.file_id,
       size: video.file_size,
@@ -301,19 +282,19 @@ export function registerTransport(deps: TransportDeps): void {
     })
   })
 
-  bot.on(['message:video_note', 'channel_post:video_note'], async ctx => {
-    const vn = ctx.msg.video_note
-    await handleInbound(inboundView(ctx), '(video note)', undefined, {
+  bot.on('message:video_note', async ctx => {
+    const vn = ctx.message.video_note
+    await handleInbound(ctx, '(video note)', undefined, {
       kind: 'video_note',
       file_id: vn.file_id,
       size: vn.file_size,
     })
   })
 
-  bot.on(['message:sticker', 'channel_post:sticker'], async ctx => {
-    const sticker = ctx.msg.sticker
+  bot.on('message:sticker', async ctx => {
+    const sticker = ctx.message.sticker
     const emoji = sticker.emoji ? ` ${sticker.emoji}` : ''
-    await handleInbound(inboundView(ctx), `(sticker${emoji})`, undefined, {
+    await handleInbound(ctx, `(sticker${emoji})`, undefined, {
       kind: 'sticker',
       file_id: sticker.file_id,
       size: sticker.file_size,
@@ -325,9 +306,9 @@ export function registerTransport(deps: TransportDeps): void {
   // this handler these arrived with nothing for handleInbound to forward
   // (GitHub issue #5724). Requires @grammyjs/types>=5.0.0 for the
   // rich_message field/filter query to exist at all.
-  bot.on(['message:rich_message', 'channel_post:rich_message'], async ctx => {
-    const flattened = flattenRichMessage(ctx.msg.rich_message)
-    await handleInbound(inboundView(ctx), flattened || '(rich message with no renderable content)', undefined)
+  bot.on('message:rich_message', async ctx => {
+    const flattened = flattenRichMessage(ctx.message.rich_message)
+    await handleInbound(ctx, flattened || '(rich message with no renderable content)', undefined)
   })
 
   // Catch-all: any message type not matched by a specific handler above
@@ -336,10 +317,10 @@ export function registerTransport(deps: TransportDeps): void {
   // own handler. This keeps that from repeating silently — logs which
   // non-envelope keys showed up, and still forwards a placeholder so the
   // arrival is at least visible instead of dropped.
-  bot.on(['message', 'channel_post'], async ctx => {
-    const keys = Object.keys(ctx.msg).filter(k => !MESSAGE_ENVELOPE_KEYS.has(k))
+  bot.on('message', async ctx => {
+    const keys = Object.keys(ctx.message).filter(k => !MESSAGE_ENVELOPE_KEYS.has(k))
     const keyList = keys.join(', ') || '(none)'
     process.stderr.write(`telegram channel: unmatched message type, content keys: ${keyList}\n`)
-    await handleInbound(inboundView(ctx), `(unsupported message type: ${keyList})`, undefined)
+    await handleInbound(ctx, `(unsupported message type: ${keyList})`, undefined)
   })
 }

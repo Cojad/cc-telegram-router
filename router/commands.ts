@@ -169,8 +169,6 @@ export function renderStatus(
 
 export function roleOf(deps: Pick<CommandDeps, 'cfg' | 'db'>, uid: string): string {
   if (deps.cfg.owners.includes(uid)) return 'owner'
-  // a chat id (negative) as the sender: a channel post (transport.ts inboundView), never a person
-  if (uid.startsWith('-')) return 'guest'
   return deps.db.getUserRole(uid) ?? 'user'
 }
 
@@ -179,7 +177,7 @@ const HELP = [
   '/router bot list | add <名稱> <token> | rotate <名稱> <token> | remove <名稱>',
   '/router role <uid|@username> <角色|none> (回覆某人的訊息時可省略對象) | role list',
   '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off>',
-  '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] (群組或頻道) | group rm <chat_id> | policy <pairing|allowlist|disabled>',
+  '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] | group rm <chat_id> | policy <pairing|allowlist|disabled>',
   '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒)',
   '/router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
@@ -352,7 +350,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     case 'chat': {
       const describe = (c: Conversation) => {
         const a = deps.loadAccess()
-        const mention = c.type === 'group' || c.type === 'channel' ? (a.groups[c.chat_id]?.requireMention === false ? 'off' : 'on') : '-'
+        const mention = c.type === 'group' ? (a.groups[c.chat_id]?.requireMention === false ? 'off' : 'on') : '-'
         const title = c.type === 'dm' ? personLabel(db, c.chat_id) : c.title
         return `${c.key}${title && title !== c.chat_id ? ` (${title})` : ''}\n  chat_id ${c.chat_id}, role ${c.role}, model ${c.model ?? `${cfg.model} (預設)`}, compact ${c.compact ?? `${cfg.autoCompactWindow} (預設)`}, mention ${mention}, ${deps.sessions.isConnected(c.key) ? '待命中' : '已休眠'}${c.last_seen ? `, 最後活動 ${gmt8(c.last_seen)}` : ''}`
       }
@@ -380,7 +378,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return done(`${c.key} 模型 → ${c.model ?? `預設 (${cfg.model})`}, worker 重啟中`, { after: () => void deps.applySettings(c, { dropJob: true }) })
       }
       if (key === 'mention') {
-        if (conv.type !== 'group' && conv.type !== 'channel') return done('mention 只適用群組與頻道')
+        if (conv.type !== 'group') return done('mention 只適用群組')
         if (value !== 'on' && value !== 'off') return done('用法: /router chat [chat_id] mention <on|off>')
         const a = deps.loadAccess()
         a.groups[conv.chat_id] = { ...(a.groups[conv.chat_id] ?? { allowFrom: [] }), requireMention: value === 'on' }
@@ -487,7 +485,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         if (gop === 'add') a.groups[gid] = { requireMention: !args.includes('--no-mention'), allowFrom: [] }
         else delete a.groups[gid]
         deps.saveAccess(a)
-        return done(`群組/頻道 ${gid} ${gop === 'add' ? '已加入' : '已移除'}`)
+        return done(`群組 ${gid} ${gop === 'add' ? '已加入' : '已移除'}`)
       }
       if (op === 'policy') {
         const mode = args[2]
