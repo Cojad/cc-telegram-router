@@ -22,7 +22,7 @@
 import { mkdirSync, writeFileSync, chmodSync } from 'fs'
 import { join } from 'path'
 import type { Conversation, RouterDb, SecretHandle } from './db'
-import { scanUpdate, replaceFindings, replaceInPlace, valuesOf, eventMarker, workerMarker, ownFindings, pathText, detectSecrets, CMD_KIND, MIN_KNOWN, type Finding, type Known } from './detect'
+import { scanUpdate, replaceFindings, replaceInPlace, valuesOf, eventMarker, workerMarker, ownFindings, isQuoted, pathText, detectSecrets, CMD_KIND, MIN_KNOWN, type Finding, type Known } from './detect'
 import { sealRaw, openRaw, registerSecret, type SecretDeps } from './secrets'
 import { secretPlace, type ApprovalDeps, type Button } from './approvals'
 import { gmt8 } from './context'
@@ -150,7 +150,7 @@ export function createVault(deps: VaultDeps) {
       let delId: number | null = null
       if (info.command) outcome = '登記或 router 指令: router 處理, 訊息立刻刪除'
       else if (rec.findings.some(f => String(f.path[0]).includes('channel_post'))) outcome = '頻道貼文, 只記錄'
-      else if (!own.length) outcome = rec.findings.some(f => f.path[0] === 'callback_query') ? '按鈕資料, 只記錄' : '只在引用的訊息裡, 不提醒'
+      else if (!own.length) outcome = rec.findings.every(isQuoted) ? '只在引用的訊息裡, 不提醒' : rec.findings.some(f => f.path[0] === 'callback_query') ? '按鈕資料, 只記錄' : '不是對話訊息, 只記錄'
       else if (!info.served || !info.chatId || info.messageId == null || !info.senderId) outcome = '不是 router 服務的對話, 只記錄'
       else {
         const api = deps.api(bot)

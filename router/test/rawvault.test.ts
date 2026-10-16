@@ -200,11 +200,14 @@ test('no right to delete: only a reminder; not served, quoted only, a command, a
   await v.detected('cc', v.record('cc', { update_id: 3, message: { message_id: 12, chat: { id: Number(USER), type: 'private' }, text: 'hi', reply_to_message: { text: OPENAI } } }), info(USER))
   await v.detected('cc', v.record('cc', dmUpdate(USER, `/secret set k ${OPENAI}`)), info(USER, { command: true }))
   await v.detected('cc', v.record('cc', { update_id: 4, callback_query: { data: SLACK, message: { chat: { id: Number(USER) } } } }), info(USER, { messageId: null }))
+  // a pressed button under the reminder: the message quotes the one with the key
+  await v.detected('cc', v.record('cc', { update_id: 5, callback_query: { data: 'sdel:9:cancel', message: { chat: { id: Number(USER) }, reply_to_message: { text: OPENAI } } } }), info(USER, { messageId: null }))
   expect(sent.map(s => [s.chatId, s.text.split('\n').pop()])).toEqual([
     [OWNER, '處理: 不是 router 服務的對話, 只記錄'],
     [OWNER, '處理: 只在引用的訊息裡, 不提醒'],
     [OWNER, '處理: 登記或 router 指令: router 處理, 訊息立刻刪除'],
     [OWNER, '處理: 按鈕資料, 只記錄'],
+    [OWNER, '處理: 只在引用的訊息裡, 不提醒'],
   ])
   expect(db.getDeletion(1)).toBeNull()
 })

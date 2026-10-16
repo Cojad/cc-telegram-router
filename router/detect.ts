@@ -166,3 +166,5 @@ export const workerMarker = (eventId: number, f: Pick<Finding, 'n' | 'kind' | 'l
 /** Findings in the message itself, not in a message it quotes. */
 const QUOTED = new Set(['reply_to_message', 'external_reply', 'quote', 'pinned_message'])
 export const ownFindings = (fs: Finding[]) => fs.filter(f => (f.path[0] === 'message' || f.path[0] === 'edited_message') && !QUOTED.has(String(f.path[1])))
+/** A finding inside a quoted message (a reply, or the message under a pressed button quoting one). */
+export const isQuoted = (f: Finding) => f.path.some(k => QUOTED.has(String(k)))
