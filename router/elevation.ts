@@ -29,7 +29,7 @@ import type { Conversation, RouterDb, ElevLogKind } from './db'
 import { checkCall, describeCall, rank, permanentRule, type Call, type Rule } from './permcheck'
 import { postApproval, settleApproval, logPlace, messageLink, buttons, parseChoice, CHOICE_WORD, type ApprovalDeps, type About } from './approvals'
 import { applyOverrides } from './settings'
-import type { Authz } from './authz'
+import { logKind, type Authz } from './authz'
 
 export type HookDecision = { decision?: 'allow' | 'deny'; reason?: string }
 
@@ -103,7 +103,10 @@ export function createElevation(deps: ElevationDeps) {
   async function record(conv: Conversation, kind: ElevLogKind, text: string, ref: number | null): Promise<void> {
     db.addElevLog(conv.key, kind, text, ref)
     const place = logPlace(db, conv.bot)
-    if (place) await deps.approvals.send(conv.bot, place, text, []).catch(() => null)
+    if (!place) return
+    const mid = await deps.approvals.send(conv.bot, place, text, []).catch(() => null)
+    // the 提權成功 line shows the authorization: a revoke marks it (authz.ts markRevoked)
+    if (mid != null && kind === 'approved' && ref != null) db.addApprovalMsg({ kind: logKind('elev'), ref, bot: conv.bot, chat_id: place.chat_id, message_id: mid, text })
   }
 
   function linkOf(id: number): string {
@@ -131,7 +134,8 @@ export function createElevation(deps: ElevationDeps) {
     const sender = senderOf(conv)
     const inChat = !!elevatedSender(conv)
     const id = db.addElevation({ conv: conv.key, kind, sender, action: call ? JSON.stringify(call) : action, reason })
-    deps.approvals.noteRequest?.('elev', id, conv)
+    // a terminal turn answers no Telegram message: the result is not a reply to the last one
+    if (!terminalTurn.has(conv.key)) deps.approvals.noteRequest?.('elev', id, conv)
     const rule = ruleFor(conv, call)
     const text = [
       `🔐 提權請求 #${id}${kind === 'active' ? ' (主動申請)' : ''}`,

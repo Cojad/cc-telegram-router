@@ -43,9 +43,9 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
 
 ### 審核按鈕, 撤銷, 執行授權
 
-- 申請 (跨對話傳訊, 套件安裝, 提權) 都是「允許一次 / 永久允許 / 拒絕」, 申請訊息寫明永久允許的範圍: 跨對話是 `send *` (可送往 bot 所在的任何對話), 套件是 `pkg *` (PyPI 與 npm 不用審核, URL 與自訂來源仍審核), 提權是把被擋的那類動作寫成權限覆寫 (`Bash(python3 *)`, 讀寫某個資料夾, 某個工具或 MCP); 跳出 sandbox 不能永久允許.
+- 申請 (跨對話傳訊, 套件安裝, 提權) 都是「允許一次 / 永久允許 / 拒絕」, 申請訊息寫明永久允許的範圍: 跨對話是 `send *` (可送往 bot 所在的任何對話), 套件是 `pkg *` (PyPI 與 npm 不用審核, URL 與自訂來源仍審核), 提權是把被擋的那類動作寫成權限覆寫 (`Bash(python3)` 與 `Bash(python3 *)` 一對, 不帶參數的 `hostname` 這類指令也涵蓋; 讀寫某個資料夾, 某個工具或 MCP); 跳出 sandbox 與重導向寫檔不能永久允許.
 - 申請有了結果後, worker 處理結果的那一輪, 進度回覆當初提出申請的那則訊息; 在其他地方按下按鈕時, 那裡也同步一份進度 (開頭標明對話).
-- 允許過的申請在審核群組留「🚫 撤銷」按鈕. 每一次動用已核准的權限都記在 `auth_uses` 與「🧾 執行授權」話題, 附工具呼叫內容與撤銷按鈕. 撤銷會移除權限覆寫, 丟掉尚未使用的提權, 輪替 worker 並通知它.
+- 允許過的申請在審核群組留「🚫 撤銷」按鈕. 每一次動用已核准的權限都記在 `auth_uses` 與「🧾 執行授權」話題, 附工具呼叫內容與撤銷按鈕. 撤銷會移除權限覆寫 (一對 Bash 規則一起移除), 丟掉尚未使用的提權, 輪替 worker 並通知它; 授權出現過的每則訊息 (申請的每一份, 每次使用, 提權紀錄話題裡那則「✅ 提權成功」) 都拿掉按鈕並標「🚫 已撤銷」.
 
 ### 技能與憑證
 
@@ -209,7 +209,7 @@ bun test router/test
 | 新 bot 初次設定與審核群組 | e2e-setup 全部 |
 | /router perm 與覆寫 | phase3「/router perm: show…」「admin cannot touch…」「overrides lay paths…」 |
 | 三選一按鈕與永久允許的範圍 | phase3 grants 兩條, 「永久允許 runs it this time…」; phase3-pkg「永久允許 lets the conversation…」 |
-| 撤銷與執行授權 | phase3「authz: …」三條; phase3-pkg「installing an approved package is a use…」 |
+| 撤銷與執行授權 (含提權紀錄的成功訊息標已撤銷), 無參數指令的永久允許 | phase3「authz: …」三條,「elevation: a command without arguments (hostname)…」; phase3-pkg「installing an approved package is a use…」 |
 | 跨 bot 技能的憑證, 技能範圍 | phase3-cred 全部; e2e-setup「credentials end to end…」「http credentials end to end…」(回顯的 key 被遮蔽); phase3「elevation for a credential…」(角色不夠走提權, admin 核准); phase3「elevation for install_skill…」, e2e-setup「install_skill end to end…」; role-live「skills: …」(LIVE=1, 真的 claude 寫不進 .claude, 寫得進 skills/); phase4「/telegram:bot-skill…」 |
 
 ### 10b 對話專屬密鑰驗收對照

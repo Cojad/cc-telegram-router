@@ -11,7 +11,8 @@
 //           use): the overrides go away, the worker's settings are
 //           rewritten, a still-pending elevation is dropped, and the worker
 //           is told. Every message the authorization appeared in (each copy
-//           of the request, each use) loses its button and shows 已撤銷;
+//           of the request, each use, the 提權成功 line in 提權紀錄) loses
+//           its button and shows 已撤銷;
 //           pressing a stale button tidies them up again.
 
 import type { Conversation, RouterDb, OverrideKind, ApprovalGrant } from './db'
@@ -32,6 +33,8 @@ export interface AuthzDeps {
 }
 
 export const KIND_NAME: Record<string, string> = { grant: '跨對話傳訊', pkg: '套件安裝', elev: '提權' }
+/** approval_msgs kind of a log message about an approved request (提權紀錄 「✅ 提權成功」): marked on revoke too. */
+export const logKind = (kind: string) => `${kind}-log`
 
 export function overridesOf(g: ApprovalGrant): Granted {
   try { return (JSON.parse(g.overrides) as Stored).o ?? [] } catch { return [] }
@@ -44,11 +47,14 @@ export function createAuthz(deps: AuthzDeps) {
   const { db } = deps
 
   /** Everywhere this authorization shows: the request (keeps its outcome) and
-   *  each use in 執行授權. Buttons go, 已撤銷 is added. */
+   *  each use in 執行授權, and its 「✅ 成功」 line in a log topic (提權紀錄). Buttons go, 已撤銷 is added. */
   async function markRevoked(kind: string, ref: number, g: ApprovalGrant, who: string): Promise<void> {
     const stamp = `🚫 已撤銷 (${who})`
     for (const msg of db.approvalMsgs(kind, ref)) {
       await deps.approvals.edit(msg.bot, msg.chat_id, msg.message_id, `${msg.text}\n\n${outcomeOf(g)}\n${stamp}`, []).catch(() => {})
+    }
+    for (const msg of db.approvalMsgs(logKind(kind), ref)) {
+      await deps.approvals.edit(msg.bot, msg.chat_id, msg.message_id, `${msg.text}\n\n${stamp}`, []).catch(() => {})
     }
     for (const u of db.authUses(g.id)) {
       if (u.bot && u.chat_id && u.message_id != null) await deps.approvals.edit(u.bot, u.chat_id, u.message_id, `${u.text}\n\n${stamp}`, []).catch(() => {})

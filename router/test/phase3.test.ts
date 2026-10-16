@@ -349,7 +349,9 @@ test('elevation: a higher-role sender gets an in-chat 提權執行/拒絕 prompt
 })
 
 test('elevation: a turn typed in the worker\'s terminal has no sender: only the conversation\'s role counts, nothing is asked in the chat, even right after an owner\'s Telegram message; the next Telegram turn asks again', async () => {
-  const { conv, e, sent } = elevHarness()
+  const { conv, e, sent, approvals } = elevHarness()
+  const origins: number[] = [] // requests answering a Telegram message (their result replies to it)
+  approvals.noteRequest = (_k, ref) => origins.push(ref)
   e.onDeliver(conv, OWNER)
   expect(await e.onHook(conv, { event: 'prompt', telegram: false })).toEqual({})
   const plain = '權限不足 (本對話角色 user): user 的 Bash 只能在 sandbox 裡執行, 不能跳出 sandbox. 請改用不越權的方法完成.'
@@ -364,11 +366,15 @@ test('elevation: a turn typed in the worker\'s terminal has no sender: only the 
   // an active request from a terminal turn goes to the owner, not into the chat
   expect(await e.request(conv, '要看 /x', 'ls /x')).toBe('已向 bot owner 申請提權 (#1), 結果會以 <router_status> 通知')
   expect(sent.filter(m => m.chat === conv.chat_id)).toEqual([])
+  expect(db.getElevation(1)!.sender).toBeNull()
+  expect(origins).toEqual([]) // not the last Telegram message
   db.decideElevation(1, 'denied', OWNER, null)
   // the owner's Telegram message starts its turn: asked in the chat
   await e.onHook(conv, { event: 'prompt', telegram: true })
   expect((await e.onHook(conv, escape)).reason).toContain('router 已在對話裡詢問是否提權 (#2,')
   expect(sent.filter(m => m.chat === conv.chat_id)).toHaveLength(1)
+  expect(origins).toEqual([2])
+  expect(db.getElevation(2)!.sender).toBe(OWNER)
   e.stop()
 })
 
@@ -378,17 +384,33 @@ test('elevation: 永久允許 runs it this time and adds that kind of action to 
   const py = { event: 'pre', tool_name: 'Bash', tool_input: { command: 'ls && python3 run.py', description: '跑分析' } }
   await e.onHook(conv, py)
   expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:always', 'elev:1:deny'])
-  expect(sent[0]!.text).toContain('♾️ 永久允許的範圍: group-100555 之後可以執行 python3 開頭的 Bash 指令 (仍在 sandbox 裡), 不用再問 (權限覆寫 tool-allow Bash(python3 *))')
+  expect(sent[0]!.text).toContain('♾️ 永久允許的範圍: group-100555 之後可以執行 python3 開頭的 Bash 指令 (仍在 sandbox 裡), 不用再問 (權限覆寫 tool-allow Bash(python3), tool-allow Bash(python3 *))')
   expect(await e.decide('elev:1:always', OWNER)).toBe('已永久允許並提權')
-  expect(db.listOverrides(conv.key)).toEqual([{ conv: conv.key, kind: 'tool-allow', value: 'Bash(python3 *)' }])
+  // both shapes, like the role templates: the command alone and with arguments
+  expect(db.listOverrides(conv.key).map(o => o.value).sort()).toEqual(['Bash(python3 *)', 'Bash(python3)'])
   expect(applied).toEqual([conv.key])
   expect(told[0]).toContain('另外永久允許: 之後可以執行 python3 開頭的 Bash 指令')
   expect(db.elevLog(conv.key, 1)[0]!.text).toContain('永久允許: 執行 python3 開頭的 Bash 指令')
   // the rule now holds for the conversation itself
   expect(await e.onHook(conv, py)).toEqual({})
+  expect(await e.onHook(conv, { event: 'pre', tool_name: 'Bash', tool_input: { command: 'python3' } })).toEqual({})
   // a read outside the folder: the permanent scope is that folder
   await e.onHook(conv, { event: 'pre', tool_name: 'Read', tool_input: { file_path: '/x/data/a.csv' } })
   expect(sent[1]!.text).toContain('之後可以讀取 /x/data 底下的檔案')
+  e.stop()
+})
+
+test('elevation: a command without arguments (hostname) can be allowed for good: the rule covers it alone and with arguments', async () => {
+  const { conv, e, sent } = elevHarness()
+  e.onDeliver(conv, OWNER)
+  const host = { event: 'pre', tool_name: 'Bash', tool_input: { command: 'hostname' } }
+  await e.onHook(conv, host)
+  expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:always', 'elev:1:deny'])
+  expect(sent[0]!.text).toContain('♾️ 永久允許的範圍: group-100555 之後可以執行 hostname 開頭的 Bash 指令 (仍在 sandbox 裡), 不用再問 (權限覆寫 tool-allow Bash(hostname), tool-allow Bash(hostname *))')
+  expect(sent[0]!.text).not.toContain('明確禁止')
+  expect(await e.decide('elev:1:always', OWNER)).toBe('已永久允許並提權')
+  expect(await e.onHook(conv, host)).toEqual({})
+  expect(await e.onHook(conv, { event: 'pre', tool_name: 'Bash', tool_input: { command: 'hostname -f' } })).toEqual({})
   e.stop()
 })
 
@@ -483,8 +505,8 @@ test('authz: an approved elevation keeps a 🚫 撤銷 button; each tool call of
 })
 
 test('authz: 永久允許 overrides are revocable; calls that pass only because of them are uses; revoking removes them and rewrites settings', async () => {
-  const { conv, e, sent, told, applied, authz } = elevHarness({ authz: true })
-  db.updateBotSetup('cc', { authuse_topic: 77, approvals_chat: OWNER })
+  const { conv, e, sent, edits, told, applied, authz } = elevHarness({ authz: true })
+  db.updateBotSetup('cc', { authuse_topic: 77, elevlog_topic: 9, approvals_chat: OWNER })
   e.onDeliver(conv, OWNER)
   const py = { event: 'pre', tool_name: 'Bash', tool_input: { command: 'python3 run.py' } }
   await e.onHook(conv, py)
@@ -500,7 +522,11 @@ test('authz: 永久允許 overrides are revocable; calls that pass only because 
   expect(await authz!.revoke('elev:1:revoke', OWNER)).toBe('已撤銷')
   expect(db.listOverrides(conv.key)).toEqual([])
   expect(applied).toEqual([conv.key])
-  expect(told.at(-1)).toContain('移除 tool-allow Bash(python3 *)')
+  expect(told.at(-1)).toContain('移除 tool-allow Bash(python3), tool-allow Bash(python3 *)')
+  // every message it showed in is marked, the 提權成功 line in 提權紀錄 too
+  const ok = sent.find(m => m.thread === 9 && m.text.startsWith('✅ 提權成功 (永久允許) #1'))!
+  expect(edits.find(x => x.id === ok.id)?.text).toMatch(/^✅ 提權成功 \(永久允許\) #1[\s\S]*\n\n🚫 已撤銷 \(u\d+\)$/)
+  for (const m of sent.filter(m => m.thread === 9 && !m.text.startsWith('✅'))) expect(edits.some(x => x.id === m.id)).toBe(false) // blocked and request lines are left alone
   e.stop()
 })
 

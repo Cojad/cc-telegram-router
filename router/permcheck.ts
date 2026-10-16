@@ -152,7 +152,7 @@ export function describeCall(call: Call): string {
 export type Rule = { overrides: Array<{ kind: 'tool-allow' | 'path-read' | 'path-write' | 'mcp'; value: string }>; desc: string }
 
 /** What 永久允許 would add for a blocked call (柯姊 2026-10-16: 「該類動作」):
- *  Bash -> the leading command of each refused part, Bash(<cmd> *); reads and
+ *  Bash -> the leading command of each refused part, Bash(<cmd>) and Bash(<cmd> *); reads and
  *  writes -> the folder of the path; WebFetch/WebSearch -> the tool; MCP ->
  *  the server. lay(settings, overrides) applies /router perm overrides (from
  *  settings.ts); the rule is offered only when it really makes the call pass.
@@ -168,7 +168,8 @@ export function permanentRule(settings: any, call: Call, folder: string, lay: (s
     const cmds = [...new Set(subcommands(String(i.command ?? ''))
       .filter(s => !checkCall(settings, { tool_name: 'Bash', tool_input: { command: s } }, folder).ok)
       .map(s => s.split(/\s+/).find(w => !/^\w+=/.test(w) && w !== 'sudo') ?? ''))].filter(Boolean)
-    if (cmds.length) r = { overrides: cmds.map(c => ({ kind: 'tool-allow' as const, value: `Bash(${c} *)` })), desc: `執行 ${cmds.join(', ')} 開頭的 Bash 指令 (仍在 sandbox 裡)` }
+    // both shapes, like the role templates (Bash(ls) + Bash(ls *)): "hostname" alone never matches Bash(hostname *)
+    if (cmds.length) r = { overrides: cmds.flatMap(c => [{ kind: 'tool-allow' as const, value: `Bash(${c})` }, { kind: 'tool-allow' as const, value: `Bash(${c} *)` }]), desc: `執行 ${cmds.join(', ')} 開頭的 Bash 指令 (仍在 sandbox 裡)` }
   } else if (READ_TOOLS.has(tool) || EDIT_TOOLS.has(tool)) {
     const p = callPath(call, folder)
     const dir = tool === 'Glob' || tool === 'Grep' || tool === 'LS' ? p : p.replace(/\/[^/]*$/, '') || '/'
