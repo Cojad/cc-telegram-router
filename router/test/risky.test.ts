@@ -179,12 +179,19 @@ test('own_agents rows: newest 500 per worker kept, a name added again is the new
   expect(db.dropOwnAgents(conv.key, null)).toBe(0)
 })
 
-test('workerKey: session, pid and, from /proc, the process start time (a pid used again is another worker)', () => {
+test.skipIf(!existsSync(`/proc/${process.pid}/stat`))('workerKey: session, pid and the process start time (a pid used again is another worker); no start time, no key', async () => {
   const k = workerKey('sess-1', process.pid)
-  expect(k).toStartWith(`sess-1:${process.pid}`)
-  if (existsSync(`/proc/${process.pid}/stat`)) expect(k).toMatch(new RegExp(`^sess-1:${process.pid}:\\d+$`))
+  expect(k).toMatch(new RegExp(`^sess-1:${process.pid}:\\d+$`))
   expect(workerKey('sess-1', process.pid)).toBe(k)
-  expect(workerKey(undefined, 999999999)).toBe('?:999999999')
+  expect(workerKey(undefined, process.pid)).toStartWith(`?:${process.pid}:`)
+  // another process: another start time in the key
+  const p = Bun.spawn(['sleep', '5'])
+  const other = workerKey('sess-1', p.pid)
+  p.kill(); await p.exited
+  expect(other).toMatch(new RegExp(`^sess-1:${p.pid}:\\d+$`))
+  // gone, or never there: cannot be told apart
+  expect(workerKey('sess-1', p.pid)).toBeNull()
+  expect(workerKey('sess-1', 999999999)).toBeNull()
 })
 
 test('elevation: an owner\'s turn in a user conversation is asked in the chat, once only (no 永久允許); approved, the subagent may list agents and message another session; the main session still may not', async () => {

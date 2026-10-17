@@ -35,7 +35,8 @@
 // agent behind it would reach another session). "main" counts only from a
 // subagent (reporting back). Kept in router.db own_agents, so a router
 // restart keeps them, each bound to the worker process it started under
-// (workerKey: session id, the plugin's pid and its start time): only the
+// (workerKey: session id, the plugin's pid and its start time; no start time,
+// as without /proc, and nothing counts for that worker): only the
 // worker whose plugin said hello since this router started counts, and a
 // hello from another worker process (rotate, restart, a new session) drops
 // the conversation's older rows, whose subagents are gone with that process.
@@ -55,15 +56,16 @@ import { inParens } from './context'
 
 export type HookDecision = { decision?: 'allow' | 'deny'; reason?: string }
 
-/** Who a worker process is: its session, its plugin's pid and, where /proc
- *  has it, when that process started (a pid used again later is another process). */
-export function workerKey(session: string | null | undefined, pid: number): string {
-  let start = ''
+/** Who a worker process is: its session, its plugin's pid and when that
+ *  process started (/proc/<pid>/stat starttime: a pid used again later is
+ *  another process). null when the start time cannot be read (no /proc, the
+ *  process gone): that worker cannot be told apart, its own subagents never count. */
+export function workerKey(session: string | null | undefined, pid: number): string | null {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
-    start = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19] ?? ''
-  } catch {}
-  return `${session || '?'}:${pid}${start ? `:${start}` : ''}`
+    const start = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19]
+    return start && /^\d+$/.test(start) ? `${session || '?'}:${pid}:${start}` : null
+  } catch { return null }
 }
 
 /** A tool call in full for the 執行授權 log (only the fields the hook forwards). */

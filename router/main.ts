@@ -470,7 +470,12 @@ const ipc = createIpc({
   },
   onProgress(peer, ev) { ipcOnProgress(peer, ev) },
   // the conversation's own subagents count for the worker process that started them (router/elevation.ts)
-  onWorker: (c, h) => elevation.workerConnected(c.key, workerKey(h.session_id ?? db.getConversation(c.key)?.session_id, h.pid)),
+  // a worker that cannot be told apart (no process start time) gets none
+  onWorker: (c, h) => {
+    const w = workerKey(h.session_id ?? db.getConversation(c.key)?.session_id, h.pid)
+    if (w) elevation.workerConnected(c.key, w)
+    else { elevation.workerGone(c.key); log(`own_agents ${c.key}: no start time for pid ${h.pid}, own subagents do not count`) }
+  },
   onWorkerGone: key => elevation.workerGone(key),
   async onCli(text) {
     const owner = cfg.owners[0]

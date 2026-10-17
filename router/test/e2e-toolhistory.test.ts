@@ -103,7 +103,7 @@ test('every PreToolUse is a tool_history row with the router\'s decision; high-r
   expect(await pre(okey, 'ListAgents', {})).toBeNull()
   expect(await pre(ukey, 'SendMessage', { to: 'worker [3fa9c1]', message: '機密內容 do-not-store' })).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('power 以下的角色不能傳訊給其他 session') })
   // its own named subagent: once SubagentStart came, under the worker whose plugin is connected
-  u = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: folder(ukey), pid: 21 }, onMessage(m) { if (m.t === 'deliver') u.send({ t: 'ack', qid: m.qid }) } })
+  u = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: folder(ukey), pid: process.pid }, onMessage(m) { if (m.t === 'deliver') u.send({ t: 'ack', qid: m.qid }) } })
   await until(() => u.state().kind === 'ready')
   expect(await pre(ukey, 'Agent', { name: 'helper', subagent_type: 'general-purpose', description: 'd', prompt: 'do-not-store prompt' })).toBeNull()
   await hook(ukey, 'subagent-start', { agent_id: 'a77', agent_type: 'general-purpose' })

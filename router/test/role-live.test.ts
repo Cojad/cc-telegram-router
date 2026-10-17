@@ -97,13 +97,15 @@ test.skipIf(!LIVE)('power: a router socket outside home and the state dir (confi
   try {
     const hidden = hiddenPaths({ home: root, stateDir: state, sandboxDenyRead: [], socket: sock })
     expect(hidden).toContain(sock)
-    const [kind, conn] = await Promise.all([
-      asRole('power', bash(`stat -c %F ${sock}; cat ${join(run, 'neighbour.txt')}`), hidden),
-      asRole('power', bash(`python3 -c "import socket; c=socket.socket(socket.AF_UNIX); c.connect('${sock}'); print(c.recv(32))"`), hidden),
-    ])
-    expect(kind.text).not.toContain('socket')
-    expect(kind.text).toContain('NEIGHBOUR-OK')
-    expect(conn.text).not.toContain('ROUTER-REACHED')
+    // one claude run: the socket's file type, the folder's other file, a connection attempt.
+    // In a script: with the socket path in the command the model declined to run it (it is in its denyRead).
+    writeFileSync(join(run, 'check.sh'), `stat -c 'TYPE=%F' ${sock}\ncat ${join(run, 'neighbour.txt')}\npython3 -c "import socket; c=socket.socket(socket.AF_UNIX); c.connect('${sock}'); print(c.recv(32))" 2>&1 | tail -1\n`)
+    const r = await asRole('power', bash(`bash ${join(run, 'check.sh')}`), hidden)
+    console.log(`[role-live socket]\n${r.text.trim()}`)
+    expect(r.text).toContain('TYPE=')
+    expect(r.text).not.toContain('TYPE=socket')
+    expect(r.text).toContain('NEIGHBOUR-OK')
+    expect(r.text).not.toContain('ROUTER-REACHED')
   } finally { srv.stop(true); rmSync(run, { recursive: true, force: true }) }
 }, 300_000)
 

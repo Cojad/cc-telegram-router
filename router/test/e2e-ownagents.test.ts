@@ -6,7 +6,8 @@
 //   a named subagent started under the connected worker passes SendMessage;
 //   after a router restart it still passes once the worker's plugin
 //   reconnects (the same process); with no plugin connected nothing counts;
-//   a plugin from another process (a restarted worker) drops the rows;
+//   a plugin from another process (a restarted worker) drops the rows; a
+//   plugin whose process start time cannot be read counts for nothing;
 //   rows of a conversation that no longer exists go at start.
 
 import { test, expect, afterAll } from 'bun:test'
@@ -153,5 +154,12 @@ test('own subagents survive a router restart while the same worker runs; nothing
   // the new worker's own subagent counts
   await hook('subagent-start', { agent_id: 'b01', agent_type: 'general-purpose' })
   expect(await send('b01')).toBeNull()
-  expect(q('SELECT worker FROM own_agents WHERE conv = ?', ukey)[0].worker).toStartWith(`sess-e2e-1:${other.pid}`)
+  expect(q('SELECT worker FROM own_agents WHERE conv = ?', ukey)[0].worker).toMatch(new RegExp(`^sess-e2e-1:${other.pid}:\\d+$`))
+  fresh.close()
+
+  // a plugin whose process start time cannot be read (no such process): it cannot be told apart, nothing counts
+  const ghost = plugin(999999999)
+  await ready(ghost)
+  expect(await send('b01')).toMatchObject({ permissionDecision: 'deny' })
+  await until(() => stderr.includes('no start time for pid 999999999'))
 }, 90000)
