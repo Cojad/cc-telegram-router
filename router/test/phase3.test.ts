@@ -9,6 +9,7 @@ import type { Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
 import { ensureConversation, findByFolder } from '../conversations'
 import { checkCall, writesFile, subcommands, writesByOption, permanentRule } from '../permcheck'
+import { inParens } from '../context'
 import { renderSettings, applyOverrides } from '../settings'
 import { runCommand, type CommandDeps } from '../commands'
 import { makeAssertAllowedChat } from '../guard'
@@ -204,6 +205,23 @@ test('grants: a target request whose target is the approvals group (or the owner
   db.updateBotSetup('cc', { approvals_chat: null, approvals_topic: null, notices_topic: null })
   expect(await requestGrant(g, from, OWNER, 'target', 'x')).toBe('目標對話就是審核處 (owner 私訊), 只送了一份申請, 由 owner 或 admin 決定 (#2), 決定後會通知你')
   expect(sent.at(-1)!.text).toContain('目標對話就是這裡 (owner 私訊), 只有這一份申請, 由 owner 或 admin 決定.')
+})
+
+test('labels in parentheses are never nested: the target chat reads 「這個對話 (title, key)」; who decided reads 「(name, id)」 (柯姊 2026-10-17)', async () => {
+  expect(inParens('柯姊 (137438526)')).toBe('(柯姊, 137438526)')
+  expect(inParens('u42 [owner], 以 owner 角色執行')).toBe('(u42 [owner], 以 owner 角色執行)')
+  expect(inParens('@cc:小喵 (500) [admin], 以 admin 角色執行')).toBe('(@cc:小喵, 500 [admin], 以 admin 角色執行)')
+  const from = db.updateConversation(ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {}).key, { title: 'Example Group' })
+  const { approvals, sent, edits } = fakeApprovals()
+  const told: string[] = []
+  const g: GrantDeps = { db, approvals, notify(_c, t) { told.push(t) }, label: id => `名字 (${id})` }
+  await requestGrant(g, from, '-100888', 'target', '想分享')
+  const inTarget = sent.find(m => m.chat === '-100888')!
+  expect(inTarget.text).toContain('✅ 允許這個對話: 之後這個對話 (Example Group, group-100555) 都可以傳到這裡.')
+  expect(await decideGrant(g, 'grant:1:once', OWNER, OWNER)).toBe('✅ 已允許這個對話')
+  expect(edits[0]!.text).toEndWith(`✅ 已允許這個對話 (名字, ${OWNER})`)
+  expect(told[0]).toContain(`跨對話傳訊申請 #1 ✅ 已允許這個對話 (名字, ${OWNER}), 現在可以送往`)
+  for (const t of [...sent.map(m => m.text), ...edits.map(e => e.text), ...told]) expect(t).not.toMatch(/\([^()]*\(/) // no ( ... ( ... ) ... )
 })
 
 test('grants: target mode asks the target chat and the owner at once; the first press decides and both copies show it; a denial grants nothing', async () => {

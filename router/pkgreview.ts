@@ -22,6 +22,7 @@
 
 import type { Conversation, RouterDb } from './db'
 import { parseInstall, readManifest, customItem, type Pkg } from './packages'
+import { inParens } from './context'
 import { postApproval, settleApproval, mayDecide, parseChoice, CHOICE_WORD, type ApprovalDeps, type About } from './approvals'
 import type { HookDecision } from './elevation'
 import type { Authz } from './authz'
@@ -174,12 +175,12 @@ export function createPkgGate(deps: PkgDeps) {
     for (const v of added) db.addOverride({ conv: r.conv, kind: 'pkg', value: v })
     if (status === 'approved' && custom.length) db.grantPkgOnce(r.id, custom)
     const word = CHOICE_WORD[p.choice]
-    const outcome = `${word} (${deps.label(uid)})`
+    const outcome = `${word} ${inParens(deps.label(uid))}`
     const conv = db.getConversation(r.conv)
     if (added.length && conv) deps.authz?.record('pkg', r.id, conv, p.choice, added.map(value => ({ kind: 'pkg' as const, value })), outcome)
     await settleApproval(deps.approvals, 'pkg', r.id, outcome, added.length > 0)
     const scope = status !== 'approved' ? '' : `${p.choice === 'always' && regular.length ? ', 之後安裝 PyPI 與 npm 的套件都不用審核' : ''}${custom.length ? '; URL, 本機路徑與自訂來源的項目只放行下一次同樣的安裝, 之後再裝要重新審核' : ''}, 現在可以重新安裝了`
-    if (conv) deps.notify(conv, `<router_status>\n套件安裝審核 #${r.id} ${word} (${deps.label(uid)}): ${items.map(shown).join(', ')}${scope}.\n</router_status>`, { kind: 'pkg', ref: r.id })
+    if (conv) deps.notify(conv, `<router_status>\n套件安裝審核 #${r.id} ${word} ${inParens(deps.label(uid))}: ${items.map(shown).join(', ')}${scope}.\n</router_status>`, { kind: 'pkg', ref: r.id })
     return word
   }
 

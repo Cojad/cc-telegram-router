@@ -16,6 +16,7 @@
 
 import type { Conversation, RouterDb } from './db'
 import { postApproval, settleApproval, mayDecide, parseChoice, approvalPlace, choiceWord, type ApprovalDeps, type About } from './approvals'
+import { inParens } from './context'
 import type { Authz } from './authz'
 
 /** The send overrides allow chat_id: listed, or send * and the bot is in it. */
@@ -56,7 +57,7 @@ export async function requestGrant(deps: GrantDeps, from: Conversation, target: 
     `♾️ 永久允許的範圍: ${from.key} 之後可以送訊息到 bot 所在的任何對話, 不用再申請 (權限覆寫 send *).`,
     `撤銷: /router perm ${from.chat_id} send rm ${target} 或 send rm *`,
   ].join('\n')
-  const extra = mode === 'target' ? [{ place: { chat_id: target }, text: `📨 ${who} 想傳訊息到這個對話 (#${id})\n理由: ${reason}\n✅ 允許這個對話: 之後這個對話 (${who}) 都可以傳到這裡.\n要接受嗎?` }] : []
+  const extra = mode === 'target' ? [{ place: { chat_id: target }, text: `📨 ${who} 想傳訊息到這個對話 (#${id})\n理由: ${reason}\n✅ 允許這個對話: 之後這個對話 (${from.title ? `${from.title}, ${from.key}` : from.key}) 都可以傳到這裡.\n要接受嗎?` }] : []
   const reached = await postApproval(deps.approvals, from.bot, 'grant', id, ownerText, extra)
   if (!reached.length) return '審核頻道與目標對話都送不到, 申請沒有送出'
   if (atApprovals) return `目標對話就是審核處 (${placeName}), 只送了一份申請, 由 owner 或 admin 決定 (#${id}), 決定後會通知你`
@@ -82,10 +83,10 @@ export async function decideGrant(deps: GrantDeps, data: string, uid: string, ch
   const value = p.choice === 'always' ? '*' : g.target
   if (p.choice !== 'deny') deps.db.addOverride({ conv: g.from_conv, kind: 'send', value })
   const word = choiceWord('grant', p.choice)
-  const outcome = `${word} (${deps.label(uid)})`
+  const outcome = `${word} ${inParens(deps.label(uid))}`
   if (p.choice !== 'deny' && from) deps.authz?.record('grant', g.id, from, p.choice, [{ kind: 'send', value }], outcome)
   await settleApproval(deps.approvals, 'grant', g.id, outcome, p.choice !== 'deny')
   const scope = p.choice === 'always' ? ', 之後送往 bot 所在的任何對話都不用再申請' : p.choice === 'once' ? `, 現在可以送往 ${deps.label(g.target)}` : ''
-  if (from) deps.notify(from, `<router_status>\n跨對話傳訊申請 #${g.id} ${word} (${deps.label(uid)})${scope}.\n</router_status>`, { kind: 'grant', ref: g.id })
+  if (from) deps.notify(from, `<router_status>\n跨對話傳訊申請 #${g.id} ${word} ${inParens(deps.label(uid))}${scope}.\n</router_status>`, { kind: 'grant', ref: g.id })
   return word
 }

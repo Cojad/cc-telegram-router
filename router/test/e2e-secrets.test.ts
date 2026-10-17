@@ -46,7 +46,7 @@ const api = Bun.serve({
     calls.push({ method, body, token })
     const ok = (result: unknown) => Response.json({ ok: true, result })
     // like Telegram, parse_mode HTML with a stray < > or & is refused (the settings notices are HTML)
-    if (body.parse_mode === 'HTML' && badHtml(String(body.text))) return Response.json({ ok: false, error_code: 400, description: "Bad Request: can't parse entities" })
+    if (body.parse_mode === 'HTML' && (badHtml(String(body.text)) || refuseHtml-- > 0)) return Response.json({ ok: false, error_code: 400, description: "Bad Request: can't parse entities" })
     switch (method) {
       // a token Telegram does not know; the router's own bot keeps privacy mode on
       case 'getMe': return token.includes('unknown') ? Response.json({ ok: false, error_code: 401, description: 'Unauthorized' }, { status: 401 })
@@ -108,6 +108,7 @@ const inGroup = (from: typeof OWNER, text: string, reply?: { message_id: number;
   updates.push({ update_id: id, message: { message_id: id, date: now, chat: { id: GROUP, type: 'supergroup', title: 'Test group' }, from, text, ...(reply ? { reply_to_message: { ...reply, date: now, chat: { id: GROUP, type: 'supergroup', title: 'Test group' } } } : {}) } })
   return id
 }
+let refuseHtml = 0 // a test makes Telegram refuse the next HTML message(s)
 /** What Telegram refuses in parse_mode HTML: tags other than <b>, or an & that is not an entity. */
 const badHtml = (t: string) => { const rest = t.replace(/<\/?b>/g, ''); return /[<>]/.test(rest) || /&(?!(amp|lt|gt|quot);)/.test(rest) }
 const sentTo = (chat: number, prefix: string) => calls.filter(c => c.method === 'sendMessage' && Number(c.body.chat_id) === chat && String(c.body.text).startsWith(prefix))
@@ -236,6 +237,14 @@ test('added to a group: the owner is told about privacy mode (re-add after chang
   expect(odd.body.parse_mode).toBe('HTML')
   expect(badHtml(odd.body.text)).toBe(false)
   expect(calls.some(c => c.method === 'sendMessage' && c.body.parse_mode === 'HTML' && badHtml(String(c.body.text)))).toBe(false) // nothing refused
+  // Telegram refuses the HTML anyway (an escape missed): the notice still arrives, as plain text, and the log says why
+  refuseHtml = 1
+  updates.push({ update_id: mid, my_chat_member: { chat: { id: -100798, type: 'supergroup', title: 'Fallback' }, from: OWNER, date: now, old_chat_member: { status: 'left', user: { id: 1, is_bot: true, first_name: 'cc' } }, new_chat_member: { status: 'member', user: { id: 1, is_bot: true, first_name: 'cc' } } } })
+  const plain = await until(() => sentTo(555, '➕ @cc_bot 被加入群組 Fallback').find(c => !c.body.parse_mode))
+  expect(plain.body.text).toContain('🔒 群組隱私模式 (Group Privacy)')
+  expect(plain.body.text).not.toContain('<b>')
+  expect(sentTo(555, '➕ @cc_bot 被加入群組 Fallback').filter(c => c.body.parse_mode === 'HTML')).toHaveLength(1) // the refused one
+  await until(() => stderr.includes("Telegram refused the HTML (Bad Request: can't parse entities), sent as plain text"))
 }, 30000)
 
 test('bot settings notices on first-run setup and /router setup group: the group guide and the setup result (done or refused) carry the privacy notice and bot-to-bot', async () => {

@@ -25,7 +25,7 @@ import type { Conversation, RouterDb, SecretHandle } from './db'
 import { scanUpdate, replaceFindings, replaceInPlace, valuesOf, eventMarker, workerMarker, ownFindings, isQuoted, pathText, detectSecrets, CMD_KIND, MIN_KNOWN, type Finding, type Known } from './detect'
 import { sealRaw, openRaw, registerSecret, type SecretDeps } from './secrets'
 import { secretPlace, type ApprovalDeps, type Button } from './approvals'
-import { gmt8, maskTokens } from './context'
+import { gmt8, maskTokens, inParens } from './context'
 
 export const DELETE_AFTER_MS = 5 * 60_000
 export const DEFAULT_TTL_MIN = 10
@@ -387,7 +387,7 @@ export function createVault(deps: VaultDeps) {
       const who = senderUid ? `${deps.personLabel(senderUid)} (${srole})` : '(不明)'
       const head = [
         `🔎 原文請求 #${reqId}: ${who} 在 ${deps.chatLabel(conv.bot, conv.chat_id)}`,
-        `event #${id}${chat ? ` (${deps.chatLabel(ev.bot, chat)})` : ''}, 問題: ${cut(question.replace(/\s+/g, ' '), 200)}`,
+        `event #${id}${chat ? ` ${inParens(deps.chatLabel(ev.bot, chat))}` : ''}, 問題: ${cut(question.replace(/\s+/g, ' '), 200)}`,
         `代號: ${handles.map(h => `${h.code} (${h.kind} 末 4 碼 ${h.last4})`).join(', ')}, ${permanent ? '永久' : `${ttl} 分鐘`}, 只在 ${conv.key} 有效`,
       ]
       if (leaked) {

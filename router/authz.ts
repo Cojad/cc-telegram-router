@@ -17,6 +17,7 @@
 
 import type { Conversation, RouterDb, OverrideKind, ApprovalGrant } from './db'
 import { usePlace, mayDecide, revokeButton, type ApprovalDeps, type About } from './approvals'
+import { inParens } from './context'
 
 export type Granted = Array<{ kind: OverrideKind; value: string }>
 type Stored = { o: Granted; outcome: string }
@@ -49,7 +50,7 @@ export function createAuthz(deps: AuthzDeps) {
   /** Everywhere this authorization shows: the request (keeps its outcome) and
    *  each use in 執行授權, and its 「✅ 成功」 line in a log topic (提權紀錄). Buttons go, 已撤銷 is added. */
   async function markRevoked(kind: string, ref: number, g: ApprovalGrant, who: string): Promise<void> {
-    const stamp = `🚫 已撤銷 (${who})`
+    const stamp = `🚫 已撤銷 ${inParens(who)}`
     for (const msg of db.approvalMsgs(kind, ref)) {
       await deps.approvals.edit(msg.bot, msg.chat_id, msg.message_id, `${msg.text}\n\n${outcomeOf(g)}\n${stamp}`, []).catch(() => {})
     }

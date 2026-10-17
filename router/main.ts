@@ -35,7 +35,7 @@ import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
 import { scheduleRefresh } from './skillrefresh'
 import { createPoller, type PollEvent } from './poller'
-import { sendWithRetry } from './sendretry'
+import { sendWithRetry, htmlOrPlain } from './sendretry'
 import { pollNoticeText, describePoll, noticeVia } from './pollnotice'
 import { hashSkill, loadManifest, argRoleRefusal } from './privskill'
 import { createProgress, type ProgressEvent, type Mirror } from './progress'
@@ -539,11 +539,14 @@ const approvalDeps: ApprovalDeps = {
   async send(bot, to, text, buttons, opts) {
     const api = bots.get(bot)?.bot.api
     if (!api) return null
-    return api.sendMessage(to.chat_id, text, {
+    const send = (t: string, html: boolean) => api.sendMessage(to.chat_id, t, {
       ...(to.thread_id ? { message_thread_id: to.thread_id } : {}),
-      ...(opts?.html ? { parse_mode: 'HTML' as const } : {}),
+      ...(html ? { parse_mode: 'HTML' as const } : {}),
       ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map(b => ({ text: b.text, callback_data: b.data }))] } } : {}),
-    }).then(m => m.message_id, e => { log(`send to ${to.chat_id}: ${e}`); return null })
+    })
+    // HTML refused (an escape missed): the same text without tags, so it still arrives
+    const sent = opts?.html ? htmlOrPlain(() => send(text, true), () => send(htmlToText(text), false), { what: `send to ${to.chat_id}`, log }) : send(text, false)
+    return sent.then(m => m.message_id, e => { log(`send to ${to.chat_id}: ${e}`); return null })
   },
   // the message a request answers; none for a terminal turn (elevation.ts)
   noteRequest: requestOriginNoter({ db, currentMsg: k => currentMsg.get(k), terminalTurn: k => elevation.terminalTurn(k) }),
@@ -972,11 +975,11 @@ async function answerCommand(bot: Bot, input: CommandInput & { messageId: number
   // Long listings (log, chat) can exceed Telegram's 4096 per message.
   const head = toDm ? `(${input.text.trim()} 的結果, 來自群組 ${chats.get(String(chatId))?.title ?? chatId})\n` : ''
   const parts = chunk(`${out.html ? escHtml(head) : head}${reply}`, 4000, 'newline')
-  const html = out.html ? { parse_mode: 'HTML' as const } : {}
   let sent = true
   for (let i = 0; i < parts.length && sent; i++) {
-    // network errors, 5xx and 429 are tried again within a minute (router/sendretry.ts)
-    sent = await sendWithRetry(() => bot.api.sendMessage(target, parts[i]!, { ...html, ...(!toDm && i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {}) }), { what: 'command reply', log })
+    const part = (t: string, html: boolean) => bot.api.sendMessage(target, t, { ...(html ? { parse_mode: 'HTML' as const } : {}), ...(!toDm && i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {}) })
+    // network errors, 5xx and 429 are tried again within a minute; HTML refused: once more as plain text (router/sendretry.ts)
+    sent = await sendWithRetry(() => out.html ? htmlOrPlain(() => part(parts[i]!, true), () => part(htmlToText(parts[i]!), false), { what: 'command reply', log }) : part(parts[i]!, false), { what: 'command reply', log })
       .then(() => true, () => false)
   }
   if (toDm) {
@@ -1144,7 +1147,8 @@ function startBot(bc: BotConfig): BotHandle {
         else {
           commandDeps.setup.skip(bc.name)
           answer = '已略過, 通知與申請都會私訊給你'
-          await ctx.editMessageText(`${escHtml(GROUP_GUIDE)}\n\n${botSettingsNotice(meOf.get(bc.name) ?? null)}\n\n${escHtml(answer)}`, { parse_mode: 'HTML' }).catch(() => {})
+          const edited = `${escHtml(GROUP_GUIDE)}\n\n${botSettingsNotice(meOf.get(bc.name) ?? null)}\n\n${escHtml(answer)}`
+          await htmlOrPlain(() => ctx.editMessageText(edited, { parse_mode: 'HTML' }), () => ctx.editMessageText(htmlToText(edited)), { what: 'group guide edit', log }).catch(() => {})
         }
       }
       await ctx.answerCallbackQuery({ text: answer ?? '' }).catch(() => {})

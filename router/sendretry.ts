@@ -27,3 +27,21 @@ export async function sendWithRetry<T>(send: () => Promise<T>, o: { what: string
     }
   }
 }
+
+/** Telegram refused a parse_mode HTML message ("can't parse entities": an escape was missed). */
+export function isHtmlRefused(e: unknown): boolean {
+  const err = e as { error_code?: number; description?: string; message?: string }
+  return err?.error_code === 400 && /can't parse entities/i.test(String(err.description ?? err.message ?? ''))
+}
+
+/** Send as HTML; if Telegram refuses the HTML, send it once more as plain
+ *  text (tags dropped) and log why: the message still arrives (柯姊 2026-10-17). */
+export async function htmlOrPlain<T>(html: () => Promise<T>, plain: () => Promise<T>, o: { what: string; log(msg: string): void }): Promise<T> {
+  try {
+    return await html()
+  } catch (e) {
+    if (!isHtmlRefused(e)) throw e
+    o.log(`${o.what}: Telegram refused the HTML (${(e as { description?: string }).description ?? e}), sent as plain text`)
+    return plain()
+  }
+}

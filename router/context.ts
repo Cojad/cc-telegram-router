@@ -63,6 +63,12 @@ export function writeContextFile(cfg: Config, c: Conversation): void {
 }
 
 /** 2026-10-16 03:05 (GMT+8) */
+/** A label in parentheses, without parentheses inside: "柯姊 (137438526)"
+ *  becomes "(柯姊, 137438526)" rather than "(柯姊 (137438526))" (柯姊 2026-10-17). */
+export function inParens(s: string): string {
+  return `(${s.replace(/\s*\(([^()]*)\)/g, ', $1').replace(/^, /, '')})`
+}
+
 export function gmt8(iso: string | Date): string {
   const d = typeof iso === 'string' ? new Date(iso) : iso
   return d.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei', hour12: false }).slice(0, 16)

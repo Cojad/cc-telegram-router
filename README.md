@@ -121,7 +121,7 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
 - 新增 bot (`/router bot add`), 新 bot 初次設定 (審核群組說明那則), `/router setup group` (設定成功或不符條件都附), 以及 bot 被加入群組時 (通知送到重要通知話題或 owner 私訊), router 會附上這隻 bot 的設定提醒.
 - 群組隱私模式: 說明開啟與關閉的差別, 依 getMe 的 `can_read_all_group_messages` 顯示目前設定 (true 是關閉, 符合建議; 其他是開啟, 建議關閉), 關閉方式 (@BotFather `/setprivacy`). 重點一定寫出: 改完要把 bot 從群組移除再重新加入才生效; bot 是群組管理員就不受限制 (以管理員身分加入群組時不附這段).
 - Bot-to-Bot Communication Mode (@BotFather 的設定): Bot API 的 getMe 沒有對應欄位, 查不到開了沒, 只附固定說明: 開與關的差別, 設定方式 (@BotFather `/setbot2bot` 或 BotFather Mini App), 以及風險 (router 不分辨發話者是人還是 bot, 其他 bot 的訊息與 /secret 這類指令會照常處理; 可能互相回覆停不下來).
-- 兩段文字由柯姊定稿, 依她 review 草稿的標記加粗 (兩段的標題, 「開啟 (預設):」「關閉:」等清單開頭, 「關閉方式:」「設定方式:」「開啟的風險:」, 「兩件很重要的事:」與兩點的重點句; emoji, 目前設定那行與最後的建議段落不加粗), 以 parse_mode HTML 送出. 同一則訊息裡的其他文字, 以及帶入的群組名稱, bot 名稱一律做 HTML 跳脫, 名稱裡有 < > & 也送得出去; 在終端機 CLI 下的指令印成純文字.
+- 兩段文字由柯姊定稿, 依她 review 草稿的標記加粗 (兩段的標題, 「開啟 (預設):」「關閉:」等清單開頭, 「關閉方式:」「設定方式:」「開啟的風險:」, 「兩件很重要的事:」與兩點的重點句; emoji, 目前設定那行與最後的建議段落不加粗), 以 parse_mode HTML 送出. 同一則訊息裡的其他文字, 以及帶入的群組名稱, bot 名稱一律做 HTML 跳脫, 名稱裡有 < > & 也送得出去; 萬一 Telegram 仍拒收 HTML (can't parse entities), 同一則改用純文字 (去掉標籤) 重送一次並記 log; 在終端機 CLI 下的指令印成純文字.
 
 ### 審核群組與新 bot 初次設定
 
@@ -246,7 +246,7 @@ bun test router/test
 | --header / --scheme, 預設 Authorization: Bearer, 欄位同全域 http 憑證 | secrets「--header / --scheme…」; e2e-secrets「--header: …」 |
 | events 表遮蔽 /secret, /router cred add, /router bot add/rotate; 舊資料一次性遮蔽, 只印筆數 | secrets「events masking covers…」「one-time events migration…」; e2e-secrets「the router generates config.json secretKey…」 |
 | 全域 http 憑證路徑擋 .., ., %2e, \ | secrets「global http credentials: dot segments…」 |
-| bot add, 初次設定, setup group, 加入群組時的隱私模式提醒 (重新加入才生效, 管理員不受限) 與 bot-to-bot 說明; 照柯姊草稿加粗 (HTML), 名稱含 < > & 仍送得出去 | secrets「group privacy notice…」「the settings notices are bold…」「/router bot add: …」; e2e-secrets「added to a group…」「bot settings notices on first-run…」 (假 Telegram 拒收不合法的 HTML) |
+| bot add, 初次設定, setup group, 加入群組時的隱私模式提醒 (重新加入才生效, 管理員不受限) 與 bot-to-bot 說明; 照柯姊草稿加粗 (HTML), 名稱含 < > & 仍送得出去, HTML 被拒時改純文字重送 | secrets「group privacy notice…」「the settings notices are bold…」「/router bot add: …」; e2e-secrets「added to a group…」「bot settings notices on first-run…」 (假 Telegram 拒收不合法的 HTML) |
 
 ### 頻道驗收對照
 

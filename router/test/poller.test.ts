@@ -11,7 +11,7 @@
 import { test, expect } from 'bun:test'
 import { createPoller, classify, type PollEvent } from '../poller'
 import { pollNoticeText, describePoll, noticeVia } from '../pollnotice'
-import { sendWithRetry } from '../sendretry'
+import { sendWithRetry, htmlOrPlain, isHtmlRefused } from '../sendretry'
 
 const net = () => Object.assign(new Error('fetch failed'), { name: 'HttpError' })
 const api = (code: number, extra: Record<string, unknown> = {}) => ({ error_code: code, description: `code ${code}`, ...extra })
@@ -143,4 +143,17 @@ test('notices go through other bots that still work; a 409 or a recovery may als
   expect(noticeVia('cc', 'conflict', one)).toEqual(['cc']) // polling stopped, sending still works
   expect(noticeVia('cc', 'down', one)).toEqual([])
   expect(noticeVia('cc', 'unauthorized', one)).toEqual([])
+})
+
+test('HTML that Telegram refuses (can\'t parse entities) is sent once more as plain text, logged; other errors are not', async () => {
+  const refused = api(400, { description: "Bad Request: can't parse entities: unsupported start tag" })
+  expect(isHtmlRefused(refused)).toBe(true)
+  expect(isHtmlRefused(api(400, { description: 'Bad Request: chat not found' }))).toBe(false)
+  const logs: string[] = [], tried: string[] = []
+  const r = await htmlOrPlain(async () => { tried.push('html'); throw refused }, async () => { tried.push('plain'); return 7 }, { what: 'send to 1', log: m => logs.push(m) })
+  expect([r, tried]).toEqual([7, ['html', 'plain']])
+  expect(logs).toEqual(["send to 1: Telegram refused the HTML (Bad Request: can't parse entities: unsupported start tag), sent as plain text"])
+  const other = await htmlOrPlain(async () => { throw api(403, { description: 'Forbidden: bot was blocked by the user' }) }, async () => 1, { what: 'x', log: () => {} }).catch(e => e)
+  expect(other.error_code).toBe(403) // not an HTML problem: no plain resend
+  expect(await htmlOrPlain(async () => 5, async () => 6, { what: 'x', log: () => {} })).toBe(5)
 })
