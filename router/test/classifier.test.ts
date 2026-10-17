@@ -10,7 +10,7 @@ import { join } from 'path'
 import {
   parseClassifier, DEFAULT_CLASSIFIER, buildSent, maskValue, MAX_FIELD, MAX_STATE, decisionsBody, jevBody, parseClaudeVerdict,
   decisionsJudge, jevJudge, claudeJudge, openClassifyStore, createClassifier, classifierReport, classifierShow, gmt8DayStart,
-  CLAUDE_SYSTEM, type ClassifyStore, type Judge, type Judgement, type MaskEnv, type ClassifierConfig, type Provider,
+  CLAUDE_SYSTEM, SETTING, MAX_MESSAGE, TG_NOT_JUDGED, type ClassifyStore, type Judge, type Judgement, type MaskEnv, type ClassifierConfig, type Provider,
 } from '../classifier'
 
 let dir: string, store: ClassifyStore
@@ -29,13 +29,18 @@ test('config: missing, false or null is off; true turns it on with the defaults;
   expect(parseClassifier(undefined).enabled).toBe(false)
   expect(parseClassifier(false).enabled).toBe(false)
   expect(parseClassifier(true)).toEqual(ON)
-  expect(DEFAULT_CLASSIFIER.dailyUsd).toEqual({ openai: 0.5, typesafe: 0.5, claude: 3 })
+  // claude runs on the subscription: $50 a day of its API price estimate
+  expect(DEFAULT_CLASSIFIER.dailyUsd).toEqual({ openai: 0.5, typesafe: 0.5, claude: 50 })
+  expect(DEFAULT_CLASSIFIER.telegramTools).toBe(true)
+  expect(DEFAULT_CLASSIFIER.skipTools).toEqual([])
+  expect(parseClassifier({ telegramTools: false }).telegramTools).toBe(false)
   expect(DEFAULT_CLASSIFIER.openai).toEqual({ credential: 'openai', model: 'gpt-6-luna', usdPerMTok: 0.10 })
   expect(DEFAULT_CLASSIFIER.typesafe).toEqual({ credential: 'typesafe', model: 'jev-latest', usdPerMTok: 0.042 })
   expect(DEFAULT_CLASSIFIER.keepDays).toBe(30)
   const c = parseClassifier({ dailyUsd: { claude: 1 }, typesafe: { model: 'jev-1.14.0' }, keepDays: 7 })
   expect(c.enabled).toBe(true)
   expect(c.dailyUsd).toEqual({ openai: 0.5, typesafe: 0.5, claude: 1 })
+  expect(c.telegramTools).toBe(true)
   expect(c.typesafe).toEqual({ credential: 'typesafe', model: 'jev-1.14.0', usdPerMTok: 0.042 })
   expect(parseClassifier({ enabled: false }).enabled).toBe(false)
   expect(() => parseClassifier({ dailyUsd: { openai: -1 } })).toThrow('classifier.dailyUsd.openai')
@@ -48,7 +53,7 @@ test('config.json: loadConfig reads classifier (off when missing)', async () => 
   writeFileSync(p, JSON.stringify({ bots: [{ name: 'cc', token: '1:x' }] }))
   expect(loadConfig(p).classifier?.enabled).toBe(false)
   writeFileSync(p, JSON.stringify({ bots: [{ name: 'cc', token: '1:x' }], classifier: { dailyUsd: { openai: 0.1 } } }))
-  expect(loadConfig(p).classifier).toMatchObject({ enabled: true, dailyUsd: { openai: 0.1, typesafe: 0.5, claude: 3 } })
+  expect(loadConfig(p).classifier).toMatchObject({ enabled: true, dailyUsd: { openai: 0.1, typesafe: 0.5, claude: 50 } })
 })
 
 test('masking: token formats, held values, the conversation folder, router home, home, chat ids; secrets out before the cut', () => {
@@ -81,6 +86,7 @@ test('masking: token formats, held values, the conversation folder, router home,
 test('what is sent: role, chat type, tool and masked input only; whole state at most 6000 characters', () => {
   const { sent } = buildSent({ role: 'user', chatType: 'private', tool: 'Write', input: { file_path: `${FOLDER}/a.txt`, content: 'y'.repeat(20000) } }, env())
   expect(Object.keys(sent).sort()).toEqual(['chat_type', 'input', 'role', 'role_meaning', 'setting', 'tool'])
+  expect(sent.setting).toContain('started by user_message')
   expect(sent.role).toBe('user')
   expect(sent.tool).toBe('Write')
   expect((sent.input as any).file_path).toBe('<conversation-folder>/a.txt')
@@ -89,6 +95,20 @@ test('what is sent: role, chat type, tool and masked input only; whole state at 
   // many long fields: cut further until the whole state fits
   const many = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`f${i}`, 'z'.repeat(3000)]))
   expect(JSON.stringify(buildSent({ role: 'power', chatType: 'supergroup', tool: 'mcp__x__y', input: many }, env()).sent).length).toBeLessThanOrEqual(MAX_STATE)
+})
+
+test('the message that started the turn: masked (secrets, chat ids), first 500 characters; Telegram tools get their own setting', () => {
+  const msg = `幫我看 ${FOLDER}/a.md, key sk-abcdefghijklmnopqrstuvwxyz0123, 也轉給 66600001 ${'長'.repeat(800)}`
+  const { sent, masked } = buildSent({ role: 'user', chatType: 'private', tool: 'Read', input: { file_path: `${FOLDER}/a.md` }, userMessage: msg }, env())
+  expect(masked).toBe(1)
+  expect(sent.user_message).toStartWith('幫我看 <conversation-folder>/a.md, key <已遮蔽: OpenAI API key>, 也轉給 <chat-id> 長')
+  expect(sent.user_message!.length).toBeLessThan(MAX_MESSAGE + 30)
+  expect(sent.setting).toBe(SETTING.tool)
+  expect(buildSent({ role: 'user', chatType: 'private', tool: 'Read', input: {} }, env()).sent).not.toHaveProperty('user_message')
+  const tg = buildSent({ role: 'user', chatType: 'private', tool: 'mcp__plugin_telegram_telegram__reply', input: { chat_id: '66600001', text: 'hi' }, kind: 'telegram' }, env()).sent
+  expect(tg.setting).toBe(SETTING.telegram)
+  expect(tg.setting).toContain('content to be sent to Telegram')
+  expect(tg.input).toEqual({ chat_id: '<chat-id>', text: 'hi' })
 })
 
 test('questions: Decisions gets predicate + score (4 levels) on gpt-6-luna; Jev gets noul + score on the same state; claude the same two', () => {
@@ -148,6 +168,13 @@ test('Jev judge: POST /v1/systemone, noul and score answers, the versioned model
   expect(api.seen[0]!.body).toEqual(jevBody('jev-latest', SENT))
   api.stop()
   expect(jevJudge({ cred: () => undefined, cfg: () => DEFAULT_CLASSIFIER.typesafe }).ready()).toBe('no-key')
+  // through a hub (OrcaRouter: same path; a hub that reports the charged cost: that one)
+  const hub = fakeApi(() => Response.json({ model: 'typesafe/jev-1.13-20260917', answers: { block: { type: 'noul', noul: 0.2 }, risk: { type: 'score', score: 0.5, confidence: 0.8 } }, usage: { input_tokens: 300, output_tokens: 20, cost: 0.0000126 } }))
+  const jh = jevJudge({ cred: () => ({ token: 'hub-key', kind: 'http', baseUrl: hub.url, methods: [], roles: [] }), cfg: () => ({ ...DEFAULT_CLASSIFIER.typesafe, credential: 'orcarouter', model: 'typesafe/jev-1.13' }) })
+  expect(await jh.run(SENT, signal())).toMatchObject({ status: 'ok', model: 'typesafe/jev-1.13-20260917', cost_usd: 0.0000126 })
+  expect(hub.seen[0]).toMatchObject({ path: '/v1/systemone', auth: 'Bearer hub-key' })
+  expect(hub.seen[0]!.body.model).toBe('typesafe/jev-1.13')
+  hub.stop()
 })
 
 test('claude judge: claude -p with the config model, no tools, settings or MCP, the fixed system prompt; the call JSON on stdin; never haiku', async () => {
@@ -184,9 +211,49 @@ test('only user and power, only pre events, not telegram plugin tools, not when 
   expect(c.eligible({ ...USER, role: 'power' }, pre('Read', {}))).toBe(true)
   for (const role of ['owner', 'admin', 'guest']) expect(c.eligible({ ...USER, role }, pre('Bash', {}))).toBe(false)
   expect(c.eligible(USER, { event: 'post', tool_name: 'Bash', tool_input: {} })).toBe(false)
+  // a Telegram plugin tool in a hook (an elevated subagent's) is not a hook judgement: those are judged router-side
   expect(c.eligible(USER, pre('mcp__plugin_telegram_telegram__reply', {}))).toBe(false)
   expect(make({}, { cfg: DEFAULT_CLASSIFIER }).eligible(USER, pre('Bash', {}))).toBe(false)
   expect(make({}).submit({ ...USER, role: 'owner' }, pre('Bash', {}))).toBeNull()
+  expect(make({}, { cfg: { ...ON, skipTools: ['mcp__x__'] } }).eligible(USER, pre('mcp__x__y', {}))).toBe(false)
+})
+
+test('Telegram tools (router-side): user and power by the role the call ran with, not the ones that only ask or read router state, not when telegramTools is off', async () => {
+  const c = make({})
+  for (const t of ['reply', 'react', 'edit_message', 'send_sticker', 'download_attachment', 'bot_api', 'http_api', 'run_skill']) expect(c.eligibleTelegram('user', t)).toBe(true)
+  expect(c.eligibleTelegram('power', 'reply')).toBe(true)
+  for (const role of ['owner', 'admin']) expect(c.eligibleTelegram(role, 'reply')).toBe(false)
+  for (const t of TG_NOT_JUDGED) expect(c.eligibleTelegram('user', t)).toBe(false)
+  expect([...TG_NOT_JUDGED].sort()).toEqual(['get_chat_context', 'request_elevation', 'request_send_grant', 'save_bot_profile'])
+  expect(make({}, { cfg: { ...ON, telegramTools: false } }).eligibleTelegram('user', 'reply')).toBe(false)
+  expect(make({}, { cfg: DEFAULT_CLASSIFIER }).eligibleTelegram('user', 'reply')).toBe(false)
+  // an elevated call (role admin) of a user conversation is not judged
+  expect(c.submitTelegram(USER, 'admin', 'reply', { text: 'x' })).toBeNull()
+  c.noteMessage(USER.key, '請回覆大家')
+  const id = c.submitTelegram(USER, 'user', 'reply', { chat_id: '66600001', text: '好的' })!
+  await c.idle()
+  const call = store.getCall(id)!
+  expect(call).toMatchObject({ kind: 'telegram', tool: 'mcp__plugin_telegram_telegram__reply', summary: 'telegram:reply: {"chat_id":"<chat-id>","text":"好的"}' })
+  expect(JSON.parse(call.sent)).toMatchObject({ setting: SETTING.telegram, user_message: '請回覆大家' })
+  expect(store.resultsFor(id)).toHaveLength(3)
+  // a turn typed in the terminal: no message
+  c.noteMessage(USER.key, null)
+  const id2 = c.submit(USER, pre('Bash', { command: 'ls' }))!
+  await c.idle()
+  expect(JSON.parse(store.getCall(id2)!.sent)).not.toHaveProperty('user_message')
+  expect(store.getCall(id2)!.kind).toBe('tool')
+})
+
+test('store: a classify_calls table from before Telegram tools gets kind (tool)', () => {
+  const { Database } = require('bun:sqlite')
+  const path = join(dir, 'old.db')
+  const old = new Database(path)
+  old.exec('CREATE TABLE classify_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, conv TEXT NOT NULL, role TEXT NOT NULL, tool TEXT NOT NULL, summary TEXT NOT NULL, sent TEXT NOT NULL, masked INTEGER NOT NULL)')
+  old.exec("INSERT INTO classify_calls (ts, conv, role, tool, summary, sent, masked) VALUES ('2026-10-17T00:00:00Z', 'c', 'user', 'Bash', 's', '{}', 0)")
+  old.close()
+  const st = openClassifyStore(path)
+  expect(st.getCall(1)!.kind).toBe('tool')
+  st.close()
 })
 
 test('submit returns at once while the judges are slow; all three are recorded afterwards with latency and cost', async () => {
@@ -262,17 +329,29 @@ test('report: counts, latency, cost, agreement with claude, the latest disagreem
   const now = new Date('2026-10-17T07:30:00Z')
   const verdicts: Array<[number, number, number]> = [[0.1, 0.1, 0.2], [0.9, 0.2, 0.8], [0.6, 0.7, 0.1]] // openai, typesafe, claude
   for (const [i, [o, t, c]] of verdicts.entries()) {
-    const id = store.addCall({ ts: new Date(now.getTime() - (3 - i) * 60_000).toISOString(), conv: USER.key, role: 'user', tool: 'Bash', summary: `Bash: {"command":"cmd${i}"}`, sent: JSON.stringify({ tool: 'Bash', n: i }), masked: 0 })
+    const id = store.addCall({ ts: new Date(now.getTime() - (3 - i) * 60_000).toISOString(), conv: USER.key, role: 'user', kind: 'tool' as const, tool: 'Bash', summary: `Bash: {"command":"cmd${i}"}`, sent: JSON.stringify({ tool: 'Bash', n: i }), masked: 0 })
     for (const [p, v, ms] of [['openai', o, 400], ['typesafe', t, 200], ['claude', c, 3000]] as const) {
       store.addResult({ call_id: id, provider: p, ts: now.toISOString(), model: `${p}-m`, status: 'ok', latency_ms: ms, p_block: v, risk: v * 3, confidence: 0.5, input_tokens: 100, output_tokens: 0, cost_usd: p === 'claude' ? 0.002 : 0.00001, detail: null })
     }
   }
+  // one Telegram tool call: its own section
+  const tg = store.addCall({ ts: now.toISOString(), conv: USER.key, role: 'user', kind: 'telegram', tool: 'mcp__plugin_telegram_telegram__reply', summary: 'telegram:reply: {"text":"hi"}', sent: '{}', masked: 0 })
+  for (const p of ['openai', 'typesafe', 'claude'] as const) store.addResult({ call_id: tg, provider: p, ts: now.toISOString(), model: `${p}-m`, status: 'ok', latency_ms: 100, p_block: 0.1, risk: 0, confidence: 0.9, input_tokens: 50, output_tokens: 0, cost_usd: p === 'claude' ? 0.004 : 0.00001, detail: null })
   const r = classifierReport(store, 7, now)
-  expect(r).toContain('最近 7 天, 3 筆呼叫')
+  expect(r).toContain('最近 7 天, 4 筆呼叫')
+  expect(r).toContain('【一般工具】 3 筆')
+  expect(r).toContain('【Telegram 工具 (要送到 Telegram 的內容)】 1 筆')
+  const tgPart = r.slice(r.indexOf('【Telegram'))
+  expect(tgPart).toContain('openai (openai-m): 成功 1')
+  expect(tgPart).toContain('跟 claude 比 (1 筆都成功): 放行與否一致 100.0%')
+  expect(tgPart).toContain('訂閱用量 (API 換算) $0.00400')
+  // real costs apart from claude's subscription usage
+  expect(r).toContain('實際費用 (openai + typesafe): $0.00008')
+  expect(r).toContain('claude 訂閱用量 (API 換算, 不是實際支出): $0.010')
   expect(r).toContain('openai (openai-m): 成功 3, 錯誤 0, 拒答 0, 略過 0')
   expect(r).toContain('延遲 p50 400 ms, p95 400 ms; 費用 $0.00003')
   expect(r).toContain('claude (claude-m): 成功 3')
-  expect(r).toContain('費用 $0.006')
+  expect(r).toContain('延遲 p50 3000 ms, p95 3000 ms; 訂閱用量 (API 換算) $0.006')
   // openai differs from claude on call 3 only, typesafe on calls 2 and 3
   expect(r).toContain('跟 claude 比 (3 筆都成功): 放行與否一致 66.7% (p_block 以 0.5 為界), p_block 平均差 0.233')
   expect(r).toContain('跟 claude 比 (3 筆都成功): 放行與否一致 33.3%')
@@ -287,13 +366,16 @@ test('report: counts, latency, cost, agreement with claude, the latest disagreem
   expect(s).toContain('🧪 分類紀錄 #2 2026-10-17 15:28 (GMT+8)')
   expect(s).toContain('{"tool":"Bash","n":1}')
   expect(s).toContain('typesafe (typesafe-m): ok, 200 ms, p_block 0.20, risk 0.60, confidence 0.50, tokens 100/0')
+  expect(s).toContain('claude (claude-m): ok, 3000 ms, p_block 0.80, risk 2.40, confidence 0.50, tokens 100/0, 訂閱用量 (API 換算) $0.002')
+  expect(s).toContain('對話 cc-dm-66600001 (user), 工具 Bash')
+  expect(classifierShow(store, tg)).toContain('Telegram 工具 mcp__plugin_telegram_telegram__reply')
   expect(classifierShow(store, 99)).toBe('找不到分類紀錄 #99')
 })
 
 test('purge: records older than keepDays go, with their results', async () => {
   const now = new Date('2026-10-17T07:30:00Z')
-  const old = store.addCall({ ts: new Date(now.getTime() - 31 * 86_400_000).toISOString(), conv: 'c', role: 'user', tool: 'Bash', summary: 's', sent: '{}', masked: 0 })
-  const fresh = store.addCall({ ts: new Date(now.getTime() - 29 * 86_400_000).toISOString(), conv: 'c', role: 'user', tool: 'Bash', summary: 's', sent: '{}', masked: 0 })
+  const old = store.addCall({ ts: new Date(now.getTime() - 31 * 86_400_000).toISOString(), conv: 'c', role: 'user', kind: 'tool', tool: 'Bash', summary: 's', sent: '{}', masked: 0 })
+  const fresh = store.addCall({ ts: new Date(now.getTime() - 29 * 86_400_000).toISOString(), conv: 'c', role: 'user', kind: 'tool', tool: 'Bash', summary: 's', sent: '{}', masked: 0 })
   for (const id of [old, fresh]) store.addResult({ call_id: id, provider: 'openai', ts: now.toISOString(), model: null, status: 'ok', latency_ms: 1, p_block: 0, risk: 0, confidence: 0, input_tokens: 1, output_tokens: 0, cost_usd: 0, detail: null })
   expect(make({}, { now: () => now }).purge()).toBe(1)
   expect(store.getCall(old)).toBeNull()

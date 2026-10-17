@@ -6,13 +6,17 @@
 //   judges are slow), then all three are recorded; what reached the APIs has
 //   no held value, no conversation folder and no chat id; a call the rules
 //   block and an owner conversation's call are not sent; telegram plugin
-//   tools are not sent; /router classifier from the terminal CLI.
+//   tools are not judged in the hook; the message that started the turn goes
+//   along, masked; a Telegram reply of a user conversation is judged
+//   router-side (kind telegram), an owner's is not; /router classifier from
+//   the terminal CLI.
 
 import { test, expect, afterAll } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Database } from 'bun:sqlite'
+import { connectRouter } from '../../plugin/client'
 
 const dir = mkdtempSync(join(tmpdir(), 'cctr-cls-e2e-'))
 const state = join(dir, '.router')
@@ -97,6 +101,12 @@ const dm = (from: typeof OWNER, text: string) => { const id = mid++; updates.pus
 const folder = (key: string) => join(dir, 'bot123', key)
 
 /** The worker's PreToolUse hook (hooks/hook.ts progress pre); the decision it printed and how long it took. */
+/** A connected worker (the plugin side): acks what it is delivered. */
+const worker = (key: string, pid: number, delivered: string[] = []) => {
+  const c = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: folder(key), pid }, onMessage(m) { if (m.t === 'deliver') { delivered.push(JSON.stringify(m.params)); c.send({ t: 'ack', qid: m.qid }) } } })
+  return c
+}
+
 async function hook(key: string, tool_name: string, tool_input: object): Promise<{ out: any; ms: number }> {
   const t0 = performance.now()
   const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', 'pre'], {
@@ -109,10 +119,15 @@ async function hook(key: string, tool_name: string, tool_input: object): Promise
 }
 
 test('a user call the rules allow: the hook answers at once; Decisions, Jev and claude are recorded afterwards; nothing held, no folder, no chat id left the machine', async () => {
-  dm(USER, 'hi')
+  dm(USER, `幫我找筆記, 找到跟 ${OWNER.id} 說`)
   dm(OWNER, 'hi')
   const ukey = `dm-${USER.id}`, okey = `dm-${OWNER.id}`
   await until(() => q(`SELECT key FROM conversations WHERE key IN ('${ukey}', '${okey}')`).length === 2)
+  // the workers connect and get their message: the classifier keeps it for this turn
+  const got: string[] = []
+  worker(ukey, 11, got)
+  worker(okey, 12)
+  await until(() => got.some(g => g.includes('幫我找筆記')))
   // a Grep in its own folder: allowed for user; the pattern carries a held value and the chat ids
   const r = await hook(ukey, 'Grep', { pattern: `${OPENAI_KEY}|${USER.id}|${OWNER.id}`, path: join(folder(ukey), 'notes') })
   expect(r.out).toBeNull()
@@ -135,7 +150,25 @@ test('a user call the rules allow: the hook answers at once; Decisions, Jev and 
     expect(o).not.toContain(String(OWNER.id))
     expect(o).not.toContain(dir)
     expect(o).toContain('<conversation-folder>/notes')
+    expect(o).toContain('幫我找筆記, 找到跟 <chat-id> 說')
   }
+}, 30000)
+
+test('Telegram tools are judged router-side: a user conversation\'s reply (kind telegram, the Telegram setting); an owner\'s is not', async () => {
+  const before = q("SELECT count(*) n FROM classify_calls WHERE kind = 'telegram'")[0].n
+  const u = worker(`dm-${USER.id}`, 21), o = worker(`dm-${OWNER.id}`, 22)
+  await sleep(200)
+  const t0 = performance.now()
+  const res = await u.call('reply', { chat_id: String(USER.id), text: '找到了: notes/a.md' })
+  expect(res.isError).toBeFalsy()
+  expect(performance.now() - t0).toBeLessThan(1400)
+  expect((await o.call('reply', { chat_id: String(OWNER.id), text: 'owner 的回覆' })).isError).toBeFalsy()
+  const call = await until(() => q("SELECT * FROM classify_calls WHERE kind = 'telegram'")[before])
+  expect(call).toMatchObject({ conv: `dm-${USER.id}`, role: 'user', tool: 'mcp__plugin_telegram_telegram__reply', summary: 'telegram:reply: {"chat_id":"<chat-id>","text":"找到了: notes/a.md"}' })
+  expect(JSON.parse(call.sent).setting).toContain('content to be sent to Telegram')
+  await until(() => q(`SELECT count(*) n FROM classify_results WHERE call_id = ${call.id}`)[0].n === 3, 15000)
+  await sleep(300)
+  expect(q("SELECT count(*) n FROM classify_calls WHERE kind = 'telegram'")[0].n).toBe(before + 1)
 }, 30000)
 
 test('not sent: a call the rules block, an owner conversation, telegram plugin tools', async () => {
@@ -152,10 +185,14 @@ test('/router classifier from the owner terminal: the report', async () => {
   const p = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cli', 'classifier', '7'], { stdout: 'pipe', stderr: 'pipe' })
   const out = await new Response(p.stdout).text()
   await p.exited
-  expect(out).toContain('🧪 工具呼叫分類器 (第一階段, 只記錄): 最近 7 天, 1 筆呼叫')
+  expect(out).toContain('🧪 工具呼叫分類器 (第一階段, 只記錄): 最近 7 天, 2 筆呼叫')
+  expect(out).toContain('【一般工具】 1 筆')
+  expect(out).toContain('【Telegram 工具 (要送到 Telegram 的內容)】 1 筆')
   expect(out).toContain('openai (gpt-6-luna): 成功 1')
   expect(out).toContain('typesafe (jev-1.13.0): 成功 1')
   expect(out).toContain('claude (claude-opus-5-5): 成功 1')
+  expect(out).toContain('實際費用 (openai + typesafe)')
+  expect(out).toContain('claude 訂閱用量 (API 換算, 不是實際支出): $0.004')
   // typesafe says block (0.85), claude says allow (0.1)
-  expect(out).toContain('最近 1 筆跟 claude 意見不同')
+  expect(out).toContain('最近 2 筆跟 claude 意見不同')
 })

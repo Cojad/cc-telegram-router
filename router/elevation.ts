@@ -331,6 +331,12 @@ export function createElevation(deps: ElevationDeps) {
       return t.until > Date.now() ? t.role : null
     },
 
+    /** The role takeTicket would give, without using the ticket. */
+    peekTicket(conv: string, tool: string, args: unknown): string | null {
+      const t = tickets.get(ticketKey(conv, tool, args))
+      return t && t.until > Date.now() ? t.role : null
+    },
+
     /** A call refused router-side (a Telegram tool the main session called,
      *  which no hook sees): log it and ask for elevation like a hook block. */
     refuse: (conv: Conversation, call: Call, why: string): Promise<HookDecision> => blocked(conv, call, why, undefined),

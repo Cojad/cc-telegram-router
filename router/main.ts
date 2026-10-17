@@ -248,7 +248,8 @@ const ipc = createIpc({
     const conv = findByFolder(db, dir)
     return conv ? { mode: 'worker', conv, role: conv.role } : null
   },
-  async onCall(peer, tool, args) {
+  // Telegram plugin tools run here: the stage 1 classifier judges a call the checks let through (router/classifier.ts)
+  onCall: judgedTelegram(async (peer, tool, args) => {
     // Role or settings may have changed since this plugin said hello. An
     // elevated subagent's call carries the elevated role (router/elevation.ts tickets).
     const conv = peer.conv ? db.getConversation(peer.conv.key) : null
@@ -415,12 +416,14 @@ const ipc = createIpc({
       assertAllowedChat: makeAssertAllowedChat(live, loadAccess, chatId => (onBehalf && chatId === target) || !!conv && sendGranted(db.listOverrides(conv.key).filter(o => o.kind === 'send').map(o => o.value), chatId, id => { const a = loadAccess(); return a.allowFrom.includes(id) || id in a.groups })),
       assertSendable: makeAssertSendable(live, cfg.stateDir),
     }))
-  },
+  }),
   async onHook(peer, ev) {
     const c = peer.conv ? db.getConversation(peer.conv.key) : null
     if (!c) return {}
     // progress events ride along (pre/post/stop/...); subagent events and quiet ones are elevation only
     if (!String(ev.event).startsWith('subagent-') && !ev.quiet) ipcOnProgress(peer, ev)
+    // a turn typed in the worker's terminal has no Telegram message for the classifier
+    if (ev.event === 'prompt' && ev.telegram === false) classifier.noteMessage(c.key, null)
     const d = await elevation.onHook(c, ev as Record<string, any>)
     if (d.decision) return d
     // power may install packages once they pass review (router/pkgreview.ts)
@@ -454,6 +457,8 @@ const ipc = createIpc({
     if (logs) parts.push(logs)
     const who = elevation.onDeliver(c, params.meta.user_id)
     if (params.meta.message_id && params.meta.user !== 'router') currentMsg.set(key, Number(params.meta.message_id))
+    // the message that starts the turn goes with the classifier's judgements (masked, first 500 characters)
+    if (params.meta.user !== 'router') classifier.noteMessage(key, String(params.content ?? ''))
     if (c.type === 'dm' && cfg.owners.includes(c.chat_id) && params.meta.user_id === c.chat_id && needsPersona(db.getBotSetup(c.bot))) parts.push(bootstrapNote(c.bot))
     return {
       content: parts.length ? `${parts.join('\n')}\n${params.content}` : params.content,
@@ -631,6 +636,18 @@ const classifier = createClassifier({
   const purge = () => { try { const n = classifier.purge(); if (n) log(`classifier: removed ${n} old records`) } catch (e) { log(`classifier purge: ${e}`) } }
   purge()
   setInterval(purge, 86_400_000).unref()
+}
+
+/** onCall, plus the classifier for a Telegram plugin tool the router ran without an error, with the
+ *  role it ran with (an elevated subagent's call, which carries a ticket, is not judged). */
+function judgedTelegram<T extends { isError?: boolean }>(f: (peer: Peer, tool: string, args: Record<string, any>) => Promise<T>) {
+  return async (peer: Peer, tool: string, args: Record<string, any>): Promise<T> => {
+    const conv = peer.conv ? db.getConversation(peer.conv.key) : null
+    const role = conv ? (elevation.peekTicket(conv.key, tool, args) ?? conv.role) : null
+    const res = await f(peer, tool, args)
+    if (conv && role && !res?.isError) classifier.submitTelegram(conv, role, tool, args)
+    return res
+  }
 }
 
 /** Original updates and secrets (router/rawvault.ts, plan 10e). */

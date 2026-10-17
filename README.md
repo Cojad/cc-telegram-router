@@ -88,21 +88,22 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
 ### 工具呼叫分類器 (第一階段, 只記錄)
 
 - 是什麼: 角色範本與 `permcheck.ts` 是程式規則, 表達不到「指令合法但目的可疑」這類情況. 分類器是另外問判斷型模型「這個工具呼叫該不該擋下交給人審核」. 第一階段三家並用 (OpenAI Decisions API, TypeSafe Jev, 固定 prompt 的 `claude -p`), **結果只寫進 router.db, 不影響放行**, 用來比較速度, 結果與費用.
-- 送哪些: 對話角色 user 與 power, PreToolUse 規則判斷後放行的呼叫 (含套件審核通過的安裝). 不送: owner 與 admin 對話, 規則擋下的, 提權 subagent 的呼叫, telegram plugin 自己的工具 (`mcp__plugin_telegram_telegram__*`).
+- 送哪些: 對話角色 user 與 power, PreToolUse 規則判斷後放行的呼叫 (含套件審核通過的安裝). 不送: owner 與 admin 對話, 規則擋下的, 提權 subagent 的呼叫.
+- Telegram plugin 工具 (reply, react, edit_message, send_sticker, download_attachment, bot_api, http_api, run_skill...) 在 router 端執行, hook 看不到, 所以在 router 執行完且沒有錯誤 (router 的檢查都通過) 後判斷, 角色以這次呼叫實際使用的為準 (提權 subagent 帶 ticket 的不判斷). 只問人或只讀 router 狀態的 `get_chat_context`, `request_elevation`, `request_send_grant`, `save_bot_profile` 不判斷. 題目的說明改成「要送到 Telegram 的內容」, 重點是有沒有洩漏不該在那裡講的資料 (密鑰, 私人檔案, 其他對話或人, 系統內部) 或內容不恰當. config 的 `telegramTools: false` 可單獨關掉這一類.
 - 不拖慢放行: hook 先回答, 判斷在背景跑. 每家同時最多 4 個 (claude 2 個), 等待超過 20 筆就略過那家 (busy); 逾時 15 秒 (claude 60 秒), 不重試. 任何錯誤只記錄.
-- 外送內容 (三家同一份): 角色與說明, 對話類型, 工具名稱與參數. 參數先用 10e 的密鑰偵測遮蔽 (已知格式加 router 持有的 bot token, 全域憑證, 對話密鑰, 完全比對), 再把對話資料夾換成 `<conversation-folder>`, router home 換成 `<router-home>`, 家目錄換成 `~`, router 知道的 chat id (含群組 id 去掉負號的寫法) 換成 `<chat-id>`; 每個字串最多 1500 字, 整份最多 6000 字. 使用者的訊息不送.
+- 外送內容 (三家同一份): 角色與說明, 對話類型, 觸發這一輪的使用者訊息 (遮蔽後前 500 字; 在 worker 終端機打字的那一輪沒有), 工具名稱與參數. hook 本來就只轉送 command, description, 路徑, pattern, url, query 這些欄位 (Write/Edit 的檔案內容不離開 worker), Telegram 工具則是整份參數 (例如要送出的文字). 訊息與參數先用 10e 的密鑰偵測遮蔽 (已知格式加 router 持有的 bot token, 全域憑證, 對話密鑰, 完全比對), 再把對話資料夾換成 `<conversation-folder>`, router home 換成 `<router-home>`, 家目錄換成 `~`, router 知道的 chat id (含群組 id 去掉負號的寫法) 換成 `<chat-id>`; 每個字串最多 1500 字, 整份最多 6000 字. 使用者的訊息不送.
 - 題目 (英文, Jev 英文最準): (1) 是非題「該擋下交給人審核嗎」的機率 `p_block`; (2) 風險 4 級 (none, low, medium, high) 的加權分數 `risk` (0~3). Decisions 用 `predicate` + `score` (模型 `gpt-6-luna`, `POST /v1/decisions`), Jev 用 `noul` + `score` (`jev-latest`, `POST /v1/systemone`), claude 用固定 system prompt, 沒有工具, 設定與 MCP 的 `claude -p` (模型是 config 的 `model`, 含 haiku 就不跑), 只回 JSON.
 - 紀錄: `classify_calls` (時間, 對話, 角色, 工具, 摘要, 實際外送的內容, 遮蔽數) 與 `classify_results` (每家一列: 實際模型版本, `ok` / `error` / `refusal` / `skipped`, 延遲 ms, `p_block`, `risk`, `confidence`, tokens, 費用, 說明或略過原因 `no-key` / `model` / `budget` / `busy`). 保留 30 天, 啟動時與每天清一次.
-- 費用: Decisions $0.10 / 1M input tokens, Jev $0.042 / 1M input tokens (兩家 output 不收費), 依回應的 input_tokens 計; claude 用 `claude -p` 回報的 `total_cost_usd`. 每家每天 (GMT+8 日界) 上限預設 openai $0.5, typesafe $0.5, claude $3, 到了當天就停 (記 `budget`, router log 記一次).
-- 金鑰: Decisions 用全域憑證 `openai` (router 自己呼叫, worker 的路徑清單不用加 `/v1/decisions`); Jev 用全域憑證 `typesafe` (kind http, baseUrl `https://api.typesafe.ai`, 路徑與角色留空, worker 用不到). 沒有憑證的那家記 `no-key`, 其他照跑.
+- 費用: Decisions $0.10 / 1M input tokens, Jev $0.042 / 1M input tokens (兩家 output 不收費), 依回應的 input_tokens 計 (hub 回應有 `usage.cost` 就用它). claude 走訂閱 (`claude -p`), 記的是它回報的 `total_cost_usd`, 這是 API 價格換算的估計, 不是實際支出; 報表標成「訂閱用量 (API 換算)」, 與實際費用分開. 每家每天 (GMT+8 日界) 上限預設 openai $0.5, typesafe $0.5, claude $50 (以換算值計), 到了當天就停 (記 `budget`, router log 記一次).
+- 金鑰: Decisions 用全域憑證 `openai` (router 自己呼叫, worker 的路徑清單不用加 `/v1/decisions`). Jev 用 `typesafe.credential` 指定的全域憑證, 路徑一律是 `<baseUrl>/v1/systemone`: 原生是 `https://api.typesafe.ai` (模型 `jev-latest`), 也可以走 OrcaRouter (`https://api.orcarouter.ai`, 模型要寫 `typesafe/jev-1.13`, 2026-10-17 實測 `jev-latest` 在那裡沒有容量). 分類器用的憑證路徑與角色都留空, worker 用不到. 沒有憑證的那家記 `no-key`, 其他照跑. (OpenRouter 的 `/api/alpha/decisions` 兩個模型都有, 但用的是 Jev 式的請求格式, 而且帳號的允許供應商設定要包含 openai 與 typesafe 才能用, 目前沒接.)
 - 開關與設定 (config.json, 沒寫就是關閉):
 
   ```json
-  "classifier": { "enabled": true, "dailyUsd": { "openai": 0.5, "typesafe": 0.5, "claude": 3 }, "keepDays": 30 }
+  "classifier": { "enabled": true, "telegramTools": true, "dailyUsd": { "openai": 0.5, "typesafe": 0.5, "claude": 50 }, "typesafe": { "credential": "orcarouter", "model": "typesafe/jev-1.13" }, "keepDays": 30 }
   ```
 
-  另可設 `openai` / `typesafe` 的 `credential`, `model`, `usdPerMTok`, 以及 `skipTools` (前綴比對). 寫 `"classifier": true` 等於全部用預設值.
-- 看結果 (只限 owner, 群組裡下會改私訊回覆): `/router classifier [天數]` (預設 7 天, 1~90; 終端機 `cc-telegram-router cli classifier 7`) 列出每家的成功, 錯誤, 拒答, 略過, 延遲 p50/p95, 費用, 以 claude 為基準的一致率 (`p_block` 以 0.5 為界), `p_block` 與 `risk` 平均差, 以及最近 10 筆意見不同的; `/router classifier show <編號>` 看單筆 (含外送內容). 時間一律 GMT+8.
+  另可設 `openai` / `typesafe` 的 `credential`, `model`, `usdPerMTok`, 以及 `skipTools` (前綴比對, Telegram 工具寫全名 `mcp__plugin_telegram_telegram__<工具>`). 寫 `"classifier": true` 等於全部用預設值.
+- 看結果 (只限 owner, 群組裡下會改私訊回覆): `/router classifier [天數]` (預設 7 天, 1~90; 終端機 `cc-telegram-router cli classifier 7`) 分「一般工具」與「Telegram 工具」兩類, 各列出每家的成功, 錯誤, 拒答, 略過, 延遲 p50/p95, 費用 (claude 是訂閱用量), 以 claude 為基準的一致率 (`p_block` 以 0.5 為界), `p_block` 與 `risk` 平均差, 接著是實際費用 (openai + typesafe) 與 claude 訂閱用量 (API 換算) 兩個合計, 以及最近 10 筆意見不同的; `/router classifier show <編號>` 看單筆 (含外送內容). 時間一律 GMT+8.
 - 第二階段 (還沒做): 分類器只能把「規則放行」改成「擋下並走提權」, 只套用在 user 與 power, 連不上時照規則放行.
 
 ### bot 設定提醒
@@ -166,8 +167,8 @@ bun test router/test
 | `router/test/rawvault.test.ts` | 規劃 10e 原始事件與密鑰保護: 偵測 (格式, 指令的值, 已登記的值, 不猜熵), 掃描範圍, event_raw 加密與綁定, events 遮蔽與 worker 代號, 🔑 話題紀錄, 提醒與 5 分鐘刪除 (取消, 誰能按, 沒權限, 重啟後), event_raw (角色, 代號, 固定 agent, 出口檢查, haiku, 語言), secret_from_handle, cli event raw, /secret handles, /router secret handles, 文字類附件, 文件與工具說明 |
 | `router/test/e2e-rawvault.test.ts` | 真的 router + 假 Bot API 與假 claude: 啟動時補建 🔑 話題與補刪到期的訊息, 私訊貼 token (events, event_raw, messages, worker 都沒有明文), 提醒與取消刪除, 編輯訊息, /secret set, event_raw (user 對話被拒, owner 對話拿到代號與回答), secret_from_handle 後 bot_api 用到真值, cli event raw 寫 600 檔, 下載含 key 的 .env 附件 |
 | `router/test/phase3-privskill.test.ts` | 規劃 10d 特權技能: 參數比對與逐一傳入 (不經 shell), 沙箱的 HOME 與 PATH, 核准與雜湊暫停, 角色與 internal 動作, 憑證不外流 (回傳與寫出的檔案, 通知 owner), 憑證被拒時更新一次再重試, 額外掛載只給 internal 動作, 參數限角色走提權, http API 憑證, 每日更新 (GMT+8 時間計算與 `skillRefreshAt`, 啟動時補跑超過 24 小時沒成功的技能, 執行與寫入憑證, 不佔對話限額, 雜湊不符略過並通知, 失敗通知且遮蔽憑證) |
-| `router/test/classifier.test.ts` | 選配 1 工具呼叫分類器 (第一階段, 只記錄): config 預設與覆寫, 遮蔽 (格式, 已登記的值, 資料夾, chat id, 截斷), 外送內容與題目, Decisions / Jev / claude 三種呼叫 (假 API 與假 claude), 只送 user 與 power, 不等判斷, 錯誤與逾時, no-key 與 haiku, 每天上限 (GMT+8), 併發與略過, 報表與單筆, 30 天清除, `/router classifier` |
-| `router/test/e2e-classifier.test.ts` | 真的 router + 假 Bot API, 假 Decisions 與 Jev, 假 claude: hook 立刻放行後三家都記錄, 外送內容沒有已登記的值, 資料夾與 chat id; 擋下的, owner 對話與 telegram 工具不送; 終端機 `cli classifier` |
+| `router/test/classifier.test.ts` | 選配 1 工具呼叫分類器 (第一階段, 只記錄): config 預設與覆寫 (含 `telegramTools`, claude $50), 遮蔽 (格式, 已登記的值, 資料夾, chat id, 截斷), 外送內容與題目, 觸發的訊息 (遮蔽, 500 字, 終端機那一輪沒有), Telegram 工具 (角色, 不判斷的工具, 開關, 自己的說明), 舊表補 kind, hub 回報的費用, Decisions / Jev / claude 三種呼叫 (假 API 與假 claude), 只送 user 與 power, 不等判斷, 錯誤與逾時, no-key 與 haiku, 每天上限 (GMT+8), 併發與略過, 報表與單筆, 30 天清除, `/router classifier` |
+| `router/test/e2e-classifier.test.ts` | 真的 router + 假 Bot API, 假 Decisions 與 Jev, 假 claude: hook 立刻放行後三家都記錄, 外送內容 (含觸發的訊息) 沒有已登記的值, 資料夾與 chat id; 擋下的, owner 對話與 hook 裡的 telegram 工具不送; user 對話的 reply 在 router 端判斷 (Telegram 類), owner 的不判斷; 終端機 `cli classifier` |
 | `router/test/phase3-pkg.test.ts` | 規劃 07 套件安裝審核: 指令解析, manifest, 審核快取, 送審與核准, 慢審核, 審核模型的呼叫方式, hook |
 | `router/test/e2e-setup.test.ts` | 真的 router + 假 Bot API, 從沒有 owner 開始: 認領碼, 人設訪談與 bot CLAUDE.md, 審核群組的檢查與話題, 略過 |
 | `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`, 歸給哪隻 bot), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
@@ -266,13 +267,16 @@ bun test router/test
 
 | 驗收項目 | 測試 |
 |---|---|
-| 只送 user 與 power 規則放行的呼叫; owner/admin, 擋下的, telegram plugin 工具不送; 沒開就不送 | classifier「only user and power…」; e2e-classifier「not sent: …」 |
+| 只送 user 與 power 規則放行的呼叫; owner/admin, 擋下的不送; 沒開就不送 | classifier「only user and power…」; e2e-classifier「not sent: …」 |
+| Telegram 工具在 router 端判斷: user/power (以實際角色), 不含只問人的工具, 說明是要送到 Telegram 的內容, `telegramTools` 可單獨關 | classifier「Telegram tools (router-side)…」「the message that started the turn…」; e2e-classifier「Telegram tools are judged router-side…」 |
+| 一併送觸發這一輪的使用者訊息 (遮蔽密鑰與 chat id, 前 500 字) | classifier「the message that started the turn…」「Telegram tools (router-side)…」(終端機那一輪沒有); e2e-classifier「a user call the rules allow…」 |
 | 不影響放行也不拖慢: hook 立刻回答, 判斷在背景; 錯誤, 逾時只記錄 | classifier「submit returns at once…」「a judge that throws or hangs…」; e2e-classifier「a user call the rules allow…」 |
 | 外送前遮蔽密鑰 (格式與已登記的值), 對話資料夾, router home, 家目錄, chat id; 長度上限 | classifier「masking: …」「what is sent: …」; e2e-classifier「a user call the rules allow…」 |
 | Decisions (`/v1/decisions`, predicate + score), Jev (`/v1/systemone`, noul + score), claude -p (config 的 model, 不用 haiku, 沒有工具) 用同一份內容與同樣兩題 | classifier「questions: …」「Decisions judge: …」「Jev judge: …」「claude judge: …」「no key and haiku…」 |
 | 記錄延遲, 結果 (機率, 分數, 信心), tokens, 費用 | classifier「submit returns at once…」; e2e-classifier「a user call the rules allow…」 |
-| 每家每天上限 (GMT+8 日界), 超過當天停; 併發上限與略過 | classifier「daily cap per provider…」「busy: …」 |
-| 報表: 各家數字與跟 claude 的差異, 單筆詳情, 只限 owner | classifier「report: …」「/router classifier: …」; e2e-classifier「/router classifier from the owner terminal…」 |
+| 每家每天上限 (GMT+8 日界; claude 預設 $50, 以 total_cost_usd 換算值計), 超過當天停; 併發上限與略過 | classifier「config: …」「daily cap per provider…」「busy: …」 |
+| Jev 可以走 hub (OrcaRouter, 同一路徑, 模型與憑證由 config 指定; hub 回報的費用優先) | classifier「Jev judge: …」 |
+| 報表: 一般工具與 Telegram 工具分開, 各家數字與跟 claude 的差異, 實際費用與 claude 訂閱用量 (API 換算) 分開, 單筆詳情, 只限 owner | classifier「report: …」「/router classifier: …」; e2e-classifier「/router classifier from the owner terminal…」 |
 | 保留 30 天 | classifier「purge: …」 |
 
 ### Phase 4 驗收對照
