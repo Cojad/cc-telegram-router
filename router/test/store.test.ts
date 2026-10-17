@@ -183,6 +183,11 @@ test('old rows get their bot once: by the only bot with a conversation in the ch
     INSERT INTO events (ts, bot, update_json) VALUES ('t', 'router', '{"message":{"message_id":3,"chat":{"id":7}}}'),
       ('t', 'cc', '{"message":{"message_id":4,"chat":{"id":7}}}'), ('t', 'router', '{"message":{"message_id":4,"chat":{"id":7}}}');
     INSERT INTO outbound (ts, bot, method, payload_json, result_json) VALUES ('t', 'router', 'sendMessage', '{"chat_id":"7","text":"x"}', '{"ok":true,"result":{"message_id":5}}');
+    -- both bots had a message 8 (in) and 9 (out); the times say whose this row is
+    INSERT INTO events (ts, bot, update_json) VALUES ('2026-10-15T20:14:17.867Z', 'cc', '{"message":{"message_id":8,"chat":{"id":7},"date":1792095257}}'),
+      ('2026-10-17T00:33:06.598Z', 'router', '{"message":{"message_id":8,"chat":{"id":7},"date":1792197186}}');
+    INSERT INTO outbound (ts, bot, method, payload_json, result_json) VALUES ('2026-10-15T20:14:20.486Z', 'cc', 'sendMessage', '{"chat_id":7}', '{"ok":true,"result":{"message_id":9}}'),
+      ('2026-10-17T00:33:09.761Z', 'router', 'sendMessage', '{"chat_id":7}', '{"ok":true,"result":{"message_id":9}}');
   `)
   const ins = seed.prepare("INSERT INTO messages (chat_id, message_id, direction, ts, content) VALUES (?, ?, ?, 't', ?)")
   ins.run('-100555', '1', 'in', 'group, only cc there')
@@ -190,6 +195,8 @@ test('old rows get their bot once: by the only bot with a conversation in the ch
   ins.run('7', '4', 'in', 'both bots got a message 4: unclear')
   ins.run('7', '5', 'out', 'router sent it (outbound)')
   ins.run('7', '6', 'in', 'no trace anywhere')
+  seed.prepare("INSERT INTO messages (chat_id, message_id, direction, ts, content) VALUES ('7', '8', 'in', '2026-10-17T00:33:06.000Z', 'router got it at 08:33')").run()
+  seed.prepare("INSERT INTO messages (chat_id, message_id, direction, ts, content) VALUES ('7', '9', 'out', '2026-10-17T00:33:09.765Z', 'router sent it at 08:33')").run()
   seed.close()
   const logs: string[] = []
   const root = openStore(path, { legacyBot: 'cc', log: m => logs.push(m) })
@@ -200,18 +207,68 @@ test('old rows get their bot once: by the only bot with a conversation in the ch
     { message_id: '4', bot: 'cc', legacy: 1 },
     { message_id: '5', bot: 'router', legacy: null },
     { message_id: '6', bot: 'cc', legacy: 1 },
+    { message_id: '8', bot: 'router', legacy: null }, // update message.date = the row's time
+    { message_id: '9', bot: 'router', legacy: null }, // outbound logged within ms of the row
   ])
   expect(db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'messages'").all().map((r: any) => r.name)).toEqual(['idx_messages_bot_chat_msg'])
   db.close()
-  expect(logs).toEqual(['messages: bot filled in for old rows: 1 by conversation, 2 by events/outbound, 2 legacy (cc)'])
+  expect(logs).toEqual(['messages: bot filled in for old rows: 1 by conversation, 2 by events/outbound, 2 by time, 2 legacy (cc)'])
   // legacy rows count for the original bot only
   expect(root.forBot('cc').lookup('7', '6')?.content).toBe('no trace anywhere')
   expect(root.forBot('router').lookup('7', '6')).toBeNull()
-  expect(root.forBot('router').recent('7', 10).map(r => r.message_id)).toEqual(['5', '3'])
+  expect(root.forBot('router').recent('7', 10).map(r => r.message_id)).toEqual(['9', '8', '5', '3'])
   root.close()
   // done once: reopening changes nothing
   const again: string[] = []
   openStore(path, { legacyBot: 'router', log: m => again.push(m) }).close()
   expect(again).toEqual([])
+  for (const suffix of ['', '-wal', '-shm']) { try { unlinkSync(path + suffix) } catch {} }
+})
+
+test('legacy rows from the first backfill (no time rule) are placed again once by the time rule; a row that would collide stays; done once (migrations)', () => {
+  const path = `/tmp/store-legacy-fix-${Date.now()}.db`
+  const seed = new Database(path, { create: true })
+  seed.exec(`
+    CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, message_id TEXT NOT NULL, direction TEXT NOT NULL,
+      ts TEXT NOT NULL, user_id TEXT, content TEXT, reply_to_message_id TEXT, attachment_kind TEXT, attachment_file_id TEXT, delivered INTEGER NOT NULL DEFAULT 1,
+      rich_message INTEGER, bot TEXT, legacy INTEGER);
+    CREATE UNIQUE INDEX idx_messages_bot_chat_msg ON messages(bot, chat_id, message_id);
+    CREATE TABLE migrations (name TEXT PRIMARY KEY, at TEXT NOT NULL, changed INTEGER);
+    CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, bot TEXT NOT NULL, update_json TEXT NOT NULL);
+    CREATE TABLE outbound (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, bot TEXT NOT NULL, conv TEXT, method TEXT NOT NULL, payload_json TEXT, result_json TEXT, error TEXT);
+    INSERT INTO events (ts, bot, update_json) VALUES ('x', 'cc', '{"message":{"message_id":128,"chat":{"id":700100200},"date":1792095257}}'),
+      ('x', 'router', '{"message":{"message_id":128,"chat":{"id":700100200},"date":1792197186}}');
+    INSERT INTO outbound (ts, bot, method, payload_json, result_json) VALUES ('2026-10-15T20:14:20.486Z', 'cc', 'sendMessage', '{"chat_id":700100200}', '{"ok":true,"result":{"message_id":129}}'),
+      ('2026-10-17T00:33:09.761Z', 'router', 'sendMessage', '{"chat_id":700100200}', '{"ok":true,"result":{"message_id":129}}'),
+      ('2026-10-17T00:40:00.000Z', 'router', 'sendMessage', '{"chat_id":700100200}', '{"ok":true,"result":{"message_id":140}}');
+    INSERT INTO messages (chat_id, message_id, direction, ts, content, bot, legacy) VALUES
+      ('700100200', '128', 'in', '2026-10-17T00:33:06.000Z', '實測', 'cc', 1),
+      ('700100200', '129', 'out', '2026-10-17T00:33:09.765Z', 'router 的回覆', 'cc', 1),
+      ('700100200', '61', 'in', '2026-10-15T03:14:53.000Z', 'no trace', 'cc', 1),
+      ('700100200', '140', 'out', '2026-10-17T00:40:00.100Z', 'legacy copy', 'cc', 1),
+      ('700100200', '140', 'out', '2026-10-17T00:40:00.100Z', 'router already has 140', 'router', NULL);
+  `)
+  seed.close()
+  const logs: string[] = []
+  openStore(path, { legacyBot: 'cc', log: m => logs.push(m) }).close()
+  const db = new Database(path)
+  expect(db.query('SELECT message_id, bot, legacy FROM messages ORDER BY id').all()).toEqual([
+    { message_id: '128', bot: 'router', legacy: null },
+    { message_id: '129', bot: 'router', legacy: null },
+    { message_id: '61', bot: 'cc', legacy: 1 }, // no evidence: stays
+    { message_id: '140', bot: 'cc', legacy: 1 }, // router already has its own 140: stays
+    { message_id: '140', bot: 'router', legacy: null },
+  ])
+  expect(logs).toEqual(['messages: legacy rows placed again by time: 2 moved, 2 still legacy'])
+  expect(db.query("SELECT changed FROM migrations WHERE name = 'messages-legacy-by-time-2026-10'").get()).toEqual({ changed: 2 })
+  // once: a legacy row the time rule could place now is left alone on the next start
+  db.exec("UPDATE messages SET bot = 'cc', legacy = 1 WHERE message_id = '128'")
+  db.close()
+  const again: string[] = []
+  openStore(path, { legacyBot: 'cc', log: m => again.push(m) }).close()
+  expect(again).toEqual([])
+  const db2 = new Database(path, { readonly: true })
+  expect(db2.query("SELECT bot FROM messages WHERE message_id = '128'").get()).toEqual({ bot: 'cc' })
+  db2.close()
   for (const suffix of ['', '-wal', '-shm']) { try { unlinkSync(path + suffix) } catch {} }
 })

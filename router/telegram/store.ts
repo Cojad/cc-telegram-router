@@ -21,9 +21,14 @@
 // bot reads and writes only its own through forBot(bot). Rows from before
 // the bot column were assigned once (backfillBots): a chat only one bot has
 // a conversation in goes to that bot; otherwise the bot seen in events (in)
-// or outbound (out) for that message; what stays unclear is marked legacy
-// and given to the original bot (the first configured), the only one that
-// existed before a second bot was added.
+// or outbound (out) for that message; when both bots have one (each bot
+// numbers its own messages, so both had a message N), the one at the row's
+// time: the update whose message.date is the row's time (to the second), or
+// the outbound call logged within 2 minutes of it; what stays unclear is
+// marked legacy and given to the original bot (the first configured), the
+// only one that existed before a second bot was added. Rows marked legacy
+// by the first version (without the time rule) are placed again once
+// (fixLegacyByTime, migration messages-legacy-by-time-2026-10).
 
 import { Database } from 'bun:sqlite'
 
@@ -100,11 +105,34 @@ export interface MessageStore {
   close(): void
 }
 
+const hasTable = (db: Database, t: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t)
+
+/** The bots whose update (in) or outbound call (out) is this row's message at the row's time (row alias m):
+ *  the update's message.date is the row's time to the second; the call was logged within 2 minutes. */
+function timedEvidence(db: Database): string | null {
+  const ev = hasTable(db, 'events') ? `SELECT DISTINCT e.bot FROM events e WHERE m.direction = 'in'
+      AND CAST(json_extract(e.update_json, '$.message.chat.id') AS TEXT) = m.chat_id AND CAST(json_extract(e.update_json, '$.message.message_id') AS TEXT) = m.message_id
+      AND json_extract(e.update_json, '$.message.date') = CAST(strftime('%s', m.ts) AS INTEGER)` : null
+  const ob = hasTable(db, 'outbound') ? `SELECT DISTINCT o.bot FROM outbound o WHERE m.direction = 'out'
+      AND CAST(json_extract(o.payload_json, '$.chat_id') AS TEXT) = m.chat_id AND CAST(json_extract(o.result_json, '$.result.message_id') AS TEXT) = m.message_id
+      AND abs(julianday(o.ts) - julianday(m.ts)) * 86400 <= 120` : null
+  return [ev, ob].filter(Boolean).join(' UNION ') || null
+}
+
+/** Legacy rows (placed by the first backfill, without the time rule): the bot the time rule finds, once.
+ *  A row that would collide with that bot's own row of the same id stays. Returns how many moved. */
+export function fixLegacyByTime(db: Database): number {
+  const timed = timedEvidence(db)
+  if (!timed) return 0
+  return db.prepare(`UPDATE OR IGNORE messages AS m SET bot = (SELECT min(bot) FROM (${timed})), legacy = NULL
+    WHERE m.legacy = 1 AND (SELECT count(*) FROM (${timed})) = 1`).run().changes
+}
+
 /** Rows without a bot (from before the column): assign each once, see the header.
  *  Returns how many went to each way. */
-export function backfillBots(db: Database, legacyBot: string | undefined): { conversation: number; evidence: number; legacy: number } {
-  const has = (t: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t)
-  const out = { conversation: 0, evidence: 0, legacy: 0 }
+export function backfillBots(db: Database, legacyBot: string | undefined): { conversation: number; evidence: number; timed: number; legacy: number } {
+  const has = (t: string) => hasTable(db, t)
+  const out = { conversation: 0, evidence: 0, timed: 0, legacy: 0 }
   db.transaction(() => {
     if (has('conversations')) {
       out.conversation = db.prepare(`UPDATE messages SET bot = (SELECT min(c.bot) FROM conversations c WHERE c.chat_id = messages.chat_id)
@@ -118,6 +146,12 @@ export function backfillBots(db: Database, legacyBot: string | undefined): { con
     if (seen) {
       out.evidence = db.prepare(`UPDATE messages AS m SET bot = (SELECT min(bot) FROM (${seen}))
         WHERE m.bot IS NULL AND (SELECT count(*) FROM (${seen})) = 1`).run().changes
+    }
+    // both bots had a message with that id: the one at the row's time
+    const timed = timedEvidence(db)
+    if (timed) {
+      out.timed = db.prepare(`UPDATE messages AS m SET bot = (SELECT min(bot) FROM (${timed}))
+        WHERE m.bot IS NULL AND (SELECT count(*) FROM (${timed})) = 1`).run().changes
     }
     out.legacy = db.prepare('UPDATE messages SET bot = ?, legacy = 1 WHERE bot IS NULL').run(legacyBot ?? null).changes
   })()
@@ -173,7 +207,15 @@ export function openStore(dbPath: string, opts: { legacyBot?: string; log?: (msg
     db.exec('ALTER TABLE messages ADD COLUMN bot TEXT')
     db.exec('ALTER TABLE messages ADD COLUMN legacy INTEGER')
     const r = backfillBots(db, opts.legacyBot)
-    if (r.conversation + r.evidence + r.legacy) opts.log?.(`messages: bot filled in for old rows: ${r.conversation} by conversation, ${r.evidence} by events/outbound, ${r.legacy} legacy (${opts.legacyBot ?? 'no bot'})`)
+    if (r.conversation + r.evidence + r.timed + r.legacy) opts.log?.(`messages: bot filled in for old rows: ${r.conversation} by conversation, ${r.evidence} by events/outbound, ${r.timed} by time, ${r.legacy} legacy (${opts.legacyBot ?? 'no bot'})`)
+  }
+  // once: legacy rows from the first backfill, placed again by the time rule (in router.db, which has the migrations table)
+  const FIX = 'messages-legacy-by-time-2026-10'
+  if (hasTable(db, 'migrations') && !db.query('SELECT 1 FROM migrations WHERE name = ?').get(FIX)) {
+    const moved = fixLegacyByTime(db)
+    const left = (db.query('SELECT count(*) n FROM messages WHERE legacy = 1').get() as { n: number }).n
+    db.prepare('INSERT INTO migrations (name, at, changed) VALUES (?, ?, ?)').run(FIX, new Date().toISOString(), moved)
+    if (moved || left) opts.log?.(`messages: legacy rows placed again by time: ${moved} moved, ${left} still legacy`)
   }
   db.exec('DROP INDEX IF EXISTS idx_messages_chat_msg')
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_bot_chat_msg ON messages(bot, chat_id, message_id)')

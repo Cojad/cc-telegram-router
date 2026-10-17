@@ -121,7 +121,8 @@ test('the router generates config.json secretKey (32 bytes) when missing; tokens
   expect(Buffer.from(k, 'base64')).toHaveLength(32)
   await until(() => stderr.includes('masked tokens in 2 logged updates'))
   expect(q("SELECT count(*) n FROM events WHERE update_json LIKE '%OLDOLD%'")[0].n).toBe(0)
-  expect(q("SELECT name, changed FROM migrations")).toEqual([{ name: 'mask-command-tokens-2026-10', changed: 2 }])
+  // (other one-time migrations, e.g. store.ts messages-legacy-by-time, share the table)
+  expect(q("SELECT name, changed FROM migrations WHERE name = 'mask-command-tokens-2026-10'")).toEqual([{ name: 'mask-command-tokens-2026-10', changed: 2 }])
   expect(stderr).not.toContain('OLDOLD')
 })
 
