@@ -2,9 +2,15 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/), 版本號採 [Semantic Versioning](https://semver.org/lang/zh-TW/). 日期與時間一律 GMT+8. 每個版本對應一個里程碑, 列重點, 細節見 git history 與 [docs/](docs/).
 
-版本方案: 1.x 是官方 telegram plugin 的 fork 時期 (單一 session plugin); 2.0.0 起是 router 架構 (一個對話一個背景 session). 2.9.0 以前每個里程碑加一個 minor 版本, 依里程碑歸類, 標的時間是主要 commit 的時段, 同一時段裡的 commit 可能分屬不同版本. 2.10.0 起每個 commit 都改版號 (`package.json` 與 `plugin/package.json` 同步): 新功能或行為改變加 minor, 只有修正, 文件或測試加 patch; 條目直接寫在該 commit 的版本段落下, `[Unreleased]` 平常保持空白. 尚未建立 git tag.
+版本方案: 1.x 是官方 telegram plugin 的 fork 時期 (單一 session plugin); 2.0.0 起是 router 架構 (一個對話一個背景 session). 2.9.0 以前每個里程碑加一個 minor 版本, 依里程碑歸類, 標的時間是主要 commit 的時段, 同一時段裡的 commit 可能分屬不同版本. 2.10.0 起每個 commit 都改版號 (`package.json` 與 `plugin/package.json` 同步): 新功能或行為改變加 minor, 只有修正, 文件或測試加 patch; 條目直接寫在該 commit 的版本段落下, `[Unreleased]` 平常保持空白. 2.10.0 起每個版本都有 git tag `v<版號>` (例如 `v2.11.0`), 指向該版本的 commit; 2.9.0 以前依里程碑歸類, 對不到單一 commit, 不補 tag.
 
 ## [Unreleased]
+
+## [2.11.1] - 2026-10-17
+
+### Changed
+
+- 版本開始建立 git tag: 2.10.0 起每個版本都有 `v<版號>` tag, 已補上 `v2.10.0` 與 `v2.11.0`.
 
 ## [2.11.0] - 2026-10-17
 
