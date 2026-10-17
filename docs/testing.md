@@ -37,6 +37,8 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行 (router 家目錄與 stateDir 都是臨時位置), 驗證 Claude Code 實際放行與擋下的事; 最後兩條帶 user 對話的 hook, 驗證高風險工具真的觸發 PreToolUse 並被 router 擋下, 傳給自己命名的 subagent 則放行 |
 | `router/test/portability.test.ts` | [安裝位置](operations.md#安裝位置): config `sandboxDenyRead` 與隱藏清單, 角色範本的 denyRead, 特權技能 bwrap (含真的 bwrap 在 /var/tmp 的安裝), 位置檔與 `register`, plugin 與 hook 經位置檔連上 router, `deploy/install.sh` 不預設位置 |
 | `router/test/toolhistory.test.ts` | [工具呼叫紀錄](permissions.md#工具呼叫紀錄): 一筆的內容 (不存參數, 遮蔽與截斷), 寫入失敗只記 log, 30 天清除, 報表, `/router tools` 的權限與參數 |
+| `router/test/dmrole.test.ts` | [角色](permissions.md#角色)的私訊: 每次讀私訊都是使用者角色 (config owners 是 owner, 每隻 bot 的私訊都跟著), 改角色時私訊的 settings 重寫並標記待輪替, `/router perm <私訊> role` 等同 `/router role` 與對應不到時拒絕, 覆寫保留, `/router status` 與 `/router chat` 顯示, config owners 增減, 高風險工具與 tool_history 讀使用者角色, 遷移 (對齊一次, ctx_v 加一) |
+| `router/test/e2e-dmrole.test.ts` | 真的 router + 假 Bot API: 啟動時把有自己角色的私訊對齊使用者角色, log, settings 與 chat context 用使用者角色, 群組不變 |
 | `router/test/risky.test.ts` | [高風險工具](permissions.md#高風險工具): 每個工具在各角色的放行與擋下, SendMessage 對自己的 subagent 與跨 session 的判斷, 提權只能允許一次, 按下的人角色要夠, hook 轉送 Agent 的名稱 |
 | `router/test/e2e-toolhistory.test.ts` | 真的 router + 真的 hook + 假 Bot API: 每個 PreToolUse 一筆紀錄 (含 owner 對話), user 的高風險工具被擋而 owner 不擋, 自己命名的 subagent, router 端 Telegram 工具的紀錄, `cli tools` |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |
@@ -185,6 +187,19 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | SendMessage: 自己的 subagent (agent id; Agent 的 name 要等 SubagentStart) 與 subagent 回報 main 放行, 其他 session, `name [ref]`, `uds:`, `bridge:`, 不認得的名稱與 router 重啟前的 subagent 擋下 | risky「SendMessage: own subagents…」「cc-hook forwards an Agent call's name…」; e2e-toolhistory「every PreToolUse…」 |
 | 擋下走先擋再問, 只能允許一次 (沒有永久允許), 按下的人要 admin 以上; 核准後 subagent 可用, 主 session 照舊被擋 | risky「elevation: an owner's turn…」「elevation: a power sender…」「a power conversation…」 |
 | 這些工具在真的 Claude Code 會觸發 PreToolUse 並被 router 擋下 (`CronDelete` 例外, 不觸發 hook, 照實記錄); owner 發起的一輪在對話裡詢問提權一次; 傳給自己命名的背景 subagent 放行, 其他名稱擋下 | role-live「user: the high-risk tools reach PreToolUse…」「user: SendMessage to its own named subagent…」(LIVE=1) |
+
+## 私訊角色驗收對照
+
+| 驗收項目 | 測試 |
+|---|---|
+| 私訊的有效角色是使用者角色 (config owners 是 owner), 每隻 bot 的私訊都跟著; 群組與頻道保留自己的角色; 私訊不能單獨設角色 | dmrole「a DM's role is its user's role on every read…」; phase1「owner DM gets the owner role…」 |
+| 改使用者角色 (`/router role`): 他的私訊 settings 重寫, 標記待輪替, 回覆列出私訊, 私訊的 worker 收到 router log | dmrole「/router role: the user's DMs…」 |
+| `/router perm <私訊> role` 等同 `/router role` (同樣的檢查與效果, 回覆說明); 對應不到使用者時拒絕並提示 `/router role` | dmrole「/router perm <私訊> role is /router role…」「…with no user behind the chat id…」 |
+| 私訊的權限覆寫保留, 疊在使用者角色上; `perm show` 標明是使用者角色 | dmrole「a DM's perm overrides stay…」 |
+| `/router status` (與 `cli status`, 同一個指令) 與 `/router chat` 的私訊顯示使用者角色 | dmrole「/router status and /router chat show the user's role…」; phase2「/router config, /router chat and /router log…」 |
+| config owners 增減: 那些人的私訊跟著改 | dmrole「config owners changed…」 |
+| 讀對話角色的檢查 (高風險工具, tool_history 的對話角色) 在私訊讀到使用者角色 | dmrole「role checks that read the conversation role…」 |
+| 遷移: 私訊存的角色對齊使用者角色一次, 讀取一律不用舊值, ctx_v 加一; 啟動時對齊, log, 標記待輪替, settings 與 chat context 用使用者角色 | dmrole「migration: …」; e2e-dmrole「at start a DM's stored role is aligned…」 |
 
 ## Phase 4 驗收對照
 

@@ -162,7 +162,7 @@ export function createElevation(deps: ElevationDeps) {
     if (isRisky(call)) return { none: '高風險工具 (傳訊給其他 session, ListAgents, 排程, 遠端觸發, 推播) 只能一次一次允許' }
     if (deps.extraCheck?.(conv, call, conv.role)) {
       const none = call.tool_name.endsWith('__run_skill') ? '技能參數的角色限制沒辦法寫成固定規則, 只能一次一次允許'
-        : call.tool_name.endsWith('__install_skill') ? '安裝技能的角色限制跟著對話角色, 要長期開放請 owner 調整對話角色 (/router perm role), 這裡只能一次一次允許'
+        : call.tool_name.endsWith('__install_skill') ? '安裝技能的角色限制跟著對話角色, 要長期開放請 owner 調整對話角色 (/router perm role; 私訊是使用者角色, 用 /router role), 這裡只能一次一次允許'
         : '憑證開放給哪些角色要由 owner 用 /router cred roles 調整, 這裡只能一次一次允許'
       return { none }
     }

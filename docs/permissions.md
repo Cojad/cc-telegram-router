@@ -4,6 +4,15 @@
 
 [README](../README.md) 的文件索引列出所有文件.
 
+## 角色
+
+使用者有角色 (`router.db` 的 `users`, 用 `/router role` 設定; config `owners` 一律是 owner, 沒設定過的是 user), 群組與頻道的對話也有自己的角色 (`conversations.role`, 用 `/router perm <chat_id> role` 設定, 新對話是 user). **私訊沒有自己的角色, 它的角色就是那位使用者的角色**: settings 產生, 權限檢查, 提權比較, 套件審核, 分類器, 工具呼叫紀錄的對話角色, `/router status` 與 `/router chat` 顯示的, 全部讀使用者角色 (router 每次讀私訊時從 `users` 與 config `owners` 算出來, `conversations.role` 欄位只是同步的複本). 同一個人在每隻 bot 的私訊都跟著他.
+
+- 使用者角色改變 (`/router role`, 對私訊下的 `/router perm ... role`, config `owners` 增減) 時, 他所有私訊的 settings 與 chat context 立刻重寫, worker 標記待輪替 (閒置時停掉, 下一則訊息用新角色叫醒, 跟 `/router session rotate` 同一套), 回覆會列出受影響的私訊.
+- `/router perm <私訊> role <角色>` 等同 `/router role <那位使用者> <角色>`: 同樣的權限檢查 (admin 不能設 owner, 不能異動 owner, config owner 要用 `/router config set owners`), 回覆會說明改成設定使用者角色. chat_id 對應不到使用者時拒絕, 提示改用 `/router role`.
+- 私訊的權限覆寫 (`/router perm <私訊> tool|path|net|mcp|send|pkg ...`) 照常保留, 疊在使用者角色的範本上; `reset` 只清覆寫.
+- 遷移: 以前私訊可以有自己的角色. router 啟動時把每個私訊的 `conversations.role` 對齊使用者角色, 有變的記一行 log (`dm role <對話>: <舊> -> <新> (the user's role)`), chat context 版本加一, 並標記待輪替.
+
 ## 權限檢查與提權
 
 每個工具呼叫在 PreToolUse 由 hook 問 router, router 依對話角色的 settings 檢查 (`permcheck.ts`). 越權就擋下並告訴模型改用不越權的方法 (Claude Code 把太長的工具結果存在 `~/.claude/projects/<對話>/<session>/tool-results/`, 非 owner 角色都能讀自己對話的這些檔; 只有唯讀指令白名單的角色, 用 `>` `>>` 等重導向寫檔, 或 `sort -o`, `uniq 輸入 輸出` 這類用選項寫檔也算越權, 跟 Claude Code 一致; 比對白名單時指令依 `&&` `||` `|` `;` 與換行切段, 引號裡與跳脫的字元不算, 所以 `grep -E 'a|b'` 是一個指令); 發話者角色高於對話時, 直接在對話裡貼出「提權執行 / 拒絕」詢問 (120 秒未回應視為拒絕). 發話者綁在那一輪: 在 worker 終端機打的一輪 (prompt hook 沒有 Telegram 訊息) 沒有發話者, 只看對話角色, 不在對話裡詢問, 到下一則 Telegram 訊息開始的那一輪為止. 按下的人角色夠高才算數, 之後的第一個 subagent 以他的角色執行.

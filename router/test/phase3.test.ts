@@ -29,7 +29,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'cctr3-'))
   mkdirSync(join(dir, '.router'))
   cfg = { path: join(dir, '.router', 'config.json'), bots: [{ name: 'cc', token: '1:x' }], home: dir, stateDir: join(dir, '.router'), socket: join(dir, '.router', 's'), owners: [OWNER], model: 'm', autoCompactWindow: 750000, claudeBin: 'claude' }
-  db = openRouterDb(join(dir, '.router', 'router.db'))
+  db = openRouterDb(join(dir, '.router', 'router.db'), { owners: cfg.owners })
   db.setUserRole(ADMIN, 'admin')
   calls = []
 })

@@ -18,7 +18,6 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 | `scripts/` | `cc /status`, `cc /usage`, `cc /context` 的報表腳本 (`deploy/install.sh router` 裝到 `<stateDir>/scripts`) |
 | `deploy/` | `install.sh` 與 systemd user unit |
 | `docs/` | 技術文件 (本檔與其他主題, 見 README 的文件索引) |
-| `docs/v1/` | v1 (單一 session plugin) 時期的文件, 僅供參考 |
 
 ## 運作方式
 

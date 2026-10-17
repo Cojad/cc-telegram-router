@@ -12,6 +12,8 @@ export type Conversation = {
   chat_id: string
   type: ConvType
   folder: string
+  /** Groups and channels: the conversation's own role. DMs: the user's role
+   *  (userRole), resolved on every read; the stored column only mirrors it. */
   role: string
   session_id: string | null
   created_at: string
@@ -170,7 +172,8 @@ export interface RouterDb {
   setSession(key: string, session_id: string | null): void
   /** The conversation moved to another folder (bot folders); bumps ctx_v. */
   setFolder(key: string, folder: string): Conversation
-  /** Update some conversation fields; bumps ctx_v. Returns the new row. */
+  /** Update some conversation fields; bumps ctx_v. Returns the new row.
+   *  A DM's role cannot be set here: it is its user's role (setUserRole). */
   updateConversation(key: string, fields: Partial<Pick<Conversation, 'role' | 'title' | 'compact' | 'model'>>): Conversation
   enqueue(conv: string, params: unknown): number
   markDelivered(qid: number): void
@@ -240,7 +243,14 @@ export interface RouterDb {
   /** Use up the oldest unused once-grant of conv covering every item; its request id, or null. */
   takePkgOnce(conv: string, items: string[]): number | null
   getUserRole(uid: string): string | null
-  setUserRole(uid: string, role: string | null): void
+  /** The DM conversations whose role changed with it (their settings need rewriting). */
+  setUserRole(uid: string, role: string | null): Conversation[]
+  /** A person's effective role: owner when in config owners, else users.role, else user.
+   *  A DM conversation's role is this for its chat_id. */
+  userRole(uid: string): string
+  /** Bring the stored role of every DM in line with its user's role (startup,
+   *  config owners changed); bumps ctx_v of the ones that changed and returns them with the old value. */
+  syncDmRoles(): Array<{ conv: Conversation; from: string }>
   listUsers(): Array<{ uid: string; role: string }>
   /** /router activity to show the conversation's worker with its next message (plan 03). */
   addLog(conv: string, text: string): void
@@ -272,7 +282,10 @@ export interface RouterDb {
   close(): void
 }
 
-export function openRouterDb(path: string): RouterDb {
+/** owners: config owners (the array config.ts loaded, changed in place by
+ *  /router config set owners); they are owner in their DMs. */
+export function openRouterDb(path: string, opts: { owners?: readonly string[] } = {}): RouterDb {
+  const owners = opts.owners ?? []
   const db = new Database(path, { create: true })
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA busy_timeout = 5000')
@@ -435,7 +448,23 @@ export function openRouterDb(path: string): RouterDb {
   const qOvClear = db.prepare('DELETE FROM overrides WHERE conv = ?')
   const qRotSet = db.prepare('UPDATE conversations SET rotate_pending = ? WHERE key = ?')
   const qRotAll = db.prepare('SELECT * FROM conversations WHERE rotate_pending = 1 ORDER BY key')
-  const get = (key: string) => (qGet.get(key) as Conversation | null) ?? null
+  const userRole = (uid: string) => owners.includes(uid) ? 'owner' : ((qUserGet.get(uid) as { role: string } | null)?.role ?? 'user')
+  // A DM has no role of its own (docs/permissions.md 角色): every read takes its user's.
+  const conv = (r: Conversation | null): Conversation | null => r && r.type === 'dm' ? { ...r, role: userRole(r.chat_id) } : r
+  const convs = (rows: Conversation[]) => rows.map(r => conv(r)!)
+  const get = (key: string) => conv((qGet.get(key) as Conversation | null) ?? null)
+  const qDmRole = db.prepare("UPDATE conversations SET role = ?, ctx_v = ctx_v + 1 WHERE key = ? AND type = 'dm'")
+  const syncDmRoles = (uid?: string) => {
+    const out: Array<{ conv: Conversation; from: string }> = []
+    const rows = (uid == null ? db.prepare("SELECT * FROM conversations WHERE type = 'dm' ORDER BY key").all() : db.prepare("SELECT * FROM conversations WHERE type = 'dm' AND chat_id = ? ORDER BY key").all(uid)) as Conversation[]
+    for (const r of rows) {
+      const role = userRole(r.chat_id)
+      if (r.role === role) continue
+      qDmRole.run(role, r.key)
+      out.push({ conv: get(r.key)!, from: r.role })
+    }
+    return out
+  }
   return {
     logEvent: (bot, update) => Number(qEvent.run(now(), bot, json(update)).lastInsertRowid),
     logMaskedEvent(bot, build) {
@@ -488,12 +517,13 @@ export function openRouterDb(path: string): RouterDb {
     },
     recentOutbound: (conv, limit) => qRecentOut.all(conv, limit) as any,
     getConversation: get,
-    listConversations: () => qAll.all() as Conversation[],
-    findConversation: (bot, chat_id) => (qFind.get(bot, chat_id) as Conversation | null) ?? null,
-    insertConversation: c => { qIns.run(c.key, c.bot, c.chat_id, c.type, c.folder, c.role, c.session_id, c.created_at, c.title ?? null) },
+    listConversations: () => convs(qAll.all() as Conversation[]),
+    findConversation: (bot, chat_id) => conv((qFind.get(bot, chat_id) as Conversation | null) ?? null),
+    insertConversation: c => { qIns.run(c.key, c.bot, c.chat_id, c.type, c.folder, c.type === 'dm' ? userRole(c.chat_id) : c.role, c.session_id, c.created_at, c.title ?? null) },
     setSession: (key, sid) => { qSess.run(sid, key) },
     setFolder: (key, folder) => { db.prepare('UPDATE conversations SET folder = ?, ctx_v = ctx_v + 1 WHERE key = ?').run(folder, key); return get(key)! },
     updateConversation(key, fields) {
+      if ('role' in fields && get(key)?.type === 'dm') throw new Error(`${key}: a DM's role is its user's role (setUserRole)`)
       const sets: string[] = []
       const vals: Array<string | number | null> = []
       for (const [k, v] of Object.entries(fields)) {
@@ -548,7 +578,7 @@ export function openRouterDb(path: string): RouterDb {
     decideGrant: (id, status, by) => db.prepare("UPDATE grants SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'").run(status, by, now(), id).changes > 0,
     clearOverrides: conv => qOvClear.run(conv).changes,
     setRotate: (key, on) => { qRotSet.run(on ? 1 : 0, key) },
-    rotatePending: () => qRotAll.all() as Conversation[],
+    rotatePending: () => convs(qRotAll.all() as Conversation[]),
     approveSkill: (dir, skill, hash, by) => { db.prepare('INSERT OR REPLACE INTO skill_approvals (dir, skill, hash, approved_by, at) VALUES (?, ?, ?, ?, ?)').run(dir, skill, hash, by, now()) },
     skillApproval: dir => (db.prepare('SELECT skill, hash, approved_by, at FROM skill_approvals WHERE dir = ?').get(dir) as any) ?? null,
     revokeSkill: dir => db.prepare('DELETE FROM skill_approvals WHERE dir = ?').run(dir).changes > 0,
@@ -596,7 +626,12 @@ export function openRouterDb(path: string): RouterDb {
       return db.prepare('UPDATE pkg_requests SET once_used_at = ? WHERE id = ? AND once_used_at IS NULL').run(now(), hit.id).changes > 0 ? hit.id : null
     },
     getUserRole: uid => ((qUserGet.get(uid) as { role: string } | null)?.role) ?? null,
-    setUserRole: (uid, role) => { if (role) qUserSet.run(uid, role, now()); else qUserDel.run(uid) },
+    setUserRole: (uid, role) => {
+      if (role) qUserSet.run(uid, role, now()); else qUserDel.run(uid)
+      return syncDmRoles(uid).map(x => x.conv)
+    },
+    userRole,
+    syncDmRoles: () => syncDmRoles(),
     listUsers: () => qUsers.all() as Array<{ uid: string; role: string }>,
     addLog: (conv, text) => { qLogAdd.run(conv, now(), text) },
     bindLogs(conv, qid) {

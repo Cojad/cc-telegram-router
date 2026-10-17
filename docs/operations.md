@@ -29,6 +29,8 @@ systemctl --user enable --now cc-telegram-router
 }
 ```
 
+私訊的角色就是使用者角色 (見 [權限](permissions.md#角色)). 從私訊還有自己角色的版本升級時, router 啟動會把私訊對齊使用者角色, log 裡每個有變的私訊一行 `dm role <對話>: <舊> -> <新> (the user's role)`, 並標記待輪替, 不用另外 `/router session rotate`. 升級前可以先查哪些私訊會變: `sqlite3 <home>/.router/router.db "SELECT c.key, c.role, coalesce(u.role, 'user') FROM conversations c LEFT JOIN users u ON u.uid = c.chat_id WHERE c.type = 'dm' AND c.role != coalesce(u.role, 'user')"` (config `owners` 的私訊會是 owner, 不看 `users`).
+
 `owners` 可以留空, 用 log 裡的認領碼認領 (見下方「新 bot 初次設定與審核群組」). 套件審核用的模型就是 `model`. `skillRefreshAt` 是特權技能每日更新憑證的時間 (GMT+8 `"HH:MM"`, `"off"` 關閉, 不寫就是 `"05:00"`), 改了要重啟 router; 格式寫錯只會關閉每日更新並在 log 寫一行 `config.json: ...`, router 照常啟動. 沒有特權技能, 或技能沒有 refresh 動作時, 每日更新什麼都不做.
 
 ## 安裝位置

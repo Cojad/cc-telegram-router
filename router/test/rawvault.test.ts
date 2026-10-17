@@ -77,7 +77,7 @@ function makeVault(extra: Partial<VaultDeps> = {}) {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'cctr-raw-'))
   mkdirSync(join(dir, '.router'))
-  db = openRouterDb(join(dir, '.router', 'router.db'))
+  db = openRouterDb(join(dir, '.router', 'router.db'), { owners: [OWNER] })
   key = newSecretKey()
   access = { dmPolicy: 'allowlist', allowFrom: [OWNER, ADMIN, USER], groups: { [GROUP]: { requireMention: false, allowFrom: [] } }, pending: {} }
   sent = []; edits = []; removed = []; notices = []; asked = []
@@ -155,7 +155,7 @@ test('record: events keeps the masked update (masked = 1), event_raw the sealed 
   const bytes = readFileSync(join(dir, '.router', 'router.db')).toString('latin1') + (() => { try { return readFileSync(join(dir, '.router', 'router.db-wal')).toString('latin1') } catch { return '' } })()
   expect(bytes).not.toContain(HELD_TOKEN)
   expect(bytes).not.toContain(OPENAI)
-  db = openRouterDb(join(dir, '.router', 'router.db'))
+  db = openRouterDb(join(dir, '.router', 'router.db'), { owners: [OWNER] })
   // what handlers (messages table, worker) read from then on
   v.maskForWorker(u, rec)
   expect(u.message.text).toBe(`my bot <已遮蔽 #${rec.id}.1: Telegram bot token, 末 4 碼 yyyy> and <已遮蔽 #${rec.id}.2: OpenAI API key, 末 4 碼 oooo>`)
@@ -245,7 +245,7 @@ test('the deletion schedule survives a restart: a new router on the same router.
   const v = makeVault()
   await v.detected('cc', v.record('cc', dmUpdate(USER, OPENAI)), info(USER))
   db.close()
-  db = openRouterDb(join(dir, '.router', 'router.db'))
+  db = openRouterDb(join(dir, '.router', 'router.db'), { owners: [OWNER] })
   clock += DELETE_AFTER_MS + 60_000
   expect(await makeVault().tick()).toBe(1)
   expect(removed).toEqual([{ chatId: USER, id: 10 }])

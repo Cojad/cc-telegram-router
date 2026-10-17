@@ -27,10 +27,6 @@ export function convKey(cfg: Pick<Config, 'bots'>, bot: string, chat_id: string,
   return bot === cfg.bots[0]!.name ? base : `${bot}-${base}`
 }
 
-export function defaultRole(cfg: Pick<Config, 'owners'>, type: ConvType, chat_id: string): string {
-  return type === 'dm' && cfg.owners.includes(chat_id) ? 'owner' : 'user'
-}
-
 const CLAUDE_MD = (key: string) => `# ${key}\n\n這個對話的客製設定. bot 的人設在上一層的 CLAUDE.md, 共用規則在最上層的 CLAUDE.md.\n`
 
 /** bot<id>: the Telegram bot id (the token's part before the colon), so a token change keeps the folder. */
@@ -95,7 +91,8 @@ export function ensureConversation(
   if (!existsSync(join(folder, 'CLAUDE.md'))) writeFileSync(join(folder, 'CLAUDE.md'), CLAUDE_MD(key))
   const c: Conversation = {
     key, bot, chat_id, type, folder,
-    role: defaultRole(cfg, type, chat_id),
+    // a DM is its user's role (db.userRole); groups and channels start as user
+    role: type === 'dm' ? db.userRole(chat_id) : 'user',
     session_id: null,
     created_at: new Date().toISOString(),
   }

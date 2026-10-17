@@ -13,6 +13,7 @@
 
 ### Changed
 
+- 私訊的角色就是使用者角色: 私訊不再有自己的對話角色, settings, 權限檢查, 提權比較, 套件審核, 分類器, 工具呼叫紀錄, `/router status` 與 `/router chat` 對私訊一律讀使用者角色 (config owners 是 owner), 改使用者角色 (`/router role`, config owners) 時他每隻 bot 的私訊 settings 重寫並在閒置時輪替. `/router perm <私訊> role` 改為等同 `/router role`, 對應不到使用者時拒絕; 私訊的權限覆寫保留. 啟動時把私訊存的角色對齊使用者角色 (log 一行, 標記待輪替). 原本把某人升成 admin 後, 他的私訊仍是 user. 見 [docs/permissions.md](docs/permissions.md#角色).
 - 安裝位置可自選, 不再假設 `/x`: plugin 與 hook 從 `~/.config/cc-telegram-router/router.json` (位置檔, `cc-telegram-router register` 寫入, `deploy/install.sh router` 會執行) 找 router 的 socket 與家目錄, 不再寫死 `/x/cc/.router/router.sock`; `deploy/install.sh` 不再預設 `/x/cc/.router`, 第一次安裝要用 `CC_ROUTER_STATE` 指定, 之後從位置檔讀; 角色範本的 sandbox `denyRead` 由 `/x` 改為依安裝位置隱藏 router 的家目錄, 狀態目錄 (不在家目錄底下時) 與 config 新增的 `sandboxDenyRead` (額外要隱藏的路徑, 預設空), 特權技能的 bwrap 也一樣 (見 [docs/operations.md](docs/operations.md#安裝位置)). 原本裝在 `/x` 以外時 sandbox 看得到其他對話與 router 的資料.
 - 高風險工具改成 power 以下要提權 (只能允許一次): `ListAgents`, `RemoteTrigger`, `CronCreate`, `CronDelete`, `ScheduleWakeup`, `PushNotification`, 以及 `SendMessage` 傳給這個對話自己的 subagent 以外的對象 (其他 session). hook 多轉送 Agent 呼叫的 `name`, `subagent_type` 與 SubagentStart 的 `agent_type`, 用來認得自己的 subagent. 實測 `CronDelete` 不觸發 PreToolUse, router 擋不到 (只能刪同一個 session 建的排程). 見 [docs/permissions.md](docs/permissions.md#高風險工具).
 - `cc /status`, `cc /usage`, `cc /context` 的報表腳本收進 repo 的 `scripts/`, `deploy/install.sh router` 裝到 `<stateDir>/scripts`, router 改用這個位置 (原本是 `~/.claude/bin`). `/usage` 的解析與排版抽成 `scripts/usage_report.py`.
@@ -28,6 +29,7 @@
 ### Removed
 
 - 根目錄 `package.json` 指向不存在的 `./server.ts` 的 `bin` 與 `start` (v1 遺留).
+- `docs/v1/` (v1 單一 session plugin 時期的文件) 整個移除, README 與 docs 不再連到它.
 
 ## [2.9.0] - 2026-10-17
 

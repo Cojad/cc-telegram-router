@@ -2,7 +2,7 @@
 
 一隻 router 收 Telegram bot 的所有訊息, 每個 Telegram 對話 (私訊或群組) 交給一個獨立的 Claude Code 背景 session (`claude --bg`). 每個對話住在自己的資料夾, 有自己的 CLAUDE.md, memory 與 session, 回覆不會跑錯對話; worker 載入的 Telegram plugin 不持有 bot token, 所有收發都經 router 代為處理並記在 `router.db`.
 
-權限依角色分開: 使用者與對話各有角色 (owner, admin, power, user, guest), router 在每個工具呼叫前依對話角色檢查. 越權的動作先擋下, 再問: 發話者角色較高時直接在對話裡貼出提權詢問, 否則可以向 owner 申請; 跨對話傳訊與套件安裝也走審核, 核准過的授權可以撤銷, 每次使用都留紀錄. 密鑰 (bot token, API key) 一律由 router 保管與代呼叫, 不進 worker 也不以明文留在資料庫.
+權限依角色分開: 使用者與群組對話各有角色 (owner, admin, power, user, guest), 私訊的角色就是使用者角色, router 在每個工具呼叫前依對話角色檢查. 越權的動作先擋下, 再問: 發話者角色較高時直接在對話裡貼出提權詢問, 否則可以向 owner 申請; 跨對話傳訊與套件安裝也走審核, 核准過的授權可以撤銷, 每次使用都留紀錄. 密鑰 (bot token, API key) 一律由 router 保管與代呼叫, 不進 worker 也不以明文留在資料庫.
 
 ## 與上游的差異
 
@@ -123,7 +123,6 @@
 | [docs/operations.md](docs/operations.md) | 部署與 config.json, 安裝位置, 新 bot 初次設定與審核群組, bot 設定提醒, 輪詢與重試, 時間 |
 | [docs/testing.md](docs/testing.md) | 執行測試, 測試檔對照, 各階段驗收對照表 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本變更紀錄 |
-| [docs/v1/](docs/v1/) | v1 (單一 session plugin) 時期的文件, 僅供參考 |
 | `/telegram:doc` (`plugin/skills/doc/SKILL.md`) | worker 端的使用說明 |
 | `/telegram:bot-skill` (`plugin/skills/bot-skill/SKILL.md`) | worker 建立技能與憑證的 SOP |
 

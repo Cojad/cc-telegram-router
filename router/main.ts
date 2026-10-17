@@ -144,7 +144,8 @@ const HOOKS_DIR = join(cfg.stateDir, 'hooks')
 const SCRIPTS_DIR = [join(import.meta.dir, '..', 'scripts'), join(cfg.stateDir, 'scripts')].find(d => existsSync(join(d, 'tg-usage-report.sh'))) ?? join(cfg.stateDir, 'scripts')
 
 const DB_FILE = join(cfg.stateDir, 'router.db')
-const db = openRouterDb(DB_FILE)
+// owners by reference: a DM's role is its user's role, and config owners are owner (docs/permissions.md 角色)
+const db = openRouterDb(DB_FILE, { owners: cfg.owners })
 /** Every tool call a hook reports, and the Telegram tools the router runs (router/toolhistory.ts). */
 const toolHistory = createToolHistory({ db, log })
 {
@@ -196,6 +197,14 @@ let claimCode: string | null = cfg.owners.length ? null : newClaimCode()
 const settingsVars = (c: Conversation) => ({ folder: c.folder, home: cfg.home, hidden: hiddenPaths(cfg), botDir: botDir(cfg, c.bot), autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR, transcripts: projectStore(c.folder) })
 const settingsFor = (c: Conversation) =>
   writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, settingsVars(c), db.listOverrides(c.key))
+
+// A DM's stored role from before it followed its user's role (or from before
+// config owners changed): align it, and rotate the worker so it picks up the
+// user's role (written by the loop below).
+for (const { conv, from } of db.syncDmRoles()) {
+  log(`dm role ${conv.key}: ${from} -> ${conv.role} (the user's role)`)
+  db.setRotate(conv.key, true)
+}
 
 // Templates may have changed since the last run: rewrite every
 // conversation's settings and context file. Running workers pick settings up
@@ -1204,6 +1213,7 @@ function startBot(bc: BotConfig): BotHandle {
       claimCode = null
       writeConfig(r => { r.owners = [uid] })
       cfg.owners.push(uid)
+      for (const { conv } of db.syncDmRoles()) commandDeps.applyPermissions(conv)
       const a = loadAccess()
       if (!a.allowFrom.includes(uid)) { a.allowFrom.push(uid); saveAccess(a) }
       log(`owner claimed by ${uid}`)

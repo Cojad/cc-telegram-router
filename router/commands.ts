@@ -189,7 +189,7 @@ const HELP = [
   '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off>',
   '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] | group rm <chat_id> | policy <pairing|allowlist|disabled>',
   '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒)',
-  '/router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
+  '/router perm [chat_id] show | role <角色> (私訊等同 /router role) | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
   '/router skill list | approve <技能> | revoke <技能> (技能的特權動作: 核准後 user 與 power 對話也能執行, 憑證不外流)',
   '/router cred list | add <名稱> <token> [方法...] (owner 或 admin 的私訊) | allow|disallow <名稱> <方法...> | roles <名稱> <角色,...> | rm <名稱> | reload',
@@ -265,6 +265,26 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     const all = db.listConversations().filter(c => c.chat_id === ref)
     if (all.length > 1) return { conv: null, error: `${ref} 在 ${all.length} 隻 bot 都有對話, 請加 --bot <名稱> 或改用對話 key: ${all.map(c => `${c.key} (bot ${c.bot})`).join(', ')}` }
     return { conv: all[0] ?? null }
+  }
+  /** A user's role changed: their DMs (every bot) get new settings, rotated in when idle. */
+  const dmsFollow = (changed: Conversation[]) => {
+    for (const c of changed) {
+      deps.applyPermissions(c)
+      if (here?.key !== c.key) logs.push({ conv: c.key, text: `${who} 把這個私訊的使用者角色改成 ${c.role}` })
+    }
+    return changed.length ? `\n私訊 ${changed.map(c => c.key).join(', ')} 的 worker 閒置時會停掉, 下一則訊息套用新角色` : ''
+  }
+  /** /router role, and /router perm <私訊> role: same checks, same effect. */
+  const setRole = (uid: string, newRole: string | null, prefix = ''): CommandOutput => {
+    if (cfg.owners.includes(uid)) return deny(`${prefix}${personLabel(db, uid)} 是 config 指定的 owner, 要改請用 /router config set owners`)
+    const current = db.getUserRole(uid)
+    if (role === 'admin') {
+      if (newRole === 'owner') return deny(`${prefix}admin 不能把角色設成 owner`)
+      if (current === 'owner') return deny(`${prefix}admin 不能異動 owner 的角色與權限`)
+    }
+    const changed = db.setUserRole(uid, newRole)
+    const label = personLabel(db, uid)
+    return done(`${prefix}${label === uid ? uid : `${label} (${uid})`} 的角色: ${current ?? 'user'} → ${newRole ?? 'user'}${dmsFollow(changed)}`)
   }
   /** Optional leading conversation; defaults to the current chat. */
   const target = (i: number): { conv: Conversation | null; rest: string[]; error?: string } => {
@@ -352,15 +372,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       if (!uid) return done(`找不到 ${who}: bot 還沒收過這個人的訊息, 或 username 打錯了. 也可以回覆他的訊息再下指令`)
       const newRole = newRoleArg === 'none' ? null : newRoleArg
       if (newRole && !(ROLES as readonly string[]).includes(newRole)) return done(`角色只能是 ${ROLES.join(', ')} 或 none`)
-      if (cfg.owners.includes(uid)) return deny(`${personLabel(db, uid)} 是 config 指定的 owner, 要改請用 /router config set owners`)
-      const current = db.getUserRole(uid)
-      if (role === 'admin') {
-        if (newRole === 'owner') return deny('admin 不能把角色設成 owner')
-        if (current === 'owner') return deny('admin 不能異動 owner 的角色與權限')
-      }
-      db.setUserRole(uid, newRole)
-      const label = personLabel(db, uid)
-      return done(`${label === uid ? uid : `${label} (${uid})`} 的角色: ${current ?? 'user'} → ${newRole ?? 'user'}`)
+      return setRole(uid, newRole)
     }
 
     case 'chat': {
@@ -368,7 +380,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const a = deps.loadAccess()
         const mention = c.type === 'group' ? (a.groups[c.chat_id]?.requireMention === false ? 'off' : 'on') : '-'
         const title = c.type === 'dm' ? personLabel(db, c.chat_id) : c.title
-        return `${c.key}${title && title !== c.chat_id ? ` (${title})` : ''}\n  chat_id ${c.chat_id}, role ${c.role}, model ${c.model ?? `${cfg.model} (預設)`}, compact ${c.compact ?? `${cfg.autoCompactWindow} (預設)`}, mention ${mention}, ${deps.sessions.isConnected(c.key) ? '待命中' : '已休眠'}${c.last_seen ? `, 最後活動 ${gmt8(c.last_seen)}` : ''}`
+        return `${c.key}${title && title !== c.chat_id ? ` (${title})` : ''}\n  chat_id ${c.chat_id}, role ${c.role}${c.type === 'dm' ? ' (使用者角色)' : ''}, model ${c.model ?? `${cfg.model} (預設)`}, compact ${c.compact ?? `${cfg.autoCompactWindow} (預設)`}, mention ${mention}, ${deps.sessions.isConnected(c.key) ? '待命中' : '已休眠'}${c.last_seen ? `, 最後活動 ${gmt8(c.last_seen)}` : ''}`
       }
       if (args.length === 1) return done(db.listConversations().map(describe).join('\n') || '還沒有任何對話', { private: true })
       if (args.length === 2 && isChatRef(args[1])) {
@@ -415,7 +427,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const by = (k: string) => ov.filter(o => o.kind === k).map(o => o.value)
         const fs = eff.sandbox?.filesystem ?? {}
         return [
-          `${c.key}${c.title ? ` (${c.title})` : ''}: 角色 ${c.role}`,
+          `${c.key}${c.title ? ` (${c.title})` : ''}: 角色 ${c.role}${c.type === 'dm' ? ` (使用者 ${c.chat_id} 的角色, 用 /router role 改)` : ''}`,
           `權限模式: ${eff.permissions?.defaultMode ?? '-'}, sandbox: ${eff.sandbox?.enabled ? '開' : '關'}`,
           `允許: ${(eff.permissions?.allow ?? []).join(', ') || '(無)'}`,
           `拒絕: ${(eff.permissions?.deny ?? []).join(', ') || '(無)'}`,
@@ -437,6 +449,11 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       }
       if (what === 'role') {
         if (!op || !(ROLES as readonly string[]).includes(op)) return done(`用法: /router perm [chat_id] role <${ROLES.join('|')}>`)
+        if (conv.type === 'dm') {
+          // a DM has no role of its own: it is the user's role (docs/permissions.md 角色)
+          if (!/^\d+$/.test(conv.chat_id)) return deny(`${conv.key} 是私訊, 角色跟著使用者走, 但對應不到使用者 (chat_id ${conv.chat_id}); 請改用 /router role <uid|@username> <角色>`)
+          return setRole(conv.chat_id, op, `${conv.key} 是私訊, 角色跟著使用者走, 這個指令改為設定使用者角色 (等同 /router role ${conv.chat_id} ${op})\n`)
+        }
         if (role === 'admin' && op === 'owner') return deny('admin 不能把角色設成 owner')
         db.updateConversation(conv.key, { role: op })
         return changed(`角色 ${conv.role} → ${op}`)
@@ -569,7 +586,9 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       // owners is shared by reference (elevation, approvals): change it in place
       if (key === 'owners') cfg.owners.splice(0, cfg.owners.length, ...(value as string[]))
       else (cfg as unknown as Record<string, unknown>)[key] = value
-      return done(`${key}: ${JSON.stringify(cur)} → ${JSON.stringify(value)}`)
+      // an owner is owner in their DMs: the DMs of those added or removed change role
+      const dms = key === 'owners' ? dmsFollow(db.syncDmRoles().map(x => x.conv)) : ''
+      return done(`${key}: ${JSON.stringify(cur)} → ${JSON.stringify(value)}${dms}`)
     }
 
     case 'log': {

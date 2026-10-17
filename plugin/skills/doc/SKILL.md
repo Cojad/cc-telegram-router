@@ -15,7 +15,7 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 - admin: 可以用所有 /router 指令, 但不能把任何人設成 owner, 不能異動 owner, bot token 的新增/更換/移除只限 owner 私訊.
 - power, user, guest: 不能用 /router 指令 (會收到明確的拒絕訊息).
 
-使用者有自己的角色 (`/router role`), 每個對話也有角色 (`/router perm ... role`). 對話的角色決定那個對話裡的 worker 能做什麼:
+使用者有自己的角色 (`/router role`), 群組與頻道的對話也有角色 (`/router perm ... role`); 私訊的角色就是那位使用者的角色. 對話的角色決定那個對話裡的 worker 能做什麼:
 
 | 對話角色 | worker 能做的事 |
 |---|---|
@@ -95,11 +95,13 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 
 `user` 這個字可加可不加: `/router role user @username admin` 也可以.
 
+改了角色, 那個人在每隻 bot 的私訊都跟著改: worker 閒置時停掉, 下一則訊息用新角色叫醒. 對私訊下 `/router perm <chat_id> role <角色>` 等同 `/router role`; 私訊的權限覆寫 (tool, path, net...) 保留, 疊在新角色上.
+
 ## 其他 /router 指令
 
 | 指令 | 作用 |
 |---|---|
-| `/router status` | 每隻 bot 各列最近有訊息的對話 (新到舊, 每隻最多 10 個, 總行數超過 30 行時每隻 5 個, 最多 5 隻 bot), 每行 `狀態類型角色 多久前: 名稱`. 🛜待命中 = worker 正在執行且連上 router, 訊息立刻送達; 💤已休眠 = worker 沒在執行, 訊息先排隊, 下一則訊息自動叫醒. 😀DM 💬群組 📣頻道; 🥇owner 🥈admin 🥉power 🚻user 🥷guest |
+| `/router status` | 每隻 bot 各列最近有訊息的對話 (新到舊, 每隻最多 10 個, 總行數超過 30 行時每隻 5 個, 最多 5 隻 bot), 每行 `狀態類型角色 多久前: 名稱` (私訊的角色是那位使用者的角色). 🛜待命中 = worker 正在執行且連上 router, 訊息立刻送達; 💤已休眠 = worker 沒在執行, 訊息先排隊, 下一則訊息自動叫醒. 😀DM 💬群組 📣頻道; 🥇owner 🥈admin 🥉power 🚻user 🥷guest |
 | `/router chat` | 列出所有對話的角色, 模型, compact, mention, 待命中/已休眠, 最後活動 |
 | `/router chat [chat_id] compact <750k\|1m\|auto>` | 調整自動壓縮門檻 (worker 會重啟) |
 | `/router chat [chat_id] model <模型>` | 換模型 (worker 會重啟) |
@@ -107,7 +109,7 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 | `/router access show \| pair <code> \| allow <uid> \| remove <uid> \| group add <chat_id> \| group rm <chat_id> \| policy <...>` | 誰能跟 bot 說話 |
 | `/router session restart\|stop [chat_id]` | 重啟或停止某個對話的 worker |
 | `/router session rotate [chat_id\|all]` | 標記 worker 等待輪替: 閒置的一分鐘內停掉, 忙碌的等它閒置; 下一則訊息會用新的程式與設定叫醒. 更新 plugin 或設定後用 |
-| `/router perm [chat_id] show \| role <角色> \| tool allow\|deny\|rm <規則> \| path read\|write\|rm <路徑> \| net allow\|rm <網域> \| mcp allow\|rm <名稱> \| send allow\|rm <chat_id> \| pkg allow\|rm <pypi\|npm:名稱> \| reset` | 調整對話的角色與權限覆寫, 回覆會列出變更; worker 閒置時重啟套用 |
+| `/router perm [chat_id] show \| role <角色> \| tool allow\|deny\|rm <規則> \| path read\|write\|rm <路徑> \| net allow\|rm <網域> \| mcp allow\|rm <名稱> \| send allow\|rm <chat_id> \| pkg allow\|rm <pypi\|npm:名稱> \| reset` | 調整對話的角色與權限覆寫, 回覆會列出變更; worker 閒置時重啟套用. 私訊的 `role` 等同 `/router role` (改那位使用者的角色) |
 | `/router setup [group\|skip\|persona]` | 審核群組與 bot 初次設定 (只限 owner) |
 | `/router cred list \| add <名稱> <token> [方法...] \| allow\|disallow <名稱> <方法...> \| roles <名稱> <角色,...> \| rm <名稱>` | 跨 bot 技能用的憑證; add 只能在自己和 bot 的私訊下, 訊息會被刪除 |
 | `/router botapi <憑證> <方法> <JSON> [--file 欄位=/路徑]` | owner 直接用憑證呼叫 Bot API (終端機用 `cc-telegram-router cli botapi ...`) |

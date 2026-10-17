@@ -10,7 +10,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { z } from 'zod'
 import type { Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
-import { convKey, convType, defaultRole, ensureConversation, findByFolder } from '../conversations'
+import { convKey, convType, ensureConversation, findByFolder } from '../conversations'
 import { renderSettings } from '../settings'
 import { makeAssertAllowedChat, makeAssertSendable } from '../guard'
 import { acquireLock } from '../lock'
@@ -34,7 +34,7 @@ beforeEach(() => {
     home: dir, stateDir, socket: join(stateDir, 'router.sock'), owners: ['137438526'],
     model: 'claude-opus-5-5', autoCompactWindow: 750000, claudeBin: 'claude',
   }
-  db = openRouterDb(join(stateDir, 'router.db'))
+  db = openRouterDb(join(stateDir, 'router.db'), { owners: cfg.owners })
 })
 afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
 
@@ -52,9 +52,9 @@ test('conversation keys: dm-<id>, group-<id without minus>, prefix for non-prima
 })
 
 test('owner DM gets the owner role, everything else user', () => {
-  expect(defaultRole(cfg, 'dm', '137438526')).toBe('owner')
-  expect(defaultRole(cfg, 'dm', '900000003')).toBe('user')
-  expect(defaultRole(cfg, 'group', '-1009990000001')).toBe('user')
+  expect(ensureConversation(cfg, db, 'main', '137438526', 'private', () => {}).role).toBe('owner')
+  expect(ensureConversation(cfg, db, 'main', '900000003', 'private', () => {}).role).toBe('user')
+  expect(ensureConversation(cfg, db, 'main', '-1009990000001', 'supergroup', () => {}).role).toBe('user')
 })
 
 test('first message creates the folder skeleton once', () => {
