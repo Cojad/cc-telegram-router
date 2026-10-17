@@ -91,12 +91,13 @@ test('install_skill: copies from <folder>/skills (workers cannot write .claude);
   expect(() => go({ name: 'mine', scope: 'conversation', scopeDir: conv })).toThrow('找不到 skills/mine/SKILL.md')
 })
 
-function deps(store: { added: any[]; config: Record<string, any> }): CommandDeps {
+function deps(store: { added: any[]; config: Record<string, any>; getMe?: string[] }): CommandDeps {
   return {
     cfg, db, loadAccess: () => ({ dmPolicy: 'allowlist', allowFrom: [], groups: {}, pending: {} }) as any, saveAccess() {},
     creds: {
       async add(name, token, methods, by, http) {
-        if (http) { cfg.credentials[name] = { token, methods, roles: ['owner', 'admin'], label: `http ${http.baseUrl}`, kind: 'http', baseUrl: http.baseUrl, addedBy: by }; return `http ${http.baseUrl}` }
+        if (http) { cfg.credentials[name] = { token, methods, roles: ['owner', 'admin'], label: `http ${http.baseUrl}`, kind: 'http', ...http, addedBy: by }; return `http ${http.baseUrl}` }
+        ;(store.getMe ??= []).push(token)
         if (!token.includes(':')) throw new Error('getMe: 401 Unauthorized'); cfg.credentials[name] = { token, methods, roles: ['owner', 'admin'], label: '@eagle_bot (99)', addedBy: by }; store.added.push(name); return '@eagle_bot (99)'
       },
       update(name, change) { if (change) change(cfg.credentials[name]!); else delete cfg.credentials[name] },
@@ -178,8 +179,8 @@ test('/router cred add --http: owner or admin add an API key from their own DM; 
   expect(r.logs).toHaveLength(1)
   expect(r.logs[0]!.text).toContain('/router cred add openai <已遮蔽> --http')
   expect(JSON.stringify(r)).not.toContain(KEY)
-  expect((await run(d, `/router cred add x ${KEY} --http not-a-url`, OWNER))!.reply).toBe('--http 後面要接網址, 例如 --http https://api.openai.com')
-  expect((await run(d, `/router cred add x ${KEY} --http https://a.example v1/x`, OWNER))!.reply).toContain('路徑要以 / 開頭')
+  expect((await run(d, `/router cred add x ${KEY} --http not-a-url`, OWNER))!).toMatchObject({ reply: '--http 後面要接網址, 例如 --http https://api.example.com (不含帳密, ? 或 #)\n這則訊息已刪除, 改好再傳一次 (/router help cred 有範例)', deleteMessage: true })
+  expect((await run(d, `/router cred add x ${KEY} --http https://a.example v1/x`, OWNER))!.reply).toStartWith('路徑 v1/x 不行: 要以 / 開頭')
   expect((await run(d, `/router cred add y ${KEY} --http https://a.example /x`, '777'))!.reply).toContain('只開放 owner 與 admin') // user role
 })
 

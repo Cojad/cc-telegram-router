@@ -98,6 +98,19 @@ ListAgents 1 次: power 1; 被擋 1
 角色是對話角色; 提權: 已提權的 subagent 以較高角色執行; 被擋: router 擋下 (原因見提權紀錄); 錯誤: router 端執行的 Telegram 工具被拒或 API 失敗
 ```
 
+## /router help 主題
+
+`/router help` 列出所有指令 (cred 那行寫出 bot token 與 `--http` API key 兩種登記方式); `/router help <主題>` 給一個主題的完整用法與範例:
+
+| 主題 | 內容 |
+|---|---|
+| `cred` | 全域憑證: 在哪裡打 (owner 或 admin 自己的私訊, 訊息立刻刪除, key 不進 worker), http 憑證的 `--http`, `--header`, `--scheme`, `--query` 與路徑 (沒寫就是全部), worker 自帶標頭的規則, Anthropic, OpenAI, Google 與 Telegram bot token 範例, 管理指令, 終端機 `cred-import` |
+| `secret` | `/secret` (對話密鑰) 與 `/router cred` (全域憑證) 的差別與各自適用情境, 在哪裡打, 指令與範例, 密鑰偵測只認訊息開頭的登記指令 |
+| `perm` | `/router perm` 對話覆寫與 `/router perm user` 使用者覆寫的子操作與範例 |
+| `bot` | `/router bot` 的子操作, 與 `/router cred add` 的分別 |
+
+不認得的主題回覆主題清單加上指令總覽. `/secret help` 也指向 `/router help secret`. 細節見 [憑證與技能](credentials-and-skills.md#http-憑證的-key-放哪裡) 與 [密鑰](secrets.md).
+
 ## /router perm user
 
 `/router perm user <uid|@username> <子操作>` 把權限覆寫掛在人身上 (使用者覆寫, 存 `router.db` 的 `user_overrides`), 子操作沿用對話覆寫的語法:

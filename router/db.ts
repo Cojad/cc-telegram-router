@@ -90,6 +90,8 @@ export type ConvSecret = {
   base_url: string | null; allowed: string; added_by: string; created_at: string
   /** http: header carrying the key and its scheme (null: Authorization, Bearer), as Credential. */
   header: string | null; scheme: string | null
+  /** http: query parameter carrying the key instead of a header (null: in the header). */
+  query?: string | null
   /** telegram-bot: "@username (id)" from getMe at registration. */
   label: string | null
   /** Registered from a handle (secret_from_handle, plan 10e): its code; null for /secret set. */
@@ -416,7 +418,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
   const setupCols = new Set((db.query('PRAGMA table_info(bot_setup)').all() as Array<{ name: string }>).map(c => c.name))
   const secCols = new Set((db.query('PRAGMA table_info(conv_secrets)').all() as Array<{ name: string }>).map(c => c.name))
-  for (const n of ['header', 'scheme', 'label', 'source']) if (!secCols.has(n)) db.exec(`ALTER TABLE conv_secrets ADD COLUMN ${n} TEXT`)
+  for (const n of ['header', 'scheme', 'label', 'source', 'query']) if (!secCols.has(n)) db.exec(`ALTER TABLE conv_secrets ADD COLUMN ${n} TEXT`)
   if (!setupCols.has('elevlog_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN elevlog_topic INTEGER')
   if (!setupCols.has('authuse_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN authuse_topic INTEGER')
   if (!setupCols.has('secret_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN secret_topic INTEGER')
@@ -716,8 +718,8 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
       return changed
     },
     setConvSecret: s => {
-      db.prepare('INSERT OR REPLACE INTO conv_secrets (bot, chat_id, name, kind, value, base_url, allowed, header, scheme, label, added_by, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(s.bot, s.chat_id, s.name, s.kind, s.value, s.base_url, s.allowed, s.header ?? null, s.scheme ?? null, s.label ?? null, s.added_by, s.created_at, s.source ?? null)
+      db.prepare('INSERT OR REPLACE INTO conv_secrets (bot, chat_id, name, kind, value, base_url, allowed, header, scheme, query, label, added_by, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(s.bot, s.chat_id, s.name, s.kind, s.value, s.base_url, s.allowed, s.header ?? null, s.scheme ?? null, s.query ?? null, s.label ?? null, s.added_by, s.created_at, s.source ?? null)
     },
     getConvSecret: (bot, chat_id, name) => (db.prepare('SELECT * FROM conv_secrets WHERE bot = ? AND chat_id = ? AND name = ?').get(bot, chat_id, name) as ConvSecret | null) ?? null,
     listConvSecrets: (bot, chat_id) => db.prepare('SELECT * FROM conv_secrets WHERE bot = ? AND chat_id = ? ORDER BY name').all(bot, chat_id) as ConvSecret[],

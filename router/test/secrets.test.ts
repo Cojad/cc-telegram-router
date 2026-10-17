@@ -157,7 +157,7 @@ test('the worker is told: bot_api / http_api descriptions, /telegram:bot-skill a
   expect(desc('http_api')).toContain('<密鑰>')
   const root = join(import.meta.dir, '..', '..', 'plugin', 'skills')
   const skill = await Bun.file(join(root, 'bot-skill', 'SKILL.md')).text()
-  for (const s of ['### 對話專屬密鑰', '/secret set <名稱> <token> [方法...]', '--http <網址>', '/secret list', '/secret rm <名稱>', '<已遮蔽>', '<密鑰>', '不要叫他把值貼給你', '[--header <標頭>] [--scheme <前綴>]', '--header x-api-key', '先用 getMe 驗證']) expect(skill).toContain(s)
+  for (const s of ['### 對話專屬密鑰', '/secret set <名稱> <token> [方法...]', '--http <網址>', '/secret list', '/secret rm <名稱>', '<已遮蔽>', '<密鑰>', '不要叫他把值貼給你', '[--header <標頭>] [--scheme <前綴|none>] [--query <參數>]', '--header x-api-key', '先用 getMe 驗證']) expect(skill).toContain(s)
   const doc = await Bun.file(join(root, 'doc', 'SKILL.md')).text()
   for (const s of ['/secret set', '/router secret list|rm <chat_id>']) expect(doc).toContain(s)
 })
@@ -198,6 +198,23 @@ test('--header / --scheme: default Authorization: Bearer; --header alone sends t
     await httpApiCall({ cred: { ...secretCred(row('b'), 'sk-b'), baseUrl: `http://127.0.0.1:${api.port}` }, method: 'GET', path: '/v1/x' })
     expect(seen).toEqual({ k: 'sk-b', a: null })
   } finally { api.stop(true) }
+})
+
+test('a sentence that only names a token command is not a secret: the value counts only when the message starts with the command (or cc /...) and the argument is there (docs/secrets.md 「原始事件與密鑰保護」)', async () => {
+  const { detectSecrets } = await import('../detect')
+  // 柯姊 2026-10-17: asking how to use the command flagged her message as holding a key
+  for (const t of ['我是要你教我 /router cred add 的用法', '教我 /router cred add 怎麼用', '請問 /secret set 要怎麼打', '/router cred add 的用法', '/router cred add', '/secret set', '可以用 /router bot add mybot 123 嗎', '/router cred add 名稱 值']) {
+    expect(detectSecrets(t)).toEqual([])
+    expect(maskSecretText(t)).toBe(t)
+    expect(maskSecretUpdate({ message: { text: t } })).toEqual({ message: { text: t } })
+  }
+  // a real command still counts, at the start, after "cc ", in a reply quote
+  expect(detectSecrets('/router cred add eagle abcdefgh').map(h => h.value)).toEqual(['abcdefgh'])
+  expect(detectSecrets('  cc /router cred add eagle abcdefgh').map(h => h.value)).toEqual(['abcdefgh'])
+  expect(detectSecrets('柯柯 /secret set k plainvalue1').map(h => h.value)).toEqual(['plainvalue1'])
+  expect(buildReplyMeta({ message_id: 9, date: 0, chat: { id: 1, type: 'private' }, text: '/router cred add eagle sk-quoted-value' } as any).reply_to_text).toBe('/router cred add eagle <已遮蔽>')
+  // a known format is found anywhere, command or not
+  expect(detectSecrets('教我 /router cred add 的用法, 例如 sk-ant-TESTxxxxxxxxxxxxxxxxxxxx').map(h => h.kind)).toEqual(['Anthropic API key'])
 })
 
 test('events masking covers every command that carries a token: /secret set, /router cred add, /router bot add|rotate (also "cc /...")', () => {

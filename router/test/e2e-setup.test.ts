@@ -34,6 +34,8 @@ const api = Bun.serve({
     // a stand-in for an HTTP API credential (http_api): OpenAI-like image generation
     // an API that echoes the request (httpbin /anything): its answer carries the key back
     if (new URL(req.url).pathname.startsWith('/v1/echo')) return Response.json({ headers: { Authorization: req.headers.get('authorization') } })
+    // an Anthropic-like API (docs/credentials-and-skills.md 「http 憑證的 key 放哪裡」): every header and the query as received
+    if (new URL(req.url).pathname.startsWith('/x/')) { calls.push({ method: `http ${new URL(req.url).pathname}`, body: { search: new URL(req.url).search, headers: Object.fromEntries(req.headers) } }); return Response.json({ id: 'msg_1', echo: new URL(req.url).search }) }
     if (new URL(req.url).pathname.startsWith('/v1/')) { calls.push({ method: `http ${new URL(req.url).pathname}`, body: { auth: req.headers.get('authorization') } }); return Response.json({ data: [{ b64_json: Buffer.from('PNGDATA').toString('base64') }] }) }
     const ok = (result: unknown) => Response.json({ ok: true, result })
     switch (method) {
@@ -205,7 +207,7 @@ test('skip: only the owner may press it; afterwards everything goes to the owner
 }, 20000)
 
 test('credentials end to end: cred-import moves a token from a file into config without printing it, the router reloads, bot_api calls the API with it for an owner conversation only', async () => {
-  const CRED = '777:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
+  const CRED = '777:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
   writeFileSync(join(dir, 'old.env'), `OTHER=x\nEAGLE_TOKEN=${CRED}\n`)
   const p = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cred-import', 'eagle', join(dir, 'old.env'), 'EAGLE_TOKEN', 'addStickerToSet,getStickerSet'], { stdout: 'pipe', stderr: 'pipe' })
   const out = await new Response(p.stdout).text()
@@ -259,6 +261,70 @@ test('http credentials end to end: cred-import --http stores an API key; http_ap
   owner.close()
 }, 30000)
 
+
+test('API keys without --http are never sent to getMe (/router cred add and cred-import); --header puts the key in that header only, worker headers pass through, auth headers are refused; --query puts it in the URL; no paths means every path', async () => {
+  const KEY = 'sk-ant-TESTxxxxxxxxxxxxxxxxxxxx'
+  const base = `http://127.0.0.1:${api.port}/x`
+  const getMes = () => calls.filter(c => c.method === 'getMe' && c.token === KEY).length
+  // a DM from the owner without --http: a hint, the message deleted, no getMe with the key
+  const msg = mid++
+  updates.push({ update_id: msg, message: { message_id: msg, date: now, chat: { id: 555, type: 'private' }, from: OWNER, text: `/router cred add anthropic ${KEY}`, entities: [{ type: 'bot_command', offset: 0, length: 7 }] } })
+  const hint = await until(() => sentTo(555, '這看起來不是 Telegram bot token')[0])
+  expect(hint.body.text).toContain('像是 Anthropic API key')
+  expect(hint.body.text).toContain('/router cred add anthropic <key> --http https://api.anthropic.com --header x-api-key')
+  expect(hint.body.text).not.toContain(KEY)
+  await until(() => calls.some(c => c.method === 'deleteMessage' && c.body.message_id === msg))
+  expect(getMes()).toBe(0)
+  // cred-import of the same key without --http: refused in the terminal, no getMe either
+  writeFileSync(join(dir, 'anthropic.env'), `ANTHROPIC_API_KEY=${KEY}\n`)
+  const imp = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cred-import', 'anthropic', join(dir, 'anthropic.env'), 'ANTHROPIC_API_KEY'], { stdout: 'pipe', stderr: 'pipe' })
+  const err = await new Response(imp.stderr).text()
+  expect(await imp.exited).toBe(1)
+  expect(err).toContain('看起來不是 Telegram bot token (像是 Anthropic API key), 沒有存入')
+  expect(err).not.toContain(KEY)
+  expect(getMes()).toBe(0)
+  // with --http and --header x-api-key, no paths: stored with every path
+  const msg2 = mid++
+  updates.push({ update_id: msg2, message: { message_id: msg2, date: now, chat: { id: 555, type: 'private' }, from: OWNER, text: `/router cred add anthropic ${KEY} --http ${base} --header x-api-key`, entities: [{ type: 'bot_command', offset: 0, length: 7 }] } })
+  const added = await until(() => sentTo(555, '已加入憑證 anthropic')[0])
+  expect(added.body.text).toStartWith(`已加入憑證 anthropic: http ${base}, 標頭 x-api-key\n路徑: 全部`)
+  expect(JSON.parse(readFileSync(join(state, 'config.json'), 'utf8')).credentials.anthropic).toMatchObject({ kind: 'http', baseUrl: base, header: 'x-api-key', scheme: '', methods: ['*'] })
+  expect(getMes()).toBe(0)
+  const owner = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-555'), pid: 71 }, onMessage(m) { if (m.t === 'deliver') owner.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => owner.state().kind === 'ready')
+  const r = await owner.call('http_api', { credential: 'anthropic', path: '/v1/messages', json: { model: 'm' }, headers: { 'anthropic-version': '2023-06-01', 'anthropic-beta': 'b1' } })
+  expect(r.isError).toBeFalsy()
+  const got = calls.filter(c => c.method === 'http /x/v1/messages').at(-1)!.body
+  expect(got.headers['x-api-key']).toBe(KEY)
+  expect(got.headers['anthropic-version']).toBe('2023-06-01')
+  expect(got.headers['anthropic-beta']).toBe('b1')
+  expect(got.headers.authorization).toBeUndefined()
+  expect(got.search).toBe('')
+  // the key is nowhere else in the request
+  expect(Object.entries(got.headers).filter(([, v]) => String(v).includes(KEY)).map(([k]) => k)).toEqual(['x-api-key'])
+  // auth headers from the worker are refused before anything is sent
+  const sentHttp = () => calls.filter(c => c.method.startsWith('http ')).length
+  const n = sentHttp()
+  for (const h of ['Authorization', 'X-Api-Key', 'Cookie', 'Proxy-Authorization', 'x-goog-api-key']) {
+    const bad = await owner.call('http_api', { credential: 'anthropic', path: '/v1/messages', json: {}, headers: { [h]: 'other' } })
+    expect(bad.isError).toBe(true)
+    expect(bad.content[0]!.text).toContain(`標頭 ${h}`)
+  }
+  expect(sentHttp()).toBe(n)
+  // --query: the key in the URL, no auth header; an echoed key comes back masked
+  const msg3 = mid++
+  updates.push({ update_id: msg3, message: { message_id: msg3, date: now, chat: { id: 555, type: 'private' }, from: OWNER, text: `/router cred add gq ${KEY} --http ${base} --query key /v1/*`, entities: [{ type: 'bot_command', offset: 0, length: 7 }] } })
+  await until(() => sentTo(555, '已加入憑證 gq')[0])
+  const qr = await owner.call('http_api', { credential: 'gq', method: 'GET', path: '/v1/models?page=2' })
+  const qgot = calls.filter(c => c.method === 'http /x/v1/models').at(-1)!.body
+  expect(new URLSearchParams(qgot.search).get('key')).toBe(KEY)
+  expect(new URLSearchParams(qgot.search).get('page')).toBe('2')
+  expect(qgot.headers.authorization).toBeUndefined()
+  expect(qr.content[0]!.text).not.toContain(KEY)
+  expect(JSON.parse(qr.content[0]!.text).body.echo).toContain('key=<密鑰>')
+  expect((await owner.call('http_api', { credential: 'gq', method: 'GET', path: '/v2/models' })).content[0]!.text).toContain('沒有開放 /v2/models')
+  owner.close()
+}, 30000)
 
 test('install_skill end to end: from <folder>/skills into the conversation\'s own .claude/skills (owner here); a user conversation is refused like any block, with the elevation advice, and logged', async () => {
   const owner = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-555'), pid: 51 }, onMessage(m) { if (m.t === 'deliver') owner.send({ t: 'ack', qid: m.qid }) } })

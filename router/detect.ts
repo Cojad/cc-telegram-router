@@ -2,7 +2,8 @@
 // Only formats one can tell at a glance (Telegram bot token, OpenAI sk-,
 // Anthropic sk-ant-, GitHub ghp_ / github_pat_, AWS AKIA, Google AIza, Slack
 // xox, PEM private key blocks), the value of a token-carrying router command
-// (/secret set, /router cred add, /router bot add|rotate), and exact matches
+// (/secret set, /router cred add, /router bot add|rotate; only a message
+// that starts with the command, not a sentence naming it), and exact matches
 // of values the router already holds (global credentials, its own bot
 // tokens, conversation secrets). No entropy guessing.
 //
@@ -44,15 +45,14 @@ export function detectSecrets(text: string, known: Known[] = []): Hit[] {
     re.lastIndex = 0
     for (const m of text.matchAll(re)) all.push({ start: m.index!, end: m.index! + m[0].length, kind, value: m[0] })
   }
-  // the value of a token-carrying command, whatever it looks like
-  if (/\/(secret|router)/i.test(text)) {
-    SECRET_CMDS.lastIndex = 0
-    for (const m of text.matchAll(SECRET_CMDS)) {
-      const [, head, a, sp, b] = m as unknown as [string, string, string, string | undefined, string | undefined]
-      const start = m.index! + head.length + (b ? a.length + sp!.length : 0)
-      const value = b ?? a
-      all.push({ start, end: start + value.length, kind: CMD_KIND, value })
-    }
+  // the value of a token-carrying command, whatever it looks like (only a
+  // message that starts with the command, see SECRET_CMDS)
+  const m = SECRET_CMDS.exec(text)
+  if (m) {
+    const [, head, a, sp, b] = m as unknown as [string, string, string, string | undefined, string | undefined]
+    const start = m.index + head.length + (b ? a.length + sp!.length : 0)
+    const value = b ?? a
+    all.push({ start, end: start + value.length, kind: CMD_KIND, value })
   }
   for (const k of known) {
     if (k.value.length < MIN_KNOWN) continue

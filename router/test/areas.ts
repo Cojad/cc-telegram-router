@@ -22,7 +22,7 @@ export const AREAS: Area[] = [
   },
   {
     name: 'skills', title: '憑證與特權技能',
-    tests: ['phase3-cred.test.ts', 'phase3-privskill.test.ts'],
+    tests: ['phase3-cred.test.ts', 'phase3-privskill.test.ts', 'cred-http.test.ts'],
     paths: ['router/credentials.ts', 'router/skills.ts', 'router/privskill.ts', 'router/skillrefresh.ts', 'router/skillrun.ts', 'plugin/skills/bot-skill/**'],
   },
   {

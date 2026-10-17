@@ -27,7 +27,7 @@ import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens, 
 import { isCommand, runCommand, roleOf, type CommandDeps, type CommandInput } from './commands'
 import { runCli } from './cli'
 import { importV1Messages } from './importv1'
-import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, takeB64, shorten, DEFAULT_CRED_ROLES } from './credentials'
+import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, refuseHeaders, parseHttpScope, placementText, BOT_TOKEN_FULL, httpExample, takeB64, shorten, DEFAULT_CRED_ROLES, type KeyPlacement } from './credentials'
 import { newSecretKey, maskSecretUpdate, openSecret, refuseSecret, secretCred, scrubSecret, servesChat } from './secrets'
 import { createVault, claudeAsk, SECRET_TOPIC, SECRET_TOPIC_INTRO } from './rawvault'
 import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
@@ -78,27 +78,41 @@ if (cliAt > 0) process.exit(await runCli(cfg.socket, process.argv.slice(cliAt + 
 // being printed (router/credentials.ts). Tells a running router to reload.
 const credAt = process.argv.indexOf('cred-import')
 if (credAt > 0) {
+  const usage = '用法: cc-telegram-router cred-import <名稱> <env 檔> <變數> [方法或路徑,...] [--http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>]]'
   const rest = process.argv.slice(credAt + 1)
-  const httpAt = rest.indexOf('--http')
-  const baseUrl = httpAt >= 0 ? rest[httpAt + 1] : undefined
-  if (httpAt >= 0) rest.splice(httpAt, 2)
-  const [name, file, varName, methods] = rest
-  if (!name || !file || !varName || (httpAt >= 0 && !baseUrl)) { console.error('用法: cc-telegram-router cred-import <名稱> <env 檔> <變數> [方法或路徑,...] [--http <baseUrl>]'); process.exit(2) }
+  const [name, file, varName] = rest
+  if (!name || !file || !varName || [name, file, varName].some(a => a.startsWith('--'))) { console.error(usage); process.exit(2) }
+  // the list of methods or paths is one comma-separated word
+  const words = rest.slice(3).flatMap(w => w.startsWith('--') || /^https?:/.test(w) ? [w] : w.split(',').filter(Boolean))
+  let http: ({ baseUrl: string } & KeyPlacement) | undefined, methods: string[] | undefined = words.length ? words : undefined
+  if (words.includes('--http')) {
+    const h = parseHttpScope(words)
+    if ('error' in h) { console.error(`${h.error}\n${usage}`); process.exit(2) }
+    http = { baseUrl: h.baseUrl, ...h.placement }
+    // no paths: every path under the URL (only the host is fixed)
+    methods = h.paths.length ? h.paths : ['*']
+  } else if (words.some(w => w.startsWith('--'))) { console.error(`${words.find(w => w.startsWith('--'))} 只能跟 --http 一起用\n${usage}`); process.exit(2) }
   const line = readFileSync(file, 'utf8').split('\n').find(l => l.startsWith(`${varName}=`))
   const token = line?.slice(varName.length + 1).trim().replace(/^["']|["']$/g, '')
   if (!token) { console.error(`${file} 裡沒有 ${varName}`); process.exit(1) }
   let label: string
-  if (baseUrl) label = `http ${baseUrl}`
-  else {
+  if (http) label = `http ${http.baseUrl}`
+  else if (!BOT_TOKEN_FULL.test(token)) {
+    // not a bot token: never sent to getMe
+    const ex = httpExample(token)
+    console.error(`${varName} 看起來不是 Telegram bot token${ex.what ? ` (像是 ${ex.what})` : ''}, 沒有存入. API key 要加 --http <網址>, 例如:\ncc-telegram-router cred-import ${name} ${file} ${varName} ${ex.flags} (沒寫路徑就是全部)`)
+    process.exit(1)
+  } else {
     const me = await new Bot(token, cfg.apiRoot ? { client: { apiRoot: cfg.apiRoot } } : undefined).api.getMe().catch(e => { console.error(`token 驗證失敗: ${e}`); process.exit(1) })
     label = `@${me.username} (${me.id})`
   }
   const raw = JSON.parse(readFileSync(configPath, 'utf8'))
   raw.credentials ??= {}
-  raw.credentials[name] = { ...(raw.credentials[name] ?? {}), token, label, ...(baseUrl ? { kind: 'http', baseUrl } : {}), methods: methods ? methods.split(',') : (raw.credentials[name]?.methods ?? []), roles: raw.credentials[name]?.roles ?? DEFAULT_CRED_ROLES, addedBy: raw.credentials[name]?.addedBy ?? 'terminal' }
+  const { header: _h, scheme: _s, query: _q, ...old } = raw.credentials[name] ?? {}
+  raw.credentials[name] = { ...old, token, label, ...(http ? { kind: 'http', ...http } : {}), methods: methods ?? (raw.credentials[name]?.methods ?? []), roles: raw.credentials[name]?.roles ?? DEFAULT_CRED_ROLES, addedBy: raw.credentials[name]?.addedBy ?? 'terminal' }
   writeFileSync(configPath + '.tmp', JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 })
   renameSync(configPath + '.tmp', configPath)
-  console.log(`已存入憑證 ${name}: ${label}, ${baseUrl ? '路徑' : '方法'} ${raw.credentials[name].methods.join(', ') || '(無)'}`)
+  console.log(`已存入憑證 ${name}: ${label}${http ? placementText(http) : ''}, ${http ? '路徑' : '方法'} ${raw.credentials[name].methods.join(', ') || '(無)'}`)
   if (existsSync(cfg.socket)) await runCli(cfg.socket, ['cred', 'reload'])
   process.exit(0)
 }
@@ -253,16 +267,20 @@ async function convSecretCall(live: Peer, conv: Conversation, s: ConvSecret, too
     db.logApiCall(label, method, { params: shorten(params), files }, JSON.parse(out), res.ok ? null : `${res.error_code ?? ''}: ${scrubSecret(String(res.description), value)}`, conv.key)
     return { content: [{ type: 'text', text: out }], isError: !res.ok }
   }
+  const cred = secretCred(s, value)
+  const badHeaders = refuseHeaders(cred, args.headers)
+  if (badHeaders) return fail(badHeaders)
+  const headers = args.headers as Record<string, string> | undefined
   const save = args.save_b64 as { at?: string; to?: string } | undefined
   const dest = save?.to ? (save.to.startsWith('/') ? save.to : join(conv.folder, save.to)) : null
   if (dest && (!dest.startsWith(conv.folder + '/') || dest.startsWith(join(conv.folder, '.chat') + '/'))) return fail('save_b64.to 要在這個對話的資料夾裡 (不能是 .chat)')
-  const res = await httpApiCall({ cred: secretCred(s, value), method, path, json: args.json, form: args.form as Record<string, unknown> | undefined, files }).catch(e => ({ status: 0, body: String(e) }))
+  const res = await httpApiCall({ cred, method, path, json: args.json, form: args.form as Record<string, unknown> | undefined, files, headers }).catch(e => ({ status: 0, body: String(e) }))
   let body = res.body
   if (dest && save?.at && res.status < 300) {
     const t = takeB64(body, save.at)
     if (t.bytes) { mkdirSync(dirname(dest), { recursive: true }); writeFileSync(dest, t.bytes); body = { saved: dest, bytes: t.bytes.length, response: t.body } }
   }
-  db.logApiCall(label, `${method} ${path}`, { json: shorten(args.json), form: shorten(args.form), files }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
+  db.logApiCall(label, `${method} ${path}`, { json: shorten(args.json), form: shorten(args.form), files, ...(headers ? { headers } : {}) }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
   return { content: [{ type: 'text', text: scrubSecret(JSON.stringify({ status: res.status, body: shorten(body) }), value) }], isError: res.status === 0 || res.status >= 300 }
 }
 
@@ -338,20 +356,21 @@ const ipc = createIpc({
       const call = { tool_name: 'mcp__plugin_telegram_telegram__http_api', tool_input: args }
       const roleWhy = elevation.extraCheck(conv, call, role)
       if (roleWhy) return fail((await elevation.refuse(conv, call, roleWhy)).reason ?? roleWhy)
-      const why = refuseUse(cred, name, role, path, 'http')
+      const why = refuseUse(cred, name, role, path, 'http') ?? refuseHeaders(cred!, args.headers)
       if (why) return fail(why)
+      const headers = args.headers as Record<string, string> | undefined
       const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
       try { for (const p of Object.values(files)) makeAssertSendable(live, cfg.stateDir)(p) } catch (e) { return fail(String(e instanceof Error ? e.message : e)) }
       const save = args.save_b64 as { at?: string; to?: string } | undefined
       const dest = save?.to ? (save.to.startsWith('/') ? save.to : join(conv.folder, save.to)) : null
       if (dest && (!dest.startsWith(conv.folder + '/') || dest.startsWith(join(conv.folder, '.chat') + '/'))) return fail('save_b64.to 要在這個對話的資料夾裡 (不能是 .chat)')
-      const res = await httpApiCall({ cred: cred!, method, path, json: args.json, form: args.form as Record<string, unknown> | undefined, files }).catch(e => ({ status: 0, body: String(e) }))
+      const res = await httpApiCall({ cred: cred!, method, path, json: args.json, form: args.form as Record<string, unknown> | undefined, files, headers }).catch(e => ({ status: 0, body: String(e) }))
       let body = res.body
       if (dest && save?.at && res.status < 300) {
         const t = takeB64(body, save.at)
         if (t.bytes) { mkdirSync(dirname(dest), { recursive: true }); writeFileSync(dest, t.bytes); body = { saved: dest, bytes: t.bytes.length, response: t.body } }
       }
-      db.logApiCall(`cred:${name}`, `${method} ${path}`, { json: shorten(args.json), form: args.form, files }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
+      db.logApiCall(`cred:${name}`, `${method} ${path}`, { json: shorten(args.json), form: args.form, files, ...(headers ? { headers } : {}) }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
       // an API may echo the auth header (httpbin /anything does): the key never goes back to the worker
       return { content: [{ type: 'text', text: scrubSecret(JSON.stringify({ status: res.status, body: shorten(body) }), cred!.token) }], isError: res.status === 0 || res.status >= 300 }
     }
@@ -994,7 +1013,7 @@ const commandDeps: CommandDeps = {
       let label: string
       if (http) label = `http ${http.baseUrl}`
       else { const me = await new Bot(token, apiOpts()).api.getMe(); label = `@${me.username} (${me.id})` }
-      const c = { token, label, methods, roles: DEFAULT_CRED_ROLES, addedBy, ...(http ? { kind: 'http' as const, baseUrl: http.baseUrl } : {}) }
+      const c = { token, label, methods, roles: DEFAULT_CRED_ROLES, addedBy, ...(http ? { kind: 'http' as const, ...http } : {}) }
       writeConfig(r => { r.credentials = { ...(r.credentials as object ?? {}), [name]: c } })
       cfg.credentials[name] = c
       return label

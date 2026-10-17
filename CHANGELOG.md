@@ -9,6 +9,8 @@
 ### Added
 
 - hook 重試的斷路: router 從第一次連不到起超過 3 分鐘, 期間沒有任何一次連上時, PreToolUse 與 SubagentStart 改成每個請求只試一次就落回「放行, 但不准跳出 sandbox」, 不再每次等 45 秒; 任何一次連上就恢復正常的重試. 狀態存在使用者暫存位置 (`$XDG_RUNTIME_DIR/cc-telegram-router/`, 否則 `~/.cache/cc-telegram-router/`) 每個 router socket 一個小檔, 由所有 hook 程序共用, 原子寫入, 讀不到或壞掉當成正常. 見 [docs/permissions.md](docs/permissions.md#router-連不到時).
+- API key 的全域憑證可以直接在私訊登記並指定 key 放哪裡 (柯姊 2026-10-17): `/router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...]`, `cred-import` 與 `/secret set` 同樣的寫法 (`--query` 與 `--scheme none` 是新的, config.json 與 `conv_secrets` 加 `query` 欄位). http 憑證沒寫路徑就是網址底下全部路徑 (只限 host), 原本是一條都不開. worker 的 `http_api` 可以用 `headers` 自帶額外標頭 (例如 Anthropic 的 `anthropic-version`), router 原樣轉送; key 所在的標頭, Authorization, Cookie, Proxy-Authorization 與名稱像認證的標頭一律擋下. `/router cred list` 的路徑與角色顯示 `全部`, `(無, 全部擋下)`, `(無, 沒有對話能用)`. 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#http-憑證的-key-放哪裡).
+- `/router help <主題>` (cred, secret, perm, bot): 完整用法與範例 (Anthropic, OpenAI, Google 的 http 憑證與 Telegram bot token, 在哪裡打, 訊息會刪除, key 不進 worker, /secret 與 /router cred 的差別); `/router help` 的 cred 那行寫出 `--http` 形式. `/telegram:doc` 新增「登記 API key 與 bot token」一節, worker 被問到時直接照著教. 見 [docs/operations.md](docs/operations.md#router-help-主題).
 - router 重啟的空窗不再落回放行或擋下自己的 subagent: worker 的 PreToolUse 與 SubagentStart hook 連不到 router 時照時間表重試 (第 0, 3, 8, 15, 30, 45 秒, 整段最多 45 秒, `shared/retry.ts` 兩端共用), 6 次都連不到才落回原本的「放行, 但不准跳出 sandbox」; 其他進度事件照舊只送一次. hook 第一次嘗試時算出期限 (加 45 秒) 隨請求送給 router, 單次等待改成跟著期限 (原本 PreToolUse 寫死 5 秒), 套件審核維持 55 秒, 整段不超過 55 秒. SendMessage 給名單裡的自己的 subagent 而 worker 的 plugin 還沒重新連上時, router 等它打招呼再判斷 (同一個程序就放行), 到期限才擋. 有重試或等待時 router log 記一行. SubagentStart 的 hook 逾時由 5 秒改為 60 秒 (worker 輪替後生效). 見 [docs/permissions.md](docs/permissions.md#router-連不到時), [docs/operations.md](docs/operations.md#router-重啟).
 - 高風險工具自動提權: `ListAgents`, `RemoteTrigger`, `CronCreate`, `CronDelete`, `ScheduleWakeup`, `PushNotification` 與跨 session 的 `SendMessage` 被擋時, 若這一輪每個發話者都有權限 (用他的角色重算對話 settings, 疊上他的使用者覆寫), router 在 hook 直接放行, 不開 subagent, 不跳按鈕, 以最低的角色執行; 照樣記 `elev_log` (`auto`) 與「📜 提權紀錄」話題, tool_history 記有效角色與原因. 不是每個人都有權限時 (例如一般成員與 admin 的訊息併成一輪), 只要這一輪有角色高於對話而且有權限 (含使用者覆寫) 的發話者, 就照原本流程在對話裡跳「允許一次 / 拒絕」, 沒有人夠格才只剩主動申請. 只寫工具名稱的 allow 規則 (角色範本或覆寫) 讓 power 以下也能用, deny 規則所有角色都擋. 其他被擋的動作照原本的 subagent 提權 (取這一輪最低的發話者). 見 [docs/permissions.md](docs/permissions.md#自動提權).
 - 使用者覆寫 `/router perm user <uid|@username> show | tool | path | net | mcp | reset` (存 `router.db` 的 `user_overrides`, owner 與 admin, admin 不能異動 owner): 他發起的一輪在任何對話做自動提權重算時套用, 他按對話裡的提權按鈕時 (能否核准, 以及核准後 subagent 的每個呼叫) 也套用, 也寫進他自己私訊的 settings (先疊使用者覆寫再疊私訊覆寫, 私訊標記待輪替); 群組裡不改變 worker 的 sandbox. 見 [docs/permissions.md](docs/permissions.md#使用者覆寫).
@@ -34,6 +36,8 @@
 
 ### Fixed
 
+- 句子中間提到登記指令 (例如「我是要你教我 /router cred add 的用法」) 被判成含密鑰並準備刪除: 現在只有訊息開頭就是 `/secret set`, `/router cred add`, `/router bot add|rotate` (可加 `cc ` 前綴) 而且參數位置有值時才算; 格式比對與已登記的值不變. 見 [docs/secrets.md](docs/secrets.md#原始事件與密鑰保護).
+- `/router cred add` 與 `cred-import` 沒帶 `--http` 時, 不像 Telegram bot token 的值 (例如 Anthropic key) 會被拿去呼叫 getMe, 回「getMe failed (404)」: 現在不呼叫 getMe, 回覆它像哪種 key 與加上 `--http` 的打法, 訊息照樣刪除.
 - `/usage` 的重置日期在 12 月看到 1 月時算成下一年.
 
 ### Removed

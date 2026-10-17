@@ -6,9 +6,9 @@
 
 ## 對話專屬密鑰
 
-- 任何角色的對話都能有自己的 token 或 API key, 不用提權: 在那個對話傳 `/secret set <名稱> <值> [方法...]` (Telegram bot token, 沒寫方法就是全部) 或 `/secret set <名稱> <值> --http <網址> [--header <標頭>] [--scheme <前綴>] [路徑...]` (一般 API key, 結尾 `*` 代表前綴, 沒寫路徑就是全部). 也可以用 `cc /secret ...`.
+- 任何角色的對話都能有自己的 token 或 API key, 不用提權: 在那個對話傳 `/secret set <名稱> <值> [方法...]` (Telegram bot token, 沒寫方法就是全部) 或 `/secret set <名稱> <值> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...]` (一般 API key, 結尾 `*` 代表前綴, 沒寫路徑就是全部). 跟全域憑證 (`/router cred`) 的差別: 對話密鑰只屬於那個對話, 任何角色都能登記, 不用授權; 全域憑證由 owner 或 admin 在私訊登記, 預設給 owner 與 admin 角色的對話用 (`/router help secret` 有同樣的說明). 也可以用 `cc /secret ...`.
 - bot token 登記前一律用 getMe 驗證, getMe 不接受的值不會存 (沒有略過的開關).
-- API key 預設以 `Authorization: Bearer <key>` 送出; `--header x-api-key` 改放進那個標頭且不加前綴, `--scheme Token` 改前綴, 兩個可以一起用. 對應全域 http 憑證在 config.json 的 `header` 與 `scheme` 欄位, 意思相同. Host, Content-Type, Cookie 這類標頭不能用.
+- API key 預設以 `Authorization: Bearer <key>` 送出; `--header x-api-key` 改放進那個標頭且不加前綴, `--scheme Token` 改前綴 (`none` 不加), 兩個可以一起用; `--query key` 改放在網址的 query 參數. 跟全域 http 憑證的寫法與 config.json 的 `header`, `scheme`, `query` 欄位意思相同, 細節與 worker 自帶標頭的規則見 [http 憑證的 key 放哪裡](credentials-and-skills.md#http-憑證的-key-放哪裡). Host, Content-Type, Cookie, Proxy-Authorization 這類標頭不能用.
 - router 自己處理, 不轉給 worker. 私訊裡立刻刪掉那則訊息; 群組裡任何成員都能登記 (不看角色, 但要是 bot 有開放的群組與發話者), bot 有刪除權限就刪, 沒有就回覆提醒發送者自己刪.
 - 值以 AES-256-GCM 加密存在 `router.db` 的 `conv_secrets` (綁定 bot, 對話, 名稱), 金鑰是 `config.json` 的 `secretKey`, 沒有就在啟動時自動產生. 每個對話最多 20 把, 每把最長 4096 bytes; 名稱 `self` 保留, router 自己的 bot token 不能登記.
 - 值不會出現在任何對話: router_log 與回覆引用那則訊息時換成 `<已遮蔽>`, 工具回應裡出現的值換成 `<密鑰>`. events 表裡 `/secret set`, `/router cred add`, `/router bot add|rotate` 的值換成 `<已遮蔽 #<event id>.<序號>>`, 原文加密存在 `event_raw` (見下方「原始事件與密鑰保護」); 10e 之前已記下的 update 在啟動時遮蔽一次 (migrations 表記 `mask-command-tokens-2026-10`, log 只印筆數), 那些原文沒有保留.
@@ -17,7 +17,7 @@
 
 ## 原始事件與密鑰保護
 
-- 每個 update 的所有字串 (文字, 圖片說明, 編輯後的訊息, 按鈕資料, 被引用的訊息) 都會掃描 (`router/detect.ts`): 一眼可認的格式 (Telegram bot token, OpenAI `sk-`, Anthropic `sk-ant-`, GitHub `ghp_` 與 `github_pat_`, AWS `AKIA`, Google `AIza`, Slack `xox`, PEM 私鑰), 登記指令 (`/secret set`, `/router cred add`, `/router bot add|rotate`) 的值, 以及 router 持有的值 (自己的 bot token, 全域憑證, 對話密鑰; 完全比對, 8 字元以上). 不做「看起來很亂就算密鑰」的猜測.
+- 每個 update 的所有字串 (文字, 圖片說明, 編輯後的訊息, 按鈕資料, 被引用的訊息) 都會掃描 (`router/detect.ts`): 一眼可認的格式 (Telegram bot token, OpenAI `sk-`, Anthropic `sk-ant-`, GitHub `ghp_` 與 `github_pat_`, AWS `AKIA`, Google `AIza`, Slack `xox`, PEM 私鑰), 登記指令 (`/secret set`, `/router cred add`, `/router bot add|rotate`) 的值, 以及 router 持有的值 (自己的 bot token, 全域憑證, 對話密鑰; 完全比對, 8 字元以上). 不做「看起來很亂就算密鑰」的猜測. 登記指令的值只在那個字串以指令開頭時才算 (前面可以有 `cc ` 或 `柯柯 `; 被引用的訊息是自己的字串, 一樣看開頭), 而且參數位置真的有值 (一個不含中文等非 ASCII 字元的詞; 只有一個參數時也算, 它可能是沒寫名稱的值). 句子中間提到指令名稱, 例如「教我 /router cred add 的用法」, 不算 (2026-10-17 柯姊這句被誤判成含密鑰); 這種句子裡的 `sk-ant-` 等格式與已登記的值照樣比對. events, router_log 與回覆引用的遮蔽用同一套規則.
 - 偵測到時 `events` 存遮蔽版: 值換成 `<已遮蔽 #<event id>.<序號>>` (同一個值同一個序號), `masked` 設為 1. 原始 update 以 AES-256-GCM 加密存在 `event_raw` (沿用 `secretKey`, 綁定 event id, 搬到別列解不開), 連同遮了哪些欄位, 種類, 指紋 (末 4 碼, sha256 前 8 碼) 與等於哪個已登記的值. 沒有明文欄位, dump 或備份都看不到值.
 - 送進 worker 與存進 messages 表 (`lookup_message` 讀的那份) 的內容同樣換掉, 附種類與末 4 碼: `<已遮蔽 #12.1: Telegram bot token, 末 4 碼 a1B2>`.
 - 每次偵測記在 router.db 的 `secret_log` 與審核群組的第五個話題「🔑 密鑰偵測」(沒有審核群組就私訊 owner): 對話, 發送者, 種類與末 4 碼 (等於哪個已登記的值), 欄位, event id, 處理結果. 已設定的審核群組在 router 啟動時自動補建這個話題, `/router setup group` 也會補.

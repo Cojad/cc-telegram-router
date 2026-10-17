@@ -26,6 +26,8 @@ export type Credential = {
   /** http: header carrying the key (default Authorization) and its scheme (default Bearer; "" for the bare key). */
   header?: string
   scheme?: string
+  /** http: query parameter carrying the key instead of a header (e.g. "key"). */
+  query?: string
   /** Conversation roles that may use it; default owner and admin. */
   roles?: string[]
   /** "@username (id)" from getMe when it was added. */
