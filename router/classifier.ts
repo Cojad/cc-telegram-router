@@ -1,8 +1,9 @@
 // Tool call classifier, stage 1: record only (選配 1 工具呼叫自動分類器,
 // 柯姊 2026-10-17 定: 雙模並用). A tool call of a user or power conversation
 // that the permission rules let through is, after the hook has already
-// answered, also judged by the OpenAI Decisions API and TypeSafe Jev (both
-// through OpenRouter's Decisions router by default; native paths by config)
+// answered, also judged by the OpenAI Decisions API, TypeSafe Jev and
+// Cloudflare Clef and Clef Flash (all through OpenRouter's Decisions router by
+// default; native paths for the first two by config)
 // and a fixed-prompt claude -p (config model, never haiku). The verdicts only go to
 // router.db (classify_calls, classify_results); nothing here can block or
 // delay a call. /router classifier compares them with claude's.
@@ -24,8 +25,12 @@ import { detectSecrets, type Known } from './detect'
 import { gmt8 } from './context'
 import type { Credential } from './config'
 
-export const PROVIDERS = ['openai', 'typesafe', 'claude'] as const
+/** openai: OpenAI Decisions; typesafe: TypeSafe Jev; clef, clefflash: Cloudflare Clef and Clef Flash
+ *  (OpenRouter Decisions router); claude: claude -p, the baseline the others are compared with. */
+export const PROVIDERS = ['openai', 'typesafe', 'clef', 'clefflash', 'claude'] as const
 export type Provider = typeof PROVIDERS[number]
+export const API_PROVIDERS = ['openai', 'typesafe', 'clef', 'clefflash'] as const
+export type ApiProvider = typeof API_PROVIDERS[number]
 
 /** How a provider is called:
  *  openrouter: POST <baseUrl>/api/alpha/decisions (OpenRouter's Decisions router, Jev-style
@@ -35,15 +40,18 @@ export type Provider = typeof PROVIDERS[number]
  *              records usage.cost_usd, its billed cost, and keeps X-Orca-Request-Id in detail) */
 export type ApiKind = 'openrouter' | 'openai' | 'systemone'
 export const API_KINDS: ApiKind[] = ['openrouter', 'openai', 'systemone']
-export type ApiConfig = { api: ApiKind; credential: string; model: string; usdPerMTok: number }
+/** enabled: false leaves this provider out (no rows); the others still run. */
+export type ApiConfig = { enabled: boolean; api: ApiKind; credential: string; model: string; usdPerMTok: number }
 
 export type ClassifierConfig = {
   enabled: boolean
   /** Per provider, per day (GMT+8), in USD; at the cap the provider stops for the day. */
   dailyUsd: Record<Provider, number>
-  /** Decisions (openai) and Jev (typesafe): which API, credential and model. */
+  /** Decisions (openai), Jev (typesafe), Clef (clef) and Clef Flash (clefflash): on or off, which API, credential and model. */
   openai: ApiConfig
   typesafe: ApiConfig
+  clef: ApiConfig
+  clefflash: ApiConfig
   /** Tools never sent (prefix match). */
   skipTools: string[]
   /** Judge Telegram plugin tools too (router-side, after its checks). */
@@ -57,10 +65,13 @@ export type ClassifierConfig = {
 export const DEFAULT_CLASSIFIER: ClassifierConfig = {
   enabled: false,
   // claude runs on the subscription: its cap is on total_cost_usd, the API price estimate
-  dailyUsd: { openai: 0.5, typesafe: 0.5, claude: 50 },
+  dailyUsd: { openai: 0.5, typesafe: 0.5, clef: 0.5, clefflash: 0.5, claude: 50 },
   // both through OpenRouter (柯姊 2026-10-17); usdPerMTok only for the native paths
-  openai: { api: 'openrouter', credential: 'openrouter', model: 'openai/gpt-6-luna-decisions', usdPerMTok: 0.10 },
-  typesafe: { api: 'openrouter', credential: 'openrouter', model: 'typesafe/jev-1.13', usdPerMTok: 0.042 },
+  openai: { enabled: true, api: 'openrouter', credential: 'openrouter', model: 'openai/gpt-6-luna-decisions', usdPerMTok: 0.10 },
+  typesafe: { enabled: true, api: 'openrouter', credential: 'openrouter', model: 'typesafe/jev-1.13', usdPerMTok: 0.042 },
+  // Cloudflare Clef (27B) and Clef Flash (9B), only through OpenRouter (柯姊 2026-10-17); no native price
+  clef: { enabled: true, api: 'openrouter', credential: 'openrouter', model: 'cloudflare/clef', usdPerMTok: 0 },
+  clefflash: { enabled: true, api: 'openrouter', credential: 'openrouter', model: 'cloudflare/clef-flash', usdPerMTok: 0 },
   skipTools: [],
   telegramTools: true,
   keepDays: 30,
@@ -91,7 +102,12 @@ function readClassifier(v: unknown): ClassifierConfig {
     if (typeof x !== 'number' || !Number.isFinite(x) || x < 0) throw new Error(`classifier.${what} 要是 0 以上的數字, 收到 ${JSON.stringify(x)}`)
     return x
   }
-  const api = (k: 'openai' | 'typesafe'): ApiConfig => ({
+  const api = (k: ApiProvider): ApiConfig => ({
+    enabled: (() => {
+      const e = r[k]?.enabled ?? d[k].enabled
+      if (typeof e !== 'boolean') throw new Error(`classifier.${k}.enabled 要是 true 或 false, 收到 ${JSON.stringify(e)}`)
+      return e
+    })(),
     api: (() => {
       const a = r[k]?.api ?? d[k].api
       if (!API_KINDS.includes(a)) throw new Error(`classifier.${k}.api 要是 ${API_KINDS.join(', ')} 之一, 收到 ${JSON.stringify(a)}`)
@@ -106,6 +122,8 @@ function readClassifier(v: unknown): ClassifierConfig {
     dailyUsd: Object.fromEntries(PROVIDERS.map(p => [p, num(r.dailyUsd?.[p], d.dailyUsd[p], `dailyUsd.${p}`)])) as Record<Provider, number>,
     openai: api('openai'),
     typesafe: api('typesafe'),
+    clef: api('clef'),
+    clefflash: api('clefflash'),
     skipTools: Array.isArray(r.skipTools) ? r.skipTools.map(String) : [...d.skipTools],
     telegramTools: r.telegramTools !== false,
     keepDays: num(r.keepDays, d.keepDays, 'keepDays'),
@@ -451,6 +469,8 @@ export function gmt8DayStart(now: Date): string {
 export const LIMITS: Record<Provider, { active: number; waiting: number; timeoutMs: number }> = {
   openai: { active: 4, waiting: 20, timeoutMs: 15_000 },
   typesafe: { active: 4, waiting: 20, timeoutMs: 15_000 },
+  clef: { active: 4, waiting: 20, timeoutMs: 15_000 },
+  clefflash: { active: 4, waiting: 20, timeoutMs: 15_000 },
   claude: { active: 2, waiting: 20, timeoutMs: 60_000 },
 }
 
@@ -479,6 +499,8 @@ export function createClassifier(deps: ClassifierDeps) {
 
   /** The message that started each conversation's current turn. */
   const turnMessage = new Map<string, string>()
+  /** The providers that run: claude always (the baseline), an API provider unless its enabled is false. */
+  const active = () => PROVIDERS.filter(p => p === 'claude' || deps.cfg()[p].enabled)
   const restricted = (role: string) => role === 'user' || role === 'power'
 
   /** Hook calls the classifier looks at: user and power conversations, a pre
@@ -503,7 +525,7 @@ export function createClassifier(deps: ClassifierDeps) {
     const { sent, masked } = buildSent({ role: conv.role, chatType: conv.type, tool, input: input ?? {}, kind, userMessage: turnMessage.get(conv.key) ?? null }, env)
     const summary = `${sent.tool.replace(TG_PREFIX, 'telegram:')}: ${JSON.stringify(sent.input)}`.replace(/\s+/g, ' ').slice(0, 200)
     const id = deps.store.addCall({ ts: now().toISOString(), conv: conv.key, role: conv.role, kind, tool: sent.tool, summary, sent: JSON.stringify(sent), masked })
-    for (const p of PROVIDERS) {
+    for (const p of active()) {
       const job = runOne(id, p, sent).catch(e => deps.log?.(`classifier ${p} #${id}: ${e}`))
       pending.add(job)
       void job.finally(() => pending.delete(job))
@@ -578,7 +600,7 @@ export function createClassifier(deps: ClassifierDeps) {
     check(): string[] {
       if (!deps.cfg().enabled) return []
       const out: string[] = []
-      for (const p of PROVIDERS) {
+      for (const p of active()) {
         const why = deps.judges[p].ready()
         if (why) { skipTold.set(p, why); out.push(skipLine(p, why)) }
       }
@@ -628,6 +650,8 @@ export function classifierReport(store: ClassifyStore, days: number, now = new D
     if (!ids.size) continue
     for (const p of PROVIDERS) {
       const rs = results.filter(r => r.provider === p && ids.has(r.call_id))
+      // a provider that did not run in this window (off, or added later) has no line
+      if (!rs.length) continue
       const ok = rs.filter(r => r.status === 'ok')
       const lat = ok.map(r => r.latency_ms ?? 0)
       const skips = new Map<string, number>()
@@ -648,19 +672,20 @@ export function classifierReport(store: ClassifyStore, days: number, now = new D
     }
   }
   const sum = (ps: Provider[]) => results.filter(r => ps.includes(r.provider)).reduce((t, r) => t + (r.cost_usd ?? 0), 0)
-  out.push('', `實際費用 (openai + typesafe): ${usd(sum(['openai', 'typesafe']))}`, `claude 訂閱用量 (API 換算, 不是實際支出): ${usd(sum(['claude']))}`)
+  const ran = API_PROVIDERS.filter(p => results.some(r => r.provider === p))
+  out.push('', `實際費用 (${ran.join(' + ') || '各 API'}): ${usd(sum([...ran]))}${ran.length > 1 ? ` (${ran.map(p => `${p} ${usd(sum([p]))}`).join(', ')})` : ''}`, `claude 訂閱用量 (API 換算, 不是實際支出): ${usd(sum(['claude']))}`)
   const side = (r?: ResultRow) => r?.status === 'ok' ? (r.p_block ?? 0) >= BLOCK_AT : null
   const differ = calls.filter(c => {
     const m = by.get(c.id)
     if (m?.claude?.status !== 'ok') return false
     const cs = side(m.claude)
-    return (['openai', 'typesafe'] as const).some(p => side(m[p]) !== null && side(m[p]) !== cs)
+    return API_PROVIDERS.some(p => side(m[p]) !== null && side(m[p]) !== cs)
   }).slice(-10).reverse()
   out.push('', differ.length ? `最近 ${differ.length} 筆跟 claude 意見不同 (p_block / risk):` : '跟 claude 意見不同的: 沒有')
   for (const c of differ) {
     const m = by.get(c.id)!
     const cell = (p: Provider) => m[p]?.status === 'ok' ? `${f2(m[p]!.p_block)}/${f2(m[p]!.risk)}` : (m[p]?.status ?? '-')
-    out.push(`#${c.id} ${gmt8(c.ts)} ${c.conv} ${c.summary.slice(0, 80)}`, `  openai ${cell('openai')}, typesafe ${cell('typesafe')}, claude ${cell('claude')}`)
+    out.push(`#${c.id} ${gmt8(c.ts)} ${c.conv} ${c.summary.slice(0, 80)}`, `  ${PROVIDERS.filter(p => m[p]).map(p => `${p} ${cell(p)}`).join(', ')}`)
   }
   out.push('', '時間是 GMT+8. 單筆詳情: /router classifier show <編號>')
   return out.join('\n')

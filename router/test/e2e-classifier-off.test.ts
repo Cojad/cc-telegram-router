@@ -93,7 +93,7 @@ test('on with no credentials: each API provider is logged as skipped once at sta
   const r = startRouter('nokey', { enabled: true })
   await until(() => r.stderr.includes('router up'))
   expect(r.stderr).toContain('classifier: on (record only)')
-  for (const p of ['openai', 'typesafe']) {
+  for (const p of ['openai', 'typesafe', 'clef', 'clefflash']) {
     expect(r.stderr.split(`classifier: ${p} skipped (credential openrouter is not in config.json credentials); the others still run`).length - 1).toBe(1)
   }
   r.api.updates.push({ update_id: 1, message: { message_id: 1, date: now, chat: { id: USER.id, type: 'private' }, from: USER, text: 'hi' } })
@@ -112,9 +112,11 @@ test('on with no credentials: each API provider is logged as skipped once at sta
   expect(await hook('Read', { file_path: join(folder, 'a.md') })).toBeNull()
   expect(await hook('Read', { file_path: '/etc/hosts' })).toMatchObject({ permissionDecision: 'deny' })
   const call = await until(() => q(r.state, 'SELECT * FROM classify_calls')[0])
-  await until(() => q(r.state, `SELECT count(*) n FROM classify_results WHERE call_id = ${call.id}`)[0].n === 3)
+  await until(() => q(r.state, `SELECT count(*) n FROM classify_results WHERE call_id = ${call.id}`)[0].n === 5)
   expect(q(r.state, `SELECT provider, status, detail FROM classify_results WHERE call_id = ${call.id} ORDER BY provider`)).toEqual([
     { provider: 'claude', status: 'ok', detail: 'r' },
+    { provider: 'clef', status: 'skipped', detail: 'no-key' },
+    { provider: 'clefflash', status: 'skipped', detail: 'no-key' },
     { provider: 'openai', status: 'skipped', detail: 'no-key' },
     { provider: 'typesafe', status: 'skipped', detail: 'no-key' },
   ])

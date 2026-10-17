@@ -39,8 +39,11 @@ const api = Bun.serve({
     if (url.pathname === '/api/alpha/decisions') {
       apiSeen.push({ path: url.pathname, body, auth: req.headers.get('authorization') })
       await sleep(1500)
-      return Response.json(String(body.model).startsWith('openai/')
+      const m = String(body.model)
+      return Response.json(m.startsWith('openai/')
         ? { model: 'openai/gpt-6-luna-decisions-20261006', provider: 'OpenAI', answers: { block: { type: 'noul', noul: 0.05 }, risk: { type: 'score', score: 0.2, confidence: 0.9, legend: {}, probabilities: {} } }, usage: { input_tokens: 800, output_tokens: 0, cost: 0.0000286 } }
+        : m === 'cloudflare/clef' ? { model: 'cloudflare/clef', provider: 'PrimeIntellect', answers: { block: { type: 'noul', noul: 0.15 }, risk: { type: 'score', score: 0.6, legend: {}, probabilities: {}, confidence: 0.7 } }, usage: { input_tokens: 810, output_tokens: 20, cost: 0.00000995 } }
+        : m === 'cloudflare/clef-flash' ? { model: 'cloudflare/clef-flash', provider: 'DeepInfra', answers: { block: { type: 'noul', noul: 0.25 }, risk: { type: 'score', score: 0.9, legend: {}, probabilities: {}, confidence: 0.5 } }, usage: { input_tokens: 810, output_tokens: 20, cost: 0.0000045 } }
         : { model: 'typesafe/jev-1.13-20260917', provider: 'TypeSafe', answers: { block: { type: 'noul', noul: 0.85 }, risk: { type: 'score', score: 2.1, legend: {}, probabilities: {}, confidence: 0.6 } }, usage: { input_tokens: 820, output_tokens: 20, cost: 0.0000146 } })
     }
     const parts = url.pathname.split('/')
@@ -115,7 +118,7 @@ async function hook(key: string, tool_name: string, tool_input: object): Promise
   return { out: text ? JSON.parse(text).hookSpecificOutput : null, ms: performance.now() - t0 }
 }
 
-test('a user call the rules allow: the hook answers at once; Decisions, Jev and claude are recorded afterwards; nothing held, no folder, no chat id left the machine', async () => {
+test('a user call the rules allow: the hook answers at once; every provider (Decisions, Jev, Clef, Clef Flash, claude) is recorded afterwards; nothing held, no folder, no chat id left the machine', async () => {
   dm(USER, `幫我找筆記, 找到跟 ${OWNER.id} 說`)
   dm(OWNER, 'hi')
   const ukey = `dm-${USER.id}`, okey = `dm-${OWNER.id}`
@@ -129,17 +132,19 @@ test('a user call the rules allow: the hook answers at once; Decisions, Jev and 
   const r = await hook(ukey, 'Grep', { pattern: `${OR_KEY}|${USER.id}|${OWNER.id}`, path: join(folder(ukey), 'notes') })
   expect(r.out).toBeNull()
   expect(r.ms).toBeLessThan(1400)
-  expect(stderr).toContain('classifier: on (record only), openai openrouter openai/gpt-6-luna-decisions, typesafe openrouter typesafe/jev-1.13, telegram tools on')
+  expect(stderr).toContain('classifier: on (record only), openai openrouter openai/gpt-6-luna-decisions, typesafe openrouter typesafe/jev-1.13, clef openrouter cloudflare/clef, clefflash openrouter cloudflare/clef-flash, telegram tools on')
   const call = await until(() => q("SELECT * FROM classify_calls")[0])
   expect(call).toMatchObject({ conv: ukey, role: 'user', tool: 'Grep', masked: 1 })
-  await until(() => q(`SELECT count(*) n FROM classify_results WHERE call_id = ${call.id}`)[0].n === 3, 15000)
+  await until(() => q(`SELECT count(*) n FROM classify_results WHERE call_id = ${call.id}`)[0].n === 5, 15000)
   const rs = Object.fromEntries(q(`SELECT * FROM classify_results WHERE call_id = ${call.id}`).map(x => [x.provider, x]))
   // the billed cost from OpenRouter's usage.cost
   expect(rs.openai).toMatchObject({ status: 'ok', model: 'openai/gpt-6-luna-decisions-20261006', p_block: 0.05, risk: 0.2, input_tokens: 800, cost_usd: 0.0000286 })
   expect(rs.typesafe).toMatchObject({ status: 'ok', model: 'typesafe/jev-1.13-20260917', p_block: 0.85, risk: 2.1, confidence: 0.6, cost_usd: 0.0000146 })
+  expect(rs.clef).toMatchObject({ status: 'ok', model: 'cloudflare/clef', p_block: 0.15, cost_usd: 0.00000995 })
+  expect(rs.clefflash).toMatchObject({ status: 'ok', model: 'cloudflare/clef-flash', p_block: 0.25, cost_usd: 0.0000045 })
   expect(rs.claude).toMatchObject({ status: 'ok', model: 'claude-opus-5-5', p_block: 0.1, risk: 0.5, cost_usd: 0.002, detail: '一般讀檔' })
-  for (const p of ['openai', 'typesafe']) expect(rs[p].latency_ms).toBeGreaterThanOrEqual(1400)
-  expect(apiSeen.map(s => [s.path, s.auth, s.body.model]).sort()).toEqual([['/api/alpha/decisions', `Bearer ${OR_KEY}`, 'openai/gpt-6-luna-decisions'], ['/api/alpha/decisions', `Bearer ${OR_KEY}`, 'typesafe/jev-1.13']])
+  for (const p of ['openai', 'typesafe', 'clef', 'clefflash']) expect(rs[p].latency_ms).toBeGreaterThanOrEqual(1400)
+  expect(apiSeen.map(s => [s.path, s.auth, s.body.model]).sort()).toEqual(['cloudflare/clef', 'cloudflare/clef-flash', 'openai/gpt-6-luna-decisions', 'typesafe/jev-1.13'].map(m => ['/api/alpha/decisions', `Bearer ${OR_KEY}`, m]))
   const outgoing = [...apiSeen.map(s => JSON.stringify(s.body)), await Bun.file(join(dir, 'claude-stdin')).text(), call.sent]
   for (const o of outgoing) {
     expect(o).toContain('Grep')
@@ -164,7 +169,7 @@ test('Telegram tools are judged router-side: a user conversation\'s reply (kind 
   const call = await until(() => q("SELECT * FROM classify_calls WHERE kind = 'telegram'")[before])
   expect(call).toMatchObject({ conv: `dm-${USER.id}`, role: 'user', tool: 'mcp__plugin_telegram_telegram__reply', summary: 'telegram:reply: {"chat_id":"<chat-id>","text":"找到了: notes/a.md"}' })
   expect(JSON.parse(call.sent).setting).toContain('content to be sent to Telegram')
-  await until(() => q(`SELECT count(*) n FROM classify_results WHERE call_id = ${call.id}`)[0].n === 3, 15000)
+  await until(() => q(`SELECT count(*) n FROM classify_results WHERE call_id = ${call.id}`)[0].n === 5, 15000)
   await sleep(300)
   expect(q("SELECT count(*) n FROM classify_calls WHERE kind = 'telegram'")[0].n).toBe(before + 1)
 }, 30000)
@@ -188,9 +193,11 @@ test('/router classifier from the owner terminal: the report', async () => {
   expect(out).toContain('【Telegram 工具 (要送到 Telegram 的內容)】 1 筆')
   expect(out).toContain('openai (openai/gpt-6-luna-decisions-20261006): 成功 1')
   expect(out).toContain('typesafe (typesafe/jev-1.13-20260917): 成功 1')
-  expect(out).toContain('實際費用 (openai + typesafe): $0.00009')
+  expect(out).toContain('clef (cloudflare/clef): 成功 1')
+  expect(out).toContain('clefflash (cloudflare/clef-flash): 成功 1')
+  expect(out).toContain('實際費用 (openai + typesafe + clef + clefflash): $0.00012')
   expect(out).toContain('claude (claude-opus-5-5): 成功 1')
-  expect(out).toContain('實際費用 (openai + typesafe)')
+  expect(out).toContain('實際費用 (openai + typesafe + clef + clefflash)')
   expect(out).toContain('claude 訂閱用量 (API 換算, 不是實際支出): $0.004')
   // typesafe says block (0.85), claude says allow (0.1)
   expect(out).toContain('最近 2 筆跟 claude 意見不同')

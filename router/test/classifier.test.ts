@@ -19,6 +19,8 @@ afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }) }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const ON: ClassifierConfig = { ...DEFAULT_CLASSIFIER, enabled: true }
+/** ON with the two Clef providers off: the older tests look at openai, typesafe and claude (and this is enabled: false per provider) */
+const ON3: ClassifierConfig = { ...ON, clef: { ...ON.clef, enabled: false }, clefflash: { ...ON.clefflash, enabled: false } }
 const FOLDER = '/x/cc/bot123/dm-66600001'
 const env = (o: Partial<MaskEnv> = {}): MaskEnv => ({ folder: FOLDER, routerHome: '/x/cc', home: '/home/someone', known: [], chatIds: ['66600001'], ...o })
 const USER = { key: 'cc-dm-66600001', role: 'user', type: 'private', folder: FOLDER }
@@ -35,29 +37,35 @@ test('config: on only with "enabled": true or "classifier": true (an optional fe
   expect(parseClassifier(false).enabled).toBe(false)
   expect(parseClassifier(null).enabled).toBe(false)
   // claude runs on the subscription: $50 a day of its API price estimate
-  expect(DEFAULT_CLASSIFIER.dailyUsd).toEqual({ openai: 0.5, typesafe: 0.5, claude: 50 })
+  expect(DEFAULT_CLASSIFIER.dailyUsd).toEqual({ openai: 0.5, typesafe: 0.5, clef: 0.5, clefflash: 0.5, claude: 50 })
   expect(DEFAULT_CLASSIFIER.telegramTools).toBe(true)
   expect(DEFAULT_CLASSIFIER.skipTools).toEqual([])
   expect(parseClassifier({ enabled: true, telegramTools: false }).telegramTools).toBe(false)
   // both through OpenRouter's Decisions router by default (柯姊 2026-10-17)
-  expect(DEFAULT_CLASSIFIER.openai).toEqual({ api: 'openrouter', credential: 'openrouter', model: 'openai/gpt-6-luna-decisions', usdPerMTok: 0.10 })
-  expect(DEFAULT_CLASSIFIER.typesafe).toEqual({ api: 'openrouter', credential: 'openrouter', model: 'typesafe/jev-1.13', usdPerMTok: 0.042 })
+  expect(DEFAULT_CLASSIFIER.openai).toEqual({ enabled: true, api: 'openrouter', credential: 'openrouter', model: 'openai/gpt-6-luna-decisions', usdPerMTok: 0.10 })
+  expect(DEFAULT_CLASSIFIER.typesafe).toEqual({ enabled: true, api: 'openrouter', credential: 'openrouter', model: 'typesafe/jev-1.13', usdPerMTok: 0.042 })
   // the native paths stay as options
-  expect(parseClassifier({ enabled: true, openai: { api: 'openai', credential: 'openai', model: 'gpt-6-luna' } }).openai).toEqual({ api: 'openai', credential: 'openai', model: 'gpt-6-luna', usdPerMTok: 0.10 })
+  expect(parseClassifier({ enabled: true, openai: { api: 'openai', credential: 'openai', model: 'gpt-6-luna' } }).openai).toEqual({ enabled: true, api: 'openai', credential: 'openai', model: 'gpt-6-luna', usdPerMTok: 0.10 })
   expect(parseClassifier({ enabled: true, typesafe: { api: 'systemone', credential: 'orcarouter' } }).typesafe).toMatchObject({ api: 'systemone', credential: 'orcarouter', model: 'typesafe/jev-1.13' })
   expect(DEFAULT_CLASSIFIER.keepDays).toBe(30)
   const c = parseClassifier({ enabled: true, dailyUsd: { claude: 1 }, typesafe: { model: 'jev-1.14.0' }, keepDays: 7 })
   expect(c.enabled).toBe(true)
   expect(c.error).toBeUndefined()
-  expect(c.dailyUsd).toEqual({ openai: 0.5, typesafe: 0.5, claude: 1 })
+  expect(c.dailyUsd).toEqual({ openai: 0.5, typesafe: 0.5, clef: 0.5, clefflash: 0.5, claude: 1 })
   expect(c.telegramTools).toBe(true)
-  expect(c.typesafe).toEqual({ api: 'openrouter', credential: 'openrouter', model: 'jev-1.14.0', usdPerMTok: 0.042 })
+  expect(c.typesafe).toEqual({ enabled: true, api: 'openrouter', credential: 'openrouter', model: 'jev-1.14.0', usdPerMTok: 0.042 })
+  // Cloudflare Clef (27B) and Clef Flash (9B): their own providers, through OpenRouter, each with its own cap and switch
+  expect(DEFAULT_CLASSIFIER.clef).toEqual({ enabled: true, api: 'openrouter', credential: 'openrouter', model: 'cloudflare/clef', usdPerMTok: 0 })
+  expect(DEFAULT_CLASSIFIER.clefflash).toEqual({ enabled: true, api: 'openrouter', credential: 'openrouter', model: 'cloudflare/clef-flash', usdPerMTok: 0 })
+  const one = parseClassifier({ enabled: true, clefflash: { enabled: false }, dailyUsd: { clef: 0.2 } })
+  expect([one.clef.enabled, one.clefflash.enabled, one.dailyUsd.clef, one.dailyUsd.clefflash]).toEqual([true, false, 0.2, 0.5])
   // unusable: off, with why
   const bad = (v: unknown) => { const r = parseClassifier(v); expect(r.enabled).toBe(false); return r.error }
   expect(bad({ enabled: true, openai: { api: 'chat' } })).toBe('classifier.openai.api 要是 openrouter, openai, systemone 之一, 收到 "chat"')
   expect(bad({ enabled: true, dailyUsd: { openai: -1 } })).toContain('classifier.dailyUsd.openai')
   expect(bad({ enabled: 'yes' })).toContain('classifier.enabled 要是 true 或 false')
   expect(bad({ enabled: true, telegramTools: 1 })).toContain('classifier.telegramTools')
+  expect(bad({ enabled: true, clef: { enabled: 'no' } })).toContain('classifier.clef.enabled 要是 true 或 false')
   expect(bad('yes')).toContain('classifier 要是物件')
   expect(bad([1])).toContain('classifier 要是物件')
 })
@@ -257,7 +265,7 @@ test('check at start: one line per provider that will be skipped (no key, haiku,
 
 test('off: the turn message is not kept', async () => {
   let conf: ClassifierConfig = DEFAULT_CLASSIFIER
-  const c = createClassifier({ cfg: () => conf, store, judges: { openai: judge(0), typesafe: judge(0), claude: judge(0) }, maskEnv: () => env() })
+  const c = createClassifier({ cfg: () => conf, store, judges: { openai: judge(0), typesafe: judge(0), clef: judge(0), clefflash: judge(0), claude: judge(0) }, maskEnv: () => env() })
   c.noteMessage(USER.key, '關閉時收到的訊息')
   conf = ON
   const id = c.submit(USER, pre('Bash', { command: 'ls' }))!
@@ -288,8 +296,8 @@ function judge(p_block: number, ms = 0, extra: Partial<Judgement> = {}): Judge &
   return j
 }
 const make = (judges: Partial<Record<Provider, Judge>>, o: { cfg?: ClassifierConfig; now?: () => Date; limits?: any; log?: string[] } = {}) => createClassifier({
-  cfg: () => o.cfg ?? ON, store,
-  judges: { openai: judges.openai ?? judge(0.1), typesafe: judges.typesafe ?? judge(0.1), claude: judges.claude ?? judge(0.1) },
+  cfg: () => o.cfg ?? ON3, store,
+  judges: { openai: judges.openai ?? judge(0.1), typesafe: judges.typesafe ?? judge(0.1), clef: judges.clef ?? judge(0.1), clefflash: judges.clefflash ?? judge(0.1), claude: judges.claude ?? judge(0.1) },
   maskEnv: () => env(), now: o.now, limits: o.limits, log: m => o.log?.push(m),
 })
 
@@ -303,7 +311,7 @@ test('only user and power, only pre events, not telegram plugin tools, not when 
   expect(c.eligible(USER, pre('mcp__plugin_telegram_telegram__reply', {}))).toBe(false)
   expect(make({}, { cfg: DEFAULT_CLASSIFIER }).eligible(USER, pre('Bash', {}))).toBe(false)
   expect(make({}).submit({ ...USER, role: 'owner' }, pre('Bash', {}))).toBeNull()
-  expect(make({}, { cfg: { ...ON, skipTools: ['mcp__x__'] } }).eligible(USER, pre('mcp__x__y', {}))).toBe(false)
+  expect(make({}, { cfg: { ...ON3, skipTools: ['mcp__x__'] } }).eligible(USER, pre('mcp__x__y', {}))).toBe(false)
 })
 
 test('Telegram tools (router-side): user and power by the role the call ran with, not the ones that only ask or read router state, not when telegramTools is off', async () => {
@@ -313,7 +321,7 @@ test('Telegram tools (router-side): user and power by the role the call ran with
   for (const role of ['owner', 'admin']) expect(c.eligibleTelegram(role, 'reply')).toBe(false)
   for (const t of TG_NOT_JUDGED) expect(c.eligibleTelegram('user', t)).toBe(false)
   expect([...TG_NOT_JUDGED].sort()).toEqual(['get_chat_context', 'request_elevation', 'request_send_grant', 'save_bot_profile'])
-  expect(make({}, { cfg: { ...ON, telegramTools: false } }).eligibleTelegram('user', 'reply')).toBe(false)
+  expect(make({}, { cfg: { ...ON3, telegramTools: false } }).eligibleTelegram('user', 'reply')).toBe(false)
   expect(make({}, { cfg: DEFAULT_CLASSIFIER }).eligibleTelegram('user', 'reply')).toBe(false)
   // an elevated call (role admin) of a user conversation is not judged
   expect(c.submitTelegram(USER, 'admin', 'reply', { text: 'x' })).toBeNull()
@@ -370,7 +378,7 @@ test('a judge that throws or hangs is an error row; submit never throws', async 
   expect(by.openai).toMatchObject({ status: 'error', detail: 'connection refused' })
   expect(by.typesafe).toMatchObject({ status: 'error', detail: 'timeout 100 ms' })
   expect(by.claude!.status).toBe('ok')
-  const broken = createClassifier({ cfg: () => ON, store, judges: { openai: boom, typesafe: boom, claude: boom }, maskEnv: () => { throw new Error('db gone') } })
+  const broken = createClassifier({ cfg: () => ON, store, judges: { openai: boom, typesafe: boom, clef: boom, clefflash: boom, claude: boom }, maskEnv: () => { throw new Error('db gone') } })
   expect(broken.submit(USER, pre('Bash', {}))).toBeNull()
 })
 
@@ -395,7 +403,7 @@ test('daily cap per provider (GMT+8 day): at the cap that provider stops for the
   expect(gmt8DayStart(new Date('2026-10-16T15:59:00Z'))).toBe('2026-10-15T16:00:00.000Z')
   const logs: string[] = []
   const claude = judge(0.1, 0, { cost_usd: 2 })
-  const c = make({ claude }, { cfg: { ...ON, dailyUsd: { openai: 0.5, typesafe: 0.5, claude: 3 } }, now: () => now, log: logs })
+  const c = make({ claude }, { cfg: { ...ON3, dailyUsd: { ...ON3.dailyUsd, claude: 3 } }, now: () => now, log: logs })
   for (let i = 0; i < 4; i++) { c.submit(USER, pre('Bash', { command: `ls ${i}` })); await c.idle() }
   expect(claude.calls).toBe(2) // $2, $4 >= $3: stop
   const claudeRows = store.resultsSince('2026-10-01T00:00:00Z').filter(r => r.provider === 'claude')
@@ -407,6 +415,24 @@ test('daily cap per provider (GMT+8 day): at the cap that provider stops for the
   now = new Date('2026-10-17T16:10:00Z')
   c.submit(USER, pre('Bash', { command: 'ls' })); await c.idle()
   expect(claude.calls).toBe(3)
+})
+
+test('Clef and Clef Flash: five providers by default, each recorded; one switched off leaves no rows; the report has a line for each that ran', async () => {
+  const c = make({ clef: judge(0.2), clefflash: judge(0.9) }, { cfg: ON })
+  const id = c.submit(USER, pre('Bash', { command: 'ls' }))!
+  await c.idle()
+  expect(store.resultsFor(id).map(r => r.provider)).toEqual(['claude', 'clef', 'clefflash', 'openai', 'typesafe'])
+  const off = make({}, { cfg: { ...ON, clefflash: { ...ON.clefflash, enabled: false } } })
+  const id2 = off.submit(USER, pre('Bash', { command: 'ls -la' }))!
+  await off.idle()
+  expect(store.resultsFor(id2).map(r => r.provider)).toEqual(['claude', 'clef', 'openai', 'typesafe'])
+  const r = classifierReport(store, 7, new Date())
+  expect(r).toContain('clef (m): 成功 2')
+  expect(r).toContain('clefflash (m): 成功 1')
+  expect(r).toContain('實際費用 (openai + typesafe + clef + clefflash): $0.00700 (openai $0.00200, typesafe $0.00200, clef $0.00200, clefflash $0.00100)')
+  // clefflash (0.9) disagrees with claude (0.1) on the first call
+  expect(r).toContain('最近 1 筆跟 claude 意見不同')
+  expect(r).toContain('openai 0.10/0.30, typesafe 0.10/0.30, clef 0.20/0.60, clefflash 0.90/2.70, claude 0.10/0.30')
 })
 
 test('busy: at most N running per provider, the rest wait; beyond the waiting limit it is skipped', async () => {
