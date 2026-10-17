@@ -34,11 +34,15 @@ test('the report scripts run on python3, never a bare python (README: python3 3.
   expect(read('README.md')).toMatch(/\n\| python3 \| 3\.7 以上[^\n]*python2/)
 })
 
-test('curl and jq are recommended, not needed by the repo\'s own code and scripts', () => {
+test('curl, jq and matplotlib are recommended, the classifier key is per feature; the repo\'s own code and scripts use no curl or jq', () => {
   const readme = read('README.md')
-  const recommended = readme.slice(readme.indexOf('強烈建議:'), readme.indexOf('不需要:'))
+  const recommended = readme.slice(readme.indexOf('強烈建議:'), readme.indexOf('依功能需要:'))
+  const perFeature = readme.slice(readme.indexOf('依功能需要:'), readme.indexOf('不需要:'))
   expect(recommended).toMatch(/\n\| curl \|/)
   expect(recommended).toMatch(/\n\| jq \|/)
+  expect(recommended).toMatch(/\n\| matplotlib [^\n]*純文字/)
+  expect(perFeature).toMatch(/\n\| OpenRouter 或其他分類器的 API key \|/)
+  expect(perFeature).toMatch(/\n\| 特權技能需要的工具/)
   const sources = [
     ...readdirSync(join(ROOT, 'scripts')).map(f => `scripts/${f}`),
     'deploy/install.sh',

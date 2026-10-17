@@ -14,14 +14,27 @@ Usage:
 Category order/colors are fixed by name below (matches the real /context
 legend); pass whatever subset is present, extras are appended in a spare
 color. Output PNG path is the required first argument.
+
+Without matplotlib (not installed, or it fails to import) no PNG is written:
+a text chart (a bar per category, each starting where the one above
+ends) and a line suggesting how to install
+matplotlib go to stdout, and the exit code is 3 (NO_MATPLOTLIB); the router
+then sends the text instead of the picture (docs/operations.md, 「cc / 報表腳本」).
 """
 import json
 import sys
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyBboxPatch
+except ImportError:
+    plt = None
+
+NO_MATPLOTLIB = 3
+INSTALL_HINT = ("(沒有 matplotlib, 改用文字圖. 想要圖片請安裝: python3 -m pip install --user matplotlib"
+                " 或 sudo apt-get install python3-matplotlib)")
 
 PALETTE = {
     "System prompt": "#8a8a8a",
@@ -35,6 +48,42 @@ PALETTE = {
     "Free space": "#2b2b33",
 }
 FALLBACK_COLORS = ["#e07a5f", "#3d5a80", "#81b29a", "#f2cc8f"]
+BAR_CELLS = 20  # each cell is 5%
+
+
+# Glyphs a bar cell can show, with the part of the cell (in eighths) each covers.
+GLYPHS = [("█", 0, 8), ("▐", 4, 8), ("▕", 7, 8)] + [(g, 0, k) for k, g in enumerate("▏▎▍▌▋▊▉", 1)]
+
+
+def text_bar(s, e):
+    """A bar of BAR_CELLS cells filled from eighth s to eighth e: each cell the
+    segment touches shows the glyph closest to the part it covers."""
+    cells = []
+    for c in range(BAR_CELLS):
+        a, b = max(s, c * 8) - c * 8, min(e, c * 8 + 8) - c * 8
+        if b <= a:
+            cells.append("░")
+            continue
+        # the glyph whose covered part differs least from [a, b)
+        cells.append(min(GLYPHS, key=lambda g: (b - a) + (g[2] - g[1]) - 2 * max(0, min(b, g[2]) - max(a, g[1])))[0])
+    return "".join(cells)
+
+
+def text_chart(data):
+    """The text version of the chart: a bar per category, each starting where
+    the one above ends (together they fill the bar), then how to get the
+    picture. A category with tokens gets at least an eighth of a cell."""
+    total = data["total_tokens"]
+    names = [name for name, _ in data["categories"]]
+    width = max(len(n) for n in names) if names else 0
+    full = BAR_CELLS * 8
+    rows, cum, end = [], 0, 0
+    for name, tok in data["categories"]:
+        cum += tok
+        start = end
+        end = min(full, max(round(cum / total * full), start + (1 if tok > 0 else 0)))
+        rows.append(f"{name:<{width}}  {text_bar(start, end)}  {tok / total * 100:5.1f}%")
+    return "\n".join(rows + ["", INSTALL_HINT])
 
 
 def main():
@@ -43,6 +92,9 @@ def main():
         sys.exit(1)
     out_path = sys.argv[1]
     data = json.load(sys.stdin)
+    if plt is None:
+        print(text_chart(data))
+        sys.exit(NO_MATPLOTLIB)
 
     total = data["total_tokens"]
     categories = []

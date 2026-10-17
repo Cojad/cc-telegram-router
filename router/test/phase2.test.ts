@@ -268,7 +268,7 @@ const BOX = '─'.repeat(40) + ' tg-dm-1 ─\n❯ \n' + '─'.repeat(40) + '\n  
 const IDLE = '● done\n\n' + BOX
 
 /** A fake terminal: the screen each command leaves, Esc closes a view. */
-function fakeTmux(screens: Record<string, string>) {
+function fakeTmux(screens: Record<string, string>, chart = { code: 0, stdout: '' }) {
   const seen: Array<{ args: string[]; env?: Record<string, string> }> = []
   let screen = IDLE
   const exec = async (args: string[], env?: Record<string, string>) => {
@@ -280,7 +280,7 @@ function fakeTmux(screens: Record<string, string>) {
       else screen = screens[key.split(' ')[0]!] ?? IDLE
       return { code: 0, stdout: '' }
     }
-    if (args[0] === 'sh') return { code: 0, stdout: '' } // the chart script
+    if (args[0] === 'sh') return chart // the chart script
     return { code: 0, stdout: args[0]!.endsWith('tg-status-report.sh') ? 'Version: 2.1\n' : '' }
   }
   return { exec, seen }
@@ -310,6 +310,19 @@ test('relay /context: only its own output, as a table of the session\'s categori
   const chart = seen.find(s => s.args[0] === 'sh')!
   expect(chart.args.slice(-2)).toEqual(['/s/tg-context-chart.py', join(dir, 'context-abcd1234.png')])
   expect(JSON.parse(chart.env!.TG_CHART_JSON!)).toMatchObject({ total_tokens: 750000, used_tokens: 100600, pct_used: 13, model: 'claude-opus-5-5' })
+})
+
+test('relay /context without matplotlib: the table plus the script\'s text chart and install hint; a failed chart: the table alone', async () => {
+  const textChart = 'Messages  █▊░░░░░░░░░░░░░░░░░░    8.5%\n\n(沒有 matplotlib, 改用文字圖. 想要圖片請安裝: python3 -m pip install --user matplotlib)\n'
+  const deps = (exec: any) => ({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 30, outDir: dir, now: () => '2026-10-16 09:40' })
+  const none = await relay(deps(fakeTmux({ '/context': FIX('relay-context.txt') }, { code: 3, stdout: textChart }).exec), 'abcd1234', { cmd: '/context', args: '', raw: false })
+  expect(none.kind).toBe('text')
+  const text = (none as any).text as string
+  expect(text).toStartWith('📊 Context 用量 (2026-10-16 09:40)\nclaude-opus-5-5: 100.6k / 750k (13%)')
+  expect(text).toEndWith('\n\nMessages  █▊░░░░░░░░░░░░░░░░░░    8.5%\n\n(沒有 matplotlib, 改用文字圖. 想要圖片請安裝: python3 -m pip install --user matplotlib)')
+  const failed = await relay(deps(fakeTmux({ '/context': FIX('relay-context.txt') }, { code: 1, stdout: '' }).exec), 'abcd1234', { cmd: '/context', args: '', raw: false })
+  expect(failed.kind).toBe('text')
+  expect((failed as any).text).toEndWith('自動壓縮門檻 750k · MCP 工具 191 個 · 記憶檔 3 個 · 技能 22 個')
 })
 
 test('relay /cost: just this session\'s section of the view, in Chinese; the view is closed before leaving', async () => {

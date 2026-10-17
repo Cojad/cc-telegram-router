@@ -189,6 +189,9 @@ export function parseCost(lines: string[]): string | null {
 
 // --- running --------------------------------------------------------------------
 
+/** tg-context-chart.py's exit code when matplotlib is missing (its stdout is a text chart). */
+export const CHART_NO_MATPLOTLIB = 3
+
 export interface RelayDeps {
   /** Screen must be unchanged this long to count as done (default 3s). */
   settleMs?: number
@@ -269,7 +272,10 @@ export async function relay(deps: RelayDeps, workerId: string, r: RelayCmd): Pro
       const text = renderContext(c, deps.now?.() ?? '')
       const path = join(deps.outDir ?? env.TMUX_TMPDIR, `context-${workerId}.png`)
       const chart = await deps.exec(['sh', '-c', 'printf "%s" "$TG_CHART_JSON" | python3 "$0" "$1"', join(deps.scriptsDir, 'tg-context-chart.py'), path], { ...env, TG_CHART_JSON: JSON.stringify({ total_tokens: c.total, used_tokens: c.used, pct_used: c.pct, model: c.model, ts_gmt8: `${deps.now?.() ?? ''} GMT+8`, categories: c.categories.map(([n, t]) => [n, t]) }) })
-      return chart.code === 0 ? { kind: 'photo', path, text } : { kind: 'text', text }
+      if (chart.code === 0) return { kind: 'photo', path, text }
+      // exit 3: no matplotlib, the script printed a text chart and how to get the picture
+      if (chart.code === CHART_NO_MATPLOTLIB && chart.stdout.trim()) return { kind: 'text', text: `${text}\n\n${chart.stdout.trim()}` }
+      return { kind: 'text', text }
     }
     return { kind: 'handoff', output: dedent(lines) || `(${r.cmd} 沒有輸出)` }
   } finally {

@@ -114,13 +114,13 @@ def burn_rate(used, left):
     remaining = max(0.0, 100 - used)
     lines = ['--- 燃燒速率 ---', f'完美速率: {floor1(perfect)}%/天']
     if elapsed < MIN_ELAPSED:
-        lines.append('當前速率: 資料不足 (這週剛開始)')
+        lines.append('當前速率: 這週剛開始, 速率還看不準喔 ⏳')
     else:
         current = used / (elapsed.total_seconds() / 86400)
         lines.append(f'當前速率: {floor1(current)}%/天 ({floor0(current / perfect * 100)}% ratio)')
     lines.append(f'剩下 {remaining:.1f}% / {countdown(left)}')
     if remaining <= 0:
-        lines.append(f'本週額度已用完, {countdown(left)} 後重置 🛑')
+        lines.append(f'這週額度用完了喔, ↻{countdown(left)} 後重置 🛑')
         return lines
     if left_days <= 0:
         lines.append('即將重置')
@@ -130,7 +130,7 @@ def burn_rate(used, left):
     if best >= perfect:
         lines.append(f'可以超速 {floor0(best / perfect * 100)}%喔! 🏎️')
     else:
-        lines.append(f'超速了, 要減速! 每天最多 {floor1(best)}% 才撐得到重置 🐢')
+        lines.append(f'超速了喔! 每天最多 {floor1(best)}% 才撐得到重置 🐢')
     return lines
 
 

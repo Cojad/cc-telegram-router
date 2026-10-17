@@ -47,7 +47,7 @@
 | Claude Code CLI | 支援 `--bg`, `--resume`, `attach`, `--channels` 的版本; 開發與測試用 2.1.302 | worker (`claude --bg`), 套件審核與 event_raw 的 `claude -p`, `cc /` 代打 |
 | 官方 telegram plugin | 先裝好 `telegram@claude-plugins-official` (0.0.7) | `deploy/install.sh plugin` 把 plugin v2 放進它的快取路徑 (第一次會備份原內容) |
 | bubblewrap (`bwrap`) 與 socat | 發行版套件: `sudo apt-get install bubblewrap socat` (或 dnf) | owner 以外的角色範本都開啟 Claude Code 的 sandbox, Linux 上要靠這兩個 ([官方文件](https://code.claude.com/docs/en/sandboxing)); 特權技能的專屬沙箱 (`bwrap`). Ubuntu 24.04 以後預設的 AppArmor 會阻止 bubblewrap 建立 user namespace (`sysctl kernel.apparmor_restrict_unprivileged_userns` 是 1 就會擋), 要照官方文件加 AppArmor profile. Claude Code 的 `/sandbox` 面板 Dependencies 分頁會列出缺少的 ripgrep, bubblewrap, socat, seccomp filter |
-| python3 | 3.7 以上 (開發與測試用 3.10.12); 必須是 python3, 腳本不相容 python2 | `cc /status`, `cc /usage`, `cc /context` 的報表腳本 (本 repo 的 `scripts/`, `deploy/install.sh router` 裝到 stateDir 的 `scripts/`, 見 [部署與維運](docs/operations.md#cc--報表腳本)). matplotlib 只有 `cc /context` 的圖需要, 沒裝時 `/context` 改送純文字 |
+| python3 | 3.7 以上 (開發與測試用 3.10.12); 必須是 python3, 腳本不相容 python2 | `cc /status`, `cc /usage`, `cc /context` 的報表腳本 (本 repo 的 `scripts/`, `deploy/install.sh router` 裝到 stateDir 的 `scripts/`, 見 [部署與維運](docs/operations.md#cc--報表腳本)) |
 
 強烈建議:
 
@@ -56,7 +56,13 @@
 | tmux | `cc /指令` 代打 (router 用自己的 tmux server 開 `claude attach`) |
 | curl | 除錯時手動查詢 Bot API 與 HTTP API; 特權技能的腳本呼叫 API 常用它 (`/telegram:bot-skill` 的範例). 本 repo 的程式與腳本不用它 |
 | jq | 處理 JSON (例如 Bot API 的回應); 也在 user 角色的唯讀指令白名單裡, worker 可以直接用. 本 repo 的程式與腳本不用它 |
+| matplotlib (python3 套件) | `cc /context` 的圖; 沒有時 `/context` 退為純文字 (每個類別一段文字進度條, 從上一個類別的結尾接著畫到 100%, 附安裝建議). 安裝: `python3 -m pip install --user matplotlib` 或 `sudo apt-get install python3-matplotlib` |
 | node, pip, npm 等 | power 與 admin 對話的 worker 自己要用的執行環境 (python3 已在必要) |
+
+依功能需要:
+
+| 項目 | 用途 |
+|---|---|
 | 特權技能需要的工具 (例如 yt-dlp, deno) | 由技能自己決定; 沙箱看得到 `~/.local/bin`, `~/.local/lib`, `~/.deno/bin` |
 | OpenRouter 或其他分類器的 API key | 工具呼叫分類器 (預設關閉) |
 

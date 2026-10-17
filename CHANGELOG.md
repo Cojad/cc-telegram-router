@@ -8,14 +8,15 @@
 
 ### Added
 
-- `cc /usage` 加上 Weekly (all models) 的燃燒速率: 完美速率, 當前速率與 ratio, 剩下的額度與倒數, 到重置剛好用完的每日上限, 可超速多少或要減速 (算法見 [docs/operations.md](docs/operations.md#cc--報表腳本)).
+- `cc /usage` 加上 Weekly (all models) 的燃燒速率: 完美速率, 當前速率與 ratio, 剩下的額度與倒數, 到重置剛好用完的每日上限, 可超速多少或要減速, 措辭照群組範例的輕快語氣 (算法見 [docs/operations.md](docs/operations.md#cc--報表腳本)).
 
 ### Changed
 
 - `cc /status`, `cc /usage`, `cc /context` 的報表腳本收進 repo 的 `scripts/`, `deploy/install.sh router` 裝到 `<stateDir>/scripts`, router 改用這個位置 (原本是 `~/.claude/bin`). `/usage` 的解析與排版抽成 `scripts/usage_report.py`.
-- README 的 Requirements: python3 (3.7 以上) 列為必要; 「選配」改名「強烈建議」, 加上 curl 與 jq; bubblewrap 與 socat 附官方 sandbox 文件連結與 Ubuntu 24.04 AppArmor 的注意事項.
+- README 的 Requirements: python3 (3.7 以上) 列為必要; 「選配」分成「強烈建議」(tmux, curl, jq, matplotlib 等) 與「依功能需要」(特權技能的工具, 分類器的 API key); bubblewrap 與 socat 附官方 sandbox 文件連結與 Ubuntu 24.04 AppArmor 的注意事項.
 - `plugin/package.json` 的版本對齊 2.9.0.
 - `cc /usage` 的倒數一律只顯示最大的兩個單位, 最小到分鐘 (`5d23h`, `8h5m`, `5m`), 原本週額度會顯示成 `143h15m`.
+- `cc /context`: 腳本偵測 matplotlib, 沒有時不畫圖, 改送文字圖 (每個類別一段文字進度條, 從上一個類別的結尾接著畫到 100%) 與安裝建議; 有時照舊送圖.
 
 ### Fixed
 

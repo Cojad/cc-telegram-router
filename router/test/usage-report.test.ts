@@ -63,7 +63,7 @@ test('usage report: the week has just begun, less than an hour in: no current ra
   expect(burn(report(screen(0, RESET), '2026-10-14T04:30:00+08:00'))).toEqual([
     '--- 燃燒速率 ---',
     '完美速率: 14.2%/天',
-    '當前速率: 資料不足 (這週剛開始)',
+    '當前速率: 這週剛開始, 速率還看不準喔 ⏳',
     '剩下 100.0% / 6d23h',
     '最高可用 14.3%/天燒完',
     '可以超速 100%喔! 🏎️',
@@ -80,7 +80,7 @@ test('usage report: burning faster than the perfect rate says to slow down, with
     '當前速率: 20.0%/天 (140% ratio)',
     '剩下 40.0% / 4d0h',
     '最高可用 10.0%/天燒完',
-    '超速了, 要減速! 每天最多 10.0% 才撐得到重置 🐢',
+    '超速了喔! 每天最多 10.0% 才撐得到重置 🐢',
   ])
 })
 
@@ -112,7 +112,7 @@ test('usage report: the weekly limit used up', () => {
     '完美速率: 14.2%/天',
     '當前速率: 16.6%/天 (116% ratio)',
     '剩下 0.0% / 1d0h',
-    '本週額度已用完, 1d0h 後重置 🛑',
+    '這週額度用完了喔, ↻1d0h 後重置 🛑',
   ])
 })
 
