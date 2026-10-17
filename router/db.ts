@@ -41,6 +41,8 @@ export type Grant = { id: number; from_conv: string; target: string; mode: 'owne
 /** Per-bot first-run setup (plan 03 初次設定): persona interview, approvals group. */
 export type BotSetup = {
   bot: string
+  /** The Telegram bot id (the token's part before the colon) this setup belongs to; null in rows from before it was kept. */
+  bot_id: string | null
   /** The owner finished the persona interview (save_bot_profile). */
   persona_done: number
   persona: string | null
@@ -339,6 +341,8 @@ export function openRouterDb(path: string): RouterDb {
   if (!setupCols.has('elevlog_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN elevlog_topic INTEGER')
   if (!setupCols.has('authuse_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN authuse_topic INTEGER')
   if (!setupCols.has('secret_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN secret_topic INTEGER')
+  // which Telegram bot the setup belongs to (setup.ts adoptBotSetup): a name reused for another bot starts over
+  if (!setupCols.has('bot_id')) db.exec('ALTER TABLE bot_setup ADD COLUMN bot_id TEXT')
   const evCols = new Set((db.query('PRAGMA table_info(events)').all() as Array<{ name: string }>).map(c => c.name))
   if (!evCols.has('masked')) db.exec('ALTER TABLE events ADD COLUMN masked INTEGER NOT NULL DEFAULT 0')
   const useCols = new Set((db.query('PRAGMA table_info(auth_uses)').all() as Array<{ name: string }>).map(c => c.name))
@@ -520,12 +524,12 @@ export function openRouterDb(path: string): RouterDb {
       ? db.prepare('SELECT ts, conv, kind, text, ref FROM elev_log WHERE conv = ? ORDER BY id DESC LIMIT ?').all(conv, limit)
       : db.prepare('SELECT ts, conv, kind, text, ref FROM elev_log ORDER BY id DESC LIMIT ?').all(limit)) as any,
     bumpContext: bot => { db.prepare('UPDATE conversations SET ctx_v = ctx_v + 1 WHERE bot = ?').run(bot) },
-    getBotSetup: bot => (db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, secret_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup | null) ?? null,
+    getBotSetup: bot => (db.prepare('SELECT bot, bot_id, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, secret_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup | null) ?? null,
     updateBotSetup(bot, fields) {
       db.prepare('INSERT OR IGNORE INTO bot_setup (bot, updated_at) VALUES (?, ?)').run(bot, now())
-      const keys = Object.keys(fields).filter(k => ['persona_done', 'persona', 'approvals_chat', 'approvals_topic', 'notices_topic', 'elevlog_topic', 'authuse_topic', 'secret_topic', 'group_skipped'].includes(k))
+      const keys = Object.keys(fields).filter(k => ['bot_id', 'persona_done', 'persona', 'approvals_chat', 'approvals_topic', 'notices_topic', 'elevlog_topic', 'authuse_topic', 'secret_topic', 'group_skipped'].includes(k))
       if (keys.length) db.prepare(`UPDATE bot_setup SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE bot = ?`).run(...keys.map(k => ((fields as any)[k] ?? null) as string | number | null), now(), bot)
-      return db.prepare('SELECT bot, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, secret_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup
+      return db.prepare('SELECT bot, bot_id, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, secret_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup
     },
     addApprovalMsg: m => { db.prepare('INSERT INTO approval_msgs (kind, ref, bot, chat_id, message_id, text) VALUES (?, ?, ?, ?, ?, ?)').run(m.kind, m.ref, m.bot, m.chat_id, m.message_id, m.text) },
     approvalMsgs: (kind, ref) => db.prepare('SELECT * FROM approval_msgs WHERE kind = ? AND ref = ?').all(kind, ref) as ApprovalMsg[],

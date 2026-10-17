@@ -292,6 +292,9 @@ test('bot add answers once its getMe is in: bot list right after shows the new b
   laterUpdates.push({ update_id: 80, message: { message_id: 90, date: now, chat: { id: 111, type: 'private' }, from, text: '/router bot add two 456:TWOTWOTWOTWOTWOTWOTWOTWOTWOTWOTWO00' } })
   const added = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('已新增 bot two')))
   expect(added.body.text).toStartWith('已新增 bot two: @two_bot\n')
+  expect(added.body.text).toContain('它會帶你完成初次設定') // a new bot
+  expect(q("SELECT bot_id FROM bot_setup WHERE bot = 'two'")[0].bot_id).toBe('456') // the setup belongs to that bot
+  expect(q("SELECT bot_id FROM bot_setup WHERE bot = 'cc'")[0].bot_id).toBe('123') // filled in at start from the token
   // the new bot's poller is still waiting on its own (slow) getMe
   laterUpdates.push({ update_id: 81, message: { message_id: 91, date: now, chat: { id: 111, type: 'private' }, from, text: '/router bot list' } })
   const list = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('cc: @')))

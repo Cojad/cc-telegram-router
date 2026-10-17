@@ -13,6 +13,7 @@ import { runCommand, isCommand, type CommandDeps, type CommandInput } from '../c
 import { awaitBotInfo } from '../botinfo'
 import { buildContext, renderContext, renderLogs, maskTokens, gmt8 } from '../context'
 import { iso8, logLine } from '../../shared/time'
+import { initBotSetups, adoptBotSetup, tokenBotId, addedSetupText } from '../setup'
 import type { Access } from '../telegram/policy'
 
 const OWNER = '137438526', ADMIN = '500', USER = '600'
@@ -93,6 +94,33 @@ test('bot add: a new bot gets the first-run line; one added back under a name wh
   expect(await add()).toBe('已新增 bot x: @new_bot\n沿用既有人設, 不用重新做初次設定; 審核群組還沒設定: 在開了話題的群組裡傳 /router setup group, 或 /router setup skip 改由 owner 私訊接收. 要重新做人設訪談可用 /router setup persona')
   db.updateBotSetup('x', { persona_done: 0 }) // /router setup persona: the interview again
   expect(await add()).toStartWith('已新增 bot x: @new_bot\n私訊 @new_bot 任何一句話, 它會帶你完成初次設定')
+})
+
+test('bot setup follows the Telegram bot id: kept for the same bot added back, started over for another bot under a reused name; ids filled in at start', () => {
+  // start: a row from before bot_id was kept gets the configured bot's id; a new bot gets a row with its id
+  db.updateBotSetup('cc', { persona_done: 1 })
+  initBotSetups(db, [{ name: 'cc', id: '42' }, { name: 'fresh', id: '77' }])
+  expect(db.getBotSetup('cc')).toMatchObject({ bot_id: '42', persona_done: 1 })
+  expect(db.getBotSetup('fresh')).toMatchObject({ bot_id: '77', persona_done: 0 })
+  expect(tokenBotId('42:AAAA')).toBe('42')
+  expect(tokenBotId('weird')).toBeNull()
+  // bot add
+  expect(adoptBotSetup(db, 'brand-new', '500', false)).toBe('new')
+  expect(db.getBotSetup('brand-new')!.bot_id).toBe('500')
+  db.updateBotSetup('x', { bot_id: '600', persona_done: 1, persona: '你是 X', approvals_chat: '-100900', approvals_topic: 7, group_skipped: 0 })
+  expect(adoptBotSetup(db, 'x', '600', true)).toBe('kept') // the same bot added back
+  expect(db.getBotSetup('x')).toMatchObject({ persona_done: 1, approvals_chat: '-100900' })
+  expect(adoptBotSetup(db, 'x', '601', true)).toBe('reset') // another bot under the name
+  expect(db.getBotSetup('x')).toMatchObject({ bot_id: '601', persona_done: 0, persona: null, approvals_chat: null, approvals_topic: null, group_skipped: 0 })
+  // a row without bot_id: its folder bot<id> decides
+  db.updateBotSetup('old', { bot_id: null, persona_done: 1, group_skipped: 1 })
+  expect(adoptBotSetup(db, 'old', '700', true)).toBe('kept')
+  expect(db.getBotSetup('old')).toMatchObject({ bot_id: '700', persona_done: 1, group_skipped: 1 })
+  db.updateBotSetup('old2', { bot_id: null, persona_done: 1, group_skipped: 1 })
+  expect(adoptBotSetup(db, 'old2', '800', false)).toBe('reset')
+  expect(db.getBotSetup('old2')).toMatchObject({ bot_id: '800', persona_done: 0, group_skipped: 0 })
+  // and the bot add reply follows: the reset bot gets the first-run line
+  expect(addedSetupText('x_bot', db.getBotSetup('x'))).toStartWith('私訊 @x_bot 任何一句話, 它會帶你完成初次設定')
 })
 
 test('bot list for admin; token commands only in the owner DM, and a token message is always deleted', async () => {

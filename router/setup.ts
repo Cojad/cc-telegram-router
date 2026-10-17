@@ -24,15 +24,39 @@ export function isClaim(text: string | undefined, code: string | null): boolean 
   return !!m && m[1] === code
 }
 
+/** The Telegram bot id in a token (the part before the colon), or null. */
+export function tokenBotId(token: string): string | null {
+  const id = token.split(':')[0]
+  return id && /^\d+$/.test(id) ? id : null
+}
+
 /** Rows for bots seen for the first time. A bot that already has
  *  conversations was in use before setup existed: treat it as set up, with
- *  approvals going to the owner's DM. */
-export function initBotSetups(db: RouterDb, bots: string[]): void {
+ *  approvals going to the owner's DM. A row from before bot_id was kept
+ *  gets the configured bot's id. */
+export function initBotSetups(db: RouterDb, bots: Array<{ name: string; id: string | null }>): void {
   const used = new Set(db.listConversations().map(c => c.bot))
-  for (const b of bots) {
-    if (db.getBotSetup(b)) continue
-    db.updateBotSetup(b, used.has(b) ? { persona_done: 1, group_skipped: 1 } : {})
+  for (const { name, id } of bots) {
+    const s = db.getBotSetup(name)
+    if (!s) db.updateBotSetup(name, { ...(used.has(name) ? { persona_done: 1, group_skipped: 1 } : {}), bot_id: id })
+    else if (!s.bot_id && id) db.updateBotSetup(name, { bot_id: id })
   }
+}
+
+/** /router bot add: the setup stored under this name is kept only for the
+ *  same Telegram bot (its folder bot<id> is named by the id too). Another
+ *  bot under a reused name starts over: no persona, no approvals place. A
+ *  row without bot_id counts as the same bot when its folder bot<id> already
+ *  exists. Returns what happened. */
+export function adoptBotSetup(db: RouterDb, name: string, botId: string, hasBotFolder: boolean): 'new' | 'kept' | 'reset' {
+  const s = db.getBotSetup(name)
+  if (!s) { db.updateBotSetup(name, { bot_id: botId }); return 'new' }
+  if (s.bot_id ? s.bot_id === botId : hasBotFolder) {
+    if (!s.bot_id) db.updateBotSetup(name, { bot_id: botId })
+    return 'kept'
+  }
+  db.updateBotSetup(name, { bot_id: botId, persona_done: 0, persona: null, approvals_chat: null, approvals_topic: null, notices_topic: null, elevlog_topic: null, authuse_topic: null, secret_topic: null, group_skipped: 0 })
+  return 'reset'
 }
 
 export function needsPersona(s: BotSetup | null): boolean {
@@ -75,9 +99,9 @@ export function checkGroup(chat: { type: string; is_forum?: boolean }, member: {
   return { ok: true }
 }
 
-/** What /router bot add says about first-run setup. A bot added back under
- *  a name whose setup is done keeps its persona and approvals place: say so,
- *  instead of promising an interview that will not happen. */
+/** What /router bot add says about first-run setup. The same bot added back
+ *  under its name keeps its persona and approvals place (adoptBotSetup): say
+ *  so, instead of promising an interview that will not happen. */
 export function addedSetupText(username: string, s: BotSetup | null): string {
   if (needsPersona(s)) return `私訊 @${username} 任何一句話, 它會帶你完成初次設定 (名字, 個性, 風格, 用途, 審核群組)`
   const place = s!.approvals_chat ? `審核與通知沿用既有的審核群組 (${s!.approvals_chat})`

@@ -42,7 +42,7 @@ import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants
 import { postNotice, requestOriginNoter, type ApprovalDeps } from './approvals'
 import { createPkgGate, claudeReviewer } from './pkgreview'
 import { createClassifier, openClassifyStore, decisionsJudge, jevJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER } from './classifier'
-import { newClaimCode, isClaim, initBotSetups, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
+import { newClaimCode, isClaim, initBotSetups, adoptBotSetup, tokenBotId, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
 import { createElevation } from './elevation'
 import { dmLabel, personLabel } from './commands'
 import { parseRelay, mayRelay, relay, codeBlock, ROUTER_CMDS, type Exec, type RelayCmd } from './relay'
@@ -149,7 +149,7 @@ if (!cfg.secretKey) {
   log('generated config.json secretKey for conversation secrets')
 }
 
-initBotSetups(db, cfg.bots.map(b => b.name))
+initBotSetups(db, cfg.bots.map(b => ({ name: b.name, id: tokenBotId(b.token) })))
 for (const b of cfg.bots) ensureBotDir(cfg, b.name)
 const ctxFile = (c: Conversation) => writeContextFile(cfg, c)
 const ctxOf = (c: Conversation) => buildContext(cfg, c)
@@ -757,11 +757,14 @@ const commandDeps: CommandDeps = {
     async add(name, token) {
       if (bots.has(name)) throw new Error(`已經有名為 ${name} 的 bot`)
       const me = await new Bot(token, apiOpts()).api.getMe()
+      // the setup under this name is kept only for the same bot (router/setup.ts)
+      const hadFolder = existsSync(join(cfg.home, `bot${me.id}`))
       const bc = { name, token }
       writeConfig(r => { (r.bots as BotConfig[]).push(bc) })
       cfg.bots.push(bc)
       ensureBotDir(cfg, name)
-      db.updateBotSetup(name, {})
+      const setup = adoptBotSetup(db, name, String(me.id), hadFolder)
+      if (setup === 'reset') log(`bot add ${name}: another bot (${me.id}) than the setup's, setup starts over`)
       meOf.set(name, me)
       startBot(bc).info = me
       return me.username
@@ -770,7 +773,9 @@ const commandDeps: CommandDeps = {
       const old = bots.get(name)
       if (!old) throw new Error(`沒有名為 ${name} 的 bot`)
       const me = await new Bot(token, apiOpts()).api.getMe()
-      if (old.info && me.id !== old.info.id) throw new Error(`新 token 屬於另一隻 bot (@${me.username}), rotate 只能換同一隻 bot 的 token`)
+      // the same bot: its id from getMe, or from the old token when getMe is not in yet
+      const oldId = old.info ? String(old.info.id) : tokenBotId(old.cfg.token)
+      if (oldId && String(me.id) !== oldId) throw new Error(`新 token 屬於另一隻 bot (@${me.username}), rotate 只能換同一隻 bot 的 token`)
       const bc = { name, token }
       writeConfig(r => { r.bots = (r.bots as BotConfig[]).map(b => b.name === name ? bc : b) })
       cfg.bots.splice(cfg.bots.findIndex(b => b.name === name), 1, bc)
