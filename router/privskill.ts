@@ -6,7 +6,8 @@
 // sandbox, in a bwrap sandbox made for that action:
 //   - reads: the system, the skill folder, the action's credential folders
 //   - writes: the conversation folder (its .chat stays read-only), a private /tmp
-//   - hidden: the rest of /x (router state, other conversations), $HOME
+//   - hidden: the router's home (other conversations), its state dir, $HOME
+//     and config sandboxDenyRead
 // Credentials are handed to the script as folder paths in env vars; the
 // conversation never gets them. The skill's files are hashed at approval and
 // checked before every run. Arguments are matched against the action's
@@ -25,6 +26,7 @@
 import { createHash } from 'crypto'
 import { existsSync, readdirSync, readFileSync, statSync, lstatSync, rmSync } from 'fs'
 import { join, relative, isAbsolute } from 'path'
+import { outermost } from './settings'
 
 export type ArgSpec = {
   pattern?: string
@@ -180,11 +182,16 @@ export function redact(text: string, secrets: string[]): { text: string; hit: bo
 
 export type Sandbox = { argv: string[]; env: Record<string, string> }
 
-/** bwrap for one run: the system read-only, /x and $HOME hidden, then the
- *  skill and credential folders read-only and the conversation folder writable. */
-export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: string; creds: Record<string, string>; home: string; extraRo?: string[]; env?: Record<string, string>; credsWritable?: boolean }): Sandbox {
+/** bwrap for one run: the system read-only, a private /tmp, $HOME and the
+ *  hidden paths (router home, state dir, sandboxDenyRead) as empty folders,
+ *  then the skill and credential folders read-only and the conversation
+ *  folder writable. Every tmpfs comes before the binds that reopen what
+ *  lies inside it. */
+export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: string; creds: Record<string, string>; home: string; hidden: string[]; extraRo?: string[]; env?: Record<string, string>; credsWritable?: boolean }): Sandbox {
   const b = ['bwrap', '--die-with-parent', '--unshare-pid', '--new-session', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
-    '--tmpfs', '/tmp', '--tmpfs', '/x', '--tmpfs', o.home]
+    '--tmpfs', '/tmp']
+  // already under /tmp: hidden by it; missing: bwrap could not mount it on the read-only root
+  for (const p of outermost(['/tmp', o.home, ...o.hidden])) if (p !== '/tmp' && existsSync(p)) b.push('--tmpfs', p)
   for (const p of o.extraRo ?? []) if (existsSync(p)) b.push('--ro-bind', p, p)
   b.push('--ro-bind', o.skillDir, o.skillDir)
   // only the router's own refresh writes credentials; actions a conversation calls read them

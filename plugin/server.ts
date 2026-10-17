@@ -9,20 +9,20 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { TOOL_DEFINITIONS } from '../shared/tools'
-import { DEFAULT_SOCKET, type RouterToPlugin, type ToolResult } from '../shared/protocol'
+import { type RouterToPlugin, type ToolResult } from '../shared/protocol'
 import { iso8 } from '../shared/time'
-import { dirname } from 'path'
+import { findRouter } from '../shared/locate'
 import { connectRouter } from './client'
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR ?? process.cwd()
-// Test-only override; production workers never set it (and must not rely
-// on env anyway: background sessions inherit the daemon's environment).
-const SOCKET = process.env.CC_TELEGRAM_ROUTER_SOCKET ?? DEFAULT_SOCKET
-// The router's home is two levels above its socket (/x/cc/.router/router.sock
-// -> /x/cc). Sessions elsewhere never talk to the router: tools just report
-// that this session is not a Telegram worker.
-const HOME = dirname(dirname(SOCKET))
-const IN_HOME = PROJECT_DIR === HOME || PROJECT_DIR.startsWith(HOME + '/')
+// The router's socket and home come from its locator file (shared/locate.ts;
+// the router may be installed anywhere). Sessions outside the router's home
+// never talk to the router: tools just report that this session is not a
+// Telegram worker.
+const FOUND = findRouter()
+const SOCKET = 'socket' in FOUND ? FOUND.socket : ''
+const HOME = 'home' in FOUND ? FOUND.home : ''
+const IN_HOME = !!HOME && (PROJECT_DIR === HOME || PROJECT_DIR.startsWith(HOME + '/'))
 
 const err = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true })
 
@@ -59,7 +59,7 @@ const ready = new Promise<void>(resolve => {
 
 const router = connectRouter({
   ready,
-  disabled: IN_HOME ? undefined : `${PROJECT_DIR} is outside ${HOME}`,
+  disabled: 'error' in FOUND ? FOUND.error : IN_HOME ? undefined : `${PROJECT_DIR} is outside ${HOME}`,
   socketPath: SOCKET,
   hello: { t: 'hello', project_dir: PROJECT_DIR, session_id: process.env.CLAUDE_CODE_SESSION_ID, pid: process.pid },
   onMessage(m: RouterToPlugin) {

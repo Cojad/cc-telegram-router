@@ -16,10 +16,19 @@ const LIVE = process.env.LIVE === '1'
 const TEMPLATES = join(import.meta.dir, '..', '..', 'templates')
 const CLAUDE = process.env.CLAUDE_BIN ?? 'claude'
 const MODEL = process.env.LIVE_MODEL ?? 'claude-opus-5-5'
+// An install outside /x: root is the router home, its state dir elsewhere
+// (hidden through the template's {{hidden}}, like config sandboxDenyRead).
 let root: string
+let state: string
 
-beforeAll(() => { root = mkdtempSync(join(tmpdir(), 'cctr-live-')) })
-afterAll(() => { if (root) rmSync(root, { recursive: true, force: true }) })
+beforeAll(() => {
+  root = mkdtempSync(join(tmpdir(), 'cctr-live-'))
+  state = mkdtempSync(join(tmpdir(), 'cctr-live-state-'))
+  writeFileSync(join(state, 'router.db'), 'STATE-DB')
+  mkdirSync(join(root, 'bot1', 'dm-other'), { recursive: true })
+  writeFileSync(join(root, 'bot1', 'dm-other', 'diary.txt'), 'OTHER-CONVERSATION')
+})
+afterAll(() => { for (const d of [root, state]) if (d) rmSync(d, { recursive: true, force: true }) })
 
 type Run = { text: string; denied: string[] }
 
@@ -30,7 +39,7 @@ async function asRole(role: string, prompt: string): Promise<Run & { folder: str
   const skill = join(root, 'bot1', '.claude', 'skills', 'probe')
   mkdirSync(skill, { recursive: true })
   writeFileSync(join(skill, 'run.sh'), 'echo SKILL-OK\n')
-  const s = renderSettings(TEMPLATES, role, { folder, home: root, botDir: join(root, 'bot1'), autoCompactWindow: 750000, hooksDir: '/nonexistent' }) as any
+  const s = renderSettings(TEMPLATES, role, { folder, home: root, hidden: [root, state], botDir: join(root, 'bot1'), autoCompactWindow: 750000, hooksDir: '/nonexistent' }) as any
   delete s.hooks
   delete s.enabledPlugins
   const settings = join(root, `${role}-${Date.now()}.json`)
@@ -54,17 +63,19 @@ test.skipIf(!LIVE)('owner: runs anything, outside the folder too', async () => {
   expect(r.text).toContain('OWNER-OK')
 }, 180_000)
 
-test.skipIf(!LIVE)('power: runs python in the sandbox and writes its folder; cannot read /x, cannot write .chat', async () => {
-  const [py, write, x, chat] = await Promise.all([
+test.skipIf(!LIVE)('power: runs python in the sandbox and writes its folder; cannot read other conversations or the state dir, cannot write .chat', async () => {
+  const [py, write, other, st, chat] = await Promise.all([
     asRole('power', bash(`python3 -c "print('PY', 6*7)"`)),
     asRole('power', `用 Write 工具在目前資料夾寫一個檔案 out.txt, 內容是 WRITE-OK. ${ONE}`),
-    // the sandbox shows /x as an empty folder: read something real under it
-    asRole('power', bash('ls /x/cc/.router')),
+    // the sandbox hides the router home (but its own folder) and the state dir
+    asRole('power', bash(`cat ${join(root, 'bot1', 'dm-other', 'diary.txt')}`)),
+    asRole('power', bash(`cat ${join(state, 'router.db')}`)),
     asRole('power', `用 Write 工具寫入 .chat/context.json, 內容是 {}. ${ONE}`),
   ])
   expect(py.text).toContain('PY 42')
   expect(existsSync(join(write.folder, 'out.txt')) && readFileSync(join(write.folder, 'out.txt'), 'utf8')).toContain('WRITE-OK')
-  expect(x.text).not.toContain('router.db')
+  expect(other.text).not.toContain('OTHER-CONVERSATION')
+  expect(st.text).not.toContain('STATE-DB')
   expect(chat.denied).toContain('Write')
   expect(existsSync(join(chat.folder, '.chat', 'context.json'))).toBe(false)
 }, 300_000)

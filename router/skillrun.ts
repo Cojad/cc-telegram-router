@@ -16,10 +16,12 @@ export type RunResult = { code: number; out: string }
 export interface SkillRunDeps {
   db: RouterDb
   home: string
-  /** Where credential folders live (router-private), e.g. /x/cc/.router/creds */
+  /** Where credential folders live (router-private), <stateDir>/creds */
   credsRoot: string
   /** $HOME of the router user, hidden in the sandbox */
   userHome: string
+  /** Also hidden: the router's home, its state dir, config sandboxDenyRead (config.ts hiddenPaths) */
+  hidden: string[]
   /** Binaries outside the system dirs the sandbox needs (e.g. ~/.local/bin/yt-dlp) */
   extraRo: string[]
   botDir(bot: string): string
@@ -57,7 +59,7 @@ export async function runAction(deps: Omit<SkillRunDeps, 'notifyOwner'>, dir: st
     [`${env}_HEADER`, `${cred!.header ?? 'Authorization'}: ${`${cred!.scheme ?? 'Bearer'} ${cred!.token}`.trim()}`],
   ]))
   const mounts = a.internal ? (a.mounts ?? []).map(m => m.startsWith('~/') ? join(deps.userHome, m.slice(2)) : m) : []
-  const sb = sandboxArgv({ argv, skillDir: dir, convFolder: folder, creds: credEnv(deps, a), home: deps.userHome, extraRo: [...deps.extraRo, ...mounts], credsWritable: !!a.internal, env: { ...(a.internal ? a.env : {}), ...httpEnv } })
+  const sb = sandboxArgv({ argv, skillDir: dir, convFolder: folder, creds: credEnv(deps, a), home: deps.userHome, hidden: deps.hidden, extraRo: [...deps.extraRo, ...mounts], credsWritable: !!a.internal, env: { ...(a.internal ? a.env : {}), ...httpEnv } })
   return deps.exec(sb.argv, sb.env, (a.timeout ?? 600) * 1000)
 }
 

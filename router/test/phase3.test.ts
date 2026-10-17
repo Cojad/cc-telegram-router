@@ -34,7 +34,7 @@ beforeEach(() => {
   calls = []
 })
 afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
-const vars = (folder: string) => ({ folder, autoCompactWindow: 750000, hooksDir: '/h' })
+const vars = (folder: string) => ({ folder, hidden: ['/srv/cc'], autoCompactWindow: 750000, hooksDir: '/h' })
 
 // --- 07 role templates -------------------------------------------------------
 
@@ -108,7 +108,7 @@ test('/router perm: show (private), role, tool/path/net/mcp/send add and rm, res
   expect(r.reply).toEndWith('worker 閒置時會停掉, 下一則訊息套用新權限')
   expect(calls).toEqual(['apply group-100555 power'])
   expect((await run('/router perm -100555 path read /x/data/shared', OWNER))!.reply).toContain('覆寫: path-read /x/data/shared')
-  expect((await run('/router perm -100555 path read relative', OWNER))!.reply).toBe('路徑要用絕對路徑, 例如 /x/data/shared')
+  expect((await run('/router perm -100555 path read relative', OWNER))!.reply).toBe('路徑要用絕對路徑, 例如 /srv/data/shared')
   await run('/router perm -100555 send allow -100777', OWNER)
   await run('/router perm -100555 mcp allow claude-in-chrome', OWNER)
   expect(db.listOverrides('group-100555').map(o => o.kind).sort()).toEqual(['mcp', 'path-read', 'send'])

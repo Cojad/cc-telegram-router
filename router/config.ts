@@ -1,9 +1,11 @@
 // config.json loading (plan 03 「專案位置與部署」). Default location: next to
 // the router executable; --config <path> overrides. Holds bot tokens, so the
-// file is expected to be mode 600 under /x/cc/.router/.
+// file is expected to be mode 600 in the router's state dir (<home>/.router
+// by default; the router may be installed anywhere).
 
 import { readFileSync } from 'fs'
-import { dirname, join, resolve } from 'path'
+import { dirname, isAbsolute, join, resolve } from 'path'
+import { outermost } from './settings'
 import { parseClassifier, type ClassifierConfig } from './classifier'
 
 export type BotConfig = { name: string; token: string }
@@ -33,7 +35,7 @@ export type Config = {
   /** Where this config file lives; relative paths below resolve against it. */
   path: string
   bots: BotConfig[]
-  /** Root holding one folder per conversation, e.g. /x/cc. */
+  /** Root holding one folder per conversation (the router's home), e.g. /srv/cc. */
   home: string
   /** Router-private state: db, socket, settings, access.json. */
   stateDir: string
@@ -56,6 +58,10 @@ export type Config = {
   skillRefreshAt?: string | null
   /** Tool call classifier, stage 1 (router/classifier.ts): record only; off when missing. */
   classifier?: ClassifierConfig
+  /** Extra absolute paths hidden from every sandbox (role templates' denyRead,
+   *  privileged skill bwrap) besides home, stateDir and the user's home: e.g.
+   *  other projects on the same machine. Default none. */
+  sandboxDenyRead?: string[]
   /** Optional settings that were wrong and so turned off (logged at start): the router still runs. */
   warnings?: string[]
 }
@@ -72,6 +78,25 @@ export function parseRefreshAt(v: unknown): string | null {
   const m = typeof v === 'string' ? /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(v.trim()) : null
   if (!m) throw new Error(`skillRefreshAt 要是 "HH:MM" (GMT+8) 或 "off", 收到 ${JSON.stringify(v)}`)
   return `${m[1]!.padStart(2, '0')}:${m[2]}`
+}
+
+/** config sandboxDenyRead: absolute paths, not "/". A wrong entry is left out
+ *  with a warning (home, stateDir and the user's home stay hidden regardless). */
+export function parseDenyRead(v: unknown, warnings: string[]): string[] {
+  if (v === undefined || v === null) return []
+  if (!Array.isArray(v)) { warnings.push(`sandboxDenyRead 要是路徑陣列, 收到 ${JSON.stringify(v)}; 沒有額外隱藏的路徑`); return [] }
+  const out: string[] = []
+  for (const p of v) {
+    if (typeof p !== 'string' || !isAbsolute(p) || resolve(p) === '/') warnings.push(`sandboxDenyRead 的 ${JSON.stringify(p)} 不是絕對路徑 (也不能是 /), 略過`)
+    else out.push(resolve(p))
+  }
+  return out
+}
+
+/** What every sandbox hides (besides the user's home): the router's home,
+ *  its state dir when that lies elsewhere, and config sandboxDenyRead. */
+export function hiddenPaths(cfg: Pick<Config, 'home' | 'stateDir' | 'sandboxDenyRead'>): string[] {
+  return outermost([cfg.home, cfg.stateDir, ...(cfg.sandboxDenyRead ?? [])])
 }
 
 export function defaultConfigPath(argv: string[], execPath: string): string {
@@ -105,6 +130,7 @@ export function loadConfig(path: string): Config {
     secretKey: raw.secretKey,
     skillRefreshAt: refreshAtOrOff(raw.skillRefreshAt, warnings),
     classifier: parseClassifier(raw.classifier),
+    sandboxDenyRead: parseDenyRead(raw.sandboxDenyRead, warnings),
     warnings,
   }
 }

@@ -14,7 +14,8 @@ import { randomBytes } from 'crypto'
 import { spawn } from 'child_process'
 import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFileSync, realpathSync, readdirSync } from 'fs'
 import { basename, dirname, join } from 'path'
-import { defaultConfigPath, loadConfig, type BotConfig } from './config'
+import { defaultConfigPath, loadConfig, hiddenPaths, type BotConfig } from './config'
+import { locatorPath, syncLocator, writeLocator } from '../shared/locate'
 import { acquireLock } from './lock'
 import { openRouterDb, type Conversation, type ConvSecret } from './db'
 import { ensureConversation, ensureBotDir, botDir, convFolder, migrateConversation, findByFolder, projectStore } from './conversations'
@@ -113,7 +114,22 @@ if (importAt > 0) {
   process.exit(0)
 }
 
+// `cc-telegram-router [--config x] register`: write the locator file the
+// plugin and the worker hook find this router by (shared/locate.ts);
+// deploy/install.sh router runs it.
+if (process.argv.indexOf('register') > 0) {
+  writeLocator({ home: cfg.home, stateDir: cfg.stateDir, socket: cfg.socket })
+  console.log(`已寫入 ${locatorPath()}: home ${cfg.home}, socket ${cfg.socket}`)
+  process.exit(0)
+}
+
 const release = acquireLock(configPath + '.lock')
+{
+  // The plugin and the hook find this router through the locator file.
+  const loc = syncLocator({ home: cfg.home, stateDir: cfg.stateDir, socket: cfg.socket })
+  if (loc === 'updated') log(`locator ${locatorPath()} 已更新為目前的 home 與 socket`)
+  else if (loc !== 'ok') log(`locator ${locatorPath()} ${loc === 'missing' ? '不存在' : '指向另一個 router'}: worker 的 plugin 與 hook 找不到這個 router, 要用時執行 cc-telegram-router register`)
+}
 mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 })
 mkdirSync(cfg.home, { recursive: true })
 
@@ -167,8 +183,9 @@ const ctxOf = (c: Conversation) => buildContext(cfg, c)
 // No owner yet: the first person to DM "/start <code>" to a bot becomes it.
 let claimCode: string | null = cfg.owners.length ? null : newClaimCode()
 
-// home and botDir: skills shared by all bots / by this bot are readable (templates/roles)
-const settingsVars = (c: Conversation) => ({ folder: c.folder, home: cfg.home, botDir: botDir(cfg, c.bot), autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR, transcripts: projectStore(c.folder) })
+// home and botDir: skills shared by all bots / by this bot are readable (templates/roles);
+// hidden: what the sandbox hides besides ~ (home, stateDir, config sandboxDenyRead)
+const settingsVars = (c: Conversation) => ({ folder: c.folder, home: cfg.home, hidden: hiddenPaths(cfg), botDir: botDir(cfg, c.bot), autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR, transcripts: projectStore(c.folder) })
 const settingsFor = (c: Conversation) =>
   writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, settingsVars(c), db.listOverrides(c.key))
 
@@ -573,7 +590,7 @@ const grantDeps: GrantDeps = { db, approvals: approvalDeps, notify: notifyConver
 
 /** Privileged skill actions (router/skillrun.ts): sandboxed, credentials never reach the worker. */
 const skillDeps: SkillRunDeps = {
-  db, home: cfg.home, credsRoot: join(cfg.stateDir, 'creds'), userHome: homedir(),
+  db, home: cfg.home, credsRoot: join(cfg.stateDir, 'creds'), userHome: homedir(), hidden: hiddenPaths(cfg),
   extraRo: [join(homedir(), '.local', 'bin'), join(homedir(), '.local', 'lib'), join(homedir(), '.deno', 'bin')],
   botDir: b => botDir(cfg, b),
   httpCred: name => cfg.credentials[name],

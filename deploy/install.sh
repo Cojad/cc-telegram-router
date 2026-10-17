@@ -1,10 +1,16 @@
 #!/bin/bash
 # Build and install cc-telegram-router (plan 03 「專案位置與部署」).
 #
-#   deploy/install.sh router   compile the router into /x/cc/.router/, copy templates and the report scripts
+#   deploy/install.sh router   compile the router into the state dir, copy templates and the report scripts,
+#                              and (once config.json exists) write the locator the plugin and hook use
+#                              (~/.config/cc-telegram-router/router.json, shared/locate.ts)
 #   deploy/install.sh plugin   bundle plugin v2 into the official plugin cache path
 #   deploy/install.sh unit     install the systemd user unit (does not start it)
 #   deploy/install.sh all
+#
+# The state dir (where the router, config.json and router.db live) can be
+# anywhere. The first install names it: CC_ROUTER_STATE=<home>/.router
+# deploy/install.sh router. Later runs take it from the locator file.
 #
 # Never touches config.json or access.json; those are created by hand once.
 # The first plugin install backs up whatever was in the cache before
@@ -13,12 +19,24 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STATE="${CC_ROUTER_STATE:-/x/cc/.router}"
+LOCATOR="$HOME/.config/cc-telegram-router/router.json"
 PLUGIN_CACHE="$HOME/.claude/plugins/cache/claude-plugins-official/telegram/0.0.7"
 BACKUPS="$HOME/.claude/channels/telegram-versions"
 UNIT_DIR="$HOME/.config/systemd/user"
 
+# The state dir: CC_ROUTER_STATE, else the one the locator names (an earlier install).
+state_dir() {
+  if [ -n "${CC_ROUTER_STATE:-}" ]; then STATE="$(realpath -m "$CC_ROUTER_STATE")"; return; fi
+  if [ -f "$LOCATOR" ]; then
+    STATE="$(bun -e 'const j = await Bun.file(process.argv[1]).json(); process.stdout.write(String(j.stateDir ?? ""))' "$LOCATOR")"
+    [ -n "$STATE" ] && return
+  fi
+  echo "沒有指定安裝位置: 第一次安裝請用 CC_ROUTER_STATE=<home>/.router $(basename "$0") $1 (例如 CC_ROUTER_STATE=\$HOME/cc/.router)" >&2
+  exit 1
+}
+
 install_router() {
+  state_dir router
   mkdir -p "$STATE"
   chmod 700 "$STATE"
   bun build --compile "$REPO/router/main.ts" --outfile "$STATE/cc-telegram-router.new"
@@ -32,6 +50,11 @@ install_router() {
   bun build --compile "$REPO/hooks/hook.ts" --outfile "$STATE/hooks/cc-hook.new"
   mv -f "$STATE/hooks/cc-hook.new" "$STATE/hooks/cc-hook"
   echo "router -> $STATE/cc-telegram-router, hook -> $STATE/hooks/cc-hook, report scripts -> $STATE/scripts"
+  if [ -f "$STATE/config.json" ]; then
+    "$STATE/cc-telegram-router" register
+  else
+    echo "還沒有 $STATE/config.json: 建立後執行 $STATE/cc-telegram-router register (或再跑一次 CC_ROUTER_STATE=$STATE $(basename "$0") router)"
+  fi
 }
 
 install_plugin() {
@@ -54,6 +77,7 @@ install_plugin() {
 }
 
 install_unit() {
+  state_dir unit
   mkdir -p "$UNIT_DIR"
   sed "s#@STATE@#$STATE#g; s#@HOME@#$HOME#g" "$REPO/deploy/cc-telegram-router.service" > "$UNIT_DIR/cc-telegram-router.service"
   systemctl --user daemon-reload

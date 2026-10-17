@@ -454,7 +454,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       }
       const k = what ? kinds[what] : undefined
       if (!k || !op || !value) return done('用法: /router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset')
-      if (what === 'path' && !value.startsWith('/')) return done('路徑要用絕對路徑, 例如 /x/data/shared')
+      if (what === 'path' && !value.startsWith('/')) return done('路徑要用絕對路徑, 例如 /srv/data/shared')
       if (what === 'pkg' && !/^((pypi|npm|other):\S+|\*)$/.test(value)) return done('套件寫成 pypi:名稱 或 npm:名稱, 例如 pypi:requests; * 代表不用審核')
       if (op === 'rm') {
         const n = db.removeOverride(conv.key, k.rm, value)

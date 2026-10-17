@@ -12,6 +12,7 @@
 
 ### Changed
 
+- 安裝位置可自選, 不再假設 `/x`: plugin 與 hook 從 `~/.config/cc-telegram-router/router.json` (位置檔, `cc-telegram-router register` 寫入, `deploy/install.sh router` 會執行) 找 router 的 socket 與家目錄, 不再寫死 `/x/cc/.router/router.sock`; `deploy/install.sh` 不再預設 `/x/cc/.router`, 第一次安裝要用 `CC_ROUTER_STATE` 指定, 之後從位置檔讀; 角色範本的 sandbox `denyRead` 由 `/x` 改為依安裝位置隱藏 router 的家目錄, 狀態目錄 (不在家目錄底下時) 與 config 新增的 `sandboxDenyRead` (額外要隱藏的路徑, 預設空), 特權技能的 bwrap 也一樣 (見 [docs/operations.md](docs/operations.md#安裝位置)). 原本裝在 `/x` 以外時 sandbox 看得到其他對話與 router 的資料.
 - `cc /status`, `cc /usage`, `cc /context` 的報表腳本收進 repo 的 `scripts/`, `deploy/install.sh router` 裝到 `<stateDir>/scripts`, router 改用這個位置 (原本是 `~/.claude/bin`). `/usage` 的解析與排版抽成 `scripts/usage_report.py`.
 - README 的 Requirements: python3 (3.7 以上) 列為必要; 「選配」分成「強烈建議」(tmux, curl, jq, matplotlib 等) 與「依功能需要」(特權技能的工具, 分類器的 API key); bubblewrap 與 socat 附官方 sandbox 文件連結與 Ubuntu 24.04 AppArmor 的注意事項.
 - `plugin/package.json` 的版本對齊 2.9.0.

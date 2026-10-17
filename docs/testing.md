@@ -34,7 +34,8 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`, 歸給哪隻 bot), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
 | `router/test/poller.test.ts` | [輪詢與重試](operations.md#輪詢與重試)的輪詢: 重試間隔, 2 分鐘才通知與恢復通知, 409, 401, 429, 啟動時的 getMe, status 與通知文字 (e2e 另測 token 失效時經其他 bot 通知與 /router status); 指令回覆重試 (e2e 另測 502 後重送) |
 | `router/test/store.test.ts`, `router/test/inbound.test.ts` | [訊息紀錄](architecture.md#訊息紀錄): 每隻 bot 各自一份 (私訊撞號, 同群組同一則), 舊紀錄分配 bot 一次 (對話, events, outbound, 時間, legacy), legacy 列用時間重新判斷一次, 重複丟掉時寫 log, 引用不跨 bot |
-| `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行, 驗證 Claude Code 實際放行與擋下的事 |
+| `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行 (router 家目錄與 stateDir 都是臨時位置), 驗證 Claude Code 實際放行與擋下的事 |
+| `router/test/portability.test.ts` | [安裝位置](operations.md#安裝位置): config `sandboxDenyRead` 與隱藏清單, 角色範本的 denyRead, 特權技能 bwrap (含真的 bwrap 在 /var/tmp 的安裝), 位置檔與 `register`, plugin 與 hook 經位置檔連上 router, `deploy/install.sh` 不預設位置 |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |
 | `router/test/requirements.test.ts` | README 的 Requirements 與 package 檔: 根目錄 package.json 沒有 v1 的 `bin` 與 `start`, plugin 版本與 repo 和 CHANGELOG 一致, 報表腳本一律用 python3 (shebang 與呼叫), curl, jq 與 matplotlib 列在強烈建議, 分類器的 API key 在依功能需要, repo 自己的程式與腳本不用 curl 與 jq |
 | `router/test/context-chart.test.ts` | [cc / 報表腳本](operations.md#cc--報表腳本)的 `tg-context-chart.py`: 有 matplotlib 時寫 PNG, 沒有時 (PYTHONPATH 放一個 import 失敗的 matplotlib) exit 3, 文字圖 (各行接續到 100%, 有用量的類別至少八分之一格) 與安裝建議, 不寫 PNG; phase2 另測 relay 收到 exit 3 時送表格加文字圖 |
@@ -153,6 +154,19 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | Decisions 與 Jev 預設走 OpenRouter 的 `/api/alpha/decisions` (Jev 式請求, `usage.cost` 當實際費用, 不換算); 原生 `/v1/decisions` 與 `/v1/systemone` (TypeSafe, OrcaRouter) 由 config `api` 選 | classifier「config: …」「OpenRouter judge: …」「Decisions judge: …」「Jev judge: …」; e2e-classifier「a user call the rules allow…」 |
 | 報表: 一般工具與 Telegram 工具分開, 各家數字與跟 claude 的差異, 實際費用與 claude 訂閱用量 (API 換算) 分開, 單筆詳情, 只限 owner | classifier「report: …」「/router classifier: …」; e2e-classifier「/router classifier from the owner terminal…」 |
 | 保留 30 天 | classifier「purge: …」 |
+
+## 安裝位置驗收對照
+
+| 驗收項目 | 測試 |
+|---|---|
+| 角色範本不寫死路徑: sandbox 隱藏 router 家目錄, 不在家目錄底下的 stateDir, `sandboxDenyRead` 與 `~`, 自己的資料夾與共用技能再打開; 隱藏清單沒填入就拒絕產生 settings | portability「role templates follow the install…」「fill splices a list…」; phase1「user settings…」 |
+| `sandboxDenyRead`: 絕對路徑才收, 寫錯只略過並警告, router 照常啟動; 互相包含的路徑只留最外層 | portability「config sandboxDenyRead…」「hiddenPaths…」 |
+| `/router perm path read` 可以打開隱藏路徑裡的子目錄, 隱藏清單不變 | portability「role templates follow the install…」 |
+| 特權技能 bwrap: tmpfs 隱藏同一份清單 (存在, 不在 /tmp 底下, 不重疊), 都在 bind 之前; 真的執行時看不到其他對話, 家目錄以外的 stateDir 與 `sandboxDenyRead` | portability「skill bwrap…」兩條 |
+| plugin 與 hook 從位置檔找到 router (含 owner 的終端機 session); 沒有位置檔時 plugin 說明原因, hook 不准跳出 sandbox | portability「plugin finds the router…」「cc-hook finds the router…」「findRouter…」 |
+| `register` 依 config.json 寫位置檔; router 啟動只在位置檔指向自己時更新, 不會建立或改寫別人的 | portability「cc-telegram-router register…」「locator…」 |
+| `deploy/install.sh` 不預設安裝位置, 沒指定也沒有位置檔就停下說明 | portability「install.sh: no fixed default…」 |
+| 真的 claude: power 讀不到其他對話與 stateDir | role-live「power: runs python…」(LIVE=1) |
 
 ## Phase 4 驗收對照
 

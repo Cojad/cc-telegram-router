@@ -77,7 +77,7 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 
 - 技能要裝在這隻 bot 或全部 bot 範圍, 由 owner 或 admin 用 `/router skill approve <技能>` 核准; 核准會記下檔案雜湊, 之後改了任何檔案都自動暫停, 要重新核准.
 - 對話用 `run_skill` (skill, action, args) 呼叫. router 檢查角色與參數格式 (不經 shell), 在專屬沙箱執行: 只讀得到技能資料夾與 `creds` 指定的憑證資料夾 (路徑放在環境變數), 只寫得到對話資料夾, router 狀態與 $HOME 都看不到.
-- 憑證資料夾在 router 那邊 (`/x/cc/.router/creds/<名稱>`), 由 owner 放入檔案. 腳本要把憑證的工作副本放 `/tmp` (沙箱私有), 不要寫進對話資料夾; router 也會掃描回傳文字與輸出檔, 發現憑證內容就刪除並通知 owner.
+- 憑證資料夾在 router 那邊 (`<stateDir>/creds/<名稱>`, stateDir 是 router 的狀態目錄), 由 owner 放入檔案. 腳本要把憑證的工作副本放 `/tmp` (沙箱私有), 不要寫進對話資料夾; router 也會掃描回傳文字與輸出檔, 發現憑證內容就刪除並通知 owner.
 - `auth_failure` 比對到輸出時, router 執行 `refresh` 指定的 internal 動作一次 (只有它能寫憑證資料夾) 再重試; 更新失敗會通知 owner. 另外 router 每天固定時間 (預設 05:00 GMT+8), 以及啟動時發現超過 24 小時沒成功更新, 也會主動執行一次這個 refresh 動作, 所以它要能在憑證還有效時重複執行; 這時它在 router 的私有資料夾執行, 不在任何對話資料夾.
 - 動作要呼叫 API (例如 Whisper) 時寫 `"http": { "WHISPER": "openai" }`: 腳本拿到 `$WHISPER_URL` (base URL) 與 `$WHISPER_HEADER` (整行授權標頭, 例如 `Authorization: Bearer ...`), 要寫進 `/tmp` 的檔案再給 `curl -H @檔案`, 不要放命令列; key 出現在輸出會被遮蔽並通知 owner.
 - 某個參數只給較高角色用時寫 `"force": { "flag": "--force", "roles": ["owner", "admin"] }`: 其他角色帶這個參數會被擋, 照一般流程觸發提權申請 (發起者角色夠高就在對話裡問, 不然請對方用 request_elevation); 核准後由 subagent 重新呼叫. 這種限制不能永久允許.

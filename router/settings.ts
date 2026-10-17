@@ -5,7 +5,7 @@
 // permissions. /router perm overrides are laid on top (applyOverrides).
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
-import { join } from 'path'
+import { join, resolve, sep } from 'path'
 import type { Override } from './db'
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
@@ -20,28 +20,49 @@ export function deepMerge(a: Json, b: Json): Json {
   return b
 }
 
+type Vars = Record<string, string | number | string[]>
+
 /** Replace {{name}} inside strings; a string that is exactly one placeholder
- *  takes the value's own type (so numbers stay numbers). */
-export function fill(v: Json, vars: Record<string, string | number>): Json {
+ *  takes the value's own type (so numbers stay numbers), and inside an array
+ *  a list value is spliced in (denyRead: ["{{hidden}}", "~"]). */
+export function fill(v: Json, vars: Vars): Json {
   if (typeof v === 'string') {
     const whole = /^\{\{(\w+)\}\}$/.exec(v)
-    if (whole && whole[1] in vars) return vars[whole[1]]
+    if (whole && whole[1] in vars) return vars[whole[1]] as Json
     return v.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? String(vars[k]) : m))
   }
-  if (Array.isArray(v)) return v.map(x => fill(x, vars))
+  if (Array.isArray(v)) return v.flatMap(x => {
+    const whole = typeof x === 'string' ? /^\{\{(\w+)\}\}$/.exec(x) : null
+    const val = whole && whole[1] in vars ? vars[whole[1]] : undefined
+    return Array.isArray(val) ? val : [fill(x, vars)]
+  })
   if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x, vars)]))
   return v
 }
 
-export function renderSettings(templatesDir: string, role: string, vars: Record<string, string | number>): Json {
+/** The paths that are not inside another one of them (normalized, deduped). */
+export function outermost(paths: string[]): string[] {
+  const norm = [...new Set(paths.map(p => resolve(p)))].sort((a, b) => a.length - b.length)
+  const out: string[] = []
+  for (const p of norm) if (!out.some(o => p === o || p.startsWith(o === sep ? o : o + sep))) out.push(p)
+  return out
+}
+
+export function renderSettings(templatesDir: string, role: string, vars: Vars): Json {
   const base = JSON.parse(readFileSync(join(templatesDir, 'base-settings.json'), 'utf8'))
   const rolePath = join(templatesDir, 'roles', `${role}.json`)
   if (!existsSync(rolePath)) throw new Error(`no settings template for role ${role}`)
   const roleT = JSON.parse(readFileSync(rolePath, 'utf8'))
-  return fill(deepMerge(base, roleT), vars)
+  const s = fill(deepMerge(base, roleT), vars) as any
+  // A sandbox whose hidden paths did not get filled would show other
+  // conversations and the router's state: refuse to render it.
+  const deny: unknown[] = s?.sandbox?.filesystem?.denyRead ?? []
+  const left = deny.find(p => typeof p !== 'string' || p.includes('{{'))
+  if (left !== undefined) throw new Error(`role ${role}: sandbox denyRead ${JSON.stringify(left)} not filled`)
+  return s
 }
 
-export function writeSessionSettings(stateDir: string, templatesDir: string, key: string, role: string, vars: Record<string, string | number>, overrides: Override[] = []): string {
+export function writeSessionSettings(stateDir: string, templatesDir: string, key: string, role: string, vars: Vars, overrides: Override[] = []): string {
   const dir = join(stateDir, 'sessions')
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   const path = join(dir, `${key}.json`)

@@ -5,21 +5,22 @@
 ## 部署
 
 ```bash
-deploy/install.sh router   # 編譯到 /x/cc/.router/cc-telegram-router, 複製 templates 與報表腳本
+CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cc-telegram-router, 複製 templates 與報表腳本
 deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容)
 deploy/install.sh unit     # 安裝 systemd user unit
 systemctl --user enable --now cc-telegram-router
 ```
 
-共用的 `/x/cc/CLAUDE.md` 可以從範例開始: `cp templates/CLAUDE.md.example /x/cc/CLAUDE.md`. worker 端的使用說明在 plugin 的 `/telegram:doc` skill (`plugin/skills/doc/SKILL.md`).
+`<home>` 是 router 的家目錄, 位置可自選 (見下方「安裝位置」). 共用的 `<home>/CLAUDE.md` 可以從範例開始: `cp templates/CLAUDE.md.example <home>/CLAUDE.md`. worker 端的使用說明在 plugin 的 `/telegram:doc` skill (`plugin/skills/doc/SKILL.md`).
 
-`/x/cc/.router/config.json` (權限 600) 與 `access.json` 要手動建立一次:
+`<home>/.router/config.json` (權限 600) 與 `access.json` 要手動建立一次, 建好後執行 `<home>/.router/cc-telegram-router register` (或再跑一次 `deploy/install.sh router`) 寫入位置檔:
 
 ```json
 {
   "bots": [{ "name": "cc", "token": "<bot token>" }],
-  "home": "/x/cc",
-  "stateDir": "/x/cc/.router",
+  "home": "<home>",
+  "stateDir": "<home>/.router",
+  "sandboxDenyRead": [],
   "owners": [],
   "model": "claude-opus-5-5",
   "autoCompactWindow": 750000,
@@ -29,6 +30,15 @@ systemctl --user enable --now cc-telegram-router
 ```
 
 `owners` 可以留空, 用 log 裡的認領碼認領 (見下方「新 bot 初次設定與審核群組」). 套件審核用的模型就是 `model`. `skillRefreshAt` 是特權技能每日更新憑證的時間 (GMT+8 `"HH:MM"`, `"off"` 關閉, 不寫就是 `"05:00"`), 改了要重啟 router; 格式寫錯只會關閉每日更新並在 log 寫一行 `config.json: ...`, router 照常啟動. 沒有特權技能, 或技能沒有 refresh 動作時, 每日更新什麼都不做.
+
+## 安裝位置
+
+router 可以裝在任何位置, 程式不假設固定路徑:
+
+- `home` 是 router 的家目錄, 每隻 bot 一個 `bot<id>/`, 每個對話一個資料夾都在這裡; 不寫時是 config.json 所在目錄的上一層. `stateDir` 放 router 執行檔, config.json, access.json, router.db, socket 與各對話的 settings; 不寫時是 config.json 所在目錄. 慣例是 `<home>/.router`, 也可以放在 home 以外.
+- 位置檔: worker 的 plugin 與 hook 從 `~/.config/cc-telegram-router/router.json` 讀 router 的 `home`, `stateDir` 與 `socket` (`shared/locate.ts`). 不用環境變數, 因為背景 session 繼承的是 claude daemon 的環境, 而 owner 自己在 `<home>` 開的終端機 session 也要找得到 router. 位置檔由 `cc-telegram-router register` 依 config.json 寫入, `deploy/install.sh router` 在 config.json 已存在時會執行它. router 啟動時檢查位置檔: 指向自己 (同一個 `stateDir`) 但 `home` 或 `socket` 改過就更新並記 log; 不存在或指向另一個 router 只記 log, 不會改寫 (測試與第二套安裝不會蓋掉正式的位置檔). 位置檔不存在時, plugin 回報「不是 Telegram worker」並說明原因, hook 視同 router 連不上 (不准跳出 sandbox). plugin 只在 session 啟動時讀一次, 所以要先寫好位置檔再叫醒 worker.
+- `deploy/install.sh router` 與 `unit` 要知道 `stateDir`: 第一次用 `CC_ROUTER_STATE=<home>/.router` 指定, 之後從位置檔讀; 兩者都沒有就停下並說明, 不會裝到預設位置.
+- sandbox 隱藏的路徑: owner 以外的角色範本 `denyRead` 是 `{{hidden}}` 加上 `~` (使用者家目錄). `{{hidden}}` 是 router 的家目錄, `stateDir` (在家目錄底下時已包含在內) 與 config `sandboxDenyRead` (額外要隱藏的絕對路徑, 預設空; 例如同一台機器上其他專案所在的目錄), 互相包含的只留最外層. 自己的對話資料夾與共用技能資料夾再由 `allowRead` 打開. 特權技能的 bwrap 沙箱隱藏同一份清單 (見 [憑證與技能](credentials-and-skills.md)). `sandboxDenyRead` 的項目不是絕對路徑或是 `/` 時略過並在 log 寫一行, 其他項目照常隱藏. 改了要重啟 router, 再 `/router session rotate all` 讓 worker 用新的 settings.
 
 ## 新 bot 初次設定與審核群組
 
@@ -69,7 +79,7 @@ systemctl --user enable --now cc-telegram-router
 
 `cc /context` 有圖時送圖片, 表格當說明文字; 腳本 exit 3 時送表格加上腳本印的文字圖與安裝建議 (`python3 -m pip install --user matplotlib` 或 `sudo apt-get install python3-matplotlib`); 其他失敗只送表格.
 
-安裝: `deploy/install.sh router` 把 `scripts/` 整個複製到 `<stateDir>/scripts` (預設 `/x/cc/.router/scripts`). 編譯後的 router 用 `<stateDir>/scripts`, 從原始碼執行時用 repo 的 `scripts/`. 腳本在每次代打時才執行, 只改腳本時重跑 `deploy/install.sh router` 即可, 不用重啟 router.
+安裝: `deploy/install.sh router` 把 `scripts/` 整個複製到 `<stateDir>/scripts`. 編譯後的 router 用 `<stateDir>/scripts`, 從原始碼執行時用 repo 的 `scripts/`. 腳本在每次代打時才執行, 只改腳本時重跑 `deploy/install.sh router` 即可, 不用重啟 router.
 
 `cc /usage` 的輸出 (以測試資料為例):
 

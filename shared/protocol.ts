@@ -2,7 +2,7 @@
 // One JSON object per line. Requests carry an id and get a result with the
 // same id; router pushes (deliver) carry none.
 
-export const DEFAULT_SOCKET = '/x/cc/.router/router.sock'
+// Where the socket is: shared/locate.ts (the router may be installed anywhere).
 
 /** What the plugin turns into a notifications/claude/channel notification. */
 export type ChannelParams = { content: string; meta: Record<string, string> }

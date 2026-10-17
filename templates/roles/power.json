@@ -13,7 +13,7 @@
     "enabled": true,
     "autoAllowBashIfSandboxed": true,
     "filesystem": {
-      "denyRead": ["/x", "~"],
+      "denyRead": ["{{hidden}}", "~"],
       "allowRead": ["{{folder}}", "{{home}}/.claude/skills", "{{botDir}}/.claude/skills", "~/bin", "~/.bun"],
       "denyWrite": ["{{folder}}/.chat"]
     },

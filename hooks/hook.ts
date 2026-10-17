@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Worker hook (plan 04 hook). Compiled to /x/cc/.router/hooks/cc-hook; one
+// Worker hook (plan 04 hook). Compiled to <stateDir>/hooks/cc-hook; one
 // binary, the job is argv[2]. Never fails or blocks the session: any problem
 // means doing nothing.
 //
@@ -14,10 +14,13 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { renderContext, type ChatContext } from '../router/context'
 import { toolSummary } from '../router/progress'
-import { DEFAULT_SOCKET, encode } from '../shared/protocol'
+import { encode } from '../shared/protocol'
+import { findRouter } from '../shared/locate'
 import { INSTALL_HINT } from '../router/packages'
 
-const SOCKET = process.env.CC_TELEGRAM_ROUTER_SOCKET ?? DEFAULT_SOCKET
+// The router's socket from its locator file (shared/locate.ts); none = unreachable.
+const FOUND = findRouter()
+const SOCKET = 'socket' in FOUND ? FOUND.socket : null
 
 function progressEvent(event: string, input: Record<string, any>): Record<string, unknown> | null {
   const agent = input.agent_id ? { agent_id: String(input.agent_id) } : {}
@@ -58,12 +61,14 @@ function pick(o: Record<string, unknown>, keys: string[]): Record<string, unknow
 
 /** Ask the router; resolve its decision, or null when it cannot be reached in time. */
 async function ask(projectDir: string, ev: Record<string, unknown>, waitMs: number): Promise<Record<string, any> | null> {
+  const socket = SOCKET
+  if (!socket) return null
   return new Promise(resolve => {
     let buf = '', done = false
     const finish = (v: Record<string, any> | null) => { if (!done) { done = true; clearTimeout(timer); resolve(v) } }
     const timer = setTimeout(() => finish(null), waitMs)
     Bun.connect({
-      unix: SOCKET,
+      unix: socket,
       socket: {
         open(s) { s.write(encode({ t: 'hook', id: 1, project_dir: projectDir, ev })) },
         data(s, chunk) {
