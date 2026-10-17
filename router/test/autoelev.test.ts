@@ -95,21 +95,33 @@ test('the record goes to the 提權紀錄 topic of the approvals group too', asy
   e.stop()
 })
 
-test('a mixed turn (a user member, then an admin, read together): no automatic pass and no button, for high-risk tools and any other block', async () => {
+test('a mixed turn (a user member, then an admin, read together): no automatic pass; a high-risk call is asked in the chat since the admin may make it (once only), any other block is not (the lowest sender decides)', async () => {
   const { conv, e, sent } = harness('user')
   e.onDeliver(conv, MEMBER)
   e.onDeliver(conv, ADMIN)
   await e.onHook(conv, prompt())
   expect(e.turnSenders(conv)).toEqual([MEMBER, ADMIN])
   expect(e.senderOf(conv)).toBe(MEMBER)
-  for (const ev of [pre('ListAgents'), send('worker'), redirect]) {
-    const d = await e.onHook(conv, ev)
-    expect(d.decision).toBe('deny')
-    expect(d.reason).toContain('對方同意後呼叫 request_elevation 說明原因')
-  }
+  // any other block: the member decides, nothing asked in the chat
+  const r = await e.onHook(conv, redirect)
+  expect(r.decision).toBe('deny')
+  expect(r.reason).toContain('對方同意後呼叫 request_elevation 說明原因')
   expect(sent).toEqual([])
-  expect(db.elevLog(conv.key, 5).map(l => l.kind)).toEqual(['blocked', 'blocked', 'blocked'])
-  expect(db.elevLog(conv.key, 1)[0]!.text).toEndWith(`發起者 u${MEMBER} [user], u${ADMIN} [admin]`)
+  // high-risk: the admin present may, so the button comes up in the chat
+  const d = await e.onHook(conv, pre('ListAgents'))
+  expect(d.decision).toBe('deny')
+  expect(d.reason).toContain(`發起者 u${ADMIN} [admin] 的角色較高, router 已在對話裡詢問是否提權 (#1`)
+  expect(sent).toHaveLength(1)
+  expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:deny'])
+  expect(sent[0]!.text).toContain(`u${MEMBER} [user], u${ADMIN} [admin] 在 ${conv.key}`)
+  // one question at a time
+  expect((await e.onHook(conv, send('worker'))).reason).toContain('已在對話裡詢問是否提權 (#1)')
+  expect(db.elevLog(conv.key, 10).map(l => l.kind).reverse()).toEqual(['blocked', 'blocked', 'request', 'blocked'])
+  expect(db.elevLog(conv.key, 10).at(-1)!.text).toEndWith(`發起者 u${MEMBER} [user], u${ADMIN} [admin]`)
+  // the admin approves: the next subagent runs as admin
+  expect(await e.decide('elev:1:once', ADMIN)).toBe('已提權一次')
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'S9' })
+  expect(await e.onHook(conv, pre('ListAgents', {}, 'S9'))).toEqual({ decision: 'allow', reason: '提權 #1, 以 admin 角色執行' })
   // the other order: an admin, and a member's message coming in while the turn runs
   await e.onHook(conv, stop)
   e.onDeliver(conv, ADMIN)
@@ -117,6 +129,44 @@ test('a mixed turn (a user member, then an admin, read together): no automatic p
   expect((await e.onHook(conv, pre('ListAgents'))).decision).toBe('allow')
   e.onDeliver(conv, MEMBER)
   expect((await e.onHook(conv, pre('ListAgents'))).decision).toBe('deny')
+  e.stop()
+})
+
+test('a high-risk call in a turn where nobody above the conversation may make it: no button, only the active request', async () => {
+  const { conv, e, sent } = harness('user')
+  e.onDeliver(conv, MEMBER)
+  e.onDeliver(conv, POWER)
+  const d = await e.onHook(conv, pre('ListAgents'))
+  expect(d.reason).toContain('對方同意後呼叫 request_elevation 說明原因')
+  expect(sent).toEqual([])
+  // a member's own override makes them able to, but they are not above the conversation: nobody to press
+  db.addUserOverride(MEMBER, 'tool-allow', 'ListAgents')
+  expect((await e.onHook(conv, pre('ListAgents'))).reason).toContain('對方同意後呼叫 request_elevation 說明原因')
+  expect(sent).toEqual([])
+  // the power user's own override: above the conversation and may, so asked in the chat
+  db.addUserOverride(POWER, 'tool-allow', 'ListAgents')
+  expect((await e.onHook(conv, pre('ListAgents'))).decision).toBe('allow') // now everyone may: automatic
+  expect((await e.onHook(conv, pre('CronCreate'))).reason).toContain('對方同意後呼叫 request_elevation 說明原因')
+  e.stop()
+})
+
+test('the button: the presser\'s own overrides count (as in automatic elevation), for the approval and for the subagent that runs it', async () => {
+  const { conv, e, sent } = harness('user')
+  db.addUserOverride(POWER, 'tool-allow', 'CronCreate')
+  e.onDeliver(conv, MEMBER)
+  e.onDeliver(conv, POWER)
+  const call = pre('CronCreate', { cron: '7 9 * * *', prompt: 'x' })
+  // the power user present may (their override): asked in the chat
+  expect((await e.onHook(conv, call)).reason).toContain(`發起者 u${POWER} [power] 的角色較高, router 已在對話裡詢問是否提權 (#1`)
+  expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:deny'])
+  // another power user without the override may not press it; the one with it may
+  db.setUserRole('700100230', 'power')
+  expect(await e.decide('elev:1:once', '700100230')).toBe('你的角色 (power) 也不允許這個動作')
+  expect(await e.decide('elev:1:once', POWER)).toBe('已提權一次')
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'S7' })
+  expect(await e.onHook(conv, { ...call, agent_id: 'S7' })).toEqual({ decision: 'allow', reason: '提權 #1, 以 power 角色執行' })
+  // the subagent may do only what the presser's role and overrides allow
+  expect((await e.onHook(conv, pre('ListAgents', {}, 'S7'))).reason).toContain('即使提權為 power 也不允許')
   e.stop()
 })
 

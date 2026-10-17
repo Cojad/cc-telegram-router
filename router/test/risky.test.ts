@@ -217,17 +217,18 @@ test('elevation: an owner\'s turn in a user conversation makes the high-risk cal
   e.stop()
 })
 
-test('elevation: a power sender in a user conversation is not asked in the chat nor passed (power may not either), even when the owner speaks in the same turn; a power user may not approve one', async () => {
+test('elevation: a power sender in a user conversation is not asked in the chat nor passed (power may not either); with the owner in the same turn the high-risk call is asked in the chat (once only); a power user may not approve it', async () => {
   const { conv, e, sent } = harness('user')
   e.onDeliver(conv, POWER)
   const d = await e.onHook(conv, send('worker'))
   expect(d.reason).toContain('請改用不越權的方法完成')
-  e.onDeliver(conv, OWNER) // the same turn: as trusted as power
-  expect((await e.onHook(conv, pre('CronCreate', { cron: '7 9 * * *', prompt: 'x' }))).reason).toContain('請改用不越權的方法完成')
   expect(sent).toEqual([])
-  const id = db.addElevation({ conv: conv.key, kind: 'passive', sender: OWNER, action: JSON.stringify({ tool_name: 'CronCreate', tool_input: { cron: '7 9 * * *', prompt: 'x' } }), reason: '' })
-  expect(await e.decide(`elev:${id}:once`, POWER)).toBe('你的角色 (power) 也不允許這個動作')
-  expect(await e.decide(`elev:${id}:once`, ADMIN)).toBe('已提權一次')
+  e.onDeliver(conv, OWNER) // the same turn: no automatic pass (power may not), but the owner may press
+  expect((await e.onHook(conv, pre('CronCreate', { cron: '7 9 * * *', prompt: 'x' }))).reason).toContain(`發起者 u${OWNER} [owner] 的角色較高, router 已在對話裡詢問是否提權 (#1`)
+  expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:deny'])
+  expect(sent[0]!.text).toContain(`u${POWER} [power], u${OWNER} [owner] 在 ${conv.key}`)
+  expect(await e.decide('elev:1:once', POWER)).toBe('你的角色 (power) 也不允許這個動作')
+  expect(await e.decide('elev:1:once', ADMIN)).toBe('已提權一次')
   e.stop()
 })
 

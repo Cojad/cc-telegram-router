@@ -6,7 +6,8 @@
 //   a worker already running when the router started has no sender until
 //   its next Stop; then an owner's turn in a user group makes ListAgents at
 //   once (hook allow, elev_log auto, tool_history with the owner's role);
-//   a user's message and the owner's read in one turn: refused, no button;
+//   a user's message and the owner's read in one turn: no automatic pass,
+//   ListAgents asked in the chat (once only), a path block not asked;
 //   /router perm user (cli) on the user: their DM's settings carry it (not
 //   the group's), and their own turn in the group passes.
 // All ids and names are example values.
@@ -142,16 +143,19 @@ test('a worker running when the router started has no sender until its Stop; the
   await hook('stop', {})
 }, 30000)
 
-test('a user\'s message and the owner\'s read in one turn: refused, no automatic pass and no button', async () => {
+test('a user\'s message and the owner\'s read in one turn: no automatic pass; ListAgents is asked in the chat (the owner may), any other block is not', async () => {
   const a = msg(GROUP, USER, '幫我看一下')
   const b = msg(GROUP, OWNER, '順便列出 agents')
   await until(() => delivered.some(d => d.meta.message_id === String(b)) && delivered.some(d => d.meta.message_id === String(a)))
   await prompt([a, USER], [b, OWNER])
-  expect(await hook('pre', { tool_name: 'ListAgents', tool_input: {} })).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('請改用不越權的方法完成') })
   expect(await hook('pre', { tool_name: 'Bash', tool_input: { command: 'touch /etc/example-file' } })).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('請改用不越權的方法完成') })
   await sleep(300)
   expect(asked()).toEqual([])
   expect(q(`SELECT text FROM elev_log WHERE conv = '${GKEY}' AND kind = 'blocked' ORDER BY id DESC LIMIT 1`)[0].text).toEndWith(`發起者 Example User (${USER.id}) [user], Example Owner (${OWNER.id}) [owner]`)
+  expect(await hook('pre', { tool_name: 'ListAgents', tool_input: {} })).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('router 已在對話裡詢問是否提權') })
+  const ask = await until(() => asked()[0])
+  expect(Number(ask.body.chat_id)).toBe(GROUP.id)
+  expect(ask.body.reply_markup.inline_keyboard.flat().map((k: any) => k.callback_data)).toEqual([expect.stringMatching(/^elev:\d+:once$/), expect.stringMatching(/^elev:\d+:deny$/)])
   await hook('stop', {})
 }, 30000)
 

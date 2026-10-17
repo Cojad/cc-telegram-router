@@ -7,7 +7,9 @@
 //      whether to request permission from the bot owner (request_elevation).
 //   2. If every person in this turn has a higher role than the conversation
 //      (each delivery carries sender_role and elevated), the router also asks
-//      right there in the chat: 「提權執行」 or 「拒絕」, refused by default
+//      right there in the chat (for a high-risk call: if anyone in the turn
+//      above the conversation may make it, their own overrides counted; 柯姊
+//      2026-10-17, so an admin in a mixed turn need not go to the approvals group): 「提權執行」 or 「拒絕」, refused by default
 //      after 120 seconds (passive request). The turn's people: everyone whose
 //      message was delivered to the worker since its last Stop, including
 //      messages that come in while the turn runs (Claude Code may read them
@@ -22,7 +24,8 @@
 //      the middle of a turn whose messages this router never saw: its turns
 //      have no sender until its next Stop (unknownTurns).
 //   3. The prompt offers 允許一次 / 永久允許 / 拒絕. Whoever presses must have
-//      a role above the conversation's that allows the blocked call; the
+//      a role above the conversation's that allows the blocked call (their
+//      own /router perm user overrides counted, for the subagent too); the
 //      elevation then runs with *their* role, bound to the next subagent the
 //      worker starts (one subagent, 10 minutes to start it). 永久允許 also
 //      adds the kind of action to the conversation's /router perm overrides
@@ -38,8 +41,9 @@
 // button, when every person in the turn may make it: their role's settings
 // for this conversation with their own overrides laid on (/router perm user),
 // checked like the conversation's own (checkCall, riskyRefusal, extraCheck).
-// It runs with the lowest of their roles and is logged like any elevation.
-// Only these tools: the hook alone decides them. A blocked path, domain or
+// It runs with the lowest of their roles and is logged like any elevation;
+// when not everyone may, it falls back to the button above. Only these
+// tools: the hook alone decides them. A blocked path, domain or
 // leaving the sandbox still goes through the subagent elevation above.
 //
 // High-risk tools (permcheck.riskyRefusal, 柯姊 2026-10-17): ListAgents,
@@ -158,8 +162,8 @@ export function createElevation(deps: ElevationDeps) {
   const terminalTurn = new Set<string>()
   /** approved, waiting for the worker's next subagent */
   const granted = new Map<string, Grant>()
-  /** agent_id -> conversation and the role it runs with */
-  const bound = new Map<string, { conv: string; role: string; id: number }>()
+  /** agent_id -> conversation, the role it runs with and who approved it (their own overrides count too) */
+  const bound = new Map<string, { conv: string; role: string; id: number; by: string }>()
   const timers = new Map<number, ReturnType<typeof setTimeout>>()
   /** Telegram tools run router-side (bot_api...): an elevated subagent's call,
    *  seen in its PreToolUse, leaves a one-use ticket the router's tool
@@ -210,10 +214,12 @@ export function createElevation(deps: ElevationDeps) {
     return why ? { ok: false as const, why } : c
   }
   /** Would this person be allowed this call here: their role, with their own overrides laid on (/router perm user). */
-  const allowedFor = (conv: Conversation, uid: string, call: Call, agent?: string) => {
-    const role = deps.roleOf(uid)
+  const allowedFor = (conv: Conversation, uid: string, call: Call, agent?: string, role = deps.roleOf(uid)) =>
+    allowedAs(conv, role, call, agent, personSettings(conv, uid, role))
+  /** The conversation's settings under a person's role, their own overrides laid on. */
+  function personSettings(conv: Conversation, uid: string, role: string): any {
     const own = db.listUserOverrides(uid)
-    return allowedAs(conv, role, call, agent, own.length ? applyOverrides(deps.settingsAs(conv, role), own) : undefined)
+    return own.length ? applyOverrides(deps.settingsAs(conv, role), own) : deps.settingsAs(conv, role)
   }
   /** Everyone in this turn may make this high-risk call: the role it runs with (the lowest of theirs); else null. */
   const autoRole = (conv: Conversation, call: Call, agent?: string): string | null => {
@@ -258,10 +264,9 @@ export function createElevation(deps: ElevationDeps) {
     return permanentRule(deps.settingsAs(conv, conv.role), call, conv.folder, lay)
   }
 
-  /** Post an elevation request (in the chat, or at the approvals place). */
-  async function ask(conv: Conversation, kind: 'passive' | 'active', action: string, reason: string, call: Call | null): Promise<{ id: number; where: 'chat' | 'owner' | 'none' }> {
+  /** Post an elevation request: in the chat (inChat), or at the approvals place. */
+  async function ask(conv: Conversation, kind: 'passive' | 'active', action: string, reason: string, call: Call | null, inChat: boolean): Promise<{ id: number; where: 'chat' | 'owner' | 'none' }> {
     const sender = senderOf(conv)
-    const inChat = !!elevatedSender(conv)
     const id = db.addElevation({ conv: conv.key, kind, sender, action: call ? JSON.stringify(call) : action, reason })
     // a terminal turn answers no Telegram message: the result is not a reply to the last one
     if (!terminalTurn.has(conv.key)) deps.approvals.noteRequest?.('elev', id, conv)
@@ -325,13 +330,17 @@ export function createElevation(deps: ElevationDeps) {
     const action = describeCall(call)
     await record(conv, 'blocked', `⛔ ${conv.key} 被擋: ${action}\n${why}${agent ? ` (subagent ${agent})` : ''}\n發起者 ${whoTurn(conv)}`, null)
     const guide = `權限不足 (本對話角色 ${conv.role}): ${why}.`
-    const elevated = elevatedSender(conv)
-    if (elevated && allowedAs(conv, deps.roleOf(elevated), call, agent).ok) {
+    // who in this turn could press the button: for a high-risk call anyone above the conversation who may make it
+    // (柯姊 2026-10-17: an admin in a mixed turn need not go to the approvals group); otherwise the lowest sender
+    const elevated = isRisky(call)
+      ? turnSenders(conv)?.find(u => rank(deps.roleOf(u)) > rank(conv.role) && allowedFor(conv, u, call, agent).ok) ?? null
+      : elevatedSender(conv)
+    if (elevated && (isRisky(call) || allowedAs(conv, deps.roleOf(elevated), call, agent).ok)) {
       // one question in the chat at a time; a request waiting for the owner elsewhere does not hold up a new one
       const pending = db.pendingElevations().find(p => p.conv === conv.key && db.approvalMsgs('elev', p.id).some(m => m.chat_id === conv.chat_id))
       if (pending) return { decision: 'deny', reason: `${guide} 已在對話裡詢問是否提權 (#${pending.id}), 等 <router_status> 的結果; 這段時間不要用越權的方法繞過.` }
       const reason = String(call.tool_input?.description ?? '')
-      const { id, where } = await ask(conv, 'passive', action, reason, call)
+      const { id, where } = await ask(conv, 'passive', action, reason, call, true)
       if (where !== 'none') return { decision: 'deny', reason: `${guide} 發起者 ${who(elevated)} 的角色較高, router 已在對話裡詢問是否提權 (#${id}, ${Math.round(askTimeout / 1000)} 秒內沒人回應視為拒絕). 先不要用越權的方法繞過; 等 <router_status> 的結果: 核准就照指示交給 subagent, 拒絕或逾時就告訴對方無法完成.` }
     }
     return { decision: 'deny', reason: `${guide} 請改用不越權的方法完成. 如果在不越權的情況下無法合理完成, 告訴對方這個請求無法繼續, 並問對方是否要向 bot owner 申請權限; 對方同意後呼叫 request_elevation 說明原因.` }
@@ -390,7 +399,7 @@ export function createElevation(deps: ElevationDeps) {
           }
           const g = granted.get(conv.key)
           if (g && agent && g.until > Date.now()) {
-            bound.set(agent, { conv: conv.key, role: g.role, id: g.id })
+            bound.set(agent, { conv: conv.key, role: g.role, id: g.id, by: g.by })
             deps.log?.(`elevation #${g.id} ${conv.key}: bound to subagent ${agent} as ${g.role}`)
           }
           granted.delete(conv.key)
@@ -403,7 +412,7 @@ export function createElevation(deps: ElevationDeps) {
           const call: Call = { tool_name: String(ev.tool_name ?? ''), tool_input: ev.tool_input ?? {} }
           const b = agent ? bound.get(agent) : undefined
           if (b && b.conv === conv.key) {
-            const c = allowedAs(conv, b.role, call, agent)
+            const c = allowedFor(conv, b.by, call, agent, b.role)
             if (!c.ok) return blocked(conv, call, `即使提權為 ${b.role} 也不允許: ${c.why}`, agent)
             noteSpawn(conv.key, call)
             const g = db.approvalGrantsFor('elev', b.id).find(x => x.status === 'active')
@@ -444,7 +453,7 @@ export function createElevation(deps: ElevationDeps) {
     async request(conv: Conversation, reason: string, action: string): Promise<string> {
       const pending = db.pendingElevation(conv.key)
       if (pending) return `已有一個提權請求在等待 (#${pending.id})`
-      const { id, where } = await ask(conv, 'active', action || '(未指定)', reason, null)
+      const { id, where } = await ask(conv, 'active', action || '(未指定)', reason, null, !!elevatedSender(conv))
       if (where === 'none') return '提權請求送不出去 (對話與審核頻道都送不到)'
       return where === 'chat' ? `已在對話裡詢問是否提權 (#${id}, ${Math.round(askTimeout / 1000)} 秒內沒人回應視為拒絕), 結果會以 <router_status> 通知` : `已向 bot owner 申請提權 (#${id}), 結果會以 <router_status> 通知`
     },
@@ -462,8 +471,10 @@ export function createElevation(deps: ElevationDeps) {
       if (rank(role) <= rank(conv.role)) return `你的角色 (${role}) 沒有高於這個對話 (${conv.role}), 不能決定`
       const call = e.action.startsWith('{') ? JSON.parse(e.action) as Call : null
       if (p.choice !== 'deny' && call) {
-        const c = checkCall(deps.settingsAs(conv, role), call, conv.folder, role)
-        if (!c.ok || riskyRefusal(call, role, false, deps.settingsAs(conv, role))) return `你的角色 (${role}) 也不允許這個動作`
+        // the presser's own overrides count, as in automatic elevation (柯姊 2026-10-17)
+        const settings = personSettings(conv, uid, role)
+        const c = checkCall(settings, call, conv.folder, role)
+        if (!c.ok || riskyRefusal(call, role, false, settings)) return `你的角色 (${role}) 也不允許這個動作`
       }
       let permanent: Rule | undefined
       if (p.choice === 'always') {
