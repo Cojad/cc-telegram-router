@@ -1,8 +1,9 @@
 // Tool call classifier, stage 1: record only (選配 1 工具呼叫自動分類器,
 // 柯姊 2026-10-17 定: 雙模並用). A tool call of a user or power conversation
 // that the permission rules let through is, after the hook has already
-// answered, also judged by the OpenAI Decisions API, TypeSafe Jev and a
-// fixed-prompt claude -p (config model, never haiku). The verdicts only go to
+// answered, also judged by the OpenAI Decisions API and TypeSafe Jev (both
+// through OpenRouter's Decisions router by default; native paths by config)
+// and a fixed-prompt claude -p (config model, never haiku). The verdicts only go to
 // router.db (classify_calls, classify_results); nothing here can block or
 // delay a call. /router classifier compares them with claude's.
 //
@@ -26,50 +27,79 @@ import type { Credential } from './config'
 export const PROVIDERS = ['openai', 'typesafe', 'claude'] as const
 export type Provider = typeof PROVIDERS[number]
 
+/** How a provider is called:
+ *  openrouter: POST <baseUrl>/api/alpha/decisions (OpenRouter's Decisions router, Jev-style
+ *              request for both models; usage.cost is the billed cost)
+ *  openai:     POST <baseUrl>/v1/decisions (OpenAI native; cost = input tokens x usdPerMTok)
+ *  systemone:  POST <baseUrl>/v1/systemone (TypeSafe native, or OrcaRouter; usage.cost if given, else tokens x usdPerMTok) */
+export type ApiKind = 'openrouter' | 'openai' | 'systemone'
+export const API_KINDS: ApiKind[] = ['openrouter', 'openai', 'systemone']
+export type ApiConfig = { api: ApiKind; credential: string; model: string; usdPerMTok: number }
+
 export type ClassifierConfig = {
   enabled: boolean
   /** Per provider, per day (GMT+8), in USD; at the cap the provider stops for the day. */
   dailyUsd: Record<Provider, number>
-  openai: { credential: string; model: string; usdPerMTok: number }
-  typesafe: { credential: string; model: string; usdPerMTok: number }
+  /** Decisions (openai) and Jev (typesafe): which API, credential and model. */
+  openai: ApiConfig
+  typesafe: ApiConfig
   /** Tools never sent (prefix match). */
   skipTools: string[]
   /** Judge Telegram plugin tools too (router-side, after its checks). */
   telegramTools: boolean
   /** Rows older than this are removed. */
   keepDays: number
+  /** Why the config block was not usable (the classifier is then off; main logs it). */
+  error?: string
 }
 
 export const DEFAULT_CLASSIFIER: ClassifierConfig = {
   enabled: false,
   // claude runs on the subscription: its cap is on total_cost_usd, the API price estimate
   dailyUsd: { openai: 0.5, typesafe: 0.5, claude: 50 },
-  openai: { credential: 'openai', model: 'gpt-6-luna', usdPerMTok: 0.10 },
-  typesafe: { credential: 'typesafe', model: 'jev-latest', usdPerMTok: 0.042 },
+  // both through OpenRouter (柯姊 2026-10-17); usdPerMTok only for the native paths
+  openai: { api: 'openrouter', credential: 'openrouter', model: 'openai/gpt-6-luna-decisions', usdPerMTok: 0.10 },
+  typesafe: { api: 'openrouter', credential: 'openrouter', model: 'typesafe/jev-1.13', usdPerMTok: 0.042 },
   skipTools: [],
   telegramTools: true,
   keepDays: 30,
 }
 
-/** config.json "classifier": missing = off; fields left out keep their defaults. */
+/** config.json "classifier": on only with "enabled": true (an optional feature of a
+ *  public repo); fields left out keep their defaults. A block that is not
+ *  usable never stops the router: the classifier is off and error says why. */
 export function parseClassifier(v: unknown): ClassifierConfig {
+  try {
+    return readClassifier(v)
+  } catch (e) {
+    return { ...DEFAULT_CLASSIFIER, enabled: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+function readClassifier(v: unknown): ClassifierConfig {
   const d = DEFAULT_CLASSIFIER
-  if (v === undefined || v === null || v === false) return { ...d }
-  if (v === true) return { ...d, enabled: true }
-  if (typeof v !== 'object') throw new Error(`classifier 要是物件, true 或 false, 收到 ${JSON.stringify(v)}`)
+  if (v === undefined || v === null) return { ...d }
+  if (typeof v !== 'object' || Array.isArray(v)) throw new Error(`classifier 要是物件, 例如 {"enabled": true}, 收到 ${JSON.stringify(v)}`)
   const r = v as Record<string, any>
+  if (r.enabled !== undefined && typeof r.enabled !== 'boolean') throw new Error(`classifier.enabled 要是 true 或 false, 收到 ${JSON.stringify(r.enabled)}`)
+  if (r.telegramTools !== undefined && typeof r.telegramTools !== 'boolean') throw new Error(`classifier.telegramTools 要是 true 或 false, 收到 ${JSON.stringify(r.telegramTools)}`)
   const num = (x: unknown, def: number, what: string) => {
     if (x === undefined) return def
     if (typeof x !== 'number' || !Number.isFinite(x) || x < 0) throw new Error(`classifier.${what} 要是 0 以上的數字, 收到 ${JSON.stringify(x)}`)
     return x
   }
-  const api = (k: 'openai' | 'typesafe') => ({
+  const api = (k: 'openai' | 'typesafe'): ApiConfig => ({
+    api: (() => {
+      const a = r[k]?.api ?? d[k].api
+      if (!API_KINDS.includes(a)) throw new Error(`classifier.${k}.api 要是 ${API_KINDS.join(', ')} 之一, 收到 ${JSON.stringify(a)}`)
+      return a as ApiKind
+    })(),
     credential: String(r[k]?.credential ?? d[k].credential),
     model: String(r[k]?.model ?? d[k].model),
     usdPerMTok: num(r[k]?.usdPerMTok, d[k].usdPerMTok, `${k}.usdPerMTok`),
   })
   return {
-    enabled: r.enabled !== false,
+    enabled: r.enabled === true,
     dailyUsd: Object.fromEntries(PROVIDERS.map(p => [p, num(r.dailyUsd?.[p], d.dailyUsd[p], `dailyUsd.${p}`)])) as Record<Provider, number>,
     openai: api('openai'),
     typesafe: api('typesafe'),
@@ -252,7 +282,7 @@ async function postJson(url: string, cred: Credential, body: unknown, signal: Ab
 
 const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null)
 
-export function decisionsJudge(o: { cred: () => Credential | undefined; cfg: () => ClassifierConfig['openai'] }): Judge {
+export function decisionsJudge(o: { cred: () => Credential | undefined; cfg: () => ApiConfig }): Judge {
   return {
     ready: () => (o.cred()?.token ? null : 'no-key'),
     async run(sent, signal) {
@@ -270,7 +300,7 @@ export function decisionsJudge(o: { cred: () => Credential | undefined; cfg: () 
   }
 }
 
-export function jevJudge(o: { cred: () => Credential | undefined; cfg: () => ClassifierConfig['typesafe'] }): Judge {
+export function jevJudge(o: { cred: () => Credential | undefined; cfg: () => ApiConfig }): Judge {
   return {
     ready: () => (o.cred()?.token ? null : 'no-key'),
     async run(sent, signal) {
@@ -284,6 +314,35 @@ export function jevJudge(o: { cred: () => Credential | undefined; cfg: () => Cla
       return { ...base, status: 'ok', p_block: num(block.noul), risk: num(risk.score), confidence: num(risk.confidence) }
     },
   }
+}
+
+/** OpenRouter's Decisions router: one endpoint for both models, the Jev request shape
+ *  (state, questions map; noul and score); usage.cost is what OpenRouter billed. */
+export function openrouterJudge(o: { cred: () => Credential | undefined; cfg: () => ApiConfig }): Judge {
+  return {
+    ready: () => (o.cred()?.token ? null : 'no-key'),
+    async run(sent, signal) {
+      const c = o.cfg(), cred = o.cred()!
+      const j = await postJson(`${(cred.baseUrl ?? 'https://openrouter.ai').replace(/\/+$/, '')}/api/alpha/decisions`, cred, jevBody(c.model, sent), signal)
+      const block = j.answers?.block, risk = j.answers?.risk
+      const cost = num(j.usage?.cost)
+      const base = { model: String(j.model ?? c.model), input_tokens: num(j.usage?.input_tokens), output_tokens: num(j.usage?.output_tokens), cost_usd: cost ?? 0 }
+      const noCost = cost === null ? 'no usage.cost in the response' : undefined
+      if (block?.type !== 'noul' || risk?.type !== 'score') return { ...base, status: 'refusal', p_block: num(block?.noul), risk: num(risk?.score), confidence: num(risk?.confidence), detail: ['missing answer', noCost].filter(Boolean).join('; ') }
+      return { ...base, status: 'ok', p_block: num(block.noul), risk: num(risk.score), confidence: num(risk.confidence), ...(noCost ? { detail: noCost } : {}) }
+    },
+  }
+}
+
+/** The judge for one provider, by its configured api (read on every call, so a config change applies). */
+export function apiJudge(o: { cfg: () => ApiConfig; cred: (name: string) => Credential | undefined }): Judge {
+  const cred = () => o.cred(o.cfg().credential)
+  const by: Record<ApiKind, Judge> = {
+    openrouter: openrouterJudge({ cred, cfg: o.cfg }),
+    openai: decisionsJudge({ cred, cfg: o.cfg }),
+    systemone: jevJudge({ cred, cfg: o.cfg }),
+  }
+  return { ready: () => by[o.cfg().api].ready(), run: (sent, signal) => by[o.cfg().api].run(sent, signal) }
 }
 
 /** claude -p with no tools, settings or MCP, in a scratch folder (as pkgreview). */
@@ -395,6 +454,7 @@ export function createClassifier(deps: ClassifierDeps) {
   const now = () => deps.now?.() ?? new Date()
   const lanes = Object.fromEntries(PROVIDERS.map(p => [p, { active: 0, waiting: [] as Array<() => void> }])) as Record<Provider, { active: number; waiting: Array<() => void> }>
   const capTold = new Map<Provider, string>()
+  const skipTold = new Map<Provider, string>()
   const pending = new Set<Promise<void>>()
   const limit = (p: Provider) => ({ ...LIMITS[p], ...deps.limits?.[p] })
 
@@ -439,7 +499,12 @@ export function createClassifier(deps: ClassifierDeps) {
   async function runOne(callId: number, p: Provider, sent: Sent): Promise<void> {
     const judge = deps.judges[p]
     const why = judge.ready()
-    if (why) return record(callId, p, { status: 'skipped', detail: why })
+    if (why) {
+      // logged once per reason until the provider runs again
+      if (skipTold.get(p) !== why) { skipTold.set(p, why); deps.log?.(`classifier: ${p} skipped (${why === 'no-key' ? 'its credential is not in config.json credentials' : why === 'model' ? 'config model is haiku' : why}); the others still run`) }
+      return record(callId, p, { status: 'skipped', detail: why })
+    }
+    skipTold.delete(p)
     const cap = deps.cfg().dailyUsd[p]
     const day = gmt8DayStart(now())
     if (deps.store.spentSince(p, day) >= cap) {

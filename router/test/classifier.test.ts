@@ -9,8 +9,8 @@ import { tmpdir, homedir } from 'os'
 import { join } from 'path'
 import {
   parseClassifier, DEFAULT_CLASSIFIER, buildSent, maskValue, MAX_FIELD, MAX_STATE, decisionsBody, jevBody, parseClaudeVerdict,
-  decisionsJudge, jevJudge, claudeJudge, openClassifyStore, createClassifier, classifierReport, classifierShow, gmt8DayStart,
-  CLAUDE_SYSTEM, SETTING, MAX_MESSAGE, TG_NOT_JUDGED, type ClassifyStore, type Judge, type Judgement, type MaskEnv, type ClassifierConfig, type Provider,
+  decisionsJudge, jevJudge, openrouterJudge, apiJudge, claudeJudge, openClassifyStore, createClassifier, classifierReport, classifierShow, gmt8DayStart,
+  CLAUDE_SYSTEM, SETTING, MAX_MESSAGE, TG_NOT_JUDGED, type ApiConfig, type ClassifyStore, type Judge, type Judgement, type MaskEnv, type ClassifierConfig, type Provider,
 } from '../classifier'
 
 let dir: string, store: ClassifyStore
@@ -24,36 +24,51 @@ const env = (o: Partial<MaskEnv> = {}): MaskEnv => ({ folder: FOLDER, routerHome
 const USER = { key: 'cc-dm-66600001', role: 'user', type: 'private', folder: FOLDER }
 const pre = (tool_name: string, tool_input: object) => ({ event: 'pre', tool_name, tool_input })
 
-test('config: missing, false or null is off; true turns it on with the defaults; fields override; bad numbers throw', () => {
+test('config: on only with "enabled": true (an optional feature of a public repo); fields override; an unusable block turns it off with the reason, never throws', () => {
   expect(parseClassifier(undefined)).toEqual(DEFAULT_CLASSIFIER)
   expect(parseClassifier(undefined).enabled).toBe(false)
-  expect(parseClassifier(false).enabled).toBe(false)
-  expect(parseClassifier(true)).toEqual(ON)
+  expect(parseClassifier({}).enabled).toBe(false)
+  expect(parseClassifier({ dailyUsd: { claude: 1 } }).enabled).toBe(false)
+  expect(parseClassifier({ enabled: false }).enabled).toBe(false)
+  expect(parseClassifier({ enabled: true })).toEqual(ON)
   // claude runs on the subscription: $50 a day of its API price estimate
   expect(DEFAULT_CLASSIFIER.dailyUsd).toEqual({ openai: 0.5, typesafe: 0.5, claude: 50 })
   expect(DEFAULT_CLASSIFIER.telegramTools).toBe(true)
   expect(DEFAULT_CLASSIFIER.skipTools).toEqual([])
-  expect(parseClassifier({ telegramTools: false }).telegramTools).toBe(false)
-  expect(DEFAULT_CLASSIFIER.openai).toEqual({ credential: 'openai', model: 'gpt-6-luna', usdPerMTok: 0.10 })
-  expect(DEFAULT_CLASSIFIER.typesafe).toEqual({ credential: 'typesafe', model: 'jev-latest', usdPerMTok: 0.042 })
+  expect(parseClassifier({ enabled: true, telegramTools: false }).telegramTools).toBe(false)
+  // both through OpenRouter's Decisions router by default (柯姊 2026-10-17)
+  expect(DEFAULT_CLASSIFIER.openai).toEqual({ api: 'openrouter', credential: 'openrouter', model: 'openai/gpt-6-luna-decisions', usdPerMTok: 0.10 })
+  expect(DEFAULT_CLASSIFIER.typesafe).toEqual({ api: 'openrouter', credential: 'openrouter', model: 'typesafe/jev-1.13', usdPerMTok: 0.042 })
+  // the native paths stay as options
+  expect(parseClassifier({ enabled: true, openai: { api: 'openai', credential: 'openai', model: 'gpt-6-luna' } }).openai).toEqual({ api: 'openai', credential: 'openai', model: 'gpt-6-luna', usdPerMTok: 0.10 })
+  expect(parseClassifier({ enabled: true, typesafe: { api: 'systemone', credential: 'orcarouter' } }).typesafe).toMatchObject({ api: 'systemone', credential: 'orcarouter', model: 'typesafe/jev-1.13' })
   expect(DEFAULT_CLASSIFIER.keepDays).toBe(30)
-  const c = parseClassifier({ dailyUsd: { claude: 1 }, typesafe: { model: 'jev-1.14.0' }, keepDays: 7 })
+  const c = parseClassifier({ enabled: true, dailyUsd: { claude: 1 }, typesafe: { model: 'jev-1.14.0' }, keepDays: 7 })
   expect(c.enabled).toBe(true)
+  expect(c.error).toBeUndefined()
   expect(c.dailyUsd).toEqual({ openai: 0.5, typesafe: 0.5, claude: 1 })
   expect(c.telegramTools).toBe(true)
-  expect(c.typesafe).toEqual({ credential: 'typesafe', model: 'jev-1.14.0', usdPerMTok: 0.042 })
-  expect(parseClassifier({ enabled: false }).enabled).toBe(false)
-  expect(() => parseClassifier({ dailyUsd: { openai: -1 } })).toThrow('classifier.dailyUsd.openai')
-  expect(() => parseClassifier('yes')).toThrow()
+  expect(c.typesafe).toEqual({ api: 'openrouter', credential: 'openrouter', model: 'jev-1.14.0', usdPerMTok: 0.042 })
+  // unusable: off, with why
+  const bad = (v: unknown) => { const r = parseClassifier(v); expect(r.enabled).toBe(false); return r.error }
+  expect(bad({ enabled: true, openai: { api: 'chat' } })).toBe('classifier.openai.api 要是 openrouter, openai, systemone 之一, 收到 "chat"')
+  expect(bad({ enabled: true, dailyUsd: { openai: -1 } })).toContain('classifier.dailyUsd.openai')
+  expect(bad({ enabled: 'yes' })).toContain('classifier.enabled 要是 true 或 false')
+  expect(bad({ enabled: true, telegramTools: 1 })).toContain('classifier.telegramTools')
+  expect(bad(true)).toContain('classifier 要是物件')
+  expect(bad('yes')).toContain('classifier 要是物件')
+  expect(bad([1])).toContain('classifier 要是物件')
 })
 
-test('config.json: loadConfig reads classifier (off when missing)', async () => {
+test('config.json: loadConfig reads classifier (off when missing, off and the reason when unusable; the router still loads)', async () => {
   const { loadConfig } = await import('../config')
   const p = join(dir, 'config.json')
   writeFileSync(p, JSON.stringify({ bots: [{ name: 'cc', token: '1:x' }] }))
   expect(loadConfig(p).classifier?.enabled).toBe(false)
-  writeFileSync(p, JSON.stringify({ bots: [{ name: 'cc', token: '1:x' }], classifier: { dailyUsd: { openai: 0.1 } } }))
+  writeFileSync(p, JSON.stringify({ bots: [{ name: 'cc', token: '1:x' }], classifier: { enabled: true, dailyUsd: { openai: 0.1 } } }))
   expect(loadConfig(p).classifier).toMatchObject({ enabled: true, dailyUsd: { openai: 0.1, typesafe: 0.5, claude: 50 } })
+  writeFileSync(p, JSON.stringify({ bots: [{ name: 'cc', token: '1:x' }], classifier: { enabled: true, keepDays: 'x' } }))
+  expect(loadConfig(p).classifier).toMatchObject({ enabled: false, error: expect.stringContaining('classifier.keepDays') })
 })
 
 test('masking: token formats, held values, the conversation folder, router home, home, chat ids; secrets out before the cut', () => {
@@ -138,10 +153,12 @@ function fakeApi(handler: (path: string, body: any) => Response | Promise<Respon
 }
 const SENT = buildSent({ role: 'user', chatType: 'private', tool: 'Bash', input: { command: 'ls' } }, env()).sent
 const signal = () => new AbortController().signal
+const NATIVE_OPENAI: ApiConfig = { api: 'openai', credential: 'openai', model: 'gpt-6-luna', usdPerMTok: 0.10 }
+const NATIVE_JEV: ApiConfig = { api: 'systemone', credential: 'typesafe', model: 'jev-latest', usdPerMTok: 0.042 }
 
 test('Decisions judge: POST /v1/decisions with the key as Bearer; probability, score, confidence, tokens and cost from the answer', async () => {
   const api = fakeApi(() => Response.json({ model: 'gpt-6-luna', answers: [{ type: 'predicate', name: 'block', probability: 0.12 }, { type: 'score', name: 'risk', score: 0.4, confidence: 0.8, probabilities: [] }], usage: { input_tokens: 1000, output_tokens: 0 } }))
-  const j = decisionsJudge({ cred: () => ({ token: 'sk-test-decisions', kind: 'http', baseUrl: api.url, methods: [] }), cfg: () => DEFAULT_CLASSIFIER.openai })
+  const j = decisionsJudge({ cred: () => ({ token: 'sk-test-decisions', kind: 'http', baseUrl: api.url, methods: [] }), cfg: () => NATIVE_OPENAI })
   expect(j.ready()).toBeNull()
   expect(await j.run(SENT, signal())).toEqual({ model: 'gpt-6-luna', status: 'ok', p_block: 0.12, risk: 0.4, confidence: 0.8, input_tokens: 1000, output_tokens: 0, cost_usd: 1000 * 0.10 / 1e6 })
   expect(api.seen[0]).toMatchObject({ path: '/v1/decisions', auth: 'Bearer sk-test-decisions' })
@@ -149,32 +166,63 @@ test('Decisions judge: POST /v1/decisions with the key as Bearer; probability, s
   api.stop()
   // a refused question
   const r = fakeApi(() => Response.json({ model: 'gpt-6-luna', answers: [{ type: 'refusal', name: 'block' }, { type: 'score', name: 'risk', score: 1, confidence: 0.5 }], usage: { input_tokens: 10 } }))
-  const jr = decisionsJudge({ cred: () => ({ token: 'k', kind: 'http', baseUrl: r.url, methods: [] }), cfg: () => DEFAULT_CLASSIFIER.openai })
+  const jr = decisionsJudge({ cred: () => ({ token: 'k', kind: 'http', baseUrl: r.url, methods: [] }), cfg: () => NATIVE_OPENAI })
   expect(await jr.run(SENT, signal())).toMatchObject({ status: 'refusal', p_block: null, risk: 1, detail: 'refused: block' })
   r.stop()
   // an HTTP error says the status and the API's message, never the request
   const e = fakeApi(() => Response.json({ error: { message: 'model not enabled' } }, { status: 403 }))
-  const je = decisionsJudge({ cred: () => ({ token: 'sk-never-shown', kind: 'http', baseUrl: e.url, methods: [] }), cfg: () => DEFAULT_CLASSIFIER.openai })
+  const je = decisionsJudge({ cred: () => ({ token: 'sk-never-shown', kind: 'http', baseUrl: e.url, methods: [] }), cfg: () => NATIVE_OPENAI })
   await expect(je.run(SENT, signal())).rejects.toThrow('HTTP 403: model not enabled')
   e.stop()
-  expect(decisionsJudge({ cred: () => undefined, cfg: () => DEFAULT_CLASSIFIER.openai }).ready()).toBe('no-key')
+  expect(decisionsJudge({ cred: () => undefined, cfg: () => NATIVE_OPENAI }).ready()).toBe('no-key')
 })
 
 test('Jev judge: POST /v1/systemone, noul and score answers, the versioned model from the response; no key = no-key', async () => {
   const api = fakeApi(() => Response.json({ model: 'jev-1.13.0', answers: { block: { type: 'noul', noul: 0.91 }, risk: { type: 'score', score: 2.6, legend: {}, probabilities: {}, confidence: 0.7 } }, usage: { input_tokens: 2000, output_tokens: 30 } }))
-  const j = jevJudge({ cred: () => ({ token: 'ts-test', kind: 'http', baseUrl: api.url, methods: [] }), cfg: () => DEFAULT_CLASSIFIER.typesafe })
+  const j = jevJudge({ cred: () => ({ token: 'ts-test', kind: 'http', baseUrl: api.url, methods: [] }), cfg: () => NATIVE_JEV })
   expect(await j.run(SENT, signal())).toEqual({ model: 'jev-1.13.0', status: 'ok', p_block: 0.91, risk: 2.6, confidence: 0.7, input_tokens: 2000, output_tokens: 30, cost_usd: 2000 * 0.042 / 1e6 })
   expect(api.seen[0]).toMatchObject({ path: '/v1/systemone', auth: 'Bearer ts-test' })
   expect(api.seen[0]!.body).toEqual(jevBody('jev-latest', SENT))
   api.stop()
-  expect(jevJudge({ cred: () => undefined, cfg: () => DEFAULT_CLASSIFIER.typesafe }).ready()).toBe('no-key')
+  expect(jevJudge({ cred: () => undefined, cfg: () => NATIVE_JEV }).ready()).toBe('no-key')
   // through a hub (OrcaRouter: same path; a hub that reports the charged cost: that one)
   const hub = fakeApi(() => Response.json({ model: 'typesafe/jev-1.13-20260917', answers: { block: { type: 'noul', noul: 0.2 }, risk: { type: 'score', score: 0.5, confidence: 0.8 } }, usage: { input_tokens: 300, output_tokens: 20, cost: 0.0000126 } }))
-  const jh = jevJudge({ cred: () => ({ token: 'hub-key', kind: 'http', baseUrl: hub.url, methods: [], roles: [] }), cfg: () => ({ ...DEFAULT_CLASSIFIER.typesafe, credential: 'orcarouter', model: 'typesafe/jev-1.13' }) })
+  const jh = jevJudge({ cred: () => ({ token: 'hub-key', kind: 'http', baseUrl: hub.url, methods: [], roles: [] }), cfg: () => ({ ...NATIVE_JEV, credential: 'orcarouter', model: 'typesafe/jev-1.13' }) })
   expect(await jh.run(SENT, signal())).toMatchObject({ status: 'ok', model: 'typesafe/jev-1.13-20260917', cost_usd: 0.0000126 })
   expect(hub.seen[0]).toMatchObject({ path: '/v1/systemone', auth: 'Bearer hub-key' })
   expect(hub.seen[0]!.body.model).toBe('typesafe/jev-1.13')
   hub.stop()
+})
+
+test('OpenRouter judge: POST /api/alpha/decisions with the Jev request shape for both models; usage.cost is the cost (no estimate); apiJudge follows config api', async () => {
+  const api = fakeApi((_p, body) => Response.json(body.model.startsWith('openai/')
+    ? { id: 'gen-dec-1', model: 'openai/gpt-6-luna-decisions-20261006', provider: 'OpenAI', answers: { block: { type: 'noul', noul: 0.3 }, risk: { type: 'score', score: 1.2, confidence: 0.6, legend: {}, probabilities: {} } }, usage: { input_tokens: 640, output_tokens: 0, cost: 0.0000286 } }
+    : { id: 'gen-dec-2', model: 'typesafe/jev-1.13-20260917', provider: 'TypeSafe', answers: { block: { type: 'noul', noul: 0.7 }, risk: { type: 'score', score: 2, confidence: 0.4, legend: {}, probabilities: {} } }, usage: { input_tokens: 650, output_tokens: 40 } }))
+  const cred = { token: 'sk-or-test', kind: 'http' as const, baseUrl: api.url, methods: [], roles: [] }
+  const luna = openrouterJudge({ cred: () => cred, cfg: () => DEFAULT_CLASSIFIER.openai })
+  expect(await luna.run(SENT, signal())).toEqual({ model: 'openai/gpt-6-luna-decisions-20261006', status: 'ok', p_block: 0.3, risk: 1.2, confidence: 0.6, input_tokens: 640, output_tokens: 0, cost_usd: 0.0000286 })
+  expect(api.seen[0]).toMatchObject({ path: '/api/alpha/decisions', auth: 'Bearer sk-or-test' })
+  expect(api.seen[0]!.body).toEqual(jevBody('openai/gpt-6-luna-decisions', SENT))
+  // no usage.cost: recorded as 0 and said so, never estimated
+  const jev = openrouterJudge({ cred: () => cred, cfg: () => DEFAULT_CLASSIFIER.typesafe })
+  expect(await jev.run(SENT, signal())).toMatchObject({ status: 'ok', model: 'typesafe/jev-1.13-20260917', p_block: 0.7, cost_usd: 0, detail: 'no usage.cost in the response' })
+  expect(api.seen[1]!.body.model).toBe('typesafe/jev-1.13')
+  expect(openrouterJudge({ cred: () => undefined, cfg: () => DEFAULT_CLASSIFIER.openai }).ready()).toBe('no-key')
+  // apiJudge: the configured api and credential, read on every call
+  let conf: ApiConfig = DEFAULT_CLASSIFIER.openai
+  const creds: Record<string, any> = { openrouter: cred, openai: { ...cred, token: 'sk-native' } }
+  const j = apiJudge({ cfg: () => conf, cred: n => creds[n] })
+  await j.run(SENT, signal())
+  expect(api.seen.at(-1)).toMatchObject({ path: '/api/alpha/decisions', auth: 'Bearer sk-or-test' })
+  conf = NATIVE_OPENAI
+  await j.run(SENT, signal()).catch(() => null)
+  expect(api.seen.at(-1)).toMatchObject({ path: '/v1/decisions', auth: 'Bearer sk-native' })
+  conf = { ...NATIVE_JEV, credential: 'openrouter' }
+  await j.run(SENT, signal()).catch(() => null)
+  expect(api.seen.at(-1)).toMatchObject({ path: '/v1/systemone' })
+  conf = { ...DEFAULT_CLASSIFIER.openai, credential: 'missing' }
+  expect(j.ready()).toBe('no-key')
+  api.stop()
 })
 
 test('claude judge: claude -p with the config model, no tools, settings or MCP, the fixed system prompt; the call JSON on stdin; never haiku', async () => {
@@ -286,10 +334,17 @@ test('a judge that throws or hangs is an error row; submit never throws', async 
   expect(broken.submit(USER, pre('Bash', {}))).toBeNull()
 })
 
-test('no key and haiku are skipped, the others still run', async () => {
-  const c = make({ typesafe: { ready: () => 'no-key', run: async () => { throw new Error('must not run') } }, claude: { ready: () => 'model', run: async () => { throw new Error('must not run') } } })
+test('no key and haiku are skipped, the others still run; each reason is logged once', async () => {
+  const logs: string[] = []
+  const c = make({ typesafe: { ready: () => 'no-key', run: async () => { throw new Error('must not run') } }, claude: { ready: () => 'model', run: async () => { throw new Error('must not run') } } }, { log: logs })
   const id = c.submit(USER, pre('Bash', { command: 'ls' }))!
   await c.idle()
+  c.submit(USER, pre('Bash', { command: 'ls -la' }))
+  await c.idle()
+  expect(logs).toEqual([
+    'classifier: typesafe skipped (its credential is not in config.json credentials); the others still run',
+    'classifier: claude skipped (config model is haiku); the others still run',
+  ])
   expect(store.resultsFor(id).map(r => [r.provider, r.status, r.detail])).toEqual([['claude', 'skipped', 'model'], ['openai', 'ok', null], ['typesafe', 'skipped', 'no-key']])
 })
 

@@ -43,7 +43,7 @@ import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
 import { postNotice, requestOriginNoter, type ApprovalDeps } from './approvals'
 import { createPkgGate, claudeReviewer } from './pkgreview'
-import { createClassifier, openClassifyStore, decisionsJudge, jevJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER } from './classifier'
+import { createClassifier, openClassifyStore, apiJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER } from './classifier'
 import { escHtml, htmlToText } from './setup'
 import { newClaimCode, isClaim, initBotSetups, adoptBotSetup, tokenBotId, resetNotice, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
 import { createElevation } from './elevation'
@@ -616,12 +616,16 @@ const pkgGate = createPkgGate({
 /** Tool call classifier, stage 1: record only (router/classifier.ts). */
 const classifyStore = openClassifyStore(DB_FILE)
 const classifierCfg = () => cfg.classifier ?? DEFAULT_CLASSIFIER
+// an unusable config block only turns the classifier off: the router starts as usual
+if (classifierCfg().error) log(`classifier: config.json classifier 有誤, 分類器關閉: ${classifierCfg().error}`)
+else if (classifierCfg().enabled) log(`classifier: on (record only), openai ${classifierCfg().openai.api} ${classifierCfg().openai.model}, typesafe ${classifierCfg().typesafe.api} ${classifierCfg().typesafe.model}, telegram tools ${classifierCfg().telegramTools ? 'on' : 'off'}`)
 const classifier = createClassifier({
   cfg: classifierCfg,
   store: classifyStore,
   judges: {
-    openai: decisionsJudge({ cred: () => cfg.credentials[classifierCfg().openai.credential], cfg: () => classifierCfg().openai }),
-    typesafe: jevJudge({ cred: () => cfg.credentials[classifierCfg().typesafe.credential], cfg: () => classifierCfg().typesafe }),
+    // Decisions and Jev: OpenRouter by default, or the native / systemone paths (config api)
+    openai: apiJudge({ cfg: () => classifierCfg().openai, cred: n => cfg.credentials[n] }),
+    typesafe: apiJudge({ cfg: () => classifierCfg().typesafe, cred: n => cfg.credentials[n] }),
     claude: claudeJudge({ claudeBin: cfg.claudeBin, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
   },
   // the same held values 10e matches exactly, plus every chat id the router knows

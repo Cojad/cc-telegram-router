@@ -24,7 +24,7 @@ mkdirSync(state)
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const OWNER = { id: 55500001, is_bot: false, first_name: 'Boss', username: 'boss' }
 const USER = { id: 66600001, is_bot: false, first_name: 'U', username: 'u' }
-const OPENAI_KEY = 'sk-fake-classifier-e2e-0001', TS_KEY = 'ts-fake-classifier-e2e-0001'
+const OR_KEY = 'sk-or-fake-classifier-e2e-0001'
 
 const apiSeen: Array<{ path: string; body: any; auth: string | null }> = []
 const updates: unknown[] = []
@@ -35,15 +35,13 @@ const api = Bun.serve({
     const url = new URL(req.url)
     const body = (req.headers.get('content-type') ?? '').includes('json') ? await req.json() : {}
     // the classifier APIs answer slowly: the hook must not wait for them
-    if (url.pathname === '/v1/decisions') {
+    // OpenRouter's Decisions router: one endpoint, the model picks Decisions or Jev
+    if (url.pathname === '/api/alpha/decisions') {
       apiSeen.push({ path: url.pathname, body, auth: req.headers.get('authorization') })
       await sleep(1500)
-      return Response.json({ model: 'gpt-6-luna', answers: [{ type: 'predicate', name: 'block', probability: 0.05 }, { type: 'score', name: 'risk', score: 0.2, confidence: 0.9, probabilities: [] }], usage: { input_tokens: 800, output_tokens: 0 } })
-    }
-    if (url.pathname === '/v1/systemone') {
-      apiSeen.push({ path: url.pathname, body, auth: req.headers.get('authorization') })
-      await sleep(1500)
-      return Response.json({ model: 'jev-1.13.0', answers: { block: { type: 'noul', noul: 0.85 }, risk: { type: 'score', score: 2.1, legend: {}, probabilities: {}, confidence: 0.6 } }, usage: { input_tokens: 820, output_tokens: 20 } })
+      return Response.json(String(body.model).startsWith('openai/')
+        ? { model: 'openai/gpt-6-luna-decisions-20261006', provider: 'OpenAI', answers: { block: { type: 'noul', noul: 0.05 }, risk: { type: 'score', score: 0.2, confidence: 0.9, legend: {}, probabilities: {} } }, usage: { input_tokens: 800, output_tokens: 0, cost: 0.0000286 } }
+        : { model: 'typesafe/jev-1.13-20260917', provider: 'TypeSafe', answers: { block: { type: 'noul', noul: 0.85 }, risk: { type: 'score', score: 2.1, legend: {}, probabilities: {}, confidence: 0.6 } }, usage: { input_tokens: 820, output_tokens: 20, cost: 0.0000146 } })
     }
     const parts = url.pathname.split('/')
     const method = parts.pop()!
@@ -67,8 +65,7 @@ writeFileSync(join(state, 'config.json'), JSON.stringify({
   bots: [{ name: 'cc', token: '123:test' }], home: dir, stateDir: state, owners: [String(OWNER.id)],
   model: 'claude-opus-5-5', claudeBin: fakeClaude, apiRoot: `http://127.0.0.1:${api.port}`,
   credentials: {
-    openai: { token: OPENAI_KEY, kind: 'http', baseUrl: `http://127.0.0.1:${api.port}`, methods: [] },
-    typesafe: { token: TS_KEY, kind: 'http', baseUrl: `http://127.0.0.1:${api.port}`, methods: [], roles: [] },
+    openrouter: { token: OR_KEY, kind: 'http', baseUrl: `http://127.0.0.1:${api.port}`, methods: [], roles: [] },
   },
   classifier: { enabled: true },
 }))
@@ -129,23 +126,24 @@ test('a user call the rules allow: the hook answers at once; Decisions, Jev and 
   worker(okey, 12)
   await until(() => got.some(g => g.includes('幫我找筆記')))
   // a Grep in its own folder: allowed for user; the pattern carries a held value and the chat ids
-  const r = await hook(ukey, 'Grep', { pattern: `${OPENAI_KEY}|${USER.id}|${OWNER.id}`, path: join(folder(ukey), 'notes') })
+  const r = await hook(ukey, 'Grep', { pattern: `${OR_KEY}|${USER.id}|${OWNER.id}`, path: join(folder(ukey), 'notes') })
   expect(r.out).toBeNull()
   expect(r.ms).toBeLessThan(1400)
+  expect(stderr).toContain('classifier: on (record only), openai openrouter openai/gpt-6-luna-decisions, typesafe openrouter typesafe/jev-1.13, telegram tools on')
   const call = await until(() => q("SELECT * FROM classify_calls")[0])
   expect(call).toMatchObject({ conv: ukey, role: 'user', tool: 'Grep', masked: 1 })
   await until(() => q(`SELECT count(*) n FROM classify_results WHERE call_id = ${call.id}`)[0].n === 3, 15000)
   const rs = Object.fromEntries(q(`SELECT * FROM classify_results WHERE call_id = ${call.id}`).map(x => [x.provider, x]))
-  expect(rs.openai).toMatchObject({ status: 'ok', model: 'gpt-6-luna', p_block: 0.05, risk: 0.2, input_tokens: 800 })
-  expect(rs.openai.cost_usd).toBeCloseTo(800 * 0.10 / 1e6, 12)
-  expect(rs.typesafe).toMatchObject({ status: 'ok', model: 'jev-1.13.0', p_block: 0.85, risk: 2.1, confidence: 0.6 })
+  // the billed cost from OpenRouter's usage.cost
+  expect(rs.openai).toMatchObject({ status: 'ok', model: 'openai/gpt-6-luna-decisions-20261006', p_block: 0.05, risk: 0.2, input_tokens: 800, cost_usd: 0.0000286 })
+  expect(rs.typesafe).toMatchObject({ status: 'ok', model: 'typesafe/jev-1.13-20260917', p_block: 0.85, risk: 2.1, confidence: 0.6, cost_usd: 0.0000146 })
   expect(rs.claude).toMatchObject({ status: 'ok', model: 'claude-opus-5-5', p_block: 0.1, risk: 0.5, cost_usd: 0.002, detail: '一般讀檔' })
   for (const p of ['openai', 'typesafe']) expect(rs[p].latency_ms).toBeGreaterThanOrEqual(1400)
-  expect(apiSeen.map(s => [s.path, s.auth])).toEqual(expect.arrayContaining([['/v1/decisions', `Bearer ${OPENAI_KEY}`], ['/v1/systemone', `Bearer ${TS_KEY}`]]))
+  expect(apiSeen.map(s => [s.path, s.auth, s.body.model]).sort()).toEqual([['/api/alpha/decisions', `Bearer ${OR_KEY}`, 'openai/gpt-6-luna-decisions'], ['/api/alpha/decisions', `Bearer ${OR_KEY}`, 'typesafe/jev-1.13']])
   const outgoing = [...apiSeen.map(s => JSON.stringify(s.body)), await Bun.file(join(dir, 'claude-stdin')).text(), call.sent]
   for (const o of outgoing) {
     expect(o).toContain('Grep')
-    expect(o).not.toContain(OPENAI_KEY)
+    expect(o).not.toContain(OR_KEY)
     expect(o).not.toContain(String(USER.id))
     expect(o).not.toContain(String(OWNER.id))
     expect(o).not.toContain(dir)
@@ -188,8 +186,9 @@ test('/router classifier from the owner terminal: the report', async () => {
   expect(out).toContain('🧪 工具呼叫分類器 (第一階段, 只記錄): 最近 7 天, 2 筆呼叫')
   expect(out).toContain('【一般工具】 1 筆')
   expect(out).toContain('【Telegram 工具 (要送到 Telegram 的內容)】 1 筆')
-  expect(out).toContain('openai (gpt-6-luna): 成功 1')
-  expect(out).toContain('typesafe (jev-1.13.0): 成功 1')
+  expect(out).toContain('openai (openai/gpt-6-luna-decisions-20261006): 成功 1')
+  expect(out).toContain('typesafe (typesafe/jev-1.13-20260917): 成功 1')
+  expect(out).toContain('實際費用 (openai + typesafe): $0.00009')
   expect(out).toContain('claude (claude-opus-5-5): 成功 1')
   expect(out).toContain('實際費用 (openai + typesafe)')
   expect(out).toContain('claude 訂閱用量 (API 換算, 不是實際支出): $0.004')
