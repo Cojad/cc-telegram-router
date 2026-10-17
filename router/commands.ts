@@ -10,7 +10,7 @@ import type { MessageRecord } from './telegram/store'
 import { gmt8, maskTokens } from './context'
 import { describeCreds } from './credentials'
 import { SECRET_RE, runSecretCommand, describeSecrets, describeHandles } from './secrets'
-import { addedSetupText } from './setup'
+import { addedSetupText, escHtml } from './setup'
 
 export const ROLES = ['owner', 'admin', 'power', 'user', 'guest'] as const
 
@@ -28,7 +28,8 @@ export type CommandInput = {
  *  and appends whether that worked to the reply. */
 /** private: the reply lists other conversations or people; in a group it
  *  goes to the sender's DM instead. */
-export type CommandOutput = { reply: string; private?: boolean; deleteMessage?: boolean; deleteLabel?: string; logs: Array<{ conv: string; text: string }>; after?: () => void }
+/** html: the reply is written for parse_mode HTML (the bot settings notices, router/setup.ts). */
+export type CommandOutput = { reply: string; private?: boolean; deleteMessage?: boolean; deleteLabel?: string; html?: boolean; logs: Array<{ conv: string; text: string }>; after?: () => void }
 
 export interface CommandDeps {
   cfg: Config
@@ -83,7 +84,7 @@ export interface CommandDeps {
     describe(bot: string): string
     skip(bot: string): void
     resetPersona(bot: string): void
-    /** Make this chat the approvals group; the reply says what happened or what is missing. */
+    /** Make this chat the approvals group; the reply (HTML: it ends with the bot settings notice) says what happened or what is missing. */
     group(bot: string, chatId: string): Promise<string>
   }
   sendTo(bot: string, chatId: string, text: string): Promise<void>
@@ -321,7 +322,9 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         if (!token) return done(`用法: /router bot ${op} <名稱> <token>`)
         const username = op === 'add' ? await deps.bots.add(name, token) : await deps.bots.rotate(name, token)
         const notice = op === 'add' ? deps.botNotice?.(name) : undefined
-        return done(`${op === 'add' ? `已新增 bot ${name}: @${username}\n${addedSetupText(username, db.getBotSetup(name))}` : `已更換 bot ${name}: @${username}`}${notice ? `\n\n${notice}` : ''}`, { deleteMessage: true })
+        const said = op === 'add' ? `已新增 bot ${name}: @${username}\n${addedSetupText(username, db.getBotSetup(name))}` : `已更換 bot ${name}: @${username}`
+        // the settings notice is HTML (bold): the rest of the reply is escaped around it
+        return notice ? done(`${escHtml(said)}\n\n${notice}`, { deleteMessage: true, html: true }) : done(said, { deleteMessage: true })
       } catch (e) {
         return done(`bot ${op} 失敗: ${e instanceof Error ? e.message : e}`, { deleteMessage: hasToken })
       }
@@ -721,7 +724,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       if (op === 'persona') { deps.setup.resetPersona(input.bot); return done('下次 owner 私訊這隻 bot 時會重新做人設訪談') }
       if (op === 'group') {
         if (input.chatType !== 'supergroup' && input.chatType !== 'group') return done('請在要當審核群組的那個群組裡下 /router setup group')
-        return done(await deps.setup.group(input.bot, input.chatId))
+        return done(await deps.setup.group(input.bot, input.chatId), { html: true })
       }
       return done('用法: /router setup [show] | group | skip | persona')
     }

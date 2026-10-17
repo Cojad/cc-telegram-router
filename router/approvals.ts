@@ -42,7 +42,7 @@ export interface ApprovalDeps {
   owners: string[]
   isAdmin(uid: string): boolean
   /** Send with one row of inline buttons (none for a notice); the message id, or null when it failed. */
-  send(bot: string, to: Place, text: string, buttons: Button[]): Promise<number | null>
+  send(bot: string, to: Place, text: string, buttons: Button[], opts?: { html?: boolean }): Promise<number | null>
   /** Replace a message's text; buttons replace its keyboard (none = removed). */
   edit(bot: string, chat_id: string, message_id: number, text: string, buttons?: Button[]): Promise<void>
   /** A request kind#ref was just made by conv (to find the message that led to it later). */
@@ -112,9 +112,9 @@ export function usePlace(db: RouterDb, bot: string): Place | null {
   return s?.approvals_chat && s.authuse_topic ? { chat_id: s.approvals_chat, thread_id: s.authuse_topic } : null
 }
 
-export async function postNotice(deps: ApprovalDeps, bot: string, text: string): Promise<boolean> {
+export async function postNotice(deps: ApprovalDeps, bot: string, text: string, opts?: { html?: boolean }): Promise<boolean> {
   const place = noticePlace(deps.db, deps.owners, bot)
-  return !!place && (await deps.send(bot, place, text, [])) != null
+  return !!place && (await deps.send(bot, place, text, [], opts)) != null
 }
 
 /** The elevation log (提權紀錄) lives only in an approvals group; without one it stays in router.db. */

@@ -44,6 +44,7 @@ import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants
 import { postNotice, requestOriginNoter, type ApprovalDeps } from './approvals'
 import { createPkgGate, claudeReviewer } from './pkgreview'
 import { createClassifier, openClassifyStore, decisionsJudge, jevJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER } from './classifier'
+import { escHtml, htmlToText } from './setup'
 import { newClaimCode, isClaim, initBotSetups, adoptBotSetup, tokenBotId, resetNotice, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
 import { createElevation } from './elevation'
 import { dmLabel, personLabel } from './commands'
@@ -375,7 +376,7 @@ const ipc = createIpc({
       log(`${conv.bot}: persona saved to ${botDir(cfg, conv.bot)}/CLAUDE.md, ${others.length} other worker(s) marked for rotation`)
       const s = db.getBotSetup(conv.bot)
       if (!s?.approvals_chat && !s?.group_skipped) {
-        setTimeout(() => void approvalDeps.send(conv.bot, { chat_id: conv.chat_id }, `${GROUP_GUIDE}\n\n${botSettingsNotice(meOf.get(conv.bot) ?? null)}`, [{ text: '略過, 用私訊接收', data: `setup:${conv.bot}:skip` }]), 3000)
+        setTimeout(() => void approvalDeps.send(conv.bot, { chat_id: conv.chat_id }, `${escHtml(GROUP_GUIDE)}\n\n${botSettingsNotice(meOf.get(conv.bot) ?? null)}`, [{ text: '略過, 用私訊接收', data: `setup:${conv.bot}:skip` }], { html: true }), 3000)
       }
       return { content: [{ type: 'text', text: `已儲存人設到 ${botDir(cfg, conv.bot)}/CLAUDE.md, 這隻 bot 的其他對話會在下次叫醒時套用 (這個對話在下次重啟後生效, 現在就照新人設說話即可). router 會接著私訊 owner 審核群組的設定步驟, 你不用再說明.` }] }
     }
@@ -447,7 +448,7 @@ const ipc = createIpc({
     if (!out) return `不是 /router 指令: ${text}`
     for (const l of out.logs) db.addLog(l.conv, l.text)
     out.after?.()
-    return out.reply
+    return out.html ? htmlToText(out.reply) : out.reply
   },
   decorate(key, qid, params, conn) {
     const c = db.getConversation(key)
@@ -535,11 +536,12 @@ function notifyConversation(c: Conversation, text: string, about?: { kind: strin
 const approvalDeps: ApprovalDeps = {
   db, owners: cfg.owners,
   isAdmin: uid => roleOf(commandDeps, uid) === 'admin',
-  async send(bot, to, text, buttons) {
+  async send(bot, to, text, buttons, opts) {
     const api = bots.get(bot)?.bot.api
     if (!api) return null
     return api.sendMessage(to.chat_id, text, {
       ...(to.thread_id ? { message_thread_id: to.thread_id } : {}),
+      ...(opts?.html ? { parse_mode: 'HTML' as const } : {}),
       ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map(b => ({ text: b.text, callback_data: b.data }))] } } : {}),
     }).then(m => m.message_id, e => { log(`send to ${to.chat_id}: ${e}`); return null })
   },
@@ -718,16 +720,16 @@ async function ensureSecretTopic(bot: string): Promise<void> {
   log(`${bot}: created topic ${SECRET_TOPIC} in the approvals group`)
 }
 
-/** Group setup: /router setup group, run in the forum group itself. */
+/** Group setup: /router setup group, run in the forum group itself. The reply is HTML (the bot settings notice). */
 async function setupGroup(bot: string, chatId: string): Promise<string> {
   const h = bots.get(bot)
-  if (!h?.info) return 'bot 還沒啟動完成, 稍後再試'
+  if (!h?.info) return escHtml('bot 還沒啟動完成, 稍後再試')
   const chat = await h.bot.api.getChat(chatId).catch(() => null)
-  if (!chat) return '查不到這個群組'
+  if (!chat) return escHtml('查不到這個群組')
   const member = await h.bot.api.getChatMember(chatId, h.info.id).catch(() => null)
   const check = checkGroup(chat as { type: string; is_forum?: boolean }, member as { status: string; can_manage_topics?: boolean } | null)
   // the bot settings notice either way: privacy matters for every group, not only the approvals one
-  if (!check.ok) return `⛔ ${check.reason}\n\n${botSettingsNotice(meOf.get(bot) ?? h.info)}`
+  if (!check.ok) return `⛔ ${escHtml(check.reason)}\n\n${botSettingsNotice(meOf.get(bot) ?? h.info)}`
   const s = db.getBotSetup(bot)
   const same = s?.approvals_chat === chatId
   const reuse = same && !!s.notices_topic && !!s.approvals_topic && !!s.elevlog_topic && !!s.authuse_topic && !!s.secret_topic
@@ -746,7 +748,7 @@ async function setupGroup(bot: string, chatId: string): Promise<string> {
     await approvalDeps.send(bot, { chat_id: chatId, thread_id: approvals }, '這裡會收到權限申請: 跨對話傳訊, 套件安裝, 向 owner 的提權申請. owner 與 admin 可以按允許或拒絕.', [])
     await approvalDeps.send(bot, { chat_id: chatId, thread_id: elevlog }, '提權紀錄: 所有被擋下的動作, 所有提權請求 (主動或被動), 以及提權成功 (附原始請求的連結).', [])
   }
-  return `✅ 審核群組設定完成${reuse ? ' (沿用既有話題)' : ''}: 重要通知與權限申請之後都送到這個群組的話題\n\n${botSettingsNotice(meOf.get(bot) ?? h.info)}`
+  return `${escHtml(`✅ 審核群組設定完成${reuse ? ' (沿用既有話題)' : ''}: 重要通知與權限申請之後都送到這個群組的話題`)}\n\n${botSettingsNotice(meOf.get(bot) ?? h.info)}`
 }
 
 /** A message gate() delivered: queue it for its conversation and make sure a worker picks it up. */
@@ -955,18 +957,21 @@ async function answerCommand(bot: Bot, input: CommandInput & { messageId: number
     // other people's messages when it is an admin there.
     const ok = await bot.api.deleteMessage(chatId, messageId).then(() => true, e => { log(`delete command message failed: ${e}`); return false })
     const what = out.deleteLabel ?? '含 token 的訊息'
-    reply += ok ? `\n已刪除${what}` : `\n⚠️ 無法刪除${what} (bot 沒有刪除權限), 請${out.deleteLabel ? '自己刪掉那則訊息' : '手動刪除'}`
+    const note = ok ? `\n已刪除${what}` : `\n⚠️ 無法刪除${what} (bot 沒有刪除權限), 請${out.deleteLabel ? '自己刪掉那則訊息' : '手動刪除'}`
+    reply += out.html ? escHtml(note) : note
   }
   // Listings name other conversations and people: in a group they go to
   // the sender's DM, the group only hears that they were sent.
   const toDm = out.private && input.chatType !== 'private'
   const target = toDm ? senderId : String(chatId)
   // Long listings (log, chat) can exceed Telegram's 4096 per message.
-  const parts = chunk(toDm ? `(${input.text.trim()} 的結果, 來自群組 ${chats.get(String(chatId))?.title ?? chatId})\n${reply}` : reply, 4000, 'newline')
+  const head = toDm ? `(${input.text.trim()} 的結果, 來自群組 ${chats.get(String(chatId))?.title ?? chatId})\n` : ''
+  const parts = chunk(`${out.html ? escHtml(head) : head}${reply}`, 4000, 'newline')
+  const html = out.html ? { parse_mode: 'HTML' as const } : {}
   let sent = true
   for (let i = 0; i < parts.length && sent; i++) {
     // network errors, 5xx and 429 are tried again within a minute (router/sendretry.ts)
-    sent = await sendWithRetry(() => bot.api.sendMessage(target, parts[i]!, !toDm && i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {}), { what: 'command reply', log })
+    sent = await sendWithRetry(() => bot.api.sendMessage(target, parts[i]!, { ...html, ...(!toDm && i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {}) }), { what: 'command reply', log })
       .then(() => true, () => false)
   }
   if (toDm) {
@@ -1108,7 +1113,8 @@ function startBot(bc: BotConfig): BotHandle {
     if (mcm && (mcm.chat.type === 'group' || mcm.chat.type === 'supergroup') && ['left', 'kicked'].includes(mcm.old_chat_member.status) && ['member', 'administrator', 'restricted'].includes(mcm.new_chat_member.status)) {
       const admin = mcm.new_chat_member.status === 'administrator'
       const notice = [admin ? null : privacyNotice(meOf.get(bc.name) ?? null), B2B_NOTICE].filter(Boolean).join('\n\n')
-      void postNotice(approvalDeps, bc.name, `➕ @${h.info?.username ?? bc.name} 被加入群組 ${mcm.chat.title ?? mcm.chat.id}${admin ? ' (管理員)' : ''}\n\n${notice}`).catch(e => log(`group join notice: ${e}`))
+      // the notices are HTML (bold): the group's title and the bot's name are escaped
+      void postNotice(approvalDeps, bc.name, `${escHtml(`➕ @${h.info?.username ?? bc.name} 被加入群組 ${mcm.chat.title ?? mcm.chat.id}${admin ? ' (管理員)' : ''}`)}\n\n${notice}`, { html: true }).catch(e => log(`group join notice: ${e}`))
     }
     // Added to a broadcast channel: not supported (posts only go to events); tell the owner.
     if (mcm && mcm.chat.type === 'channel' && ['left', 'kicked'].includes(mcm.old_chat_member.status) && ['member', 'administrator'].includes(mcm.new_chat_member.status)) {
@@ -1134,7 +1140,7 @@ function startBot(bc: BotConfig): BotHandle {
         else {
           commandDeps.setup.skip(bc.name)
           answer = '已略過, 通知與申請都會私訊給你'
-          await ctx.editMessageText(`${GROUP_GUIDE}\n\n${botSettingsNotice(meOf.get(bc.name) ?? null)}\n\n${answer}`).catch(() => {})
+          await ctx.editMessageText(`${escHtml(GROUP_GUIDE)}\n\n${botSettingsNotice(meOf.get(bc.name) ?? null)}\n\n${escHtml(answer)}`, { parse_mode: 'HTML' }).catch(() => {})
         }
       }
       await ctx.answerCallbackQuery({ text: answer ?? '' }).catch(() => {})

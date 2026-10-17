@@ -313,6 +313,7 @@ test('bot add answers once its getMe is in: bot list right after shows the new b
   const added = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('已新增 bot two')))
   expect(added.body.text).toStartWith('已新增 bot two: @two_bot\n')
   expect(added.body.text).toContain('它會帶你完成初次設定') // a new bot
+  expect(added.body.parse_mode).toBe('HTML') // the settings notice is bold (HTML), the rest escaped
   expect(q("SELECT bot_id FROM bot_setup WHERE bot = 'two'")[0].bot_id).toBe('456') // the setup belongs to that bot
   expect(q("SELECT bot_id FROM bot_setup WHERE bot = 'cc'")[0].bot_id).toBe('123') // from the token at start
   // the new bot's poller is still waiting on its own (slow) getMe

@@ -17,7 +17,7 @@ import { parseRelay } from '../relay'
 import { buildReplyMeta } from '../telegram/inbound'
 import type { Access } from '../telegram/policy'
 import { refuseUse, badPath } from '../credentials'
-import { privacyNotice, botSettingsNotice, B2B_NOTICE } from '../setup'
+import { privacyNotice, botSettingsNotice, B2B_NOTICE, escHtml, htmlToText } from '../setup'
 
 const OWNER = '137438526', MEMBER = '700', STRANGER = '800', GROUP = '-100700'
 let dir: string, db: RouterDb, deps: SecretDeps, access: Access
@@ -238,14 +238,28 @@ test('global http credentials: dot segments and their encodings are refused befo
 })
 
 test('group privacy notice (柯姊 wording): what on and off mean, the current setting from getMe (true = off), how to turn it off, re-add after changing, admins are not limited; the bot-to-bot notice says it cannot be checked', () => {
-  const on = privacyNotice({ username: 'x_bot', can_read_all_group_messages: false })!
-  const off = privacyNotice({ username: 'x_bot', can_read_all_group_messages: true })!
+  // HTML now (bold, parse_mode HTML): the words are unchanged
+  const on = htmlToText(privacyNotice({ username: 'x_bot', can_read_all_group_messages: false })!)
+  const off = htmlToText(privacyNotice({ username: 'x_bot', can_read_all_group_messages: true })!)
   for (const n of [on, off]) for (const s of ['🔒 群組隱私模式 (Group Privacy)', '每隻 bot 預設都是開啟的', '用名字叫它 (例如「柯柯」)', '通常要改為關閉', '私訊 @BotFather → /setprivacy → 選這隻 bot → Disable.', '⚠️ 兩件很重要的事:', '1. 改完之後, 要把 bot 從群組移除再重新加入才會生效', '2. 如果 bot 是該群組的管理員, 就不受隱私模式限制']) expect(n).toContain(s)
   expect(on).toContain('你目前 Group Privacy 設定: ⚠️ 開啟 (ℹ️ Bot 無法看到每則群組訊息, 建議改為關閉)')
   expect(off).toContain('你目前 Group Privacy 設定: ✅ 關閉 (Bot 可以看到每則群組訊息, 符合建議的設定)')
-  expect(privacyNotice({ username: 'x_bot' })).toBe(on) // missing = on
+  expect(htmlToText(privacyNotice({ username: 'x_bot' })!)).toBe(on) // missing = on
   expect(privacyNotice(null)).toBeNull()
-  for (const s of ['🤖 Bot 之間互傳訊息 (Bot-to-Bot Communication Mode)', '預設關閉. router 沒辦法查到它目前是開是關', '私訊要兩隻 bot 都開啟才能互傳', '設定方式: 私訊 @BotFather → /setbot2bot → 選這隻 bot → Enable (開啟) 或 Disable (關閉); 也可以在 @BotFather 的 Mini App 裡設定.', '包括 /secret 這類指令', '互相回覆停不下來']) expect(B2B_NOTICE).toContain(s)
+  for (const s of ['🤖 Bot 之間互傳訊息 (Bot-to-Bot Communication Mode)', '預設關閉. router 沒辦法查到它目前是開是關', '私訊要兩隻 bot 都開啟才能互傳', '設定方式: 私訊 @BotFather → /setbot2bot → 選這隻 bot → Enable (開啟) 或 Disable (關閉); 也可以在 @BotFather 的 Mini App 裡設定.', '包括 /secret 這類指令', '互相回覆停不下來']) expect(htmlToText(B2B_NOTICE)).toContain(s)
+})
+
+test('the settings notices are bold where 柯姊\'s reviewed draft is (parse_mode HTML), emoji and the rest not', () => {
+  const bold = (html: string) => [...html.matchAll(/<b>([^<]*)<\/b>/g)].map(m => m[1])
+  expect(bold(privacyNotice({ username: 'x_bot', can_read_all_group_messages: false })!)).toEqual([
+    '群組隱私模式 (Group Privacy)', '開啟 (預設):', '關閉:', '關閉方式:', '兩件很重要的事:',
+    '改完之後, 要把 bot 從群組移除再重新加入才會生效.', '如果 bot 是該群組的管理員, 就不受隱私模式限制',
+  ])
+  expect(bold(B2B_NOTICE)).toEqual(['Bot 之間互傳訊息 (Bot-to-Bot Communication Mode)', '關閉 (預設):', '開啟:', '設定方式:', '開啟的風險:'])
+  expect(privacyNotice({ username: 'x_bot' })).toContain('\n你目前 Group Privacy 設定: ⚠️ 開啟') // that line is not bold
+  expect(B2B_NOTICE.split('\n').at(-1)).not.toContain('<b>') // her advice paragraph is not bold
+  expect(escHtml('<A&B> "x"')).toBe('&lt;A&amp;B&gt; "x"')
+  expect(htmlToText(escHtml('<A&B>'))).toBe('<A&B>')
 })
 
 test('/router bot add: the reply carries the new bot\'s settings notice (privacy, bot-to-bot); rotate does not', async () => {
@@ -259,5 +273,6 @@ test('/router bot add: the reply carries the new bot\'s settings notice (privacy
   const add = (await runCommand(dm(OWNER, '/router bot add two 9:NEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEW'), cdeps))!
   expect(add.reply).toStartWith('已新增 bot two: @two_bot\n')
   expect(add.reply).toEndWith(`\n\n${botSettingsNotice(me)}`)
+  expect(add.html).toBe(true) // sent with parse_mode HTML
   expect((await runCommand(dm(OWNER, '/router bot rotate two 9:NEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEW'), cdeps))!.reply).toBe('已更換 bot two: @two_bot')
 })

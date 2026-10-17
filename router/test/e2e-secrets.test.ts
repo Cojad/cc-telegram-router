@@ -45,6 +45,8 @@ const api = Bun.serve({
     const method = parts.pop()!, token = parts.pop()!.replace(/^bot/, '')
     calls.push({ method, body, token })
     const ok = (result: unknown) => Response.json({ ok: true, result })
+    // like Telegram, parse_mode HTML with a stray < > or & is refused (the settings notices are HTML)
+    if (body.parse_mode === 'HTML' && badHtml(String(body.text))) return Response.json({ ok: false, error_code: 400, description: "Bad Request: can't parse entities" })
     switch (method) {
       // a token Telegram does not know; the router's own bot keeps privacy mode on
       case 'getMe': return token.includes('unknown') ? Response.json({ ok: false, error_code: 401, description: 'Unauthorized' }, { status: 401 })
@@ -106,6 +108,8 @@ const inGroup = (from: typeof OWNER, text: string, reply?: { message_id: number;
   updates.push({ update_id: id, message: { message_id: id, date: now, chat: { id: GROUP, type: 'supergroup', title: 'Test group' }, from, text, ...(reply ? { reply_to_message: { ...reply, date: now, chat: { id: GROUP, type: 'supergroup', title: 'Test group' } } } : {}) } })
   return id
 }
+/** What Telegram refuses in parse_mode HTML: tags other than <b>, or an & that is not an entity. */
+const badHtml = (t: string) => { const rest = t.replace(/<\/?b>/g, ''); return /[<>]/.test(rest) || /&(?!(amp|lt|gt|quot);)/.test(rest) }
 const sentTo = (chat: number, prefix: string) => calls.filter(c => c.method === 'sendMessage' && Number(c.body.chat_id) === chat && String(c.body.text).startsWith(prefix))
 const worker = (key: string, pid: number, delivered: string[] = []) => {
   const c = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', key), pid }, onMessage(m) { if (m.t === 'deliver') { delivered.push(JSON.stringify(m.params)); c.send({ t: 'ack', qid: m.qid }) } } })
@@ -223,6 +227,14 @@ test('added to a group: the owner is told about privacy mode (re-add after chang
   const a = await until(() => sentTo(555, '➕').find(c => String(c.body.text).includes('(管理員)')))
   expect(a.body.text).not.toContain('群組隱私模式')
   expect(a.body.text).toContain('Bot-to-Bot Communication Mode')
+  // HTML with 柯姊's bold; a group title with < > & still goes out, escaped
+  expect(n.body.parse_mode).toBe('HTML')
+  expect(n.body.text).toContain('<b>群組隱私模式 (Group Privacy)</b>')
+  updates.push({ update_id: mid, my_chat_member: { chat: { id: -100799, type: 'supergroup', title: 'R&D <team> "1"' }, from: OWNER, date: now, old_chat_member: { status: 'left', user: { id: 1, is_bot: true, first_name: 'cc' } }, new_chat_member: { status: 'member', user: { id: 1, is_bot: true, first_name: 'cc' } } } })
+  const odd = await until(() => sentTo(555, '➕ @cc_bot 被加入群組 R&amp;D &lt;team&gt; "1"')[0])
+  expect(odd.body.parse_mode).toBe('HTML')
+  expect(badHtml(odd.body.text)).toBe(false)
+  expect(calls.some(c => c.method === 'sendMessage' && c.body.parse_mode === 'HTML' && badHtml(String(c.body.text)))).toBe(false) // nothing refused
 }, 30000)
 
 test('bot settings notices on first-run setup and /router setup group: the group guide and the setup result (done or refused) carry the privacy notice and bot-to-bot', async () => {
@@ -231,6 +243,7 @@ test('bot settings notices on first-run setup and /router setup group: the group
   await until(() => owner.state().kind === 'ready')
   expect((await owner.call('save_bot_profile', { name: '小鯨', persona: '你是小鯨.' })).isError).toBeFalsy()
   const guide = await until(() => sentTo(555, '最後一步: 設定審核群組')[0], 10000)
+  expect(guide.body.parse_mode).toBe('HTML')
   for (const s of ['你目前 Group Privacy 設定: ⚠️ 開啟', '從群組移除再重新加入才會生效', '不受隱私模式限制', 'Bot-to-Bot Communication Mode']) expect(guide.body.text).toContain(s)
   owner.close()
   // a plain group cannot be the approvals group: refused, with the notice all the same
@@ -242,4 +255,5 @@ test('bot settings notices on first-run setup and /router setup group: the group
   updates.push({ update_id: mid, message: { message_id: mid++, date: now, chat: { id: -100801, type: 'supergroup', title: 'Approvals' }, from: OWNER, text: '/router setup group', entities: [{ type: 'bot_command', offset: 0, length: 7 }] } })
   const done = await until(() => sentTo(-100801, '✅ 審核群組設定完成')[0])
   for (const s of ['你目前 Group Privacy 設定: ⚠️ 開啟', '從群組移除再重新加入才會生效', 'Bot-to-Bot Communication Mode']) expect(done.body.text).toContain(s)
+  expect([no.body.parse_mode, done.body.parse_mode]).toEqual(['HTML', 'HTML'])
 }, 30000)

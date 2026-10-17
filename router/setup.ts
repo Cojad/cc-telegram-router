@@ -132,43 +132,52 @@ export function describeSetup(s: BotSetup | null, ownerDm: string | undefined): 
   return [`人設: ${needsPersona(s) ? '尚未完成 (owner 下次私訊時會開始訪談)' : '已完成'}`, `審核與通知: ${place}`].join('\n')
 }
 
+/** Text for Telegram's parse_mode HTML: & < > escaped (names of groups, people, channels too). */
+export const escHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+/** The plain text of a message written for parse_mode HTML (the terminal CLI prints it so). */
+export const htmlToText = (s: string) => s.replace(/<\/?b>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+const t = escHtml
+const b = (s: string) => `<b>${escHtml(s)}</b>`
+
 /** Group privacy (@BotFather /setprivacy; getMe can_read_all_group_messages
- *  true = off). Wording by 柯姊 (2026-10-17); the current-setting line is
- *  picked from getMe. null when getMe is not known yet. */
+ *  true = off). Wording by 柯姊 (2026-10-17), bold where her reviewed draft
+ *  had it; HTML (parse_mode HTML), like B2B_NOTICE: whoever sends it sends
+ *  the whole message as HTML and escapes the rest (escHtml). The
+ *  current-setting line is picked from getMe. null when getMe is not known yet. */
 export function privacyNotice(me: { username: string; can_read_all_group_messages?: boolean } | null): string | null {
   if (!me) return null
   const off = me.can_read_all_group_messages === true
   return [
-    '🔒 群組隱私模式 (Group Privacy)',
-    '這是 @BotFather 裡的設定, 每隻 bot 預設都是開啟的.',
-    '- 開啟 (預設): bot 在群組裡只收得到以 / 開頭的指令, 以及直接回覆 bot 的訊息. 用名字叫它 (例如「柯柯」) 或一般聊天, 它都看不到.',
-    '- 關閉: bot 看得到群組裡的每一則訊息, 可以用名字呼叫, 也能跟上對話的前後文.',
-    '為了讓分身在群組裡好用, 通常要改為關閉.',
+    `🔒 ${b('群組隱私模式 (Group Privacy)')}`,
+    t('這是 @BotFather 裡的設定, 每隻 bot 預設都是開啟的.'),
+    `- ${b('開啟 (預設):')}${t(' bot 在群組裡只收得到以 / 開頭的指令, 以及直接回覆 bot 的訊息. 用名字叫它 (例如「柯柯」) 或一般聊天, 它都看不到.')}`,
+    `- ${b('關閉:')}${t(' bot 看得到群組裡的每一則訊息, 可以用名字呼叫, 也能跟上對話的前後文.')}`,
+    t('為了讓分身在群組裡好用, 通常要改為關閉.'),
     '',
-    off ? '你目前 Group Privacy 設定: ✅ 關閉 (Bot 可以看到每則群組訊息, 符合建議的設定)'
-      : '你目前 Group Privacy 設定: ⚠️ 開啟 (ℹ️ Bot 無法看到每則群組訊息, 建議改為關閉)',
+    t(off ? '你目前 Group Privacy 設定: ✅ 關閉 (Bot 可以看到每則群組訊息, 符合建議的設定)'
+      : '你目前 Group Privacy 設定: ⚠️ 開啟 (ℹ️ Bot 無法看到每則群組訊息, 建議改為關閉)'),
     '',
-    '關閉方式: 私訊 @BotFather → /setprivacy → 選這隻 bot → Disable.',
+    `${b('關閉方式:')}${t(' 私訊 @BotFather → /setprivacy → 選這隻 bot → Disable.')}`,
     '',
-    '⚠️ 兩件很重要的事:',
-    '1. 改完之後, 要把 bot 從群組移除再重新加入才會生效. 已經在群組裡的 bot 不會自動套用新設定, 每個群組都要重加一次.',
-    '2. 如果 bot 是該群組的管理員, 就不受隱私模式限制, 本來就看得到全部訊息, 那個群組可以不用改.',
+    `⚠️ ${b('兩件很重要的事:')}`,
+    `1. ${b('改完之後, 要把 bot 從群組移除再重新加入才會生效.')}${t(' 已經在群組裡的 bot 不會自動套用新設定, 每個群組都要重加一次.')}`,
+    `2. ${b('如果 bot 是該群組的管理員, 就不受隱私模式限制')}${t(', 本來就看得到全部訊息, 那個群組可以不用改.')}`,
   ].join('\n')
 }
 
 /** Bot-to-Bot Communication Mode (@BotFather): Bot API getMe has no field
  *  for it, so it cannot be checked, only explained. Wording by 柯姊 (2026-10-17). */
 export const B2B_NOTICE = [
-  '🤖 Bot 之間互傳訊息 (Bot-to-Bot Communication Mode)',
-  '這是 @BotFather 裡的設定, 預設關閉. router 沒辦法查到它目前是開是關.',
-  '- 關閉 (預設): 這隻 bot 收不到其他 bot 的訊息.',
-  '- 開啟: 在群組裡, 別的 bot 對它下 /指令@這隻bot, 或回覆它的訊息時, 它收得到. 如果它是群組管理員或關了隱私模式, 會收到群組裡其他 bot 的所有訊息. 私訊要兩隻 bot 都開啟才能互傳.',
-  '設定方式: 私訊 @BotFather → /setbot2bot → 選這隻 bot → Enable (開啟) 或 Disable (關閉); 也可以在 @BotFather 的 Mini App 裡設定.',
-  '開啟的風險: router 不分辨發話者是人還是 bot, 其他 bot 的訊息會像一般成員一樣交給分身處理, 包括 /secret 這類指令; 兩隻 bot 也可能互相回覆停不下來.',
-  '如果你希望你的 bot 能跟一般帳號一樣與其他 bot 互動, 就需要打開, 但這有機會增加被其他機器人攻擊的風險, 需要小心並理解. 如果你沒打算讓 bot 跟其他 bot 溝通, 不用去打開; 如果你希望 bot 能跟其他 bot 溝通來擴展能力, 則可以打開.',
+  `🤖 ${b('Bot 之間互傳訊息 (Bot-to-Bot Communication Mode)')}`,
+  t('這是 @BotFather 裡的設定, 預設關閉. router 沒辦法查到它目前是開是關.'),
+  `- ${b('關閉 (預設):')}${t(' 這隻 bot 收不到其他 bot 的訊息.')}`,
+  `- ${b('開啟:')}${t(' 在群組裡, 別的 bot 對它下 /指令@這隻bot, 或回覆它的訊息時, 它收得到. 如果它是群組管理員或關了隱私模式, 會收到群組裡其他 bot 的所有訊息. 私訊要兩隻 bot 都開啟才能互傳.')}`,
+  `${b('設定方式:')}${t(' 私訊 @BotFather → /setbot2bot → 選這隻 bot → Enable (開啟) 或 Disable (關閉); 也可以在 @BotFather 的 Mini App 裡設定.')}`,
+  `${b('開啟的風險:')}${t(' router 不分辨發話者是人還是 bot, 其他 bot 的訊息會像一般成員一樣交給分身處理, 包括 /secret 這類指令; 兩隻 bot 也可能互相回覆停不下來.')}`,
+  t('如果你希望你的 bot 能跟一般帳號一樣與其他 bot 互動, 就需要打開, 但這有機會增加被其他機器人攻擊的風險, 需要小心並理解. 如果你沒打算讓 bot 跟其他 bot 溝通, 不用去打開; 如果你希望 bot 能跟其他 bot 溝通來擴展能力, 則可以打開.'),
 ].join('\n')
 
-/** What the owner should know about a bot's settings: group privacy and bot-to-bot. */
+/** What the owner should know about a bot's settings: group privacy and bot-to-bot (HTML). */
 export function botSettingsNotice(me: { username: string; can_read_all_group_messages?: boolean } | null): string {
   return [privacyNotice(me), B2B_NOTICE].filter(Boolean).join('\n\n')
 }
