@@ -268,25 +268,30 @@ export async function httpApiCall(o: { cred: Credential; method: string; path: s
   try { return { status: r.status, body: JSON.parse(text) } } catch { return { status: r.status, body: text } }
 }
 
+/** json_file outside the conversation's folder: owner and admin conversations (the turn's role, an elevated one included). */
+export const jsonFileAnywhere = (role: string) => role === 'owner' || role === 'admin'
+
 /** Largest json_file http_api sends. */
 export const MAX_JSON_FILE = 20 * 1024 * 1024
 
-/** http_api json_file: a file in the conversation's folder (relative to it,
- *  or absolute) sent as the JSON body, so a large request is not written out
- *  as tool arguments. Only one body: not with json, form or files. The path
- *  check is the files one (assertSendable: never router state) and, for
- *  every role, inside the folder after symlinks. Returns the text to send. */
-export function readJsonFile(args: { json?: unknown; json_file?: unknown; form?: unknown; files?: unknown }, folder: string, assertSendable: (path: string) => void): { text: string; path: string; bytes: number } | { error: string } | null {
+/** http_api json_file: a file (relative to the conversation's folder, or
+ *  absolute) sent as the JSON body, so a large request is not written out as
+ *  tool arguments. Only one body: not with json, form or files. The router
+ *  reads it, not the worker: never router state (stateDir), and for a
+ *  conversation that is not owner or admin (wide false) inside its folder,
+ *  both after symlinks. Returns the text to send. */
+export function readJsonFile(args: { json?: unknown; json_file?: unknown; form?: unknown; files?: unknown }, folder: string, opts: { wide: boolean; stateDir: string }): { text: string; path: string; bytes: number } | { error: string } | null {
   if (args.json_file == null) return null
-  if (typeof args.json_file !== 'string' || !args.json_file) return { error: 'json_file 要是檔案路徑 (相對於這個對話的資料夾, 或資料夾內的絕對路徑)' }
+  if (typeof args.json_file !== 'string' || !args.json_file) return { error: 'json_file 要是檔案路徑 (相對於這個對話的資料夾, 或絕對路徑)' }
   if (args.json !== undefined || args.form != null || (args.files != null && Object.keys(args.files as object).length)) return { error: 'json_file 與 json, form, files 只能擇一: 請求內容只能有一種' }
   const path = isAbsolute(args.json_file) ? args.json_file : join(folder, args.json_file)
   let real: string
   try { real = realpathSync(path) } catch { return { error: `找不到 json_file ${args.json_file}` } }
-  let root = folder
-  try { root = realpathSync(folder) } catch {}
-  if (!real.startsWith(root + sep)) return { error: `json_file ${args.json_file} 要在這個對話的資料夾裡` }
-  try { assertSendable(real) } catch (e) { return { error: e instanceof Error ? e.message : String(e) } }
+  const realOf = (p: string) => { try { return realpathSync(p) } catch { return p } }
+  const state = realOf(opts.stateDir)
+  if (real === state || real.startsWith(state + sep)) return { error: `json_file ${args.json_file} 在 router 的狀態目錄裡, 不能送出` }
+  // owner and admin: any file the router can read; other roles: their folder only
+  if (!opts.wide && !real.startsWith(realOf(folder) + sep)) return { error: `json_file ${args.json_file} 要在這個對話的資料夾裡` }
   const st = statSync(real)
   if (!st.isFile()) return { error: `json_file ${args.json_file} 不是檔案` }
   if (st.size > MAX_JSON_FILE) return { error: `json_file ${args.json_file} 有 ${st.size} bytes, 超過上限 ${MAX_JSON_FILE} bytes (20 MB)` }

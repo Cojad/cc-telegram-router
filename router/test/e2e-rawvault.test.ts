@@ -166,7 +166,7 @@ test('an edited message with a key is masked and reminded too; /secret set in a 
   const sec = await until(() => q(`SELECT id, update_json FROM events WHERE masked = 1 AND update_json LIKE '%/secret set mine%'`)[0])
   expect(JSON.parse(sec.update_json).message.text).toBe(`/secret set mine <已遮蔽 #${sec.id}.1> --http https://api.example.com`)
   const log = await until(() => sentTo(APPROVALS, `🔑 偵測到密鑰 event #${sec.id}`)[0])
-  expect(log.body.text).toContain('處理: 登記或 router 指令: router 處理 (登記指令的訊息 60 秒後刪除, 發送者可取消; 被拒的立刻刪除)')
+  expect(log.body.text).toContain('處理: 登記或 router 指令: router 處理 (登記指令的訊息在私訊 60 秒後刪除, 發送者, owner, admin 可取消; 群組 10 秒後刪除; 被拒的立刻刪除)')
 })
 
 test('event_raw: a user conversation is refused; the owner\'s worker gets the handle version and the fixed agent\'s answer; secret_from_handle, then bot_api with the real token; cli event raw writes a 600 file', async () => {

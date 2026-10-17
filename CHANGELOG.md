@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-10-17
+
+### Added
+
+- 列出與管理預設標頭不用重貼 key (柯姊 2026-10-17): `/router cred header <名稱>` 不帶參數就列出, `set <標頭>:<值>` 同名 (不分大小寫) 就更新; 對話密鑰對等的 `/secret header <名稱> [set <標頭>:<值> | rm <標頭>]`, 在那個對話任何角色都能打, 規則跟全域憑證相同. 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#預設標頭).
+
+### Changed
+
+- 群組裡合法的 `/secret set` 改成 10 秒後刪除 (原本立刻刪), 提示不附「取消刪除」按鈕 (群組其他人看得到); bot 沒有刪除權限時另回一則提醒自己刪, 不排程. 被拒的指令照舊立刻刪. 見 [docs/secrets.md](docs/secrets.md#登記訊息何時刪除).
+- 登記訊息的「取消刪除」改成發訊者本人, owner, admin 都能按 (比照密鑰偵測), 其他人按回「沒有權限」; 不是發訊者按的, 提示寫出是誰取消. 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#登記訊息的延遲刪除).
+- `http_api` 的 `json_file`: owner 與 admin 角色的對話可以讀對話資料夾以外的檔案, user 與 power 照舊限資料夾內; 都跟著符號連結判斷, router 狀態目錄 (stateDir) 一律拒絕, 20 MB 與 JSON 檢查不變. 檔案由 router 讀, 不受 worker sandbox 限制. 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#http_api-的-json_file).
+
 ## [2.10.0] - 2026-10-17
 
 ### Added

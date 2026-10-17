@@ -17,9 +17,10 @@
 
 ## 登記訊息的延遲刪除
 
-- 含值的登記訊息 (`/router cred add|rotate`, `/router bot add|rotate`, `/secret set`) 在私訊裡不再立刻刪除: router 先回覆結果, 再回一則「⏳ 這則訊息含有 key, 60 秒後 (HH:MM) 刪除」的提示, 附「取消刪除」按鈕, 只有發訊者本人能按 (owner, admin 也不行). 時間到自動刪, 提示改成「🗑 已刪除含 key 的登記訊息」; 按了就保留, 提示改成已取消刪除並提醒不需要時自己刪. 登記失敗 (格式不對, 不像 bot token, getMe 不接受) 的訊息同樣 60 秒後刪, 方便照著改好再傳.
-- 立刻刪除, 不給取消: 在群組打的 (`/router cred` 與 `/router bot` 在群組會被拒, `/secret set` 在群組照常登記但訊息立刻刪), 被拒的 (角色不夠, admin 動別人加入的憑證), router 沒有服務的對話. 群組裡 bot 沒有刪除權限時回覆提醒自己刪.
-- 排程跟 10e 密鑰偵測共用 router.db 的 `secret_deletions` (`kind` 欄: `detect` 是偵測, `command` 是登記訊息), router 重啟後照常執行, 停機期間到期的在啟動時刪 (每 10 秒檢查一次). 取消與刪除結果也記在「🔑 密鑰偵測」紀錄 (`secret_log`). 偵測紀錄的處理欄寫「登記或 router 指令: router 處理 (登記指令的訊息 60 秒後刪除, 發送者可取消; 被拒的立刻刪除)」.
+- 含值的登記訊息 (`/router cred add|rotate`, `/router bot add|rotate`, `/secret set`) 在私訊裡不再立刻刪除: router 先回覆結果, 再回一則「⏳ 這則訊息含有 key, 60 秒後 (HH:MM) 刪除」的提示, 附「取消刪除」按鈕, 發訊者本人, owner, admin 能按 (比照密鑰偵測的取消權限), 其他人按會回「沒有權限: 只有發訊者本人, owner, admin 能取消刪除」. 時間到自動刪, 提示改成「🗑 已刪除含 key 的登記訊息」; 按了就保留, 提示改成已取消刪除 (不是發訊者按的會寫是誰) 並提醒不需要時自己刪. 登記失敗 (格式不對, 不像 bot token, getMe 不接受) 的訊息同樣 60 秒後刪, 方便照著改好再傳.
+- 群組裡合法的 `/secret set` (router 服務的群組, 登記失敗的也算): 10 秒後刪除, 提示「⏳ 這則訊息含有 key, 10 秒後 (HH:MM) 刪除.」不附取消按鈕 (群組其他人看得到). bot 在群組沒有刪除權限時不排程, 回覆提醒發訊者自己刪.
+- 立刻刪除, 不給取消: 被拒的 (`/router cred` 與 `/router bot` 在群組打, 角色不夠, admin 動別人加入的憑證), router 沒有服務的對話. bot 沒有刪除權限時回覆提醒自己刪.
+- 排程跟 10e 密鑰偵測共用 router.db 的 `secret_deletions` (`kind` 欄: `detect` 是偵測, `command` 是登記訊息), router 重啟後照常執行, 停機期間到期的在啟動時刪 (每 10 秒檢查一次). 取消與刪除結果也記在「🔑 密鑰偵測」紀錄 (`secret_log`). 偵測紀錄的處理欄寫「登記或 router 指令: router 處理 (登記指令的訊息在私訊 60 秒後刪除, 發送者, owner, admin 可取消; 群組 10 秒後刪除; 被拒的立刻刪除)」.
 - 在終端機打的指令 (`cc-telegram-router cli`) 沒有訊息要刪.
 
 ## 同名憑證: 覆蓋或取消
@@ -38,14 +39,16 @@
 
 - http 憑證可以有預設標頭: worker 呼叫 `http_api` 沒帶同名標頭 (不分大小寫) 時 router 自動補上, worker 有帶就用 worker 的. 例如替 Anthropic 憑證加 `anthropic-version:2023-06-01`, worker 就不必每次自帶.
 - 登記時寫 `--default-header <名稱>:<值>` (可多次, 值可以含 `:`): `/router cred add`, `/router cred rotate`, `cred-import`, `/secret set --http` 都支援, `secret_from_handle` 的 scope 也是. 規則跟 worker 自帶的標頭一樣: 不能是 key 所在的標頭, 也不能是 Authorization, Proxy-Authorization, Cookie, Host, Content-Type 這類被擋的標頭.
-- 不用重貼 key 調整現有憑證: `/router cred header <名稱> set <標頭>:<值>` (同名就取代), `/router cred header <名稱> rm <標頭>`. 不含 key, 所以可以在任何對話打, 權限是 owner 或加入它的 admin. bot token 憑證沒有標頭可設.
+- 不用重貼 key 調整現有憑證: `/router cred header <名稱>` (不帶參數就列出現有的預設標頭), `/router cred header <名稱> set <標頭>:<值>` (新增; 同名不分大小寫就更新成這次的名稱與值), `/router cred header <名稱> rm <標頭>`. 不含 key, 所以可以在任何對話打, 權限是 owner 或加入它的 admin. bot token 憑證沒有標頭可設.
+- 對話密鑰的對等指令: `/secret header <名稱>` (列出), `/secret header <名稱> set <標頭>:<值>`, `/secret header <名稱> rm <標頭>`, 在那個對話打, 跟 `/secret rm` 一樣任何角色都可以. 規則相同 (不能是 key 所在的標頭或被擋的標頭), telegram-bot 密鑰沒有標頭可設; 回覆都是「<名稱> 的預設標頭: ...」, 沒有就是 `(無)`.
 - 預設標頭不是秘密: `/router cred list`, `/secret list` 與覆蓋提示都會列出名稱與值. config.json 存在憑證的 `defaultHeaders` 物件, 對話密鑰存在 `conv_secrets.default_headers` (JSON). `cred-import` 重新匯入時跟 `--header` 等一樣以這次的選項為準.
 - 替現有的 anthropic 憑證加上版本: `/router cred header anthropic set anthropic-version:2023-06-01`.
 
 ## http_api 的 json_file
 
-- `http_api` 的 `json_file`: 對話資料夾裡的檔案路徑 (相對於資料夾, 或資料夾內的絕對路徑), router 讀檔當 JSON body 原樣送出 (Content-Type: application/json). 用在很大的請求, 例如量 26 萬 token 的 `count_tokens`: 內容塞進工具參數的成本比實際送出還高.
-- 檢查: 跟 `files` 一樣不能是 router 狀態目錄, 而且不論角色都必須在這個對話的資料夾裡 (跟著符號連結算, 連到外面的不行); 最大 20 MB; 內容要是合法的 JSON, 否則拒絕並說明哪裡錯. `json_file` 與 `json`, `form`, `files` 只能擇一. 任何一項不通過就不送出.
+- `http_api` 的 `json_file`: 檔案路徑 (相對於對話資料夾, 或絕對路徑), router 讀檔當 JSON body 原樣送出 (Content-Type: application/json). 用在很大的請求, 例如量 26 萬 token 的 `count_tokens`: 內容塞進工具參數的成本比實際送出還高.
+- 檢查 (都跟著符號連結算): 不論角色都不能在 router 狀態目錄 (stateDir) 裡; owner 與 admin 角色的對話可以讀對話資料夾以外的檔案, user 與 power 必須在這個對話的資料夾裡 (連到外面的不行). 最大 20 MB; 內容要是合法的 JSON, 否則拒絕並說明哪裡錯. `json_file` 與 `json`, `form`, `files` 只能擇一. 任何一項不通過就不送出.
+- 讀檔的是 router, 不是 worker: 路徑檢查只看上面的規則, 不看 worker 的 sandbox. 所以 owner 與 admin 的對話能讓 router 讀到 worker 的 sandbox 讀不到的檔案: 只要 router 程序讀得到, 不在 stateDir, 而且是合法 JSON, 內容就會送到憑證的網址. 這跟 `files` 參數對 owner 的放寬同一個道理 (`files` 目前只放寬 owner).
 - `outbound` 的請求欄記檔案路徑與大小, 不記內容.
 
 ## http 憑證的 key 放哪裡
@@ -65,5 +68,5 @@
 
 ## 驗證
 
-- `router/test/cred-flows.test.ts` (7 項, 模組層級) 與 `router/test/e2e-creds.test.ts` (7 項, 真的 router 對假的 Bot API 與本機假 HTTP 伺服器): 登記訊息的延遲刪除與取消 (只限發訊者, 群組立刻刪, 重啟後到期照刪), rotate 保留設定, 同名 add 的覆蓋 / 取消與逾時丟棄, 預設標頭 (補上, 被 worker 覆蓋, 不能是被擋的標頭), json_file (路徑, 大小上限, 非法 JSON, 與 json 互斥, 實際送出內容).
+- `router/test/cred-flows.test.ts` (9 項, 模組層級) 與 `router/test/e2e-creds.test.ts` (7 項, 真的 router 對假的 Bot API 與本機假 HTTP 伺服器): 登記訊息的延遲刪除與取消 (私訊 60 秒, 發訊者, owner, admin 能取消, 其他人沒有權限; 群組 10 秒且不附按鈕; 被拒的立刻刪; 重啟後到期照刪), rotate 保留設定, 同名 add 的覆蓋 / 取消與逾時丟棄, 預設標頭 (補上, 被 worker 覆蓋, 不能是被擋的標頭, `/router cred header` 與 `/secret header` 的列出, 更新, rm), json_file (owner 與 admin 可讀資料夾外, user 與 power 限資料夾內, stateDir 一律拒絕, 大小上限, 非法 JSON, 與 json 互斥, 實際送出內容).
 - `router/test/cred-http.test.ts`, `router/test/phase3-cred.test.ts`: key 放哪裡, worker 自帶標頭, /router help cred.

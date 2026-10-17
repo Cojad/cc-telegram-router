@@ -214,7 +214,7 @@ test('no right to delete: only a reminder; not served, quoted only, a command, a
   expect(sent.map(s => [s.chatId, s.text.split('\n').pop()])).toEqual([
     [OWNER, '處理: 不是 router 服務的對話, 只記錄'],
     [OWNER, '處理: 只在引用的訊息裡, 不提醒'],
-    [OWNER, '處理: 登記或 router 指令: router 處理 (登記指令的訊息 60 秒後刪除, 發送者可取消; 被拒的立刻刪除)'],
+    [OWNER, '處理: 登記或 router 指令: router 處理 (登記指令的訊息在私訊 60 秒後刪除, 發送者, owner, admin 可取消; 群組 10 秒後刪除; 被拒的立刻刪除)'],
     [OWNER, '處理: 按鈕資料, 只記錄'],
     [OWNER, '處理: 只在引用的訊息裡, 不提醒'],
   ])

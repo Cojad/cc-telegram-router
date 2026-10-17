@@ -27,7 +27,7 @@ import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens, 
 import { isCommand, runCommand, roleOf, decideCredOverwrite, type CommandDeps, type CommandInput } from './commands'
 import { runCli } from './cli'
 import { importV1Messages } from './importv1'
-import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, refuseHeaders, refuseKeyParam, parseHttpScope, placementText, defaultHeadersText, setHeader, readJsonFile, createCredStaging, BOT_TOKEN_FULL, httpExample, takeB64, shorten, DEFAULT_CRED_ROLES, type HttpScope } from './credentials'
+import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, refuseHeaders, refuseKeyParam, parseHttpScope, placementText, defaultHeadersText, setHeader, readJsonFile, jsonFileAnywhere, createCredStaging, BOT_TOKEN_FULL, httpExample, takeB64, shorten, DEFAULT_CRED_ROLES, type HttpScope } from './credentials'
 import { newSecretKey, maskSecretUpdate, openSecret, refuseSecret, secretCred, scrubSecret, servesChat } from './secrets'
 import { createVault, claudeAsk, SECRET_TOPIC, SECRET_TOPIC_INTRO } from './rawvault'
 import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
@@ -271,8 +271,8 @@ async function convSecretCall(live: Peer, conv: Conversation, s: ConvSecret, too
   const badHeaders = refuseHeaders(cred, args.headers) ?? refuseKeyParam(cred, path)
   if (badHeaders) return fail(badHeaders)
   const headers = args.headers as Record<string, string> | undefined
-  // json_file: a file in the folder sent as the JSON body
-  const jf = readJsonFile(args, conv.folder, makeAssertSendable(live, cfg.stateDir))
+  // json_file: a file sent as the JSON body (owner and admin: anywhere but router state; others: their folder)
+  const jf = readJsonFile(args, conv.folder, { wide: jsonFileAnywhere(live.role), stateDir: cfg.stateDir })
   if (jf && 'error' in jf) return fail(jf.error)
   const save = args.save_b64 as { at?: string; to?: string } | undefined
   const dest = save?.to ? (save.to.startsWith('/') ? save.to : join(conv.folder, save.to)) : null
@@ -364,8 +364,8 @@ const ipc = createIpc({
       const headers = args.headers as Record<string, string> | undefined
       const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
       try { for (const p of Object.values(files)) makeAssertSendable(live, cfg.stateDir)(p) } catch (e) { return fail(String(e instanceof Error ? e.message : e)) }
-      // json_file: a file in the folder sent as the JSON body
-      const jf = readJsonFile(args, conv.folder, makeAssertSendable(live, cfg.stateDir))
+      // json_file: a file sent as the JSON body (owner and admin: anywhere but router state; others: their folder)
+      const jf = readJsonFile(args, conv.folder, { wide: jsonFileAnywhere(live.role), stateDir: cfg.stateDir })
       if (jf && 'error' in jf) return fail(jf.error)
       const save = args.save_b64 as { at?: string; to?: string } | undefined
       const dest = save?.to ? (save.to.startsWith('/') ? save.to : join(conv.folder, save.to)) : null
@@ -1147,9 +1147,10 @@ async function answerCommand(bot: Bot, input: CommandInput & { messageId: number
   if (!out) return
   for (const l of out.logs) db.addLog(l.conv, l.text)
   let reply = out.reply
-  // a registration command in a DM: deleted 60 seconds after this answer
-  // unless its sender cancels (rawvault scheduleCommand); anywhere else at once
-  const later = !!out.deleteMessage && !!out.deleteLater && input.chatType === 'private'
+  // a registration command: deleted 60 seconds after this answer in a DM
+  // unless its sender, an owner or an admin cancels, 10 seconds in a group
+  // (rawvault scheduleCommand); a refusal at once
+  const later = !!out.deleteMessage && !!out.deleteLater
   if (out.deleteMessage && !later) {
     // Say what actually happened: in a group the bot can only delete
     // other people's messages when it is an admin there.
@@ -1176,7 +1177,7 @@ async function answerCommand(bot: Bot, input: CommandInput & { messageId: number
   }
   // the question an expiry edits
   if (out.staged != null && lastId != null) credStaging.attach(out.staged, lastId)
-  if (later) await vault.scheduleCommand(input.bot, { chatId, messageId, senderId, eventId: input.eventId ?? null }).catch(e => log(`command message deletion: ${e}`))
+  if (later) await vault.scheduleCommand(input.bot, { chatId, chatType: input.chatType, messageId, senderId, eventId: input.eventId ?? null }).catch(e => log(`command message deletion: ${e}`))
   if (toDm) {
     await sendWithRetry(() => bot.api.sendMessage(chatId, sent ? '已私訊給你' : '⛔ 這個指令的結果只會私訊給你, 但我私訊不到你. 請先私訊我一次 (例如 /start) 再試', { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } }), { what: 'command reply', log }).catch(() => {})
   }

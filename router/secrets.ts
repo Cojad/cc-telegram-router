@@ -2,7 +2,8 @@
 // keeps its own token or API key in router.db (table conv_secrets),
 // encrypted with AES-256-GCM under config.json "secretKey". Registered with
 // /secret set in that chat (the router answers it itself and deletes the
-// message; in a group any member may), used only by that conversation
+// message; in a group any member may; /secret header changes the default
+// headers without the value), used only by that conversation
 // through bot_api / http_api (looked up before the global credentials, no
 // role check, no authorization), limited to the methods or URL and paths
 // given at registration. The value never reaches a worker: logs, the events
@@ -14,7 +15,7 @@ import type { RouterDb, ConvSecret, SecretHandle } from './db'
 import type { Access } from './telegram/policy'
 import type { CommandInput, CommandOutput } from './commands'
 import { maskTokens, gmt8 } from './context'
-import { badPath, parseHttpScope, placementText, defaultHeadersText, BOT_TOKEN_FULL, httpExample } from './credentials'
+import { badPath, parseHttpScope, placementText, defaultHeadersText, parseDefaultHeader, refuseDefaultHeader, setHeader, BOT_TOKEN_FULL, httpExample } from './credentials'
 
 export const MAX_SECRETS = 20
 export const MAX_SECRET_BYTES = 4096
@@ -120,6 +121,7 @@ const USAGE = [
   '/secret set <名稱> <token> [方法...] (Telegram bot token, 沒寫方法就是全部; 不像 bot token 的值不會拿去 getMe)',
   '/secret set <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...] (結尾 * 代表前綴, 沒寫路徑就是全部; 預設 Authorization: Bearer <key>, 只寫 --header 時值原樣放進那個標頭, --query 改放在網址的 query 參數; --default-header: worker 沒帶同名標頭時 router 補上)',
   '/secret list | rm <名稱>',
+  '/secret header <名稱> (列出) | header <名稱> set <標頭>:<值> (同名就更新) | header <名稱> rm <標頭> (http 密鑰的預設標頭, 不用重貼 key)',
   '/secret handles (router 發給這個對話的密鑰代號) | revoke <代號>',
   '密鑰只屬於這個對話, 加密存在 router, 對話裡的分身只拿得到名稱, 用 bot_api / http_api 工具呼叫',
   '跟全域憑證 (/router cred) 的差別與範例: /router help secret',
@@ -161,7 +163,8 @@ export async function runSecretCommand(input: CommandInput & { botUsername?: str
   const logs: CommandOutput['logs'] = []
   const shown = maskSecretText(input.text.trim())
   // the message with the value: deleted 60 seconds after the answer in a DM
-  // (its sender may cancel), at once in a group or where it is refused (router/main.ts answerCommand)
+  // (its sender, an owner or an admin may cancel), 10 seconds in a group, at
+  // once where it is refused (router/main.ts answerCommand)
   const done = (reply: string, del = hasValue, later = true): CommandOutput => {
     if (here) logs.push({ conv: here.key, text: `${input.senderName} ${shown} → ${reply.split('\n')[0]}` })
     return { reply, logs, ...(del ? { deleteMessage: true, deleteLabel: '含密鑰的訊息', ...(later ? { deleteLater: true } : {}) } : {}) }
@@ -193,6 +196,32 @@ export async function runSecretCommand(input: CommandInput & { botUsername?: str
       const name = args[1]
       if (!name) return done('用法: /secret rm <名稱>')
       return done(db.removeConvSecret(bot, chatId, name) ? `已移除密鑰 ${name}` : `這個對話沒有名為 ${name} 的密鑰`)
+    }
+    case 'header': {
+      // default headers of an http secret, without the value again
+      const [, name, how, what] = args
+      const usage = '用法: /secret header <名稱> (列出) | /secret header <名稱> set <標頭>:<值> | /secret header <名稱> rm <標頭>'
+      if (!name) return done(usage)
+      const s = db.getConvSecret(bot, chatId, name)
+      if (!s) return done(`這個對話沒有名為 ${name} 的密鑰`)
+      if (s.kind !== 'http') return done(`${name} 是 Telegram bot token 密鑰, 沒有標頭可設`)
+      const h = (s.default_headers ? JSON.parse(s.default_headers) : {}) as Record<string, string>
+      const list = (all: Record<string, string>) => `${name} 的預設標頭: ${defaultHeadersText(all).replace(/^, 預設標頭 /, '') || '(無)'}`
+      if (how == null) return done(list(h))
+      if ((how !== 'set' && how !== 'rm') || !what || args.length > 4) return done(usage)
+      if (how === 'set') {
+        const d = parseDefaultHeader(what)
+        if ('error' in d) return done(`${d.error}\n${usage}`)
+        const why = refuseDefaultHeader({ header: s.header ?? undefined, query: s.query ?? undefined }, d.name, d.value)
+        if (why) return done(why)
+        setHeader(h, d.name, d.value)
+      } else {
+        const key = Object.keys(h).find(k => k.toLowerCase() === what.toLowerCase())
+        if (!key) return done(`${name} 沒有預設標頭 ${what}`)
+        delete h[key]
+      }
+      db.setConvSecret({ ...s, default_headers: Object.keys(h).length ? JSON.stringify(h) : null })
+      return done(list(h))
     }
     case 'set': {
       const name = args[1], value = args[2]

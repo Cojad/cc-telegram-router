@@ -177,7 +177,10 @@ test('group: any member registers a telegram-bot secret; the bot cannot delete t
   expect((await until(() => sentTo(GROUP, '這不是可用的 bot token')[0])).body.text).toStartWith('這不是可用的 bot token (getMe 失敗: 401: Unauthorized), 沒有登記')
   const r = await until(() => sentTo(GROUP, '已登記')[0])
   expect(r.body.text).toStartWith('已登記這個對話的密鑰 gbot: telegram-bot @group_tool_bot (9), 方法 sendMessage')
-  expect(r.body.text).toEndWith('\n⚠️ 無法刪除含密鑰的訊息 (bot 沒有刪除權限), 請自己刪掉那則訊息')
+  expect(r.body.text).not.toContain('刪除')
+  // a group: deleted 10 seconds later, but the bot may not delete here, so only a reminder and nothing scheduled
+  expect((await until(() => calls.find(c => c.method === 'sendMessage' && c.body.reply_parameters?.message_id === msg && String(c.body.text).startsWith('⚠️')))).body.text).toBe('⚠️ 這則訊息含有 key. bot 沒有刪除權限, 請自己刪掉這則訊息.')
+  expect(q(`SELECT count(*) n FROM secret_deletions WHERE chat_id = '-100700'`)[0].n).toBe(0)
   expect(q("SELECT added_by FROM conv_secrets WHERE chat_id = '-100700' AND name = 'gbot'")).toEqual([{ added_by: '777' }])
   // someone replies to the message the bot could not delete
   inGroup(OWNER, 'is this safe?', { message_id: msg, text, from: MEMBER })

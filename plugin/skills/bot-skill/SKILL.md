@@ -31,7 +31,7 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能裝在哪�
 **token 永遠不寫進技能, 也不放在對話讀得到的 .env.** 一律存成 router 的憑證, 用 `bot_api` 工具呼叫:
 
 1. 請 owner (或 admin) 登記憑證, 二擇一:
-   - 在**自己和 bot 的私訊**傳 `/router cred add <名稱> <token> [方法...]`. router 會驗證 token, 60 秒後刪掉那則訊息 (他可以按「取消刪除」保留), token 只存在 router 設定檔, 不會進到任何對話. 之後換 token 用 `/router cred rotate <名稱> <新 token>`, 方法與角色不變.
+   - 在**自己和 bot 的私訊**傳 `/router cred add <名稱> <token> [方法...]`. router 會驗證 token, 60 秒後刪掉那則訊息 (他, owner, admin 可以按「取消刪除」保留), token 只存在 router 設定檔, 不會進到任何對話. 之後換 token 用 `/router cred rotate <名稱> <新 token>`, 方法與角色不變.
    - token 已經在某個檔案裡: 在終端機執行 `cc-telegram-router cred-import <名稱> <檔案> <變數名> [方法,...]`, 值不會印出來.
    - **不要叫使用者把 token 貼在對話裡**; 對方貼了就提醒他換一把新的, 並改走上面的方式.
 2. 只開放技能需要的 Bot API 方法 (`/router cred allow <名稱> <方法...>`), 預設只有 owner 與 admin 角色的對話能用 (`/router cred roles <名稱> <角色,...>` 可調整). 角色不夠的對話呼叫時跟其他越權動作一樣被擋並走提權: 發話者角色較高就在對話裡詢問, 否則可以 request_elevation 向 owner 申請; 只能允許一次, 要長期開放請 owner 調整憑證的角色.
@@ -49,7 +49,7 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能裝在哪�
 
 bot token 會先用 getMe 驗證, 不是有效的 bot token 就不會存; 沒加 `--http` 而值不像 bot token (例如 API key) 時 router 不拿去 getMe, 直接提示要加 `--http`.
 
-router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到 `<已遮蔽>`), 加密存起來, 私訊裡 60 秒後刪掉 (發訊者可按「取消刪除」); 群組裡立刻刪, bot 沒有刪除權限時會提醒發送者自己刪.
+router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到 `<已遮蔽>`), 加密存起來, 私訊裡 60 秒後刪掉 (發訊者, owner, admin 可按「取消刪除」); 群組裡 10 秒後刪, 沒有取消按鈕, bot 沒有刪除權限時會提醒發送者自己刪. 要改 http 密鑰的預設標頭不用重貼 key: `/secret header <名稱>` (列出) | `set <標頭>:<值>` | `rm <標頭>`.
 之後用 `bot_api` 或 `http_api`, credential 填那個名稱: 對話自己的密鑰優先於全域憑證, 不看角色也不用授權, 只能呼叫登記時的方法或網址與路徑.
 回應裡出現的值會換成 `<密鑰>`. 使用者用 `/secret list` 看有哪些, `/secret rm <名稱>` 移除. 這只是**建議使用者自己去下指令**, 不要叫他把值貼給你.
 使用者已經把值貼在對話裡時, 你看到的是 `<已遮蔽 #<event id>.<序號>: ...>`: 不要叫他重貼. owner 或 admin 的一輪可以用 `event_raw` 拿到代號, 再用 `secret_from_handle` 登記成這個對話的密鑰 (見 /telegram:doc 的「密鑰與原文」).
@@ -60,10 +60,10 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 `/router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...]`
 (訊息 60 秒後刪除), 或 owner 在終端機 `cc-telegram-router cred-import <名稱> <檔案> <變數名> [路徑,...] --http <網址> [同樣的選項]`.
 沒寫路徑就是那個網址底下全部路徑, 要收窄就列出路徑 (結尾 `*` 代表前綴). 範例 (Anthropic):
-`/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key --default-header anthropic-version:2023-06-01`. 換 key 用 `/router cred rotate <名稱> <新 key>`, 不用重貼 key 改預設標頭用 `/router cred header <名稱> set <標頭>:<值>`. 完整說明: 使用者打 `/router help cred`.
+`/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key --default-header anthropic-version:2023-06-01`. 換 key 用 `/router cred rotate <名稱> <新 key>`, 不用重貼 key 改預設標頭用 `/router cred header <名稱> set <標頭>:<值>` (同名就更新), 移除用 `rm <標頭>`, 不帶參數就列出. 完整說明: 使用者打 `/router help cred`.
 技能裡用 `http_api` (credential, path, json 或 json_file 或 form + files, 可選 headers) 呼叫. key 放哪裡由憑證決定, 你不用也不能自己放:
 `headers` 只放 API 需要的其他標頭 (例如 `{"anthropic-version": "2023-06-01"}`; 憑證有預設標頭時 router 自動補上, 你帶了同名的就用你的), 帶 key 所在的那個標頭 (例如 x-api-key 憑證的 x-api-key), Authorization, Proxy-Authorization, Cookie, Host, Content-Type 這類會被擋; 用 `--query` 的憑證, path 裡也不能自己帶那個參數. 回應裡的 base64
-很大的請求 (例如幾十萬 token 的 count_tokens) 先寫成自己資料夾裡的 JSON 檔, 用 `json_file: "相對路徑"` 送出 (最多 20 MB, 要是合法 JSON, 跟 json, form, files 擇一), 不要把內容塞進 json 參數.
+很大的請求 (例如幾十萬 token 的 count_tokens) 先寫成自己資料夾裡的 JSON 檔, 用 `json_file: "相對路徑"` 送出 (最多 20 MB, 要是合法 JSON, 跟 json, form, files 擇一), 不要把內容塞進 json 參數. 檔案是 router 讀的: owner 與 admin 對話可以給資料夾外的路徑 (router 狀態目錄除外), user 與 power 只能用自己資料夾裡的.
 大檔 (例如產生的圖) 用 `save_b64` `{ "at": "data.0.b64_json", "to": "相對路徑" }` 直接存進自己資料夾,
 不要讓它回到對話裡.
 

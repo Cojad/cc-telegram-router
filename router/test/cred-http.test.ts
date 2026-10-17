@@ -52,9 +52,10 @@ test('/router help: the cred line shows the --http form and points to the topics
   expect(all).toContain('/router help <主題>: 完整用法與範例, 主題: cred, secret, perm, bot')
   const cred = (await run('/router help cred'))!.reply
   expect(cred).toBe(HELP_TOPICS.cred!)
-  for (const s of ['只能在你 (owner 或 admin) 自己和 bot 的私訊', '不會進 worker; 含 key 的那則訊息 60 秒後刪除', '「取消刪除」按鈕 (只有你能按', '在群組打會被拒絕並立刻刪除', '/router cred rotate <名稱> <新的 key 或 token>', '/router cred header anthropic set anthropic-version:2023-06-01', '「覆蓋 / 取消」按鈕', 'Anthropic: /router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', 'anthropic-version: 2023-06-01', 'OpenAI: /router cred add openai sk-...', '/router cred add eagle 123456789:AA...', '沒寫路徑就是那個網址底下全部路徑', '不能帶 key 所在的標頭, Authorization, Proxy-Authorization, Cookie', 'cred-import']) expect(cred).toContain(s)
+  for (const s of ['只能在你 (owner 或 admin) 自己和 bot 的私訊', '不會進 worker; 含 key 的那則訊息 60 秒後刪除', '「取消刪除」按鈕 (你, owner, admin 能按', '在群組打會被拒絕並立刻刪除', '/router cred rotate <名稱> <新的 key 或 token>', '/router cred header anthropic set anthropic-version:2023-06-01', '「覆蓋 / 取消」按鈕', 'Anthropic: /router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', 'anthropic-version: 2023-06-01', 'OpenAI: /router cred add openai sk-...', '/router cred add eagle 123456789:AA...', '沒寫路徑就是那個網址底下全部路徑', '不能帶 key 所在的標頭, Authorization, Proxy-Authorization, Cookie', 'cred-import']) expect(cred).toContain(s)
   const secret = (await run('/router help SECRET'))!.reply
-  for (const s of ['/secret (對話密鑰)', '/router cred (全域憑證)', '任何角色都能登記', '句子中間提到指令名稱不算']) expect(secret).toContain(s)
+  for (const s of ['/secret (對話密鑰)', '/router cred (全域憑證)', '任何角色都能登記', '句子中間提到指令名稱不算', '「取消刪除」按鈕 (發訊者, owner, admin 能按)', '群組裡 10 秒後刪除, 不給取消按鈕', '/secret header <名稱> (列出) | header <名稱> set <標頭>:<值> (同名就更新) | header <名稱> rm <標頭>']) expect(secret).toContain(s)
+  expect(cred).toContain('/router cred header <名稱> (列出) | /router cred header <名稱> set <標頭>:<值> (同名就更新) | /router cred header <名稱> rm <標頭>')
   expect((await run('/router help perm'))!.reply).toContain('/router perm user <uid|@username>')
   expect((await run('/router help bot'))!.reply).toContain('/router help cred')
   expect((await run('/router help nope'))!.reply).toStartWith('沒有 nope 這個主題, 主題: cred, secret, perm, bot')
@@ -195,13 +196,14 @@ test('httpApiCall puts the key only where the credential says (a local server se
 
 test('/telegram:doc and /telegram:bot-skill teach registering keys: where to type, the message is deleted 60 seconds later, rotate, default headers, json_file, the key never reaches the worker, --http with the key\'s place, Anthropic example; http_api documents headers', async () => {
   const doc = await Bun.file(join(import.meta.dir, '..', '..', 'plugin', 'skills', 'doc', 'SKILL.md')).text()
-  for (const s of ['## 登記 API key 與 bot token', '只能在他自己和 bot 的私訊', '要用 key 的那個對話', '**不會送進 worker**', '**60 秒後刪除**', '只有發訊者本人能按', '/router cred rotate <名稱> <新的 key 或 token>', '/router cred header anthropic set anthropic-version:2023-06-01', '「覆蓋 / 取消」按鈕', '**你永遠拿不到值**', '一定要加 `--http <網址>`', '沒寫路徑就是那個網址底下全部路徑', '/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', 'anthropic-version', '/router cred add eagle 123456789:AA...', '/router help cred', '`/router help <主題>`', '(無, 全部擋下)', '句子中間提到指令']) expect(doc).toContain(s)
+  for (const s of ['## 登記 API key 與 bot token', '只能在他自己和 bot 的私訊', '要用 key 的那個對話', '**不會送進 worker**', '**60 秒後刪除**', '發訊者本人, owner, admin 能按', '/router cred rotate <名稱> <新的 key 或 token>', '/router cred header anthropic set anthropic-version:2023-06-01', '「覆蓋 / 取消」按鈕', '**你永遠拿不到值**', '一定要加 `--http <網址>`', '沒寫路徑就是那個網址底下全部路徑', '/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', 'anthropic-version', '/router cred add eagle 123456789:AA...', '/router help cred', '`/router help <主題>`', '(無, 全部擋下)', '句子中間提到指令']) expect(doc).toContain(s)
+  for (const s of ['群組裡的 `/secret set` 10 秒後刪除, 沒有取消按鈕', '`/router cred header <名稱>` (列出)', '`/secret header <名稱> [set <標頭>:<值> | rm <標頭>]`']) expect(doc).toContain(s)
   const skill = await Bun.file(join(import.meta.dir, '..', '..', 'plugin', 'skills', 'bot-skill', 'SKILL.md')).text()
-  for (const s of ['--query <參數>', '/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', '`headers` 只放 API 需要的其他標頭', '--default-header <名稱>:<值>', '`json_file: "相對路徑"`', '/router cred rotate <名稱> <新 key>']) expect(skill).toContain(s)
+  for (const s of ['--query <參數>', '/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', '`headers` 只放 API 需要的其他標頭', '--default-header <名稱>:<值>', '`json_file: "相對路徑"`', '/router cred rotate <名稱> <新 key>', 'owner 與 admin 對話可以給資料夾外的路徑', '群組裡 10 秒後刪', '`/secret header <名稱>` (列出)']) expect(skill).toContain(s)
   const { TOOL_DEFINITIONS } = await import('../../shared/tools')
   const http = (TOOL_DEFINITIONS as any[]).find(t => t.name === 'http_api')
   expect(http.inputSchema.properties.headers.type).toBe('object')
   expect(http.inputSchema.properties.json_file.type).toBe('string')
-  expect(http.description).toContain('json_file (a file in your folder')
+  expect(http.description).toContain('json_file (a file relative to your folder or absolute, up to 20 MB; the router reads it: inside your folder, or anywhere but router state for an owner or admin conversation)')
   expect(http.description).toContain('never send the header the key goes in, Authorization, Proxy-Authorization, Cookie')
 })

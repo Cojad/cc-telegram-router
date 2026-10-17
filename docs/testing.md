@@ -90,8 +90,8 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/phase3.test.ts` | 規劃 03, 07: 角色範本, /router perm, 權限檢查, 跨對話傳訊申請, 審核頻道, 提權 (詢問, 核准, 逾時, 主動申請, 紀錄), hook, bot 資料夾與搬遷 |
 | `router/test/phase3-cred.test.ts` | 憑證的角色與方法限制, Bot API 呼叫 (含上傳), install_skill 的來源, 範圍與檢查, /router cred 與 botapi |
 | `router/test/cred-http.test.ts` | [http 憑證的 key 放哪裡](credentials-and-skills.md#http-憑證的-key-放哪裡)與 [/router help 主題](operations.md#router-help-主題): help 主題的內容, 沒帶 --http 又不像 bot token 時不呼叫 getMe 並提示 (`/router cred add` 與 `/secret set`), `--header` `--scheme` `--query` 在 `/router cred add`, `cred-import`, `/secret set` 三處一致, 沒寫路徑就是全部, 清單顯示 (全部, 空路徑, 空角色), http_api 額外標頭的放行與擋下, 本機假 HTTP 伺服器確認 key 只出現在指定位置 |
-| `router/test/cred-flows.test.ts` | [登記訊息的延遲刪除](credentials-and-skills.md#登記訊息的延遲刪除), [同名憑證: 覆蓋或取消](credentials-and-skills.md#同名憑證-覆蓋或取消), [換 key: cred rotate](credentials-and-skills.md#換-key-cred-rotate), [預設標頭](credentials-and-skills.md#預設標頭), [http_api 的 json_file](credentials-and-skills.md#http_api-的-json_file), [登記訊息何時刪除](secrets.md#登記訊息何時刪除) 的模組層級: scheduleCommand 的提示, 時間, 只限發訊者取消, 新的 vault (重啟) 照刪; 哪些指令 60 秒後刪, 哪些立刻刪; rotate 保留設定與 getMe; 覆蓋 / 取消與 2 分鐘逾時; `--default-header` 與 `/router cred header`; 本機假伺服器確認預設標頭與 json_file 內容; readJsonFile 的路徑, 大小, JSON 檢查 |
-| `router/test/e2e-creds.test.ts` | 同上各節, 真的 router + 假 Bot API + 本機假 HTTP 伺服器: 重啟前排的刪除在啟動時執行, 私訊的提示與取消按鈕 (別人按被拒), 群組立刻刪, 同名 add 的按鈕流程, rotate (含 bot token 的 getMe), 預設標頭補上與被 worker 覆蓋, json_file 實際送出的內容與各種拒絕 |
+| `router/test/cred-flows.test.ts` | [登記訊息的延遲刪除](credentials-and-skills.md#登記訊息的延遲刪除), [同名憑證: 覆蓋或取消](credentials-and-skills.md#同名憑證-覆蓋或取消), [換 key: cred rotate](credentials-and-skills.md#換-key-cred-rotate), [預設標頭](credentials-and-skills.md#預設標頭), [http_api 的 json_file](credentials-and-skills.md#http_api-的-json_file), [登記訊息何時刪除](secrets.md#登記訊息何時刪除) 的模組層級: scheduleCommand 私訊的提示, 時間, 發訊者, owner, admin 能取消而其他人沒有權限, 新的 vault (重啟) 照刪; 群組 10 秒後刪, 不附按鈕, 沒有刪除權限只提醒; 哪些指令延後刪, 哪些立刻刪; rotate 保留設定與 getMe; 覆蓋 / 取消與 2 分鐘逾時; `--default-header`, `/router cred header` 與 `/secret header` 的列出, set, 同名更新, rm; 本機假伺服器確認預設標頭與 json_file 內容; readJsonFile 的角色 (owner, admin 可讀資料夾外, user, power 不行), stateDir, 符號連結, 大小, JSON 檢查 |
+| `router/test/e2e-creds.test.ts` | 同上各節, 真的 router + 假 Bot API + 本機假 HTTP 伺服器: 重啟前排的刪除在啟動時執行, 私訊的提示與取消按鈕 (發訊者, owner, admin 能按, 其他 user 沒有權限), 群組的 `/secret set` 10 秒後刪且不附按鈕, 群組被拒的立刻刪, 同名 add 的按鈕流程, rotate (含 bot token 的 getMe), 預設標頭補上與被 worker 覆蓋, `/router cred header` 與 `/secret header` 的列出, 更新, rm, json_file 實際送出的內容, owner 與 admin 讀資料夾外, user 被拒, stateDir 一律拒絕與其他拒絕 |
 | `router/test/secrets.test.ts` | 規劃 10b 對話專屬密鑰: 加密與綁定, 遮蔽 (句子中間提到登記指令不算密鑰的回歸測試), /secret 指令 (私訊, 群組, 拒絕, 上限, getMe 驗證 (不像 bot token 的值不送 getMe), --header), 使用範圍檢查, /router secret; events 遮蔽與一次性 migration, 全域 http 路徑, bot 設定提醒 |
 | `router/test/e2e-secrets.test.ts` | 真的 router + 假 Bot API 與 HTTP API: secretKey 自動產生, 舊 events 遮蔽, 私訊登記與刪訊息, 群組登記與提醒, getMe 驗證, 引用遮蔽, http_api (含 --header) 與 bot_api 使用, 其他對話用不到, list / rm, 加入群組, 初次設定與 setup group 的設定提醒 |
 | `router/test/rawvault.test.ts` | 規劃 10e 原始事件與密鑰保護: 偵測 (格式, 指令的值, 已登記的值, 不猜熵), 掃描範圍, event_raw 加密與綁定, events 遮蔽與 worker 代號, 🔑 話題紀錄, 提醒與 5 分鐘刪除 (取消, 誰能按, 沒權限, 重啟後), event_raw (角色, 代號, 固定 agent, 出口檢查, haiku, 語言), secret_from_handle, cli event raw, /secret handles, /router secret handles, 文字類附件, 文件與工具說明 |
@@ -209,7 +209,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | 已知格式加已登記的全域憑證與對話密鑰 (完全比對), 不做熵值猜測 | rawvault「detection: …」 |
 | 每次偵測記在第五個話題「🔑 密鑰偵測」, 沒有審核群組私訊 owner; 既有群組自動補建話題 | rawvault「a served chat…」「no right to delete…」; e2e-rawvault「startup: …」; e2e-setup「approvals group: …five topics…」 |
 | 送進 worker 的訊息換成代號, 附種類與末 4 碼 | rawvault「record: …」; e2e-rawvault「a token pasted in a DM…」(含 messages 表) |
-| 一般對話: 回覆提醒, 5 分鐘後刪除, 取消刪除 (發送者, owner, admin), 沒有刪除權限只提醒; 登記指令立刻刪除 | rawvault「a served chat…」「no right to delete…」「取消刪除…」; e2e-rawvault「a token pasted in a DM…」「an edited message…」 |
+| 一般對話: 回覆提醒, 5 分鐘後刪除, 取消刪除 (發送者, owner, admin), 沒有刪除權限只提醒; 登記指令照「憑證登記流程驗收對照」的延後刪除 | rawvault「a served chat…」「no right to delete…」「取消刪除…」; e2e-rawvault「a token pasted in a DM…」「an edited message…」 |
 | 刪除排程撐過 router 重啟 | rawvault「the deletion schedule survives a restart…」; e2e-rawvault「startup: …」 |
 | event_raw: 只限發話者或對話角色 owner/admin, 任何對話 (含 owner 對話); 代號說明由程式填 (種類, getMe, 是否等於已登記的值); 固定 system prompt, 沒有工具的 claude -p, config 的 model, 不用 haiku | rawvault「event_raw: only when…」「the fixed agent is claude -p…」「event_raw exit check…」; e2e-rawvault「event_raw: …」「event_raw goes by who started the turn…」(終端機那一輪只看對話角色) |
 | 出口檢查: 回答有明文或疑似密鑰就整份擋下並通知 owner | rawvault「event_raw exit check…」 |
@@ -354,13 +354,13 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 
 | 驗收項目 | 測試 |
 |---|---|
-| `/router cred add\|rotate`, `/secret set`, `/router bot add\|rotate` 在私訊回覆後 60 秒刪除, 提示附「取消刪除」, 只有發訊者能按 (owner 也不行), 按了保留並改提示 | cred-flows「scheduleCommand…」; e2e-creds「/router cred add in the owner DM…」「/secret set in a DM…」; e2e-secrets「DM: a user registers…」; e2e「bot rotate (owner DM)…」 |
-| 群組裡誤打 (被拒) 與群組的 `/secret set` 立刻刪除, 不給取消; 被拒的 (角色, 別人的憑證) 立刻刪 | cred-flows「which messages wait 60 seconds…」; e2e-creds「/secret set in a DM…」 |
-| router 重啟後尚未到期的刪除照樣執行, 停機期間到期的在啟動時刪 | cred-flows「scheduleCommand…」; e2e-creds「router restart…」 |
+| `/router cred add\|rotate`, `/secret set`, `/router bot add\|rotate` 在私訊回覆後 60 秒刪除, 提示附「取消刪除」, 發訊者, owner, admin 能按, 其他人回沒有權限, 按了保留並改提示 | cred-flows「scheduleCommand in a DM…」; e2e-creds「/router cred add in the owner DM…」「/secret set in a DM…」; e2e-secrets「DM: a user registers…」; e2e「bot rotate (owner DM)…」 |
+| 群組裡合法的 `/secret set` 10 秒後刪除, 提示不附取消按鈕, bot 沒有刪除權限只提醒; 群組裡誤打 (被拒) 與被拒的 (角色, 別人的憑證) 立刻刪 | cred-flows「scheduleCommand in a group…」「which messages wait 60 seconds…」; e2e-creds「/secret set in a DM…」; e2e-secrets「group: any member registers…」 |
+| router 重啟後尚未到期的刪除照樣執行, 停機期間到期的在啟動時刪 | cred-flows「scheduleCommand in a DM…」; e2e-creds「router restart…」 |
 | `/router cred rotate` 只換 key, 網址, 標頭, 路徑, 角色保留; bot token 先 getMe; 權限比照 add | cred-flows「/router cred rotate keeps everything…」; e2e-creds「/router cred rotate…」 |
 | 同名 `/router cred add` 不靜默覆蓋: 現有設定摘要 (不含值) + 覆蓋 / 取消, 只限下指令的人, 新值只在記憶體 2 分鐘, 逾時或取消丟棄, 覆蓋用這次的設定整個取代; admin 對別人的照舊拒絕 | cred-flows「/router cred add of a name that exists…」; e2e-creds「/router cred add of a name that exists…」 |
-| `http_api` 的 `json_file`: 對話資料夾內 (相對或絕對), 路徑檢查, 20 MB 上限, 非法 JSON 拒絕並說明, 與 json 擇一, 實際送出內容 | cred-flows「readJsonFile…」「httpApiCall: default headers…」; e2e-creds「http_api json_file…」 |
-| 預設標頭: cred add, rotate, cred-import, `/secret set --http` 的 `--default-header`, worker 沒帶才補, 有帶用 worker 的, 不能是 key 的標頭或被擋的標頭, `/router cred header set\|rm`, `/router cred list` 顯示 | cred-flows「default headers…」「httpApiCall: default headers…」; e2e-creds「default headers…」 |
+| `http_api` 的 `json_file`: 相對或絕對路徑, owner 與 admin 對話可讀資料夾外, user 與 power 限資料夾內 (跟著符號連結), stateDir 一律拒絕, 20 MB 上限, 非法 JSON 拒絕並說明, 與 json 擇一, 實際送出內容 | cred-flows「readJsonFile…」「httpApiCall: default headers…」; e2e-creds「http_api json_file…」 |
+| 預設標頭: cred add, rotate, cred-import, `/secret set --http` 的 `--default-header`, worker 沒帶才補, 有帶用 worker 的, 不能是 key 的標頭或被擋的標頭, `/router cred header` 與 `/secret header` 的列出, set (同名更新), rm, `/router cred list` 顯示 | cred-flows「default headers…」「/secret header…」「httpApiCall: default headers…」; e2e-creds「default headers…」 |
 
 ## Phase 4 驗收對照
 

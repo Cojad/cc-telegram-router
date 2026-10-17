@@ -32,8 +32,9 @@ export type CommandInput = {
  *  goes to the sender's DM instead. */
 /** html: the reply is written for parse_mode HTML (the bot settings notices, router/setup.ts). */
 /** deleteLater: the command message carries a value and is deleted 60 seconds
- *  after the answer unless its sender cancels (rawvault scheduleCommand);
- *  without it deleteMessage deletes at once (a refusal, a wrong place).
+ *  after the answer in a DM unless its sender, an owner or an admin cancels,
+ *  10 seconds in a group with no button (rawvault scheduleCommand); without
+ *  it deleteMessage deletes at once (a refusal, a wrong place).
  *  buttons go under the reply; staged: a /router cred add waiting for 覆蓋. */
 export type CommandOutput = { reply: string; private?: boolean; deleteMessage?: boolean; deleteLater?: boolean; deleteLabel?: string; html?: boolean; buttons?: Array<{ text: string; data: string }>; staged?: number; logs: Array<{ conv: string; text: string }>; after?: () => void }
 
@@ -205,7 +206,7 @@ const HELP = [
   '/router perm user <uid|@username> show | tool|path|net|mcp ... | reset (掛在使用者身上的覆寫: 他發起的一輪重算高風險工具, 他的私訊也套用)',
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
   '/router skill list | approve <技能> | revoke <技能> (技能的特權動作: 核准後 user 與 power 對話也能執行, 憑證不外流)',
-  '/router cred list | add <名稱> <bot token> [方法...] | add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...] | rotate <名稱> <新的 key> [--default-header <名稱>:<值>]... (add 與 rotate 只在 owner 或 admin 自己的私訊) | header <名稱> set <名稱>:<值> | header <名稱> rm <標頭> | allow|disallow <名稱> <方法或路徑...> | roles <名稱> <角色,...> | rm <名稱> | reload',
+  '/router cred list | add <名稱> <bot token> [方法...] | add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...] | rotate <名稱> <新的 key> [--default-header <名稱>:<值>]... (add 與 rotate 只在 owner 或 admin 自己的私訊) | header <名稱> [set <標頭>:<值> | rm <標頭>] (不帶參數就列出預設標頭) | allow|disallow <名稱> <方法或路徑...> | roles <名稱> <角色,...> | rm <名稱> | reload',
   '/router secret list [chat_id] (不寫就列出所有有密鑰的對話) | rm <chat_id> [名稱] (不寫名稱就全部移除): 各對話用 /secret 登記的密鑰',
   '/router secret handles [chat_id] (原文請求發出的密鑰代號, 不寫就列出全部) | revoke <代號>',
   '/router event raw <event id> (只在終端機: 遮蔽過的原始 update 明文寫進權限 600 的檔案, 只印路徑)',
@@ -222,14 +223,14 @@ const HELP = [
 
 const CRED_ADD_USAGE = '/router cred add <名稱 (小寫英數)> <bot token> [方法...] 或 /router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...]'
 const CRED_ROTATE_USAGE = '/router cred rotate <名稱> <新的 key 或 token> [--default-header <名稱>:<值>]... (只換值, 網址, 標頭, 路徑, 角色不變; bot token 先用 getMe 驗證)'
-const CRED_HEADER_USAGE = '/router cred header <名稱> set <標頭>:<值> | /router cred header <名稱> rm <標頭> (http 憑證的預設標頭, 不用重貼 key)'
+const CRED_HEADER_USAGE = '/router cred header <名稱> (列出) | /router cred header <名稱> set <標頭>:<值> (同名就更新) | /router cred header <名稱> rm <標頭> (http 憑證的預設標頭, 不用重貼 key)'
 
 /** /router help <主題>: full usage with examples. */
 export const HELP_TOPICS: Record<string, string> = {
   cred: [
     '全域憑證 /router cred: 存在 router 設定檔 (config.json), 給 owner 與 admin 角色的對話 (可用 roles 放寬) 透過工具使用; worker 只拿到名稱, 看不到值.',
     '',
-    '在哪裡打: add 與 rotate 只能在你 (owner 或 admin) 自己和 bot 的私訊. router 自己處理, 不會進 worker; 含 key 的那則訊息 60 秒後刪除, router 會回一則提示附「取消刪除」按鈕 (只有你能按, 按了就保留). 在群組打會被拒絕並立刻刪除, 值已外流, 請換一把新的.',
+    '在哪裡打: add 與 rotate 只能在你 (owner 或 admin) 自己和 bot 的私訊. router 自己處理, 不會進 worker; 含 key 的那則訊息 60 秒後刪除, router 會回一則提示附「取消刪除」按鈕 (你, owner, admin 能按, 按了就保留). 在群組打會被拒絕並立刻刪除, 值已外流, 請換一把新的.',
     '',
     '一般 API key (用 http_api 工具):',
     '/router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...]',
@@ -267,12 +268,13 @@ export const HELP_TOPICS: Record<string, string> = {
     '- /router cred (全域憑證): owner 或 admin 在自己私訊登記, 存在 router 設定檔, 預設給 owner 與 admin 角色的對話用, 可用 roles 放寬. 適合整隻 bot 或技能共用的 key.',
     'worker 都用 bot_api / http_api 工具, credential 填名稱 (先找對話密鑰, 再找全域憑證); 值不會進 worker, 回應裡出現的值換成 <密鑰>.',
     '',
-    '在哪裡打: 要用 key 的那個對話 (私訊或群組). router 自己處理, 不會進 worker; 私訊裡那則訊息 60 秒後刪除, router 會回一則提示附「取消刪除」按鈕 (只有發訊者能按); 群組立刻刪除, bot 沒有刪除權限會提醒你自己刪.',
+    '在哪裡打: 要用 key 的那個對話 (私訊或群組). router 自己處理, 不會進 worker; 私訊裡那則訊息 60 秒後刪除, router 會回一則提示附「取消刪除」按鈕 (發訊者, owner, admin 能按); 群組裡 10 秒後刪除, 不給取消按鈕, bot 沒有刪除權限會提醒你自己刪. 被拒的立刻刪除.',
     '',
     '/secret set <名稱> <bot token> [方法...] (getMe 驗證, 沒寫方法就是全部)',
     '/secret set <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...] (沒寫路徑就是全部; --default-header: worker 沒帶同名標頭時 router 補上)',
     '範例: /secret set anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key --default-header anthropic-version:2023-06-01',
     '/secret list | rm <名稱> | handles | revoke <代號>',
+    '/secret header <名稱> (列出) | header <名稱> set <標頭>:<值> (同名就更新) | header <名稱> rm <標頭>: http 密鑰的預設標頭, 不用重貼 key',
     'owner 與 admin: /router secret list [chat_id] | rm <chat_id> [名稱] | handles [chat_id] | revoke <代號>',
     '',
     '偵測: 訊息開頭就是 /secret set, /router cred add|rotate, /router bot add|rotate 時, 參數位置的值當成密鑰; 句子中間提到指令名稱不算. 其他地方只認 sk-ant-, sk-, bot token 這類格式與已登記的值.',
@@ -904,6 +906,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         // default headers of an http credential, without the key again
         const how = args[3], what = args[4]
         if (cred.kind !== 'http') return done(`${name} 是 Telegram bot token 憑證, 沒有標頭可設`)
+        if (how == null) return done(`${name} 的預設標頭: ${defaultHeadersText(cred.defaultHeaders).replace(/^, 預設標頭 /, '') || '(無)'}`)
         if ((how !== 'set' && how !== 'rm') || !what || args.length > 5) return done(`用法: ${CRED_HEADER_USAGE}`)
         if (how === 'set') {
           const d = parseDefaultHeader(what)
