@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.12.1] - 2026-10-17
+
+### Changed
+
+- 測試補上同一個特權動作同時用 `store`, `bots`, `http` 的組合 (三組環境變數都拿到, 資料庫寫回, key 與 token 都不回到對話). 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#驗證).
+
 ## [2.12.0] - 2026-10-17
 
 ### Added

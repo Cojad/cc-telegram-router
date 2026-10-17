@@ -10,7 +10,7 @@
 // privileged.json is read. Runs on one database queue across conversations;
 // the database is hidden from the conversation and other actions. bots: only
 // telegram-bot credentials; the token never comes back (output, files the
-// run wrote, the database). Keep in sync with that section and
+// run wrote, the database); store, bots and http together in one action. Keep in sync with that section and
 // /telegram:bot-skill.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
@@ -249,4 +249,25 @@ test('bots: the script gets <apiRoot>/bot<token>; the token never comes back (ou
   expect(snapshot()).toEqual(before)
   expect(told.some(t => t.includes('資料庫沒有變動'))).toBe(true)
   expect(told.join('\n')).not.toContain(TOKEN)
+})
+
+test('store, bots and http together in one action (the generate action\'s mix): each env is set, the line is written back, no key or token comes back', async () => {
+  const KEY = 'sk-test0123456789abcdefghijklmnop'
+  writeSkill({ generate: {
+    run: ['bash', '-c', 'echo "url=$OPENAI_URL"; [ -n "$OPENAI_HEADER" ] && echo header-set; echo "api=${STICKER_BOT_API%%/bot*}"; echo "$OPENAI_HEADER $STICKER_BOT_API"; echo \'{"id":2}\' >> "$STICKERS/log.jsonl"'],
+    roles: ['user', 'power', 'admin', 'owner'], http: { OPENAI: 'openai' }, bots: { STICKER_BOT: 'baldeagle' }, store: { STICKERS: 'tg-sticker' }, timeout: 30,
+  } })
+  expect(() => loadManifest(skill)).not.toThrow()
+  deps.httpCred = name => name === 'openai' ? { token: KEY, kind: 'http', baseUrl: 'https://api.example.com', methods: ['/v1/images/generations'] } : undefined
+  deps.botCred = name => name === 'baldeagle' ? { token: TOKEN, methods: ['addStickerToSet'] } : undefined
+  seed()
+  const r = await runSkill(deps, conv, 'user', 'sticker', 'generate', {})
+  expect(r.ok).toBe(true)
+  expect(r.text).toContain('url=https://api.example.com')
+  expect(r.text).toContain('header-set')
+  expect(r.text).toContain('api=http://127.0.0.1:9')
+  expect(r.text).toContain('Authorization: Bearer <已遮蔽> http://127.0.0.1:9/bot<已遮蔽>')
+  expect(r.text).not.toContain(KEY)
+  expect(r.text).not.toContain(TOKEN)
+  expect(readFileSync(join(store, 'log.jsonl'), 'utf8')).toBe('{"id":1}\n{"id":2}\n')
 })
