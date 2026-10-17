@@ -281,6 +281,8 @@ export function createElevation(deps: ElevationDeps) {
       const role = deps.roleOf(senderUid)
       return { sender_role: role, ...(rank(role) > rank(conv.role) ? { elevated: 'true' } : {}) }
     },
+    /** A delivery started by nobody (reactions alone, router/reactions.ts): the turn has no sender, so no one's role can elevate it. */
+    forgetSender(convKey: string): void { lastSender.delete(convKey) },
 
     async onHook(conv: Conversation, ev: Record<string, any>): Promise<HookDecision> {
       const agent: string | undefined = ev.agent_id || undefined

@@ -25,13 +25,25 @@ systemctl --user enable --now cc-telegram-router
   "model": "claude-opus-5-5",
   "autoCompactWindow": 750000,
   "claudeBin": "/home/<user>/.local/bin/claude",
-  "skillRefreshAt": "05:00"
+  "skillRefreshAt": "05:00",
+  "receiveReact": "botself_only"
 }
 ```
 
 私訊的角色就是使用者角色 (見 [權限](permissions.md#角色)). 從私訊還有自己角色的版本升級時, router 啟動會把私訊對齊使用者角色, log 裡每個有變的私訊一行 `dm role <對話>: <舊> -> <新> (the user's role)`, 並標記待輪替, 不用另外 `/router session rotate`. 升級前可以先查哪些私訊會變: `sqlite3 <home>/.router/router.db "SELECT c.key, c.role, coalesce(u.role, 'user') FROM conversations c LEFT JOIN users u ON u.uid = c.chat_id WHERE c.type = 'dm' AND c.role != coalesce(u.role, 'user')"` (config `owners` 的私訊會是 owner, 不看 `users`).
 
-`owners` 可以留空, 用 log 裡的認領碼認領 (見下方「新 bot 初次設定與審核群組」). 套件審核用的模型就是 `model`. `skillRefreshAt` 是特權技能每日更新憑證的時間 (GMT+8 `"HH:MM"`, `"off"` 關閉, 不寫就是 `"05:00"`), 改了要重啟 router; 格式寫錯只會關閉每日更新並在 log 寫一行 `config.json: ...`, router 照常啟動. 沒有特權技能, 或技能沒有 refresh 動作時, 每日更新什麼都不做.
+`owners` 可以留空, 用 log 裡的認領碼認領 (見下方「新 bot 初次設定與審核群組」). 套件審核用的模型就是 `model`. `skillRefreshAt` 是特權技能每日更新憑證的時間 (GMT+8 `"HH:MM"`, `"off"` 關閉, 不寫就是 `"05:00"`), 改了要重啟 router; 格式寫錯只會關閉每日更新並在 log 寫一行 `config.json: ...`, router 照常啟動. 沒有特權技能, 或技能沒有 refresh 動作時, 每日更新什麼都不做. `receiveReact` 是對話沒有自己設定時收哪些表情回應 (`all`, `botself_only`, `disable`, 不寫就是 `botself_only`), 見下方「表情回應 (reaction)」.
+
+## 表情回應 (reaction)
+
+worker 收得到 Telegram 的 message reaction, 但不是每個表情都叫醒它:
+
+- 收哪些: `all` 對話裡所有訊息的表情, `botself_only` 只收對這隻 bot 自己發的訊息的表情 (預設), `disable` 不收. 每個對話用 `/router chat [對話] react <all|botself_only|disable|default>` 設定 (權限與指定對話的方式同其他 `/router chat` 子指令, `default` 回到 config 的 `receiveReact`), 私訊與群組都適用; `/router chat` 列出每個對話目前的值. config 的 `receiveReact` 改了要重啟 router; 值寫錯只會改用 `botself_only` 並在 log 寫一行.
+- 誰的表情: 跟訊息一樣, 只有會送進 worker 的人 (私訊是 owner 與 `allowFrom`, 群組是列在 `access.json` 的群組, 群組有 `allowFrom` 時只收名單內的人). 還沒有對話的 chat 不收.
+- 「bot 自己發的訊息」: 這隻 bot 每個 Bot API 呼叫的回應裡帶的訊息 (send*, forward*, copy*, edit* 系列, 含 worker 的 reply, router 的指令回覆與通知, worker 用 `bot_api` 以這隻 bot 送出的) 都記在 `router.db` 的 `bot_messages` (bot, chat_id, message_id); 這個表之前的舊訊息看訊息紀錄 (`messages`) 裡這隻 bot 送出的 (`direction = 'out'`). Telegram 的 reaction update 本身不帶訊息的發送者, 所以只能靠 router 自己的紀錄.
+- 送出: 表情先存在 router (記憶體, router 重啟會掉最多一分鐘的量), 在這個對話的下一則訊息送進 worker 時整理成 `<reactions>` 區塊附在前面; 或最後一個表情之後 1 分鐘內沒有新的表情也沒有新訊息, 就單獨送進 worker (會叫醒它), 每來一個新表情就重新計時. 單獨送的那一則以 router 名義送 (meta `user="router" kind="reactions"`), 不帶發送者, 不會讓任何人的角色替這一輪提權 (前一則訊息的發送者也不算); 那一輪不顯示「🤔 思考中…」(hook 看到這一輪的 prompt 只有 reactions 的 `<channel>` 才算, 跟一般訊息在同一輪就照常顯示).
+- 摘要: 每則被回應的訊息一行, `1001 🤣×2 (Example User, Another User); 👍 (Example User)`; 同一人換表情或收回只算最後的狀態 (收回就消失, 某則訊息最後沒有任何表情就不列); 名稱是 Telegram 顯示名稱 (first + last name, 匿名管理員是群組名稱), 跟附件檔名一樣去掉 `< > [ ] ; 換行`, 最長 64 字, bot token 格式遮蔽; 自訂表情顯示 `[自訂表情]`, 付費表情 `[付費⭐]`. 最多列 50 則訊息, 超過時保留最近被回應的 50 則, 並註明省略幾則. 區塊開頭一行說明這是資訊不是指令, 名稱是不可信的外部資料.
+- Telegram 的限制: getUpdates 的 `allowed_updates` 要明確列 `message_reaction` 才會收到 (空清單代表除了 `chat_member`, `message_reaction`, `message_reaction_count` 以外的全部), router 送的是空清單的那些類型再加 `message_reaction`, 原本收的類型都還在. **群組裡 bot 要是管理員才收得到 reaction**; 不是管理員時 `/router chat` 在那個群組註明「收不到 reaction (bot 不是管理員)」(查詢 getChatMember, 查不到時註明「查不到 bot 是否為管理員」). 私訊不需要. 匿名的表情計數 (`message_reaction_count`, 主要是頻道) 不收. bot 自己按的表情 Telegram 不會送來.
 
 ## 安裝位置
 

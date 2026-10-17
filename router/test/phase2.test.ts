@@ -22,7 +22,7 @@ let calls: string[]
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'cctr2-'))
   mkdirSync(join(dir, '.router'))
-  cfg = { path: join(dir, '.router', 'config.json'), bots: [{ name: 'cc', token: '1:x' }], home: dir, stateDir: join(dir, '.router'), socket: join(dir, '.router', 's'), owners: [OWNER], model: 'claude-opus-5-5', autoCompactWindow: 750000, claudeBin: 'claude' }
+  cfg = { path: join(dir, '.router', 'config.json'), bots: [{ name: 'cc', token: '1:x' }], home: dir, stateDir: join(dir, '.router'), socket: join(dir, '.router', 's'), owners: [OWNER], model: 'claude-opus-5-5', autoCompactWindow: 750000, claudeBin: 'claude', receiveReact: 'botself_only' }
   db = openRouterDb(join(dir, '.router', 'router.db'), { owners: cfg.owners })
   db.setUserRole(ADMIN, 'admin')
   access = { dmPolicy: 'allowlist', allowFrom: [OWNER, ADMIN, USER], groups: { '-100555': { requireMention: true, allowFrom: [] } }, pending: { abc123: { senderId: '700', chatId: '700', createdAt: Date.now(), expiresAt: Date.now() + 60000, replies: 1 } } } as Access
@@ -376,8 +376,8 @@ test('/router config, /router chat and /router log with no arguments list everyt
   ensureConversation(cfg, db, 'cc', '-100555', 'supergroup', () => {})
   db.updateConversation('group-100555', { title: 'Example Group', compact: 300000 })
   const chats = (await run('/router chat', OWNER))!.reply
-  expect(chats).toContain('dm-137438526\n  chat_id 137438526, role owner (使用者角色), model claude-opus-5-5 (預設), compact 750000 (預設), mention -, 已休眠')
-  expect(chats).toContain('group-100555 (Example Group)\n  chat_id -100555, role user, model claude-opus-5-5 (預設), compact 300000, mention on, 已休眠')
+  expect(chats).toContain('dm-137438526\n  chat_id 137438526, role owner (使用者角色), model claude-opus-5-5 (預設), compact 750000 (預設), mention -, react botself_only (預設), 已休眠')
+  expect(chats).toContain('group-100555 (Example Group)\n  chat_id -100555, role user, model claude-opus-5-5 (預設), compact 300000, mention on, react botself_only (預設), 已休眠')
   expect((await run('/router chat -100555', OWNER))!.reply).toStartWith('group-100555 (Example Group)')
   const logs = (await run('/router log', OWNER))!.reply
   expect(logs).toContain('[dm-137438526]')

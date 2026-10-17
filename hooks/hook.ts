@@ -25,7 +25,11 @@ const SOCKET = 'socket' in FOUND ? FOUND.socket : null
 function progressEvent(event: string, input: Record<string, any>): Record<string, unknown> | null {
   const agent = input.agent_id ? { agent_id: String(input.agent_id) } : {}
   switch (event) {
-    case 'prompt': return { event, telegram: /<channel source="[^"]*telegram/.test(String(input.prompt ?? '')) }
+    case 'prompt': {
+      const tags = String(input.prompt ?? '').match(/<channel source="[^"]*telegram[^>]*>/g) ?? []
+      // a turn started by message reactions alone (router/reactions.ts): the router shows no progress for it
+      return { event, telegram: tags.length > 0, ...(tags.length && tags.every(t => / kind="reactions"/.test(t)) ? { reactions: true } : {}) }
+    }
     case 'pre':
     case 'post': {
       const name = String(input.tool_name ?? '')

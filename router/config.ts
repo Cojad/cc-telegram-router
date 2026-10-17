@@ -8,6 +8,7 @@ import { homedir } from 'os'
 import { dirname, isAbsolute, join, resolve } from 'path'
 import { outermost } from './settings'
 import { parseClassifier, type ClassifierConfig } from './classifier'
+import { parseReactMode, type ReactMode } from './reactions'
 
 export type BotConfig = { name: string; token: string }
 
@@ -63,6 +64,11 @@ export type Config = {
    *  privileged skill bwrap) besides home, stateDir and the user's home: e.g.
    *  other projects on the same machine. Default none. */
   sandboxDenyRead?: string[]
+  /** Which message reactions reach workers when the conversation has no
+   *  /router chat react of its own (router/reactions.ts); default botself_only. */
+  receiveReact: ReactMode
+  /** How long reactions wait for more before going to the worker alone (default 60000); only tests shorten it. */
+  reactFlushMs?: number
   /** Optional settings that were wrong and so turned off (logged at start): the router still runs. */
   warnings?: string[]
 }
@@ -143,6 +149,8 @@ export function loadConfig(path: string): Config {
     skillRefreshAt: refreshAtOrOff(raw.skillRefreshAt, warnings),
     classifier: parseClassifier(raw.classifier),
     sandboxDenyRead: parseDenyRead(raw.sandboxDenyRead, warnings),
+    receiveReact: parseReactMode(raw.receiveReact, warnings),
+    reactFlushMs: typeof raw.reactFlushMs === 'number' && raw.reactFlushMs > 0 ? raw.reactFlushMs : undefined,
     warnings,
   }
 }

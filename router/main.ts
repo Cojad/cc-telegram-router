@@ -36,6 +36,7 @@ import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
 import { scheduleRefresh } from './skillrefresh'
 import { createPoller, type PollEvent } from './poller'
+import { ALLOWED_UPDATES, createReactionBuffer, reactor, reactionLabel, wanted, type ReactMode } from './reactions'
 import { sendWithRetry, htmlOrPlain } from './sendretry'
 import { pollNoticeText, describePoll, noticeVia } from './pollnotice'
 import { hashSkill, loadManifest, argRoleRefusal } from './privskill'
@@ -268,6 +269,8 @@ function ipcOnProgress(peer: Peer, ev: Record<string, unknown>): void {
   if (!c) return
   if (ev.event === 'stop' || (ev.event === 'prompt' && ev.telegram)) log(`progress ${c.key} ${ev.event}`)
   let replyTo: number | undefined, mirrors: Mirror[] | undefined
+  // a turn started by reactions alone (hooks/hook.ts) shows no 🤔 in the chat; the previous turn's progress still closes
+  if (ev.event === 'prompt' && ev.telegram && ev.reactions) ev = { ...ev, telegram: false }
   if (ev.event === 'prompt' && ev.telegram) {
     replyTo = replyNext.get(c.key); replyNext.delete(c.key)
     mirrors = pendingMirrors.get(c.key); pendingMirrors.delete(c.key)
@@ -318,6 +321,7 @@ const ipc = createIpc({
       const params = (args.params ?? {}) as Record<string, unknown>
       const res = await botApiCall({ apiRoot: cfg.apiRoot, token: cred!.token, method, params, files }).catch(e => ({ ok: false, description: String(e) }))
       db.logApiCall(own ? conv.bot : `cred:${name}`, method, { params, files }, res, res.ok ? null : `${res.error_code ?? ''}: ${res.description}`, conv.key)
+      if (own) noteSent(conv.bot, method, params, res)
       // an API may echo what it was sent: the token never goes back to the worker
       return { content: [{ type: 'text', text: scrubSecret(JSON.stringify(res), cred!.token) }], isError: !res.ok }
     }
@@ -495,6 +499,8 @@ const ipc = createIpc({
     const logs = renderLogs(db.bindLogs(key, qid))
     if (logs) parts.push(logs)
     const who = elevation.onDeliver(c, params.meta.user_id)
+    // reactions alone: nobody started this turn, no one's role elevates it (router/reactions.ts)
+    if (params.meta.kind === 'reactions') elevation.forgetSender(key)
     if (params.meta.message_id && params.meta.user !== 'router') currentMsg.set(key, Number(params.meta.message_id))
     // the message that starts the turn goes with the classifier's judgements (masked, first 500 characters)
     if (params.meta.user !== 'router') classifier.noteMessage(key, String(params.content ?? ''))
@@ -852,9 +858,44 @@ function onChannel(botName: string, params: ChannelParams): void {
       params.meta.image_path = dest
     } catch (e) { log(`move image for ${conv.key} failed: ${e}`) }
   }
+  // reactions kept since the last message ride in front of this one
+  const block = reactions.take(conv.key)
+  if (block) params = { ...params, content: `${block}\n${params.content}` }
   db.enqueue(conv.key, params)
   if (ipc.isConnected(conv.key)) ipc.pushQueue(conv.key)
   else void supervisor.ensureAwake(conv)
+}
+
+/** The bot's own messages, for receiveReact botself_only; a failed write never fails the call that sent them. */
+function noteSent(bot: string, method: string, payload: unknown, res: unknown): void {
+  try { db.noteBotMessages(bot, method, payload, res) } catch (e) { log(`bot_messages ${bot} ${method}: ${e}`) }
+}
+
+/** Message reactions kept per conversation until its next message, or a minute without more (router/reactions.ts). */
+const reactions = createReactionBuffer({
+  flushMs: cfg.reactFlushMs,
+  onFlush(key, block) {
+    const c = db.getConversation(key)
+    if (!c) return
+    log(`reactions ${key}: handed over alone`)
+    db.enqueue(c.key, { content: block, meta: { chat_id: c.chat_id, user: 'router', kind: 'reactions', ts: iso8() } })
+    if (ipc.isConnected(c.key)) ipc.pushQueue(c.key)
+    else void supervisor.ensureAwake(c)
+  },
+})
+
+/** A message_reaction update: kept for the conversation's worker when its receiveReact mode wants it. */
+function onReaction(botName: string, u: import('grammy/types').MessageReactionUpdated): void {
+  const chatId = String(u.chat.id)
+  const conv = db.findConversation(botName, chatId)
+  const who = reactor(u)
+  if (!conv || !who) return
+  // the same people whose messages reach the worker (a DM's allowFrom, a group's allowFrom)
+  if (!servesChat(loadAccess(), cfg.owners, u.chat.type, chatId, who.id)) return
+  const mode = (conv.react ?? cfg.receiveReact) as ReactMode
+  const ownMessage = () => db.isBotMessage(botName, chatId, u.message_id) || store.forBot(botName).lookup(chatId, String(u.message_id))?.direction === 'out'
+  if (!wanted(mode, ownMessage)) return
+  reactions.add(conv.key, { messageId: u.message_id, actorId: who.id, actorName: who.name, reactions: u.new_reaction.map(reactionLabel) })
 }
 
 function apiOpts() {
@@ -1004,6 +1045,12 @@ const commandDeps: CommandDeps = {
   async sendTo(botName, chatId, text) {
     await bots.get(botName)?.bot.api.sendMessage(chatId, text)
   },
+  async botIsAdmin(botName, chatId) {
+    const h = bots.get(botName)
+    if (!h?.info) return null
+    const m = await h.bot.api.getChatMember(chatId, h.info.id).catch(() => null)
+    return m ? m.status === 'administrator' || m.status === 'creator' : null
+  },
   recentMessages: (bot, chatId, n) => store.forBot(bot).recent(chatId, n),
   restartRouter() {
     // Under systemd (Restart=always) exiting is enough; otherwise start a
@@ -1144,6 +1191,7 @@ function startBot(bc: BotConfig): BotHandle {
       const res = await prev(method, payload, signal)
       const apiErr = res.ok ? null : `${res.error_code}: ${res.description}`
       if (method !== 'getUpdates') db.logApiCall(bc.name, method, payload, res, apiErr, callConv.getStore() ?? null)
+      noteSent(bc.name, method, payload, res)
       return res
     } catch (e) {
       db.logApiCall(bc.name, method, payload, undefined, String(e), callConv.getStore() ?? null)
@@ -1274,13 +1322,15 @@ function startBot(bc: BotConfig): BotHandle {
   const dmCommandGate = (ctx: InboundContext) => policyDmCommandGate(ctx, loadAccess(), saveAccess)
   const handleInbound = createHandleInbound({ gate, bot, mcp: fakeMcp as never, store: store.forBot(bc.name), log: m => log(`${bc.name}: ${m}`) })
   registerTransport({ bot, mcp: fakeMcp as never, dmCommandGate, loadAccess, handleInbound, token: bc.token, inboxDir: INBOX })
+  bot.on('message_reaction', ctx => onReaction(bc.name, ctx.messageReaction))
   bot.catch(err => log(`${bc.name}: handler error: ${err.error}`))
 
   // our own long polling with the retry and notice policy (router/poller.ts), at start and later on
   h.poller = createPoller({
     getMe: signal => bot.api.getMe(signal),
     deleteWebhook: signal => bot.api.deleteWebhook({}, signal),
-    getUpdates: (offset, first, signal) => bot.api.getUpdates({ offset, timeout: 30, ...(first ? { allowed_updates: [] } : {}) }, signal),
+    // message_reaction has to be asked for by name; the rest is what an empty list gives (router/reactions.ts)
+    getUpdates: (offset, first, signal) => bot.api.getUpdates({ offset, timeout: 30, ...(first ? { allowed_updates: [...ALLOWED_UPDATES] } : {}) }, signal),
     onInfo: info => {
       bot.botInfo = info
       h.info = info
@@ -1408,6 +1458,7 @@ async function shutdown(sig: string, respawn = false) {
   await Promise.allSettled([...bots.values()].map(h => h.stop()))
   ipc.stop()
   elevation.stop()
+  reactions.stop()
   try { db.close(); store.close() } catch {}
   release()
   if (respawn) spawn(process.execPath, process.argv.slice(1), { detached: true, stdio: 'ignore' }).unref()

@@ -28,6 +28,8 @@ export type Conversation = {
   last_seen?: string | null
   /** Marked by /router session rotate: stop the worker once it is idle. */
   rotate_pending?: number
+  /** Which message reactions reach the worker (router/reactions.ts); null = config receiveReact. */
+  react?: string | null
 }
 
 /** Everyone the bot has seen (plan 03 資料表 people). */
@@ -175,6 +177,11 @@ export interface RouterDb {
   /** Update some conversation fields; bumps ctx_v. Returns the new row.
    *  A DM's role cannot be set here: it is its user's role (setUserRole). */
   updateConversation(key: string, fields: Partial<Pick<Conversation, 'role' | 'title' | 'compact' | 'model'>>): Conversation
+  /** /router chat react: all | botself_only | disable, null = config default. No ctx_v bump (the worker's context does not show it). */
+  setReact(key: string, mode: string | null): Conversation
+  /** Messages a bot sent (any Bot API call that returned one), for receiveReact botself_only. */
+  noteBotMessages(bot: string, method: string, payload: unknown, result: unknown): void
+  isBotMessage(bot: string, chat_id: string, message_id: number): boolean
   enqueue(conv: string, params: unknown): number
   markDelivered(qid: number): void
   ack(qid: number): void
@@ -393,6 +400,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
     );
     CREATE INDEX IF NOT EXISTS tool_history_ts ON tool_history (ts);
     CREATE TABLE IF NOT EXISTS own_agents (conv TEXT NOT NULL, worker TEXT NOT NULL, name TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (conv, worker, name));
+    CREATE TABLE IF NOT EXISTS bot_messages (bot TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, ts TEXT NOT NULL, PRIMARY KEY (bot, chat_id, message_id));
   `)
   // Columns added after Phase 1.
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
@@ -413,7 +421,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   if (!evCols.has('masked')) db.exec('ALTER TABLE events ADD COLUMN masked INTEGER NOT NULL DEFAULT 0')
   const useCols = new Set((db.query('PRAGMA table_info(auth_uses)').all() as Array<{ name: string }>).map(c => c.name))
   for (const [n, t] of [['bot', 'TEXT'], ['chat_id', 'TEXT'], ['message_id', 'INTEGER']]) if (!useCols.has(n!)) db.exec(`ALTER TABLE auth_uses ADD COLUMN ${n} ${t}`)
-  for (const [name, type] of [['title', 'TEXT'], ['compact', 'INTEGER'], ['model', 'TEXT'], ['ctx_v', 'INTEGER NOT NULL DEFAULT 1'], ['last_seen', 'TEXT'], ['rotate_pending', 'INTEGER NOT NULL DEFAULT 0']]) {
+  for (const [name, type] of [['title', 'TEXT'], ['compact', 'INTEGER'], ['model', 'TEXT'], ['ctx_v', 'INTEGER NOT NULL DEFAULT 1'], ['last_seen', 'TEXT'], ['rotate_pending', 'INTEGER NOT NULL DEFAULT 0'], ['react', 'TEXT']]) {
     if (!cols.has(name)) db.exec(`ALTER TABLE conversations ADD COLUMN ${name} ${type}`)
   }
 
@@ -424,6 +432,8 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   const qEvent = db.prepare('INSERT INTO events (ts, bot, update_json) VALUES (?, ?, ?)')
   const qApi = db.prepare('INSERT INTO outbound (ts, bot, conv, method, payload_json, result_json, error) VALUES (?, ?, ?, ?, ?, ?, ?)')
   const qRecentOut = db.prepare('SELECT ts, method, payload_json, error FROM outbound WHERE conv = ? ORDER BY id DESC LIMIT ?')
+  const qBotMsg = db.prepare('INSERT OR IGNORE INTO bot_messages (bot, chat_id, message_id, ts) VALUES (?, ?, ?, ?)')
+  const qIsBotMsg = db.prepare('SELECT 1 FROM bot_messages WHERE bot = ? AND chat_id = ? AND message_id = ?')
   const qGet = db.prepare('SELECT * FROM conversations WHERE key = ?')
   const qAll = db.prepare('SELECT * FROM conversations ORDER BY key')
   const qFind = db.prepare('SELECT * FROM conversations WHERE bot = ? AND chat_id = ?')
@@ -533,6 +543,19 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
       qApi.run(now(), bot, conv, method, json(payload), result === undefined ? null : json(result), error)
     },
     recentOutbound: (conv, limit) => qRecentOut.all(conv, limit) as any,
+    setReact: (key, mode) => { db.prepare('UPDATE conversations SET react = ? WHERE key = ?').run(mode, key); return get(key)! },
+    noteBotMessages(bot, method, payload, result) {
+      // send*, forward*, copy*, edit*: a Message, a list of them, or a MessageId (chat from the payload)
+      if (!/^(send|forward|copy|edit)/.test(method)) return
+      const r = (result as { ok?: boolean; result?: unknown } | undefined)
+      if (!r?.ok) return
+      const to = (payload as { chat_id?: unknown } | null)?.chat_id
+      for (const m of (Array.isArray(r.result) ? r.result : [r.result]) as Array<{ message_id?: unknown; chat?: { id?: unknown } } | null>) {
+        const chat = m?.chat?.id ?? to
+        if (typeof m?.message_id === 'number' && chat != null) qBotMsg.run(bot, String(chat), m.message_id, now())
+      }
+    },
+    isBotMessage: (bot, chat_id, message_id) => !!qIsBotMsg.get(bot, chat_id, message_id),
     getConversation: get,
     listConversations: () => convs(qAll.all() as Conversation[]),
     findConversation: (bot, chat_id) => conv((qFind.get(bot, chat_id) as Conversation | null) ?? null),

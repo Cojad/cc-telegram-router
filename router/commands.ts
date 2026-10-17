@@ -12,6 +12,7 @@ import { describeCreds } from './credentials'
 import { SECRET_RE, runSecretCommand, describeSecrets, describeHandles } from './secrets'
 import { addedSetupText, escHtml } from './setup'
 import { toolReport, KEEP_DAYS } from './toolhistory'
+import { REACT_MODES, isReactMode } from './reactions'
 
 export const ROLES = ['owner', 'admin', 'power', 'user', 'guest'] as const
 
@@ -89,6 +90,8 @@ export interface CommandDeps {
     group(bot: string, chatId: string): Promise<string>
   }
   sendTo(bot: string, chatId: string, text: string): Promise<void>
+  /** Whether the bot is an administrator of a group (getChatMember); null when Telegram could not say. Groups send reactions to admins only. */
+  botIsAdmin?(bot: string, chatId: string): Promise<boolean | null>
   /** Plan 10e: the plaintext of a masked event into a 600 file (terminal only); returns what to print. */
   events?: { rawToFile(id: number): Promise<string> }
   /** Tool call classifier, stage 1 (router/classifier.ts): the comparison report and one record. */
@@ -186,7 +189,7 @@ const HELP = [
   '/router status',
   '/router bot list | add <名稱> <token> | rotate <名稱> <token> | remove <名稱>',
   '/router role <uid|@username> <角色|none> (回覆某人的訊息時可省略對象) | role list',
-  '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off>',
+  '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off> | react <all|botself_only|disable|default>',
   '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] | group rm <chat_id> | policy <pairing|allowlist|disabled>',
   '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒)',
   '/router perm [chat_id] show | role <角色> (私訊等同 /router role) | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
@@ -376,16 +379,26 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     }
 
     case 'chat': {
-      const describe = (c: Conversation) => {
+      // receiveReact: in a group Telegram sends reactions only when the bot is an administrator there
+      const adminNote = async (c: Conversation): Promise<string | null> => {
+        if (c.type !== 'group' || (c.react ?? cfg.receiveReact) === 'disable' || !deps.botIsAdmin) return null
+        const admin = await deps.botIsAdmin(c.bot, c.chat_id).catch(() => null)
+        return admin === false ? '收不到 reaction (bot 不是管理員)' : admin === null ? '查不到 bot 是否為管理員' : null
+      }
+      const reactOf = async (c: Conversation) => {
+        const note = await adminNote(c)
+        return `${c.react ?? `${cfg.receiveReact} (預設)`}${note ? `, ${note}` : ''}`
+      }
+      const describe = async (c: Conversation) => {
         const a = deps.loadAccess()
         const mention = c.type === 'group' ? (a.groups[c.chat_id]?.requireMention === false ? 'off' : 'on') : '-'
         const title = c.type === 'dm' ? personLabel(db, c.chat_id) : c.title
-        return `${c.key}${title && title !== c.chat_id ? ` (${title})` : ''}\n  chat_id ${c.chat_id}, role ${c.role}${c.type === 'dm' ? ' (使用者角色)' : ''}, model ${c.model ?? `${cfg.model} (預設)`}, compact ${c.compact ?? `${cfg.autoCompactWindow} (預設)`}, mention ${mention}, ${deps.sessions.isConnected(c.key) ? '待命中' : '已休眠'}${c.last_seen ? `, 最後活動 ${gmt8(c.last_seen)}` : ''}`
+        return `${c.key}${title && title !== c.chat_id ? ` (${title})` : ''}\n  chat_id ${c.chat_id}, role ${c.role}${c.type === 'dm' ? ' (使用者角色)' : ''}, model ${c.model ?? `${cfg.model} (預設)`}, compact ${c.compact ?? `${cfg.autoCompactWindow} (預設)`}, mention ${mention}, react ${await reactOf(c)}, ${deps.sessions.isConnected(c.key) ? '待命中' : '已休眠'}${c.last_seen ? `, 最後活動 ${gmt8(c.last_seen)}` : ''}`
       }
-      if (args.length === 1) return done(db.listConversations().map(describe).join('\n') || '還沒有任何對話', { private: true })
+      if (args.length === 1) return done((await Promise.all(db.listConversations().map(describe))).join('\n') || '還沒有任何對話', { private: true })
       if (args.length === 2 && isChatRef(args[1])) {
         const { conv: c, error } = findChat(args[1]!)
-        return done(c ? describe(c) : error ?? '找不到這個對話', { private: true })
+        return done(c ? await describe(c) : error ?? '找不到這個對話', { private: true })
       }
       const { conv, rest, error } = target(1)
       if (!conv) return done(error ?? '找不到這個對話 (它還沒有任何訊息進來過)')
@@ -413,7 +426,15 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         deps.saveAccess(a)
         return done(`${conv.key} ${value === 'on' ? '要 mention 才回應' : '不用 mention 也會收到所有訊息'}`)
       }
-      return done('用法: /router chat [chat_id] compact|model|mention <值>')
+      if (key === 'react') {
+        if (value !== 'default' && !isReactMode(value)) return done(`用法: /router chat [chat_id] react <${REACT_MODES.join('|')}|default>`)
+        const c = db.setReact(conv.key, value === 'default' ? null : value)
+        const mode = c.react ?? `預設 (${cfg.receiveReact})`
+        if (here?.key !== c.key) logs.push({ conv: c.key, text: `${who} 把表情回應的接收改成 ${c.react ?? cfg.receiveReact}` })
+        const note = await adminNote(c)
+        return done(`${c.key} react → ${mode}${note ? `\n⚠️ ${note}` : ''}`)
+      }
+      return done('用法: /router chat [chat_id] compact|model|mention|react <值>')
     }
 
     case 'perm': {
