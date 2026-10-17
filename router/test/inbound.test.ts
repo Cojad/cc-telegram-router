@@ -9,7 +9,7 @@ import { expect, test } from 'bun:test'
 import type { Context } from 'grammy'
 import { buildReplyMeta, createHandleInbound, extractAttachmentMeta, type InboundDeps } from '../telegram/inbound'
 import { type Access, type GateResult } from '../telegram/policy'
-import type { MessageRecord } from '../telegram/store'
+import { openStore, type MessageRecord } from '../telegram/store'
 
 test('buildReplyMeta: no reply_to_message produces no reply fields', () => {
   expect(buildReplyMeta(undefined)).toEqual({})
@@ -389,4 +389,39 @@ test('a store.lookup failure during the reply fallback never blocks delivery', a
   await handleInbound(ctx, 'my answer', undefined)
 
   expect(notifications).toHaveLength(1)
+})
+
+test('two bots, one store: the same chat and message id reaches each bot\'s worker (a DM to both, a group both are in); a real duplicate for one bot is dropped with a log line, never silently', async () => {
+  const root = openStore(':memory:')
+  const logs: string[] = []
+  const make = (bot: string) => {
+    const notifications: Array<{ params: Record<string, unknown> }> = []
+    const handle = createHandleInbound({
+      gate: () => ({ action: 'deliver', access: accessAllowingEveryone() }),
+      bot: { api: { sendChatAction: async () => {}, setMessageReaction: async () => {} } } as never,
+      mcp: { notification: async (n: unknown) => { notifications.push(n as never); return undefined } } as never,
+      store: root.forBot(bot),
+      log: m => logs.push(`${bot}: ${m}`),
+    })
+    return { handle, notifications }
+  }
+  const cc = make('cc'), router = make('router')
+  // the person DMs both bots; each numbers its own messages, both have a 127
+  await cc.handle(ctxFor({ message_id: 127, chat: { id: 700100200 }, text: 'to cc' }), 'to cc', undefined)
+  await router.handle(ctxFor({ message_id: 127, chat: { id: 700100200 }, text: '實測 5-2' }), '實測 5-2', undefined)
+  expect(cc.notifications.map(n => n.params.content)).toEqual(['to cc'])
+  expect(router.notifications.map(n => n.params.content)).toEqual(['實測 5-2'])
+  // a group both bots are in: the same message, once for each
+  await cc.handle(ctxFor({ message_id: 50, chat: { id: -100777, type: 'supergroup' } as never, text: 'hi' }), 'hi', undefined)
+  await router.handle(ctxFor({ message_id: 50, chat: { id: -100777, type: 'supergroup' } as never, text: 'hi' }), 'hi', undefined)
+  expect([cc.notifications.length, router.notifications.length]).toEqual([2, 2])
+  expect(logs).toEqual([])
+  // the same update again for one bot: dropped, and said so
+  await router.handle(ctxFor({ message_id: 127, chat: { id: 700100200 }, text: '實測 5-2' }), '實測 5-2', undefined)
+  expect(router.notifications).toHaveLength(2)
+  expect(logs).toEqual(['router: telegram channel: duplicate message dropped (chat 700100200, message 127): already recorded for this bot'])
+  // a reply quoting message 127 gets this bot's text, not the other bot's
+  await cc.handle(ctxFor({ message_id: 128, chat: { id: 700100200 }, text: 're', reply_to_message: { message_id: 127 } }), 're', undefined)
+  expect((cc.notifications.at(-1)!.params.meta as Record<string, unknown>).reply_to_text).toBe('to cc')
+  root.close()
 })

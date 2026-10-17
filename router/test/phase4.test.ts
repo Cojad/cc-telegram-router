@@ -22,7 +22,7 @@ test('import-v1: copies the v1 messages into router.db, skips ones already there
     const store = openStore(routerDb)
     store.close()
     const r = new Database(routerDb)
-    r.prepare('INSERT INTO messages (chat_id, message_id, direction, ts, content, delivered) VALUES (?, ?, ?, ?, ?, ?)').run('137438526', '2', 'out', '2026-09-15T01:18:20.000Z', 'already here', 1)
+    r.prepare('INSERT INTO messages (bot, chat_id, message_id, direction, ts, content, delivered) VALUES (?, ?, ?, ?, ?, ?, ?)').run('cc', '137438526', '2', 'out', '2026-09-15T01:18:20.000Z', 'already here', 1)
     r.close()
     // through the real entry point, like the deploy step does
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ bots: [{ name: 'cc', token: '1:x' }], home: dir, stateDir: dir, owners: ['137438526'] }))
@@ -36,7 +36,11 @@ test('import-v1: copies the v1 messages into router.db, skips ones already there
     expect(await run()).toBe('匯入 0 則, 略過已存在的 3 則')
     const db = new Database(routerDb, { readonly: true })
     const rows = db.query('SELECT chat_id, message_id, direction, content, delivered FROM messages ORDER BY ts, id').all()
+    // v1 ran one bot: the rows are the first bot's (or --bot's)
+    expect(db.query('SELECT DISTINCT bot FROM messages').all()).toEqual([{ bot: 'cc' }])
     db.close()
+    const bad = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(dir, 'config.json'), 'import-v1', v1, '--bot', 'nope'], { stdout: 'pipe', stderr: 'pipe' })
+    expect(await bad.exited).toBe(2)
     expect(rows).toEqual([
       { chat_id: '137438526', message_id: '1', direction: 'in', content: 'v1 hello', delivered: 1 },
       { chat_id: '137438526', message_id: '2', direction: 'out', content: 'already here', delivered: 1 },

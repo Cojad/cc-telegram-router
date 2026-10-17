@@ -11,7 +11,7 @@ import { openStore, type Store } from '../telegram/store'
 
 const stores: Store[] = []
 function harness(): { deps: OutboundDeps; sentTexts: string[]; stickerCalls: Array<{ chat_id: string; sticker: unknown; other: unknown }> } {
-  const store = openStore(':memory:')
+  const store = openStore(':memory:').forBot('cc')
   stores.push(store)
   const sentTexts: string[] = []
   const stickerCalls: Array<{ chat_id: string; sticker: unknown; other: unknown }> = []

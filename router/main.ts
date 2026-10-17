@@ -101,9 +101,11 @@ if (credAt > 0) {
 const importAt = process.argv.indexOf('import-v1')
 if (importAt > 0) {
   const src = process.argv[importAt + 1]
-  if (!src) { console.error('用法: cc-telegram-router import-v1 <messages.db>'); process.exit(2) }
-  openStore(join(cfg.stateDir, 'router.db')).close() // make sure the messages table exists
-  const r = importV1Messages(join(cfg.stateDir, 'router.db'), src)
+  const botAt = process.argv.indexOf('--bot')
+  const bot = botAt > 0 ? process.argv[botAt + 1] : cfg.bots[0]!.name
+  if (!src || src === '--bot' || !bot || !cfg.bots.some(b => b.name === bot)) { console.error('用法: cc-telegram-router import-v1 <messages.db> [--bot <名稱>] (預設第一隻 bot)'); process.exit(2) }
+  openStore(join(cfg.stateDir, 'router.db'), { legacyBot: cfg.bots[0]!.name }).close() // make sure the messages table exists, keyed by bot
+  const r = importV1Messages(join(cfg.stateDir, 'router.db'), src, bot)
   console.log(`匯入 ${r.imported} 則, 略過已存在的 ${r.skipped} 則`)
   process.exit(0)
 }
@@ -123,7 +125,8 @@ const DB_FILE = join(cfg.stateDir, 'router.db')
 const db = openRouterDb(DB_FILE)
 // Updates logged before every token-carrying command was masked (router/secrets.ts): mask them once.
 { const n = db.maskEventsOnce('mask-command-tokens-2026-10', maskSecretUpdate); if (n != null) log(`masked tokens in ${n} logged updates`) }
-const store = openStore(DB_FILE)
+// messages are kept per bot; rows from before that go to the bot they show up under, else the first bot (store.ts)
+const store = openStore(DB_FILE, { legacyBot: cfg.bots[0]!.name, log })
 const ACCESS_FILE = join(cfg.stateDir, 'access.json')
 const INBOX = join(cfg.stateDir, 'inbox')
 
@@ -387,7 +390,7 @@ const ipc = createIpc({
     // (a reminder for tomorrow is fine); the DM says which group and message
     let onBehalf = false
     if (tool === 'reply' && conv && conv.type === 'group' && args.on_behalf_of != null && target && target !== conv.chat_id) {
-      const asked = store.lookup(conv.chat_id, String(args.on_behalf_of))
+      const asked = store.forBot(conv.bot).lookup(conv.chat_id, String(args.on_behalf_of))
       if (!asked || asked.direction !== 'in' || asked.user_id !== target) {
         return { content: [{ type: 'text', text: `on_behalf_of ${String(args.on_behalf_of)} 不是 ${target} 在這個群組傳給 bot 的訊息: 只能回到提出要求的那個人的私訊. 其他對象要用 request_send_grant 申請.` }], isError: true }
       }
@@ -405,7 +408,7 @@ const ipc = createIpc({
       }
     }
     return callConv.run(conv?.key ?? 'terminal', () => callTool(tool, args, {
-      bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store, apiRoot: cfg.apiRoot,
+      bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store: store.forBot(botName), apiRoot: cfg.apiRoot,
       // plan 10e: secrets in a downloaded text file become markers
       scanDownload: (buf, file) => vault.attachment(botName, file, buf),
       assertAllowedChat: makeAssertAllowedChat(live, loadAccess, chatId => (onBehalf && chatId === target) || !!conv && sendGranted(db.listOverrides(conv.key).filter(o => o.kind === 'send').map(o => o.value), chatId, id => { const a = loadAccess(); return a.allowFrom.includes(id) || id in a.groups })),
@@ -893,7 +896,7 @@ const commandDeps: CommandDeps = {
   async sendTo(botName, chatId, text) {
     await bots.get(botName)?.bot.api.sendMessage(chatId, text)
   },
-  recentMessages: (chatId, n) => store.recent(chatId, n),
+  recentMessages: (bot, chatId, n) => store.forBot(bot).recent(chatId, n),
   restartRouter() {
     // Under systemd (Restart=always) exiting is enough; otherwise start a
     // detached copy of ourselves once the lock is released.
@@ -1139,7 +1142,7 @@ function startBot(bc: BotConfig): BotHandle {
   }
   const gate = (ctx: InboundContext) => policyGate(ctx, loadAccess(), h.info?.username ?? '', saveAccess, () => randomBytes(3).toString('hex'))
   const dmCommandGate = (ctx: InboundContext) => policyDmCommandGate(ctx, loadAccess(), saveAccess)
-  const handleInbound = createHandleInbound({ gate, bot, mcp: fakeMcp as never, store })
+  const handleInbound = createHandleInbound({ gate, bot, mcp: fakeMcp as never, store: store.forBot(bc.name), log: m => log(`${bc.name}: ${m}`) })
   registerTransport({ bot, mcp: fakeMcp as never, dmCommandGate, loadAccess, handleInbound, token: bc.token, inboxDir: INBOX })
   bot.catch(err => log(`${bc.name}: handler error: ${err.error}`))
 

@@ -91,7 +91,8 @@ export interface CommandDeps {
   events?: { rawToFile(id: number): Promise<string> }
   /** Tool call classifier, stage 1 (router/classifier.ts): the comparison report and one record. */
   classifier?: { report(days: number): string; show(id: number): string }
-  recentMessages(chatId: string, n: number): MessageRecord[]
+  /** A bot's messages in a chat (each bot keeps its own: router/telegram/store.ts). */
+  recentMessages(bot: string, chatId: string, n: number): MessageRecord[]
   writeConfig(mutate: (raw: Record<string, unknown>) => void): void
   restartRouter(): void
   startedAt: Date
@@ -574,7 +575,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       const n = Math.min(Math.max(Number(explicit ? args[2] : args[1]) || (explicit ? 10 : 5), 1), 50)
       const fmt = (r: MessageRecord) => `${gmt8(r.ts).slice(5)} ${r.direction === 'in' ? `← ${r.user_id ?? '?'}` : '→'} ${(r.content ?? '').replace(/\s+/g, ' ').slice(0, 80)}${r.delivered ? '' : ' (未送進 worker)'}`
       const blocks = convs.map(c => {
-        const rows = deps.recentMessages(c.chat_id, n).reverse()
+        const rows = deps.recentMessages(c.bot, c.chat_id, n).reverse()
         return `[${c.key}${c.title ? ` ${c.title}` : ''}]\n${rows.map(fmt).join('\n') || '(沒有紀錄)'}`
       })
       return done(blocks.join('\n\n'), { private: true })

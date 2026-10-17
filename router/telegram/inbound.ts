@@ -158,12 +158,17 @@ export interface InboundDeps {
   bot: Pick<Bot, 'api'>
   mcp: Pick<Server, 'notification'>
   /** Every message this plugin sees is recorded here (delivered or not), and
-   *  looked up to fill in reply_to_text when Telegram doesn't inline it. */
+   *  looked up to fill in reply_to_text when Telegram doesn't inline it.
+   *  This bot's messages only (store.ts forBot): another bot's message with
+   *  the same chat and message id is not this one. */
   store: Pick<Store, 'record' | 'lookup'>
+  /** Where a dropped duplicate is noted (default stderr). */
+  log?: (msg: string) => void
 }
 
 export function createHandleInbound(deps: InboundDeps) {
   const { gate, bot, mcp, store } = deps
+  const log = deps.log ?? ((m: string) => { process.stderr.write(`${m}\n`) })
 
   return async function handleInbound(
     ctx: HandleInboundContext,
@@ -177,7 +182,7 @@ export function createHandleInbound(deps: InboundDeps) {
     const chatIdForStore = ctx.chat ? String(ctx.chat.id) : undefined
     const msgIdForStore = ctx.message?.message_id
 
-    // Dedup on (chat_id, message_id) before gate() or a notification ever
+    // Dedup on this bot's (chat_id, message_id) before gate() or a notification ever
     // happens — guards against the same update reaching handleInbound
     // twice (a poller redelivery, or any future second transport) turning
     // into two separate notifications to Claude for one Telegram message.
@@ -187,7 +192,11 @@ export function createHandleInbound(deps: InboundDeps) {
     // worth keeping even with a single transport.
     if (chatIdForStore && msgIdForStore != null) {
       try {
-        if (store.lookup(chatIdForStore, String(msgIdForStore))) return
+        if (store.lookup(chatIdForStore, String(msgIdForStore))) {
+          // never silent: a message dropped here never reaches the worker
+          log(`telegram channel: duplicate message dropped (chat ${chatIdForStore}, message ${msgIdForStore}): already recorded for this bot`)
+          return
+        }
       } catch (err) {
         process.stderr.write(`telegram channel: store.lookup (dedup check) failed: ${err}\n`)
       }

@@ -3,7 +3,11 @@
 // recording delivered=false rows so a dropped message isn't a total
 // blackout. Each test below maps to one of those, plus the upsert
 // behavior the UNIQUE index implies and basic recent()-pagination
-// correctness — not an exhaustive SQL spec.
+// correctness — not an exhaustive SQL spec. Rows belong to a bot (柯姊
+// 2026-10-17): two bots' messages with the same chat and message id are
+// two rows, each bot sees only its own, and old rows are placed once
+// (conversation, events, outbound, else legacy to the original bot).
+// Keep in sync with README 「運作方式」 and the store.ts header.
 
 import { afterEach, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
@@ -12,7 +16,7 @@ import { openStore, type MessageRecord, type Store } from '../telegram/store'
 
 const stores: Store[] = []
 function freshStore(): Store {
-  const s = openStore(':memory:')
+  const s = openStore(':memory:').forBot('cc')
   stores.push(s)
   return s
 }
@@ -129,7 +133,8 @@ test('opening a pre-removal DB (raw/mtproto columns still present) migrates clea
   )
   seed.close()
 
-  const store = openStore(path)
+  // its row had no bot: with no other evidence it goes to the original bot, marked legacy
+  const store = openStore(path, { legacyBot: 'cc' }).forBot('cc')
   stores.push(store)
   const found = store.lookup('-100', '99')
   expect(found).not.toBeNull()
@@ -144,4 +149,69 @@ test('opening a pre-removal DB (raw/mtproto columns still present) migrates clea
   for (const suffix of ['', '-wal', '-shm']) {
     try { unlinkSync(path + suffix) } catch {}
   }
+})
+
+test('two bots, same chat and message id (a person DMs both; a group both are in): two rows, each bot sees only its own', () => {
+  const root = openStore(':memory:')
+  const cc = root.forBot('cc'), two = root.forBot('two')
+  cc.record(rec({ chat_id: '700100200', message_id: '127', direction: 'out', content: 'cc reply' }))
+  expect(two.lookup('700100200', '127')).toBeNull() // not a duplicate for the other bot
+  two.record(rec({ chat_id: '700100200', message_id: '127', direction: 'in', content: '實測 5-2' }))
+  expect(cc.lookup('700100200', '127')?.content).toBe('cc reply')
+  expect(two.lookup('700100200', '127')?.content).toBe('實測 5-2')
+  expect(cc.recent('700100200', 10).map(r => r.content)).toEqual(['cc reply'])
+  expect(two.recent('700100200', 10).map(r => r.content)).toEqual(['實測 5-2'])
+  // a group's ids are shared: the same message seen by both bots
+  cc.record(rec({ chat_id: '-100777', message_id: '50', content: 'hi both' }))
+  two.record(rec({ chat_id: '-100777', message_id: '50', content: 'hi both' }))
+  expect([cc.lookup('-100777', '50')?.content, two.lookup('-100777', '50')?.content]).toEqual(['hi both', 'hi both'])
+  expect(two.recent('-100777', 10, '51')).toHaveLength(1)
+  root.close()
+})
+
+test('old rows get their bot once: by the only bot with a conversation in the chat, else by events (in) or outbound (out), else legacy to the original bot', () => {
+  const path = `/tmp/store-bot-backfill-${Date.now()}.db`
+  const seed = new Database(path, { create: true })
+  seed.exec(`
+    CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, message_id TEXT NOT NULL, direction TEXT NOT NULL,
+      ts TEXT NOT NULL, user_id TEXT, content TEXT, reply_to_message_id TEXT, attachment_kind TEXT, attachment_file_id TEXT, delivered INTEGER NOT NULL DEFAULT 1, rich_message INTEGER);
+    CREATE UNIQUE INDEX idx_messages_chat_msg ON messages(chat_id, message_id);
+    CREATE TABLE conversations (key TEXT PRIMARY KEY, bot TEXT NOT NULL, chat_id TEXT NOT NULL);
+    CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, bot TEXT NOT NULL, update_json TEXT NOT NULL);
+    CREATE TABLE outbound (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, bot TEXT NOT NULL, conv TEXT, method TEXT NOT NULL, payload_json TEXT, result_json TEXT, error TEXT);
+    INSERT INTO conversations VALUES ('group-100555', 'cc', '-100555'), ('dm-7', 'cc', '7'), ('router-dm-7', 'router', '7');
+    INSERT INTO events (ts, bot, update_json) VALUES ('t', 'router', '{"message":{"message_id":3,"chat":{"id":7}}}'),
+      ('t', 'cc', '{"message":{"message_id":4,"chat":{"id":7}}}'), ('t', 'router', '{"message":{"message_id":4,"chat":{"id":7}}}');
+    INSERT INTO outbound (ts, bot, method, payload_json, result_json) VALUES ('t', 'router', 'sendMessage', '{"chat_id":"7","text":"x"}', '{"ok":true,"result":{"message_id":5}}');
+  `)
+  const ins = seed.prepare("INSERT INTO messages (chat_id, message_id, direction, ts, content) VALUES (?, ?, ?, 't', ?)")
+  ins.run('-100555', '1', 'in', 'group, only cc there')
+  ins.run('7', '3', 'in', 'seen by router in events')
+  ins.run('7', '4', 'in', 'both bots got a message 4: unclear')
+  ins.run('7', '5', 'out', 'router sent it (outbound)')
+  ins.run('7', '6', 'in', 'no trace anywhere')
+  seed.close()
+  const logs: string[] = []
+  const root = openStore(path, { legacyBot: 'cc', log: m => logs.push(m) })
+  const db = new Database(path, { readonly: true })
+  expect(db.query('SELECT message_id, bot, legacy FROM messages ORDER BY id').all()).toEqual([
+    { message_id: '1', bot: 'cc', legacy: null },
+    { message_id: '3', bot: 'router', legacy: null },
+    { message_id: '4', bot: 'cc', legacy: 1 },
+    { message_id: '5', bot: 'router', legacy: null },
+    { message_id: '6', bot: 'cc', legacy: 1 },
+  ])
+  expect(db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'messages'").all().map((r: any) => r.name)).toEqual(['idx_messages_bot_chat_msg'])
+  db.close()
+  expect(logs).toEqual(['messages: bot filled in for old rows: 1 by conversation, 2 by events/outbound, 2 legacy (cc)'])
+  // legacy rows count for the original bot only
+  expect(root.forBot('cc').lookup('7', '6')?.content).toBe('no trace anywhere')
+  expect(root.forBot('router').lookup('7', '6')).toBeNull()
+  expect(root.forBot('router').recent('7', 10).map(r => r.message_id)).toEqual(['5', '3'])
+  root.close()
+  // done once: reopening changes nothing
+  const again: string[] = []
+  openStore(path, { legacyBot: 'router', log: m => again.push(m) }).close()
+  expect(again).toEqual([])
+  for (const suffix of ['', '-wal', '-shm']) { try { unlinkSync(path + suffix) } catch {} }
 })

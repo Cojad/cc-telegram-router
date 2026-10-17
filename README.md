@@ -30,6 +30,7 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 10. `/router` 指令裡的 `chat_id` 指這隻 bot 的對話, `--bot <名稱>` 指別隻; 對話 key (`router-dm-123`) 到處都能用. 終端機 CLI 會找所有 bot, 多隻都有時列出候選並要求 `--bot`, 不會默默挑一隻.
 11. 廣播頻道目前不支援: 頻道貼文 (`channel_post`, `edited_channel_post`) 只寫進 events, 不建立對話也不送 worker (頻道裡的 `/router`, `/secret`, `cc /` 一樣不處理). bot 被加入頻道時通知 owner (重要通知話題, 沒有審核群組就私訊), 說明尚未支援並請有實際應用場景的人到 GitHub issues (https://github.com/Cojad/cc-telegram-router/issues) 提交使用情境與需要的功能.
 12. 時間一律 GMT+8, 不出現 UTC 或 Z: router 的 log 每行開頭是 `2026-10-17 08:06:04.919+08:00`, 交給 worker 的訊息時間 (`<channel ts=...>`) 是 `2026-10-17T08:06:04.919+08:00`, 指令輸出, 通知, router_log 與報表顯示的時間都換算成 GMT+8 (`shared/time.ts`, `router/context.ts` 的 `gmt8`). router.db 與訊息紀錄裡存的仍是 UTC 的 ISO 時間 (比較與查詢用), 顯示時才換算.
+13. 訊息紀錄 (`router.db` 的 `messages`, `lookup_message`, 回覆引用的補全, `/router log` 讀的那份) 每一筆屬於一隻 bot, 以 (bot, chat_id, message_id) 為唯一鍵, 每隻 bot 只讀寫自己的. 同一個人私訊兩隻 bot 時各自從 1 編號, 群組裡兩隻 bot 收到的是同一個編號, 以前只看 (chat_id, message_id) 會把另一隻 bot 的訊息當成重複而靜默丟掉, 引用也可能拿到另一隻 bot 的訊息. 加欄位前的舊紀錄只在升級時分配一次: 那個 chat 只有一隻 bot 有對話就歸它, 否則看 `events` (收到的) 或 `outbound` (送出的) 是哪隻 bot, 還是判斷不了 (例如兩隻 bot 剛好同號) 就標 `legacy` 歸給第一隻 bot (原本唯一的那隻). 被當成重複丟掉的訊息一律在 router log 寫一行. `import-v1 <messages.db> [--bot <名稱>]` 匯入的訊息歸給第一隻 bot 或 `--bot` 指定的.
 
 ### 目錄
 
@@ -169,7 +170,8 @@ bun test router/test
 | `router/test/e2e-classifier.test.ts` | 真的 router + 假 Bot API, 假 Decisions 與 Jev, 假 claude: hook 立刻放行後三家都記錄, 外送內容沒有已登記的值, 資料夾與 chat id; 擋下的, owner 對話與 telegram 工具不送; 終端機 `cli classifier` |
 | `router/test/phase3-pkg.test.ts` | 規劃 07 套件安裝審核: 指令解析, manifest, 審核快取, 送審與核准, 慢審核, 審核模型的呼叫方式, hook |
 | `router/test/e2e-setup.test.ts` | 真的 router + 假 Bot API, 從沒有 owner 開始: 認領碼, 人設訪談與 bot CLAUDE.md, 審核群組的檢查與話題, 略過 |
-| `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
+| `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`, 歸給哪隻 bot), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
+| `router/test/store.test.ts`, `router/test/inbound.test.ts` | 訊息紀錄 (運作方式 13): 每隻 bot 各自一份 (私訊撞號, 同群組同一則), 舊紀錄分配 bot 一次 (對話, events, outbound, legacy), 重複丟掉時寫 log, 引用不跨 bot |
 | `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行, 驗證 Claude Code 實際放行與擋下的事 |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |
 | `router/test/channel.test.ts` | 頻道 (運作方式 11): 加入頻道的通知內容, /telegram:doc 的頻道一節 |
@@ -279,7 +281,8 @@ bun test router/test
 |---|---|
 | CLAUDE.md 三層改寫 (FORCED / GENERAL / Default suggestions), 人設放在 bot 資料夾 | phase4「three-tier CLAUDE.md example…」, e2e-setup「persona interview…」 |
 | telegram:format skill, /telegram:doc 涵蓋新功能 | phase4「plugin skills…」 |
-| 匯入 v1 的 messages.db, 可重複執行不重複匯入 | phase4「import-v1…」 |
+| 匯入 v1 的 messages.db, 可重複執行不重複匯入, 歸給第一隻 bot 或 --bot | phase4「import-v1…」 |
+| 訊息紀錄每隻 bot 各一份: 私訊撞號與同群組同一則都送進各自的對話, lookup 與引用不跨 bot, 舊紀錄分配一次, 重複丟掉有 log | store「two bots, same chat and message id…」「old rows get their bot once…」; inbound「two bots, one store…」; e2e「two bots in the same group…」 |
 | 舊對話資料夾與對話紀錄搬進 bot 資料夾, 之後從新位置 resume | phase3「bot folders…」 |
 | 一週內沒有掉訊息, 回錯對話或權限誤放 | 上線觀察: router.db 的 queue (未 ack), outbound 錯誤, elev_log |
 

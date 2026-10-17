@@ -21,6 +21,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const calls: Array<{ method: string; body: any; token?: string }> = []
 let updatesServed = false
 const laterUpdates: unknown[] = []
+const twoUpdates: unknown[] = [] // for the second bot (added by bot add)
 const now = Math.floor(Date.now() / 1000)
 const UPDATES = [
   { update_id: 1, message: { message_id: 10, date: now, chat: { id: 111, type: 'private' }, from: { id: 111, is_bot: false, first_name: 'O', username: 'owner' }, text: 'hello router' } },
@@ -42,7 +43,7 @@ const api = Bun.serve({
         if (calls.filter(c => c.method === 'getMe' && c.token === token).length > 1) await sleep(3000)
         return ok({ id: 456, is_bot: true, first_name: 'Two', username: 'two_bot' })
       }
-      if (method === 'getUpdates') { await sleep(200); return ok([]) }
+      if (method === 'getUpdates') { await sleep(200); return ok(twoUpdates.splice(0)) }
       return ok(true)
     }
     switch (method) {
@@ -310,3 +311,15 @@ test('bot add answers once its getMe is in: bot list right after shows the new b
   const list = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('cc: @')))
   expect(list.body.text).toBe('cc: @cc_bot (id 1, cc)\ntwo: @two_bot (id 456, Two)')
 }, 15000)
+
+test('two bots in the same group get the same message: each records it and delivers it to its own conversation (message ids are the group\'s, not one bot\'s)', async () => {
+  const from = { id: 222, is_bot: false, first_name: 'U', username: 'user' }
+  const msg = { message_id: 77, date: now, chat: { id: -100777, type: 'supergroup', title: 'G' }, from, text: 'hello both bots' }
+  laterUpdates.push({ update_id: 90, message: msg })
+  twoUpdates.push({ update_id: 5, message: msg })
+  const rows = await until(() => { const r = q("SELECT bot, delivered FROM messages WHERE chat_id = '-100777' AND message_id = '77' ORDER BY bot"); return r.length === 2 && r }, 12000)
+  expect(rows).toEqual([{ bot: 'cc', delivered: 1 }, { bot: 'two', delivered: 1 }])
+  const queued = await until(() => { const r = q("SELECT conv FROM queue WHERE params LIKE '%hello both bots%' ORDER BY conv").map((x: any) => x.conv); return r.length === 2 && r }, 12000)
+  expect(queued).toEqual(['group-100777', 'two-group-100777'])
+  expect(stderr).not.toContain('duplicate message dropped')
+}, 20000)

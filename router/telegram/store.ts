@@ -11,6 +11,19 @@
 //     Telegram doesn't inline the replied-to message (old messages) —
 //     not wired up yet (plan.html phase 4), this module just makes it
 //     possible.
+//
+// Every row belongs to one bot (柯姊 2026-10-17): two bots number their
+// messages separately in the same private chat (a person DMs both), and a
+// group's message ids are shared by every bot in it, so (chat_id,
+// message_id) alone made one bot's message look like a duplicate of the
+// other's (dropped without a trace) and let lookup_message or a reply's
+// quoted text cross bots. Rows are keyed (bot, chat_id, message_id); each
+// bot reads and writes only its own through forBot(bot). Rows from before
+// the bot column were assigned once (backfillBots): a chat only one bot has
+// a conversation in goes to that bot; otherwise the bot seen in events (in)
+// or outbound (out) for that message; what stays unclear is marked legacy
+// and given to the original bot (the first configured), the only one that
+// existed before a second bot was added.
 
 import { Database } from 'bun:sqlite'
 
@@ -70,17 +83,49 @@ function toRecord(row: MessageRow): MessageRecord {
   }
 }
 
+/** One bot's messages (MessageStore.forBot). */
 export interface Store {
-  /** Insert or, for the same (chat_id, message_id), replace. */
+  /** Insert or, for the same (bot, chat_id, message_id), replace. */
   record(r: MessageRecord): void
-  /** O(1) — backed by a UNIQUE index on (chat_id, message_id). */
+  /** O(1) — backed by a UNIQUE index on (bot, chat_id, message_id). */
   lookup(chat_id: string, message_id: string): MessageRecord | null
   /** Most recent first. `beforeId`, when given, pages older than that message_id. */
   recent(chat_id: string, limit: number, beforeId?: string): MessageRecord[]
+  /** Closes the whole database (MessageStore.close). */
   close(): void
 }
 
-export function openStore(dbPath: string): Store {
+export interface MessageStore {
+  forBot(bot: string): Store
+  close(): void
+}
+
+/** Rows without a bot (from before the column): assign each once, see the header.
+ *  Returns how many went to each way. */
+export function backfillBots(db: Database, legacyBot: string | undefined): { conversation: number; evidence: number; legacy: number } {
+  const has = (t: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t)
+  const out = { conversation: 0, evidence: 0, legacy: 0 }
+  db.transaction(() => {
+    if (has('conversations')) {
+      out.conversation = db.prepare(`UPDATE messages SET bot = (SELECT min(c.bot) FROM conversations c WHERE c.chat_id = messages.chat_id)
+        WHERE bot IS NULL AND (SELECT count(DISTINCT c.bot) FROM conversations c WHERE c.chat_id = messages.chat_id) = 1`).run().changes
+    }
+    const ev = has('events') ? `SELECT DISTINCT e.bot FROM events e WHERE m.direction = 'in'
+        AND CAST(json_extract(e.update_json, '$.message.chat.id') AS TEXT) = m.chat_id AND CAST(json_extract(e.update_json, '$.message.message_id') AS TEXT) = m.message_id` : null
+    const ob = has('outbound') ? `SELECT DISTINCT o.bot FROM outbound o WHERE m.direction = 'out'
+        AND CAST(json_extract(o.payload_json, '$.chat_id') AS TEXT) = m.chat_id AND CAST(json_extract(o.result_json, '$.result.message_id') AS TEXT) = m.message_id` : null
+    const seen = [ev, ob].filter(Boolean).join(' UNION ')
+    if (seen) {
+      out.evidence = db.prepare(`UPDATE messages AS m SET bot = (SELECT min(bot) FROM (${seen}))
+        WHERE m.bot IS NULL AND (SELECT count(*) FROM (${seen})) = 1`).run().changes
+    }
+    out.legacy = db.prepare('UPDATE messages SET bot = ?, legacy = 1 WHERE bot IS NULL').run(legacyBot ?? null).changes
+  })()
+  return out
+}
+
+/** legacyBot: the original bot, which gets the rows backfillBots cannot place (the first configured bot). */
+export function openStore(dbPath: string, opts: { legacyBot?: string; log?: (msg: string) => void } = {}): MessageStore {
   const db = new Database(dbPath, { create: true })
   db.exec('PRAGMA journal_mode = WAL')
   db.exec(`
@@ -98,7 +143,6 @@ export function openStore(dbPath: string): Store {
       delivered INTEGER NOT NULL DEFAULT 1
     )
   `)
-  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_chat_msg ON messages(chat_id, message_id)')
   // Migration for databases created before the `rich_message` column
   // existed — SQLite has no "ADD COLUMN IF NOT EXISTS", so this just
   // tries and swallows the "duplicate column" error on every boot after
@@ -123,25 +167,36 @@ export function openStore(dbPath: string): Store {
       if (!(err instanceof Error) || !/no such column/i.test(err.message)) throw err
     }
   }
+  // Rows belong to a bot (see the header): add the column, place the old rows once, key by (bot, chat_id, message_id).
+  const cols = new Set((db.query('PRAGMA table_info(messages)').all() as Array<{ name: string }>).map(c => c.name))
+  if (!cols.has('bot')) {
+    db.exec('ALTER TABLE messages ADD COLUMN bot TEXT')
+    db.exec('ALTER TABLE messages ADD COLUMN legacy INTEGER')
+    const r = backfillBots(db, opts.legacyBot)
+    if (r.conversation + r.evidence + r.legacy) opts.log?.(`messages: bot filled in for old rows: ${r.conversation} by conversation, ${r.evidence} by events/outbound, ${r.legacy} legacy (${opts.legacyBot ?? 'no bot'})`)
+  }
+  db.exec('DROP INDEX IF EXISTS idx_messages_chat_msg')
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_bot_chat_msg ON messages(bot, chat_id, message_id)')
 
   const insertStmt = db.prepare(`
     INSERT OR REPLACE INTO messages
-      (chat_id, message_id, direction, ts, user_id, content, reply_to_message_id, attachment_kind, attachment_file_id, delivered, rich_message)
+      (bot, chat_id, message_id, direction, ts, user_id, content, reply_to_message_id, attachment_kind, attachment_file_id, delivered, rich_message)
     VALUES
-      ($chat_id, $message_id, $direction, $ts, $user_id, $content, $reply_to_message_id, $attachment_kind, $attachment_file_id, $delivered, $rich_message)
+      ($bot, $chat_id, $message_id, $direction, $ts, $user_id, $content, $reply_to_message_id, $attachment_kind, $attachment_file_id, $delivered, $rich_message)
   `)
-  const lookupStmt = db.prepare('SELECT * FROM messages WHERE chat_id = $chat_id AND message_id = $message_id')
-  const recentStmt = db.prepare('SELECT * FROM messages WHERE chat_id = $chat_id ORDER BY id DESC LIMIT $limit')
+  const lookupStmt = db.prepare('SELECT * FROM messages WHERE bot = $bot AND chat_id = $chat_id AND message_id = $message_id')
+  const recentStmt = db.prepare('SELECT * FROM messages WHERE bot = $bot AND chat_id = $chat_id ORDER BY id DESC LIMIT $limit')
   const recentBeforeStmt = db.prepare(`
     SELECT * FROM messages
-    WHERE chat_id = $chat_id
-      AND id < COALESCE((SELECT id FROM messages WHERE chat_id = $chat_id AND message_id = $before_id), 9223372036854775807)
+    WHERE bot = $bot AND chat_id = $chat_id
+      AND id < COALESCE((SELECT id FROM messages WHERE bot = $bot AND chat_id = $chat_id AND message_id = $before_id), 9223372036854775807)
     ORDER BY id DESC LIMIT $limit
   `)
 
-  return {
+  const forBot = (bot: string): Store => ({
     record(r) {
       insertStmt.run({
+        $bot: bot,
         $chat_id: r.chat_id,
         $message_id: r.message_id,
         $direction: r.direction,
@@ -156,17 +211,18 @@ export function openStore(dbPath: string): Store {
       })
     },
     lookup(chat_id, message_id) {
-      const row = lookupStmt.get({ $chat_id: chat_id, $message_id: message_id }) as MessageRow | null
+      const row = lookupStmt.get({ $bot: bot, $chat_id: chat_id, $message_id: message_id }) as MessageRow | null
       return row ? toRecord(row) : null
     },
     recent(chat_id, limit, beforeId) {
       const rows = (beforeId
-        ? recentBeforeStmt.all({ $chat_id: chat_id, $before_id: beforeId, $limit: limit })
-        : recentStmt.all({ $chat_id: chat_id, $limit: limit })) as MessageRow[]
+        ? recentBeforeStmt.all({ $bot: bot, $chat_id: chat_id, $before_id: beforeId, $limit: limit })
+        : recentStmt.all({ $bot: bot, $chat_id: chat_id, $limit: limit })) as MessageRow[]
       return rows.map(toRecord)
     },
     close() {
       db.close()
     },
-  }
+  })
+  return { forBot, close: () => db.close() }
 }
