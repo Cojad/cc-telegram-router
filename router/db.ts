@@ -111,6 +111,14 @@ export type SecretDeletion = {
   due_at: string; status: 'pending' | 'deleted' | 'failed' | 'cancelled'; decided_by: string | null; done_at: string | null
 }
 
+/** One tool call seen in PreToolUse (router/toolhistory.ts): no arguments, only the tool,
+ *  the outcome and, for SendMessage, the recipient. eff_role: an elevated subagent's role. */
+export type ToolUse = {
+  ts?: string; conv: string; conv_role: string; eff_role: string | null; tool: string
+  decision: 'allow' | 'deny' | 'error'; reason: string | null; target: string | null; subagent: boolean
+}
+export type ToolStat = { tool: string; conv_role: string; elevated: number; decision: string; n: number }
+
 export type QueueRow = { qid: number; conv: string; params: string; status: 'pending' | 'delivered' | 'acked' }
 export type LogRow = { id: number; conv: string; ts: string; text: string; qid: number | null }
 
@@ -255,6 +263,12 @@ export interface RouterDb {
   convSecretChats(): Array<{ bot: string; chat_id: string; n: number }>
   /** name null: all of the conversation's secrets. Returns how many went. */
   removeConvSecret(bot: string, chat_id: string, name: string | null): number
+  /** tool_history (router/toolhistory.ts). */
+  addToolUse(u: ToolUse): void
+  /** Counts since an ISO time, by tool, conversation role, elevated or not, decision. */
+  toolStats(since: string): ToolStat[]
+  /** Rows before an ISO time removed; returns how many. */
+  purgeToolHistory(before: string): number
   close(): void
 }
 
@@ -350,6 +364,11 @@ export function openRouterDb(path: string): RouterDb {
       status TEXT NOT NULL DEFAULT 'pending', decided_by TEXT, done_at TEXT
     );
     CREATE TABLE IF NOT EXISTS progress_msgs (key TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY (key, message_id));
+    CREATE TABLE IF NOT EXISTS tool_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, conv TEXT NOT NULL, conv_role TEXT NOT NULL, eff_role TEXT,
+      tool TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT, target TEXT, subagent INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS tool_history_ts ON tool_history (ts);
   `)
   // Columns added after Phase 1.
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
@@ -402,6 +421,9 @@ export function openRouterDb(path: string): RouterDb {
   const qPAdd = db.prepare('INSERT OR REPLACE INTO progress_msgs (key, chat_id, message_id) VALUES (?, ?, ?)')
   const qPDel = db.prepare('DELETE FROM progress_msgs WHERE key = ? AND message_id = ?')
   const qPAll = db.prepare('SELECT key, chat_id, message_id FROM progress_msgs')
+  const qToolAdd = db.prepare('INSERT INTO tool_history (ts, conv, conv_role, eff_role, tool, decision, reason, target, subagent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+  const qToolStats = db.prepare('SELECT tool, conv_role, eff_role IS NOT NULL AS elevated, decision, COUNT(*) AS n FROM tool_history WHERE ts >= ? GROUP BY tool, conv_role, elevated, decision')
+  const qToolPurge = db.prepare('DELETE FROM tool_history WHERE ts < ?')
   const qPeopleUp = db.prepare(`INSERT INTO people (uid, name, username, first_seen, last_seen, last_chat_id) VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(uid) DO UPDATE SET name = excluded.name, username = excluded.username, last_seen = excluded.last_seen, last_chat_id = coalesce(excluded.last_chat_id, last_chat_id)`)
   const qPeopleGet = db.prepare('SELECT * FROM people WHERE uid = ?')
@@ -610,6 +632,9 @@ export function openRouterDb(path: string): RouterDb {
     removeConvSecret: (bot, chat_id, name) => name == null
       ? db.prepare('DELETE FROM conv_secrets WHERE bot = ? AND chat_id = ?').run(bot, chat_id).changes
       : db.prepare('DELETE FROM conv_secrets WHERE bot = ? AND chat_id = ? AND name = ?').run(bot, chat_id, name).changes,
+    addToolUse: u => { qToolAdd.run(u.ts ?? now(), u.conv, u.conv_role, u.eff_role, u.tool, u.decision, u.reason, u.target, u.subagent ? 1 : 0) },
+    toolStats: since => qToolStats.all(since) as ToolStat[],
+    purgeToolHistory: before => qToolPurge.run(before).changes,
     close: () => db.close(),
   }
 }

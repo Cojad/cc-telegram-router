@@ -60,6 +60,21 @@ router 可以裝在任何位置, 程式不假設固定路徑:
 - 輪詢由 router 自己做 (`poller.ts`, 不用 grammY 的 bot.start), 啟動 (getMe) 與之後收訊都套用同一套規則: 網路錯誤與 Telegram 5xx 以 5 秒, 10 秒, 30 秒, 1 分, 2 分, 5 分逐步拉長, 之後每 5 分鐘一直重試 (429 照 retry_after); 斷線超過 2 分鐘才通知 owner 一次, 恢復時再通知一次. 409 衝突 (別的程式在用這個 token 收訊息) 每 60 秒重試並立刻通知. 401 (token 失效) 不再重試, 立刻通知 owner 用 `/router bot rotate`. 通知經其他還正常的 bot 送到它的重要通知話題或 owner 私訊; 409 與恢復通知也可以由那隻 bot 自己送 (409 只停收訊, 送訊息仍正常, 所以只有一隻 bot 時也收得到); 沒有 bot 送得出去, 或沒有 owner 與審核群組時只記 log. `/router status` 每隻 bot 後面標狀態: 收訊中, 重試中 (從幾點開始, 原因), token 失效.
 - `/router` 指令的回覆遇到網路錯誤, Telegram 5xx 或 429 (照 retry_after) 時, 第一次送出後 1 分鐘內最多再試 3 次 (間隔 2 秒, 5 秒, 15 秒; `sendretry.ts`), 其他 4xx 不重試, 最後還是失敗就在 router log 記一行.
 
+## 工具呼叫紀錄
+
+`router.db` 的 `tool_history` (記什麼見 [權限](permissions.md#工具呼叫紀錄)) 保留 30 天, router 啟動時與之後每天清掉更舊的. 報表只限 owner 與 admin: Telegram 用 `/router tools [天數]` (群組裡下會改私訊回覆), 終端機用 `cc-telegram-router cli tools [天數]`, 天數 1~30, 預設 7. 依工具計次, 用得最多的在前, 分列各對話角色的次數, 已提權的次數, 被 router 擋下的次數與 router 端 Telegram 工具的錯誤次數 (原因見提權紀錄). 範例 (測試資料):
+
+```
+工具呼叫統計: 近 7 天 (2026-10-10 12:00 起, GMT+8)
+Bash 56 次: owner 40, power 12, user 4; 提權 1, 被擋 3
+mcp__plugin_telegram_telegram__reply 25 次: owner 9, user 16; 錯誤 1
+Read 21 次: user 20, guest 1; 被擋 1
+SendMessage 2 次: user 2; 被擋 2
+ListAgents 1 次: power 1; 被擋 1
+合計 105 次: owner 49, power 13, user 42, guest 1; 提權 1, 被擋 7, 錯誤 1
+角色是對話角色; 提權: 已提權的 subagent 以較高角色執行; 被擋: router 擋下 (原因見提權紀錄); 錯誤: router 端執行的 Telegram 工具被拒或 API 失敗
+```
+
 ## 時間
 
 時間一律 GMT+8, 不出現 UTC 或 Z: router 的 log 每行開頭是 `2026-10-17 08:06:04.919+08:00`, 交給 worker 的訊息時間 (`<channel ts=...>`) 是 `2026-10-17T08:06:04.919+08:00`, 指令輸出, 通知, router_log 與報表顯示的時間都換算成 GMT+8 (`shared/time.ts`, `router/context.ts` 的 `gmt8`). router.db 與訊息紀錄裡存的仍是 UTC 的 ISO 時間 (比較與查詢用), 顯示時才換算.

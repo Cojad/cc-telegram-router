@@ -234,3 +234,23 @@ export function permanentRule(settings: any, call: Call, folder: string, lay: (s
   if (!checkCall(lay(settings, r.overrides), call, folder).ok) return { none: '這類動作是這個角色明確禁止的, 要改對話角色才行' }
   return r
 }
+
+// High-risk tools (柯姊 2026-10-17): reach beyond the conversation (other
+// sessions on the machine, schedules, remote runs, desktop notices). The
+// role templates do not mention them, so checkCall lets them through; the
+// router refuses them for power and below and offers elevation, once only.
+export const RISKY_TOOLS = new Set(['ListAgents', 'RemoteTrigger', 'CronCreate', 'CronDelete', 'ScheduleWakeup', 'PushNotification'])
+/** Lowest role that may use the high-risk tools (and SendMessage to other sessions) without elevation. */
+export const RISKY_MIN = 'admin'
+
+/** SendMessage's recipient ("to"; "recipient" in older builds). */
+export const sendTarget = (call: Call) => String(call.tool_input?.to ?? call.tool_input?.recipient ?? '').trim()
+
+/** Is this call refused for role by the high-risk rule? isOwn: the SendMessage
+ *  recipient is one of the conversation's own subagents (elevation.ts decides). */
+export function riskyRefusal(call: Call, role: string, isOwn: boolean): string | null {
+  if (rank(role) >= RANK[RISKY_MIN]!) return null
+  if (RISKY_TOOLS.has(call.tool_name)) return `power 以下的角色不能使用 ${call.tool_name}`
+  if (call.tool_name === 'SendMessage' && !isOwn) return `power 以下的角色不能傳訊給其他 session (收件對象 ${sendTarget(call).slice(0, 60) || '(空白)'} 不是這個對話自己的 subagent)`
+  return null
+}

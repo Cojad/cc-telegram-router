@@ -11,6 +11,7 @@ import { gmt8, maskTokens } from './context'
 import { describeCreds } from './credentials'
 import { SECRET_RE, runSecretCommand, describeSecrets, describeHandles } from './secrets'
 import { addedSetupText, escHtml } from './setup'
+import { toolReport, KEEP_DAYS } from './toolhistory'
 
 export const ROLES = ['owner', 'admin', 'power', 'user', 'guest'] as const
 
@@ -197,6 +198,7 @@ const HELP = [
   '/router event raw <event id> (只在終端機: 遮蔽過的原始 update 明文寫進權限 600 的檔案, 只印路徑)',
   '/router botapi <憑證或 bot 名稱> <方法> <JSON 參數> [--file 欄位=/路徑] (只限 owner)',
   '/router classifier [天數] [v1|v2] (工具呼叫分類器的比較報表, 預設 7 天; v1/v2 只看某一版題目) | classifier show <編號> (只限 owner)',
+  '/router tools [天數 1~30] (工具呼叫統計: 依工具與對話角色計次, 含提權與被擋, 預設 7 天)',
   '/router config (列出全部) | get <key> | set <key> <值>',
   '/router log (所有對話) | log <chat_id> [筆數]',
   '/restart',
@@ -702,6 +704,14 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       const days = dArg === undefined ? 7 : /^\d+$/.test(dArg) && Number(dArg) >= 1 && Number(dArg) <= 90 ? Number(dArg) : null
       if (days === null || rest.length > 2) return done('用法: /router classifier [天數 1~90] [v1|v2] | classifier show <編號>')
       return done(deps.classifier.report(days, vArg ? Number(vArg.slice(1)) : undefined), { private: true })
+    }
+
+    case 'tools': {
+      // tool_history (router/toolhistory.ts): no arguments in it, owner and admin like the rest of /router
+      const d = args[1]
+      const days = d === undefined ? 7 : /^\d+$/.test(d) && Number(d) >= 1 && Number(d) <= KEEP_DAYS ? Number(d) : null
+      if (days === null || args.length > 2) return done(`用法: /router tools [天數 1~${KEEP_DAYS}]`)
+      return done(toolReport(db, days), { private: true })
     }
 
     case 'botapi': {

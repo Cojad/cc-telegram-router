@@ -48,6 +48,7 @@ import { createClassifier, openClassifyStore, apiJudge, claudeJudge, classifierR
 import { escHtml, htmlToText } from './setup'
 import { newClaimCode, isClaim, initBotSetups, adoptBotSetup, tokenBotId, resetNotice, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
 import { createElevation } from './elevation'
+import { createToolHistory, hookUse } from './toolhistory'
 import { dmLabel, personLabel } from './commands'
 import { parseRelay, mayRelay, relay, codeBlock, ROUTER_CMDS, type Exec, type RelayCmd } from './relay'
 import { homedir } from 'os'
@@ -144,6 +145,13 @@ const SCRIPTS_DIR = [join(import.meta.dir, '..', 'scripts'), join(cfg.stateDir, 
 
 const DB_FILE = join(cfg.stateDir, 'router.db')
 const db = openRouterDb(DB_FILE)
+/** Every tool call a hook reports, and the Telegram tools the router runs (router/toolhistory.ts). */
+const toolHistory = createToolHistory({ db, log })
+{
+  const purge = () => { const n = toolHistory.purge(); if (n) log(`tool_history: removed ${n} rows older than 30 days`) }
+  purge()
+  setInterval(purge, 86_400_000).unref()
+}
 // Updates logged before every token-carrying command was masked (router/secrets.ts): mask them once.
 { const n = db.maskEventsOnce('mask-command-tokens-2026-10', maskSecretUpdate); if (n != null) log(`masked tokens in ${n} logged updates`) }
 // messages are kept per bot; rows from before that go to the bot they show up under, else the first bot (store.ts)
@@ -441,22 +449,14 @@ const ipc = createIpc({
   }),
   async onHook(peer, ev) {
     const c = peer.conv ? db.getConversation(peer.conv.key) : null
-    if (!c) return {}
-    // progress events ride along (pre/post/stop/...); subagent events and quiet ones are elevation only
-    if (!String(ev.event).startsWith('subagent-') && !ev.quiet) ipcOnProgress(peer, ev)
-    // a turn typed in the worker's terminal has no Telegram message for the classifier
-    if (ev.event === 'prompt' && ev.telegram === false) classifier.noteMessage(c.key, null)
-    const d = await elevation.onHook(c, ev as Record<string, any>)
-    if (d.decision) return d
-    // power may install packages once they pass review (router/pkgreview.ts)
-    if (ev.event === 'pre' && ev.tool_name === 'Bash' && c.role === 'power' && typeof ev.tool_input?.command === 'string') {
-      const p = await pkgGate.check(c, ev.tool_input.command)
-      if (p.decision === 'deny') await elevation.note(c, 'blocked', `⛔ ${c.key} 套件安裝被擋: ${String(ev.tool_input.command).slice(0, 160)}\n${p.reason}`)
-      else classifier.submit(c, ev as Record<string, any>)
-      return p
+    if (!c) {
+      // the router home's own terminal session (owner), when it has the hook
+      if (ev.event === 'pre' && peer.mode === 'terminal') toolHistory.record(hookUse({ key: 'terminal', role: 'owner' }, ev as Record<string, any>, {}, null))
+      return {}
     }
-    // the rules let it through: stage 1 classifier only records, after the answer (router/classifier.ts)
-    classifier.submit(c, ev as Record<string, any>)
+    const d = await hookDecision(peer, c, ev)
+    // a subagent's Telegram tool (quiet) is recorded when the router runs it, unless refused here
+    if (ev.event === 'pre' && (!ev.quiet || d.decision === 'deny')) toolHistory.record(hookUse(c, ev as Record<string, any>, d, elevation.boundRole(c.key, ev.agent_id ? String(ev.agent_id) : undefined)))
     return d
   },
   onProgress(peer, ev) { ipcOnProgress(peer, ev) },
@@ -671,14 +671,37 @@ for (const line of classifier.check()) log(line)
   setInterval(purge, 86_400_000).unref()
 }
 
+/** The router's answer to a worker hook event (permissions, elevation, package review). */
+async function hookDecision(peer: Peer, c: Conversation, ev: Record<string, any>): Promise<{ decision?: 'allow' | 'deny'; reason?: string }> {
+  // progress events ride along (pre/post/stop/...); subagent events and quiet ones are elevation only
+  if (!String(ev.event).startsWith('subagent-') && !ev.quiet) ipcOnProgress(peer, ev)
+  // a turn typed in the worker's terminal has no Telegram message for the classifier
+  if (ev.event === 'prompt' && ev.telegram === false) classifier.noteMessage(c.key, null)
+  const d = await elevation.onHook(c, ev as Record<string, any>)
+  if (d.decision) return d
+  // power may install packages once they pass review (router/pkgreview.ts)
+  if (ev.event === 'pre' && ev.tool_name === 'Bash' && c.role === 'power' && typeof ev.tool_input?.command === 'string') {
+    const p = await pkgGate.check(c, ev.tool_input.command)
+    if (p.decision === 'deny') await elevation.note(c, 'blocked', `⛔ ${c.key} 套件安裝被擋: ${String(ev.tool_input.command).slice(0, 160)}\n${p.reason}`)
+    else classifier.submit(c, ev as Record<string, any>)
+    return p
+  }
+  // the rules let it through: stage 1 classifier only records, after the answer (router/classifier.ts)
+  classifier.submit(c, ev as Record<string, any>)
+  return d
+}
+
 /** onCall, plus the classifier for a Telegram plugin tool the router ran without an error, with the
  *  role it ran with (an elevated subagent's call, which carries a ticket, is not judged). */
 function judgedTelegram<T extends { isError?: boolean }>(f: (peer: Peer, tool: string, args: Record<string, any>) => Promise<T>) {
   return async (peer: Peer, tool: string, args: Record<string, any>): Promise<T> => {
     const conv = peer.conv ? db.getConversation(peer.conv.key) : null
-    const role = conv ? (elevation.peekTicket(conv.key, tool, args) ?? conv.role) : null
+    const ticket = conv ? elevation.peekTicket(conv.key, tool, args) : null
+    const role = conv ? (ticket ?? conv.role) : null
     const res = await f(peer, tool, args)
     if (conv && role && !res?.isError) classifier.submitTelegram(conv, role, tool, args)
+    // the hook leaves these to the router: recorded here (a ticket: an elevated subagent's call)
+    toolHistory.record({ conv: conv?.key ?? 'terminal', conv_role: conv?.role ?? peer.role, eff_role: ticket, tool: `mcp__plugin_telegram_telegram__${tool}`, decision: res?.isError ? 'error' : 'allow', reason: null, target: null, subagent: !!ticket })
     return res
   }
 }

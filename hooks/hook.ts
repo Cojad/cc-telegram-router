@@ -41,7 +41,8 @@ function progressEvent(event: string, input: Record<string, any>): Record<string
         event, summary: toolSummary(name, input.tool_input), tool_name: name, ...agent,
         // what the elevation check needs; the rest of tool_input stays on this machine
         // what the permission check needs (router/permcheck.ts); file contents stay here
-        ...(event === 'pre' ? { tool_input: pick(input.tool_input ?? {}, ['command', 'description', 'dangerouslyDisableSandbox', 'file_path', 'notebook_path', 'path', 'pattern', 'url', 'query', 'to', 'recipient']) } : {}),
+        // an Agent call's name and type: SendMessage to it counts as to the conversation's own subagent (router/elevation.ts)
+        ...(event === 'pre' ? { tool_input: pick(input.tool_input ?? {}, ['command', 'description', 'dangerouslyDisableSandbox', 'file_path', 'notebook_path', 'path', 'pattern', 'url', 'query', 'to', 'recipient', ...(name === 'Agent' || name === 'Task' ? ['name', 'subagent_type'] : [])]) } : {}),
         // package installs are reviewed by the router (router/pkgreview.ts): wait longer
         ...(event === 'pre' && name === 'Bash' && INSTALL_HINT.test(String(input.tool_input?.command ?? '')) ? { install: true } : {}),
       }
@@ -49,7 +50,7 @@ function progressEvent(event: string, input: Record<string, any>): Record<string
     case 'compact-pre':
     case 'compact-post': return { event, trigger: String(input.trigger ?? '') }
     case 'stop': return { event }
-    case 'subagent-start':
+    case 'subagent-start': return { event, ...agent, ...(input.agent_type ? { agent_type: String(input.agent_type) } : {}) }
     case 'subagent-stop': return { event, ...agent }
   }
   return null

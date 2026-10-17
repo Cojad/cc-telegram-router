@@ -9,10 +9,12 @@
 ### Added
 
 - `cc /usage` 加上 Weekly (all models) 的燃燒速率: 完美速率, 當前速率與 ratio, 剩下的額度與倒數, 到重置剛好用完的每日上限, 可超速多少或要減速, 措辭照群組範例的輕快語氣 (算法見 [docs/operations.md](docs/operations.md#cc--報表腳本)).
+- 工具呼叫紀錄: 每個經過 PreToolUse 的工具呼叫 (所有角色, 含 owner 對話) 與 router 端執行的 Telegram 工具記在 `router.db` 的 `tool_history` (不存參數, 只有工具, 決定與原因, SendMessage 的收件對象), 保留 30 天; 報表 `/router tools [天數]` 與 `cli tools [天數]` (owner, admin). 見 [docs/permissions.md](docs/permissions.md#工具呼叫紀錄).
 
 ### Changed
 
 - 安裝位置可自選, 不再假設 `/x`: plugin 與 hook 從 `~/.config/cc-telegram-router/router.json` (位置檔, `cc-telegram-router register` 寫入, `deploy/install.sh router` 會執行) 找 router 的 socket 與家目錄, 不再寫死 `/x/cc/.router/router.sock`; `deploy/install.sh` 不再預設 `/x/cc/.router`, 第一次安裝要用 `CC_ROUTER_STATE` 指定, 之後從位置檔讀; 角色範本的 sandbox `denyRead` 由 `/x` 改為依安裝位置隱藏 router 的家目錄, 狀態目錄 (不在家目錄底下時) 與 config 新增的 `sandboxDenyRead` (額外要隱藏的路徑, 預設空), 特權技能的 bwrap 也一樣 (見 [docs/operations.md](docs/operations.md#安裝位置)). 原本裝在 `/x` 以外時 sandbox 看得到其他對話與 router 的資料.
+- 高風險工具改成 power 以下要提權 (只能允許一次): `ListAgents`, `RemoteTrigger`, `CronCreate`, `CronDelete`, `ScheduleWakeup`, `PushNotification`, 以及 `SendMessage` 傳給這個對話自己的 subagent 以外的對象 (其他 session). hook 多轉送 Agent 呼叫的 `name`, `subagent_type` 與 SubagentStart 的 `agent_type`, 用來認得自己的 subagent. 實測 `CronDelete` 不觸發 PreToolUse, router 擋不到 (只能刪同一個 session 建的排程). 見 [docs/permissions.md](docs/permissions.md#高風險工具).
 - `cc /status`, `cc /usage`, `cc /context` 的報表腳本收進 repo 的 `scripts/`, `deploy/install.sh router` 裝到 `<stateDir>/scripts`, router 改用這個位置 (原本是 `~/.claude/bin`). `/usage` 的解析與排版抽成 `scripts/usage_report.py`.
 - README 的 Requirements: python3 (3.7 以上) 列為必要; 「選配」分成「強烈建議」(tmux, curl, jq, matplotlib 等) 與「依功能需要」(特權技能的工具, 分類器的 API key); bubblewrap 與 socat 附官方 sandbox 文件連結與 Ubuntu 24.04 AppArmor 的注意事項.
 - `plugin/package.json` 的版本對齊 2.9.0.

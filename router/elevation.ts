@@ -24,9 +24,21 @@
 //      elevated, otherwise at the approvals place for owner/admin.
 // Everything blocked, every request and every outcome goes to the
 // elevation log: router.db, plus the 提權紀錄 topic of the approvals group.
+//
+// High-risk tools (permcheck.riskyRefusal, 柯姊 2026-10-17): ListAgents,
+// RemoteTrigger, CronCreate, CronDelete, ScheduleWakeup, PushNotification,
+// and SendMessage to anyone but the conversation's own subagents, are
+// refused for power and below like any block above, once only. Own
+// subagents: the agent ids SubagentStart reports, and the name of an Agent
+// call the router let through, once its SubagentStart arrives (a name whose
+// subagent never started stays unknown: a bare name with no in-process
+// agent behind it would reach another session). "main" counts only from a
+// subagent (reporting back). Kept in memory: after a router restart a
+// subagent from before is unknown, and a message to it is treated as going
+// to another session (refused for power and below).
 
 import type { Conversation, RouterDb, ElevLogKind } from './db'
-import { checkCall, describeCall, rank, permanentRule, type Call, type Rule } from './permcheck'
+import { checkCall, describeCall, rank, permanentRule, riskyRefusal, sendTarget, RISKY_TOOLS, type Call, type Rule } from './permcheck'
 import { postApproval, settleApproval, logPlace, messageLink, buttons, parseChoice, CHOICE_WORD, type ApprovalDeps, type About } from './approvals'
 import { applyOverrides } from './settings'
 import { logKind, type Authz } from './authz'
@@ -69,6 +81,9 @@ export function stableArgs(v: unknown): string {
   return JSON.stringify(v)
 }
 const TG_TOOL = 'mcp__plugin_telegram_telegram__'
+const AGENT_TOOLS = new Set(['Agent', 'Task'])
+const MAX_OWN = 500
+const isRisky = (call: Call) => RISKY_TOOLS.has(call.tool_name) || call.tool_name === 'SendMessage'
 
 export function createElevation(deps: ElevationDeps) {
   const { db } = deps
@@ -87,13 +102,37 @@ export function createElevation(deps: ElevationDeps) {
    *  execution picks up to use the elevated role. */
   const tickets = new Map<string, { role: string; id: number; until: number }>()
   const ticketKey = (conv: string, tool: string, args: unknown) => `${conv}\u0000${tool}\u0000${stableArgs(args ?? {})}`
+  /** conv -> its own subagents (agent ids, names): SendMessage to them is not cross-session */
+  const ownAgents = new Map<string, Set<string>>()
+  /** conv -> Agent calls the router let through, waiting for their SubagentStart */
+  const spawning = new Map<string, Array<{ name: string; type: string }>>()
+  const addOwn = (conv: string, id: string) => {
+    const s = ownAgents.get(conv) ?? new Set<string>()
+    s.delete(id); s.add(id)
+    while (s.size > MAX_OWN) s.delete(s.values().next().value!)
+    ownAgents.set(conv, s)
+  }
+  /** An Agent call is let through: its name becomes the conversation's once the subagent starts. */
+  const noteSpawn = (conv: string, call: Call) => {
+    if (!AGENT_TOOLS.has(call.tool_name)) return
+    const q = spawning.get(conv) ?? []
+    q.push({ name: String(call.tool_input?.name ?? ''), type: String(call.tool_input?.subagent_type ?? '') })
+    spawning.set(conv, q.slice(-20))
+  }
+  /** SendMessage's recipient is one of this conversation's own subagents (a subagent's "main" is its parent). */
+  const isOwnTarget = (conv: string, call: Call, agent?: string) => {
+    const to = sendTarget(call)
+    if (!to) return false
+    if (to === 'main') return !!agent
+    return ownAgents.get(conv)?.has(to) ?? false
+  }
 
   const senderOf = (conv: Conversation) => terminalTurn.has(conv.key) ? null : lastSender.get(conv.key) ?? null
   /** Would role be allowed this call: its permission settings, then extraCheck. */
-  const allowedAs = (conv: Conversation, role: string, call: Call) => {
+  const allowedAs = (conv: Conversation, role: string, call: Call, agent?: string) => {
     const c = checkCall(deps.settingsAs(conv, role), call, conv.folder, role)
     if (!c.ok) return c
-    const why = deps.extraCheck?.(conv, call, role)
+    const why = riskyRefusal(call, role, isOwnTarget(conv.key, call, agent)) ?? deps.extraCheck?.(conv, call, role)
     return why ? { ok: false as const, why } : c
   }
   const elevatedSender = (conv: Conversation) => {
@@ -120,6 +159,7 @@ export function createElevation(deps: ElevationDeps) {
   /** What 永久允許 would add for this call in this conversation. */
   function ruleFor(conv: Conversation, call: Call | null): Rule | { none: string } {
     if (!call) return { none: '主動申請沒有具體的動作, 只能一次一次允許' }
+    if (isRisky(call)) return { none: '高風險工具 (傳訊給其他 session, ListAgents, 排程, 遠端觸發, 推播) 只能一次一次允許' }
     if (deps.extraCheck?.(conv, call, conv.role)) {
       const none = call.tool_name.endsWith('__run_skill') ? '技能參數的角色限制沒辦法寫成固定規則, 只能一次一次允許'
         : call.tool_name.endsWith('__install_skill') ? '安裝技能的角色限制跟著對話角色, 要長期開放請 owner 調整對話角色 (/router perm role), 這裡只能一次一次允許'
@@ -199,7 +239,7 @@ export function createElevation(deps: ElevationDeps) {
     await record(conv, 'blocked', `⛔ ${conv.key} 被擋: ${action}\n${why}${agent ? ` (subagent ${agent})` : ''}\n發起者 ${who(sender)}`, null)
     const guide = `權限不足 (本對話角色 ${conv.role}): ${why}.`
     const elevated = elevatedSender(conv)
-    if (elevated && allowedAs(conv, deps.roleOf(elevated), call).ok) {
+    if (elevated && allowedAs(conv, deps.roleOf(elevated), call, agent).ok) {
       // one question in the chat at a time; a request waiting for the owner elsewhere does not hold up a new one
       const pending = db.pendingElevations().find(p => p.conv === conv.key && db.approvalMsgs('elev', p.id).some(m => m.chat_id === conv.chat_id))
       if (pending) return { decision: 'deny', reason: `${guide} 已在對話裡詢問是否提權 (#${pending.id}), 等 <router_status> 的結果; 這段時間不要用越權的方法繞過.` }
@@ -227,6 +267,14 @@ export function createElevation(deps: ElevationDeps) {
           if (ev.telegram) terminalTurn.delete(conv.key); else terminalTurn.add(conv.key)
           return {}
         case 'subagent-start': {
+          if (agent) {
+            addOwn(conv.key, agent)
+            const q = spawning.get(conv.key) ?? []
+            const type = String(ev.agent_type ?? '')
+            const i = type ? q.findIndex(x => x.type === type || (!x.type && type === 'general-purpose')) : 0
+            const [s] = q.splice(i >= 0 ? i : 0, 1)
+            if (s?.name) addOwn(conv.key, s.name)
+          }
           const g = granted.get(conv.key)
           if (g && agent && g.until > Date.now()) {
             bound.set(agent, { conv: conv.key, role: g.role, id: g.id })
@@ -242,8 +290,9 @@ export function createElevation(deps: ElevationDeps) {
           const call: Call = { tool_name: String(ev.tool_name ?? ''), tool_input: ev.tool_input ?? {} }
           const b = agent ? bound.get(agent) : undefined
           if (b && b.conv === conv.key) {
-            const c = allowedAs(conv, b.role, call)
+            const c = allowedAs(conv, b.role, call, agent)
             if (!c.ok) return blocked(conv, call, `即使提權為 ${b.role} 也不允許: ${c.why}`, agent)
+            noteSpawn(conv.key, call)
             const g = db.approvalGrantsFor('elev', b.id).find(x => x.status === 'active')
             if (g) await deps.authz?.use(conv, g, `subagent ${agent} 以 ${b.role} 角色: ${callDetail(call)}`)
             if (call.tool_name.startsWith(TG_TOOL)) tickets.set(ticketKey(conv.key, call.tool_name.slice(TG_TOOL.length), call.tool_input), { role: b.role, id: b.id, until: Date.now() + 60_000 })
@@ -253,8 +302,9 @@ export function createElevation(deps: ElevationDeps) {
             const to = String(call.tool_input.to ?? call.tool_input.recipient ?? '')
             if ([...bound.keys()].some(id => to.includes(id))) return { decision: 'deny', reason: '非提權的一輪不能指揮已提權的 subagent' }
           }
-          const c = allowedAs(conv, conv.role, call)
+          const c = allowedAs(conv, conv.role, call, agent)
           if (!c.ok) return blocked(conv, call, c.why, agent)
+          noteSpawn(conv.key, call)
           // passes only thanks to an approved override (永久允許 earlier): a use of it
           if (deps.authz) {
             const approved = deps.authz.approvedOverrides(conv)
@@ -297,7 +347,7 @@ export function createElevation(deps: ElevationDeps) {
       const call = e.action.startsWith('{') ? JSON.parse(e.action) as Call : null
       if (p.choice !== 'deny' && call) {
         const c = checkCall(deps.settingsAs(conv, role), call, conv.folder, role)
-        if (!c.ok) return `你的角色 (${role}) 也不允許這個動作`
+        if (!c.ok || riskyRefusal(call, role, false)) return `你的角色 (${role}) 也不允許這個動作`
       }
       let permanent: Rule | undefined
       if (p.choice === 'always') {
@@ -350,6 +400,14 @@ export function createElevation(deps: ElevationDeps) {
     senderOf: (conv: Conversation): string | null => senderOf(conv),
     /** The conversation's current turn was typed in the worker's terminal (no Telegram message). */
     terminalTurn: (convKey: string): boolean => terminalTurn.has(convKey),
+
+    /** The role an elevated subagent runs with (tool_history 有效角色); null when not elevated. */
+    boundRole: (convKey: string, agent: string | undefined): string | null => {
+      const b = agent ? bound.get(agent) : undefined
+      return b && b.conv === convKey ? b.role : null
+    },
+    /** The conversation's own subagents as known now (tests, /router status). */
+    ownAgents: (convKey: string): string[] => [...ownAgents.get(convKey) ?? []],
 
     state: () => ({ granted: [...granted.entries()].map(([conv, g]) => ({ conv, ...g })), bound: [...bound.entries()].map(([agent, b]) => ({ agent, ...b })) }),
     stop() { for (const t of timers.values()) clearTimeout(t) },
