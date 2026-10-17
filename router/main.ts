@@ -1223,6 +1223,12 @@ const vaultTick = () => {
 }
 vaultTick()
 setInterval(vaultTick, 10_000).unref()
+// kept copies of text attachments unused for 30 days go, at startup and daily
+{
+  const purge = () => { try { const n = vault.purgeAttachments(); if (n) log(`attachments: removed ${n} kept file(s) unused for 30 days`) } catch (e) { log(`attachment purge: ${e}`) } }
+  purge()
+  setInterval(purge, 86_400_000).unref()
+}
 
 // People seen before the people table existed: fill them in from the event log.
 {

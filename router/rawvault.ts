@@ -19,7 +19,7 @@
 // secret_from_handle registers a handle as a conversation secret (10b rules).
 // The owner's terminal can write the plaintext to a 600 file (cli event raw).
 
-import { mkdirSync, writeFileSync, chmodSync, readFileSync, existsSync } from 'fs'
+import { mkdirSync, writeFileSync, chmodSync, readFileSync, existsSync, rmSync } from 'fs'
 import { join } from 'path'
 import type { Conversation, RouterDb, SecretHandle } from './db'
 import { scanUpdate, replaceFindings, replaceInPlace, valuesOf, eventMarker, workerMarker, ownFindings, isQuoted, pathText, detectSecrets, CMD_KIND, MIN_KNOWN, type Finding, type Known } from './detect'
@@ -45,6 +45,8 @@ export type Recorded = { id: number; findings: Finding[] }
 
 /** Text attachments scanned when a worker downloads them (larger ones are passed on as they are). */
 export const MAX_TEXT_ATTACHMENT = 1024 * 1024
+/** Kept copies of text attachments go this many days after their last use. */
+export const ATTACHMENT_KEEP_DAYS = 30
 const TEXT_EXTS = new Set([
   'txt', 'env', 'json', 'yaml', 'yml', 'ini', 'conf', 'cfg', 'toml', 'properties', 'md', 'csv',
   'js', 'mjs', 'cjs', 'ts', 'jsx', 'tsx', 'py', 'rb', 'go', 'rs', 'java', 'kt', 'swift', 'c', 'h', 'cc', 'cpp', 'hpp', 'cs',
@@ -295,7 +297,19 @@ export function createVault(deps: VaultDeps) {
       await inflight.get(`${bot}\n${fileId}`)
       const c = db.cachedAttachment(bot, fileId)
       if (!c || !existsSync(c.path)) return null
+      db.touchAttachment(bot, fileId)
       return { buf: readFileSync(c.path), file_path: c.file_path, file_unique_id: c.file_unique_id }
+    },
+
+    /** Kept copies unused for ATTACHMENT_KEEP_DAYS: file and attachment_cache row go (at startup and daily). */
+    purgeAttachments(days = ATTACHMENT_KEEP_DAYS): number {
+      const old = db.staleAttachments(new Date(now() - days * 86_400_000).toISOString())
+      for (const a of old) {
+        // only files under the cache folder
+        if (deps.cacheDir && a.path.startsWith(deps.cacheDir + '/')) rmSync(a.path, { force: true })
+        db.removeAttachment(a.bot, a.file_id)
+      }
+      return old.length
     },
 
     /** Delete what is due (every few seconds, and right after a restart). */

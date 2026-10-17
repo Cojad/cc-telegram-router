@@ -6,19 +6,21 @@
 // handles, the fixed agent, the exit check, haiku refused), secret_from_handle,
 // cli event raw (600 file), /secret handles|revoke, /router secret
 // handles|revoke, /router event raw; text attachments scanned when a worker
-// downloads them, and on arrival (kept for download_attachment); the fixed
+// downloads them, and on arrival (kept for download_attachment, 30 days after
+// the last use); the fixed
 // agent's language rule. Keep in sync with README 「原始事件與密鑰保護」
 // and /telegram:doc; end to end in e2e-rawvault.test.ts.
 // Every token here is fake and built at runtime (no token-shaped literal in the repo).
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, statSync, writeFileSync, chmodSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, statSync, writeFileSync, chmodSync, existsSync } from 'fs'
+import { Database } from 'bun:sqlite'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { openRouterDb, type RouterDb, type Conversation } from '../db'
 import { newSecretKey, sealRaw, openRaw, openSecret, runSecretCommand, type SecretDeps } from '../secrets'
 import { detectSecrets, scanUpdate, ownFindings, workerMarker, CMD_KIND, KNOWN_KIND } from '../detect'
-import { createVault, claudeAsk, isTextAttachment, RAW_SYSTEM, DELETE_AFTER_MS, MAX_TEXT_ATTACHMENT, type VaultApi, type VaultDeps } from '../rawvault'
+import { createVault, claudeAsk, isTextAttachment, RAW_SYSTEM, DELETE_AFTER_MS, MAX_TEXT_ATTACHMENT, ATTACHMENT_KEEP_DAYS, type VaultApi, type VaultDeps } from '../rawvault'
 import { runCommand, type CommandDeps } from '../commands'
 import type { Access } from '../telegram/policy'
 import type { ApprovalDeps } from '../approvals'
@@ -395,7 +397,7 @@ test('docs: README 「原始事件與密鑰保護」, /telegram:doc, /telegram:b
   const root = join(import.meta.dir, '..', '..')
   const readme = readFileSync(join(root, 'README.md'), 'utf8')
   const sec = readme.slice(readme.indexOf('### 原始事件與密鑰保護'), readme.indexOf('### bot 設定提醒'))
-  for (const s of ['`<已遮蔽 #<event id>.<序號>>`', 'event_raw', 'AES-256-GCM', '綁定 event id', '「🔑 密鑰偵測」', '5 分鐘後刪除', '取消刪除', '發送者, owner, admin', 'claude -p', 'haiku', '出口檢查', '預設 10 分鐘, 最多 60 分鐘, 或永久', 'secret_from_handle', '/secret handles', 'cli event raw', '權限 600', '5 筆舊紀錄', '文字類附件', '收到訊息時就檢查', '`attachment_cache`', '`download_attachment`', '1 MB', '圖片, 二進位檔']) expect(sec).toContain(s)
+  for (const s of ['`<已遮蔽 #<event id>.<序號>>`', 'event_raw', 'AES-256-GCM', '綁定 event id', '「🔑 密鑰偵測」', '5 分鐘後刪除', '取消刪除', '發送者, owner, admin', 'claude -p', 'haiku', '出口檢查', '預設 10 分鐘, 最多 60 分鐘, 或永久', 'secret_from_handle', '/secret handles', 'cli event raw', '權限 600', '5 筆舊紀錄', '文字類附件', '收到訊息時就檢查', '`attachment_cache`', '保留 30 天 (以最後使用時間算', '`download_attachment`', '1 MB', '圖片, 二進位檔']) expect(sec).toContain(s)
   expect(readme).toContain('### 10e 原始事件與密鑰保護驗收對照')
   expect(readme).toContain('「🔑 密鑰偵測」五個話題')
   const doc = readFileSync(join(root, 'plugin', 'skills', 'doc', 'SKILL.md'), 'utf8')
@@ -503,4 +505,28 @@ test('text attachments are downloaded and checked as they come in (served chats,
   void v.prefetch('cc', slow, true)
   expect((await v.cached('cc', 'F14'))!.buf.toString()).toStartWith('T=<已遮蔽 #')
   expect(fetched.filter(f => f === 'F14')).toHaveLength(1)
+})
+
+test('kept attachment copies go 30 days after their last use: the file and the attachment_cache row; a use keeps one longer', async () => {
+  const v = makeVault()
+  expect(ATTACHMENT_KEEP_DAYS).toBe(30)
+  const doc = (id: number, file_id: string) => ({ update_id: id, message: { message_id: id, date: 0, chat: { id: Number(USER), type: 'private' }, from: { id: Number(USER), is_bot: false, first_name: 'U' }, document: { file_id, file_unique_id: 'u' + id, file_name: 'a.txt', mime_type: 'text/plain', file_size: 5 } } })
+  files = { P1: 'one', P2: 'two' }
+  for (const [i, f] of [[60, 'P1'], [61, 'P2']] as const) { const u = doc(i, f); v.record('cc', u); await v.prefetch('cc', u, true) }
+  const p1 = db.cachedAttachment('cc', 'P1')!.path, p2 = db.cachedAttachment('cc', 'P2')!.path
+  // both last used 31 days before the vault's clock; then P2 is used again (now)
+  const raw = new Database(join(dir, '.router', 'router.db'))
+  raw.prepare('UPDATE attachment_cache SET last_used = ?').run(new Date(clock - 31 * 86_400_000).toISOString())
+  raw.close()
+  clock = Date.now()
+  expect((await v.cached('cc', 'P2'))!.buf.toString()).toBe('two')
+  expect(v.purgeAttachments()).toBe(1)
+  expect(existsSync(p1)).toBe(false)
+  expect(db.cachedAttachment('cc', 'P1')).toBeNull()
+  expect(existsSync(p2)).toBe(true)
+  expect(await v.cached('cc', 'P1')).toBeNull()
+  // 31 days after that use, P2 goes too
+  clock = Date.now() + 31 * 86_400_000
+  expect(v.purgeAttachments()).toBe(1)
+  expect(existsSync(p2)).toBe(false)
 })

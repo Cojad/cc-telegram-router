@@ -129,6 +129,11 @@ export interface RouterDb {
   /** Text attachments the router downloaded when they came in (masked when they held a secret). */
   cacheAttachment(a: AttachmentCache): void
   cachedAttachment(bot: string, fileId: string): AttachmentCache | null
+  /** A worker got the kept copy: it stays another keepDays from now. */
+  touchAttachment(bot: string, fileId: string): void
+  /** Kept copies not used since beforeIso (oldest first). */
+  staleAttachments(beforeIso: string): AttachmentCache[]
+  removeAttachment(bot: string, fileId: string): void
   addHandle(h: Pick<SecretHandle, 'event_id' | 'n' | 'kind' | 'last4' | 'bot' | 'chat_id' | 'conv' | 'request_id' | 'expires_at'>): SecretHandle
   getHandle(code: string): SecretHandle | null
   /** bot and chat null: every conversation's. */
@@ -326,7 +331,7 @@ export function openRouterDb(path: string): RouterDb {
     );
     CREATE TABLE IF NOT EXISTS attachment_cache (
       bot TEXT NOT NULL, file_id TEXT NOT NULL, file_unique_id TEXT NOT NULL, file_path TEXT NOT NULL, path TEXT NOT NULL,
-      event_id INTEGER, created_at TEXT NOT NULL, PRIMARY KEY (bot, file_id)
+      event_id INTEGER, created_at TEXT NOT NULL, last_used TEXT, PRIMARY KEY (bot, file_id)
     );
     CREATE TABLE IF NOT EXISTS event_raw (event_id INTEGER PRIMARY KEY, sealed TEXT NOT NULL, fields TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS secret_handles (
@@ -359,6 +364,8 @@ export function openRouterDb(path: string): RouterDb {
   // custom-source packages an approval lets through once (pkgreview.ts): no override, used up by one install
   const pkgReqCols = new Set((db.query('PRAGMA table_info(pkg_requests)').all() as Array<{ name: string }>).map(c => c.name))
   if (!pkgReqCols.has('once_items')) { db.exec('ALTER TABLE pkg_requests ADD COLUMN once_items TEXT'); db.exec('ALTER TABLE pkg_requests ADD COLUMN once_used_at TEXT') }
+  const cacheCols = new Set((db.query('PRAGMA table_info(attachment_cache)').all() as Array<{ name: string }>).map(c => c.name))
+  if (!cacheCols.has('last_used')) db.exec('ALTER TABLE attachment_cache ADD COLUMN last_used TEXT')
   const evCols = new Set((db.query('PRAGMA table_info(events)').all() as Array<{ name: string }>).map(c => c.name))
   if (!evCols.has('masked')) db.exec('ALTER TABLE events ADD COLUMN masked INTEGER NOT NULL DEFAULT 0')
   const useCols = new Set((db.query('PRAGMA table_info(auth_uses)').all() as Array<{ name: string }>).map(c => c.name))
@@ -422,7 +429,10 @@ export function openRouterDb(path: string): RouterDb {
     getEvent: id => (db.prepare('SELECT id, ts, bot, update_json, masked FROM events WHERE id = ?').get(id) as EventRow | null) ?? null,
     eventsWithFile: (fileId, limit = 20) => db.prepare(`SELECT id, ts, bot, update_json, masked FROM events WHERE instr(update_json, ?) > 0 AND update_json NOT LIKE '{"attachment":%' ORDER BY id DESC LIMIT ?`).all(`"file_id":${JSON.stringify(fileId)}`, limit) as EventRow[],
     attachmentEvent: fileId => (db.prepare('SELECT id, ts, bot, update_json, masked FROM events WHERE substr(update_json, 1, ?) = ? ORDER BY id DESC LIMIT 1').get(`{"attachment":{"file_id":${JSON.stringify(fileId)}`.length, `{"attachment":{"file_id":${JSON.stringify(fileId)}`) as EventRow | null) ?? null,
-    cacheAttachment: a => { db.prepare('INSERT OR REPLACE INTO attachment_cache (bot, file_id, file_unique_id, file_path, path, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(a.bot, a.file_id, a.file_unique_id, a.file_path, a.path, a.event_id, now()) },
+    cacheAttachment: a => { const t = now(); db.prepare('INSERT OR REPLACE INTO attachment_cache (bot, file_id, file_unique_id, file_path, path, event_id, created_at, last_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(a.bot, a.file_id, a.file_unique_id, a.file_path, a.path, a.event_id, t, t) },
+    touchAttachment: (bot, fileId) => { db.prepare('UPDATE attachment_cache SET last_used = ? WHERE bot = ? AND file_id = ?').run(now(), bot, fileId) },
+    staleAttachments: before => db.prepare('SELECT bot, file_id, file_unique_id, file_path, path, event_id FROM attachment_cache WHERE coalesce(last_used, created_at) < ? ORDER BY coalesce(last_used, created_at)').all(before) as AttachmentCache[],
+    removeAttachment: (bot, fileId) => { db.prepare('DELETE FROM attachment_cache WHERE bot = ? AND file_id = ?').run(bot, fileId) },
     cachedAttachment: (bot, fileId) => (db.prepare('SELECT bot, file_id, file_unique_id, file_path, path, event_id FROM attachment_cache WHERE bot = ? AND file_id = ?').get(bot, fileId) as AttachmentCache | null) ?? null,
     getEventRaw: id => (db.prepare('SELECT * FROM event_raw WHERE event_id = ?').get(id) as EventRaw | null) ?? null,
     addHandle(h) {
