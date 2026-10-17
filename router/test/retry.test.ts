@@ -2,15 +2,18 @@
 // 連不到時」; shared/retry.ts). A fake clock and a fake send: the schedule and
 // its checkpoints, the deadline cutting it short, only PreToolUse and
 // SubagentStart retried, "connected but still answering" not retried, each
-// request's wait following the deadline, the whole run under the hook's 60 s.
+// request's wait following the deadline, the whole run under the hook's 60 s;
+// the breaker (over 3 minutes unreached: one try; reset by any try that
+// reaches the router; its state file broken or missing reads as normal).
 // The router's side (waiting for a worker's plugin): risky.test.ts; both with
 // the real router and hook: e2e-retry.test.ts. Keep in sync with
 // docs/testing.md 驗收對照.
 
 import { test, expect } from 'bun:test'
-import { readFileSync } from 'fs'
+import { readFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, statSync, readdirSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
 import { join } from 'path'
-import { checkpoints, untilReached, reportEvent, answerWait, waitUntil, UNREACHABLE, RETRY_WINDOW_MS, HOOK_LIMIT_MS, type Clock } from '../../shared/retry'
+import { checkpoints, untilReached, reportEvent, answerWait, waitUntil, breakerOpen, fileBreaker, readReach, reachFile, UNREACHABLE, RETRY_WINDOW_MS, HOOK_LIMIT_MS, BREAKER_MS, type Clock } from '../../shared/retry'
 
 /** A clock that only moves when slept on (or when a try says it took time). */
 function fakeClock(): Clock & { t: number; slept: number[] } {
@@ -110,4 +113,102 @@ test('waitUntil: the router waits until the hook\'s deadline, never more than 45
   expect(waitUntil(10_000, 0)).toBe(10_000)
   expect(waitUntil(10_000_000, 0)).toBe(45_000)
   expect(waitUntil(-5, 0)).toBe(-5)
+})
+
+// --- the breaker: a router unreached for over 3 minutes gets one try per request
+
+const tmp = () => mkdtempSync(join(tmpdir(), 'cctr-breaker-'))
+
+test('breakerOpen: open only past 3 minutes from the first failed try, with no try reaching the router since', () => {
+  expect(BREAKER_MS).toBe(180_000)
+  const t0 = 1_000_000
+  expect(breakerOpen({ down_since: null, last_ok: null }, t0 + 999_999)).toBe(false)
+  expect(breakerOpen({ down_since: t0, last_ok: null }, t0 + 180_000)).toBe(false)
+  expect(breakerOpen({ down_since: t0, last_ok: null }, t0 + 180_001)).toBe(true)
+  expect(breakerOpen({ down_since: t0, last_ok: t0 - 5 }, t0 + 180_001)).toBe(true)
+  // a try reached it after the first failed one (another hook process): not open
+  expect(breakerOpen({ down_since: t0, last_ok: t0 + 1 }, t0 + 999_999)).toBe(false)
+})
+
+test('the breaker through reportEvent (fake clock, real state file): six tries until 3 minutes have passed, then one; any try that reaches the router resets it', async () => {
+  const dir = tmp()
+  try {
+    const file = join(dir, 'reach.json'), br = fileBreaker(file), c = fakeClock()
+    let up = false, sent = 0
+    const send = async () => { sent++; return up ? {} : UNREACHABLE }
+    const pre = async () => { sent = 0; const d = await reportEvent('pre', '/conv', { event: 'pre' }, send, RETRY_WINDOW_MS, c, br); return { d, sent } }
+    const t0 = c.t
+    expect(await pre()).toEqual({ d: null, sent: 6 })
+    expect(readReach(file)).toEqual({ down_since: t0, last_ok: null })
+    // 3 minutes have not passed since the first failed try: still the full schedule
+    c.t = t0 + 179_000
+    expect((await pre()).sent).toBe(6)
+    // past 3 minutes: one try, the fallback at once
+    const before = c.t
+    expect(await pre()).toEqual({ d: null, sent: 1 })
+    expect(c.t).toBe(before)
+    expect((await pre()).sent).toBe(1)
+    expect(readReach(file).down_since).toBe(t0)
+    // the router answers (any event): normal again, and the time is kept
+    up = true
+    c.t += 1000
+    expect(await reportEvent('post', '/conv', { event: 'post' }, send, RETRY_WINDOW_MS, c, br)).toEqual({})
+    expect(readReach(file)).toEqual({ down_since: null, last_ok: c.t })
+    // down again: a new outage counts from its own first failed try, the full schedule
+    up = false
+    const t1 = c.t
+    expect((await pre()).sent).toBe(6)
+    expect(readReach(file)).toEqual({ down_since: t1, last_ok: t1 })
+    // a router reached while the breaker is open: answered on that one try
+    c.t = t1 + 200_000
+    up = true
+    expect(await pre()).toEqual({ d: {}, sent: 1 })
+    expect(readReach(file).down_since).toBeNull()
+    // connected but no answer in time still counts as reached
+    expect(await reportEvent('pre', '/conv', { event: 'pre' }, async () => null, RETRY_WINDOW_MS, c, br)).toBeNull()
+    expect(readReach(file).down_since).toBeNull()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the breaker\'s state file: written only when it changes, atomically (no temp file left, 0600); missing, broken or unreadable reads as normal', async () => {
+  const dir = tmp()
+  try {
+    const file = join(dir, 'sub', 'reach.json'), br = fileBreaker(file)
+    // reached with nothing failed: no file at all
+    br.result(true, 5)
+    expect(existsSync(file)).toBe(false)
+    br.result(false, 10)
+    expect(readReach(file)).toEqual({ down_since: 10, last_ok: null })
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    // a later failed try of the same outage does not move its start
+    br.result(false, 20)
+    expect(readReach(file).down_since).toBe(10)
+    expect(readdirSync(join(dir, 'sub'))).toEqual(['reach.json'])
+    // broken content: normal, the full schedule; the next failed try writes a good state over it
+    for (const junk of ['{not json', '[]', '{"down_since":"yesterday","last_ok":{}}', '']) {
+      writeFileSync(file, junk)
+      expect(readReach(file)).toEqual({ down_since: null, last_ok: null })
+      expect(br.open(999_999_999)).toBe(false)
+    }
+    const c = fakeClock()
+    let sent = 0
+    await reportEvent('pre', '/conv', { event: 'pre' }, async () => { sent++; return UNREACHABLE }, RETRY_WINDOW_MS, c, br)
+    expect(sent).toBe(6)
+    expect(readReach(file).down_since).toBe(1_000_000)
+    // unreadable (a folder where the file should be): normal, and writing fails quietly
+    const odd = join(dir, 'odd.json')
+    mkdirSync(odd)
+    const b2 = fileBreaker(odd)
+    expect(b2.open(999_999_999)).toBe(false)
+    expect(() => b2.result(false, 1)).not.toThrow()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('reachFile: one file per router socket in $XDG_RUNTIME_DIR, else ~/.cache', () => {
+  const a = reachFile('/srv/a.sock', { XDG_RUNTIME_DIR: '/run/user/1000', HOME: '/home/u' })
+  expect(a).toMatch(/^\/run\/user\/1000\/cc-telegram-router\/reach-[0-9a-f]{16}\.json$/)
+  expect(reachFile('/srv/b.sock', { XDG_RUNTIME_DIR: '/run/user/1000' })).not.toBe(a)
+  expect(reachFile('/srv/a.sock', { XDG_RUNTIME_DIR: '/run/user/1000' })).toBe(a)
+  expect(reachFile('/srv/a.sock', { HOME: '/home/u' })).toMatch(/^\/home\/u\/\.cache\/cc-telegram-router\/reach-[0-9a-f]{16}\.json$/)
+  expect(reachFile('/srv/a.sock', { XDG_RUNTIME_DIR: 'relative', HOME: '/home/u' })).toStartWith('/home/u/.cache/')
 })

@@ -9,14 +9,15 @@
 //   "🤔 思考中…" Telegram message (router/progress.ts), decides elevation
 //   (router/elevation.ts) and reviews package installs (router/pkgreview.ts):
 //   for PreToolUse its allow/deny is printed back. PreToolUse and
-//   SubagentStart retry a router they cannot reach (shared/retry.ts).
+//   SubagentStart retry a router they cannot reach (shared/retry.ts), once
+//   only when it has been unreachable for over 3 minutes.
 
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { renderContext, type ChatContext } from '../router/context'
 import { toolSummary } from '../router/progress'
 import { encode, type PluginToRouter } from '../shared/protocol'
-import { reportEvent, UNREACHABLE, RETRY_WINDOW_MS } from '../shared/retry'
+import { reportEvent, fileBreaker, reachFile, realClock, UNREACHABLE, RETRY_WINDOW_MS } from '../shared/retry'
 import { findRouter } from '../shared/locate'
 import { INSTALL_HINT } from '../router/packages'
 
@@ -113,7 +114,8 @@ async function main(): Promise<void> {
     const ev = progressEvent(event, input)
     if (!ev) return
     // A package review takes seconds; everything else answers at once.
-    const d = SOCKET ? await reportEvent(event, dir, ev, (msg, waitMs) => ask(SOCKET, msg, waitMs), WINDOW) : null
+    // a router unreached for over 3 minutes: one try (shared/retry.ts breaker)
+    const d = SOCKET ? await reportEvent(event, dir, ev, (msg, waitMs) => ask(SOCKET, msg, waitMs), WINDOW, realClock, fileBreaker(reachFile(SOCKET))) : null
     if (event !== 'pre') return
     // The router checks permissions and elevation (router/elevation.ts).
     // Unreachable router (every try failed): nobody leaves the sandbox; the

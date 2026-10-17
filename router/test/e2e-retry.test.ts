@@ -10,7 +10,10 @@
 //   try the fallback (let through, never out of the sandbox);
 //   SendMessage to the conversation's own subagent while the worker's plugin
 //   is disconnected: let through once it is back about 1 s later; refused
-//   at the deadline when it never comes back.
+//   at the deadline when it never comes back; a router unreached for over 3
+//   minutes (the breaker's state file): one try, the fallback at once, and
+//   the router back on that one try resets it. The hook's breaker state goes
+//   in the test dir (XDG_RUNTIME_DIR).
 
 import { test, expect, afterAll } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, existsSync } from 'fs'
@@ -18,6 +21,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { Database } from 'bun:sqlite'
 import { connectRouter } from '../../plugin/client'
+import { reachFile, readReach, writeReach } from '../../shared/retry'
 
 const dir = mkdtempSync(join(tmpdir(), 'cctr-retry-e2e-'))
 const state = join(dir, '.router')
@@ -94,7 +98,7 @@ async function hook(event: string, input: object, window?: number): Promise<{ ou
   const t0 = Date.now()
   const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', event], {
     stdin: new Blob([JSON.stringify({ cwd: folder(ukey), ...input })]), stdout: 'pipe',
-    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: folder(ukey), ...(window ? { CC_TELEGRAM_ROUTER_RETRY_WINDOW_MS: String(window) } : {}) },
+    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: folder(ukey), XDG_RUNTIME_DIR: dir, ...(window ? { CC_TELEGRAM_ROUTER_RETRY_WINDOW_MS: String(window) } : {}) },
   })
   const text = await new Response(p.stdout).text()
   await p.exited
@@ -175,3 +179,22 @@ test('SendMessage to the conversation\'s own subagent while its plugin is discon
   expect(late.ms).toBeLessThan(9000)
   await until(() => stderr.includes("for the worker's plugin, the plugin did not say hello in time: not counted"))
 }, 60000)
+
+test('the breaker: a router unreached for over 3 minutes gets one try, the fallback at once; back on that try, normal again', async () => {
+  const file = reachFile(join(state, 'router.sock'), { XDG_RUNTIME_DIR: dir })
+  await stopRouter()
+  writeReach(file, { down_since: Date.now() - 200_000, last_ok: null })
+  let r = await hook('pre', { tool_name: 'ListAgents', tool_input: {} })
+  expect(r.out).toBeNull()
+  expect(r.ms).toBeLessThan(2500)
+  r = await hook('pre', { tool_name: 'Bash', tool_input: { command: 'ls', dangerouslyDisableSandbox: true } })
+  expect(r.out).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: 'router unreachable: no unsandboxed commands' })
+  expect(r.ms).toBeLessThan(2500)
+  // the router is back: the one try reaches it, its decision, and the breaker closes
+  router = startRouter()
+  await until(() => existsSync(join(state, 'router.sock')))
+  r = await hook('pre', { tool_name: 'ListAgents', tool_input: {} })
+  expect(r.out).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('power 以下的角色不能使用 ListAgents') })
+  expect(readReach(file)).toMatchObject({ down_since: null })
+  expect(readReach(file).last_ok).toBeGreaterThan(Date.now() - 10_000)
+}, 30000)

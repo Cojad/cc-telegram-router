@@ -74,7 +74,7 @@ router 可以裝在任何位置, 程式不假設固定路徑:
 
 router 重啟 (`systemctl restart`, `/router restart`, 部署) 時 worker 不跟著重啟, 但有一段空窗. 2026-10-17 實測 (3 個 worker 在線): 收到 SIGTERM 後約 0.69 秒 worker 斷線, 0.85 秒新 router 起來, 1.19 秒所有 worker 的 plugin 都重新連上.
 
-- **router 程序連不上** (約 0 到 0.85 秒): worker 的 PreToolUse 與 SubagentStart hook 照時間表重試 (第 0, 3, 8, 15, 30, 45 秒), 一般重啟在第 3 秒那次就拿到 router 的正常判斷, 那個工具呼叫因此慢約 3 秒. 其他進度事件只送一次, 空窗裡的那幾則進度會漏掉. 45 秒內都連不上 (router 起不來) 才落回「放行, 但不准跳出 sandbox」, 而且每個工具呼叫都要等滿 45 秒.
+- **router 程序連不上** (約 0 到 0.85 秒): worker 的 PreToolUse 與 SubagentStart hook 照時間表重試 (第 0, 3, 8, 15, 30, 45 秒), 一般重啟在第 3 秒那次就拿到 router 的正常判斷, 那個工具呼叫因此慢約 3 秒. 其他進度事件只送一次, 空窗裡的那幾則進度會漏掉. 45 秒內都連不上 (router 起不來) 才落回「放行, 但不准跳出 sandbox」, 而且每個工具呼叫都要等滿 45 秒; 從第一次連不到起超過 3 分鐘仍沒有任何一次連上時改成每個請求只試一次就落回 (斷路), router 回來後第一次連上就恢復. 斷路的狀態檔在 `$XDG_RUNTIME_DIR/cc-telegram-router/` (沒有時 `~/.cache/cc-telegram-router/`), 刪掉就回到正常的重試.
 - **plugin 還沒重新連上** (約 0.85 到 1.19 秒): SendMessage 給這個對話自己的 subagent 會等 plugin 打招呼, 連上就立刻判斷放行, 不會被當成跨 session 擋下.
 - 細節與 log 格式見 [權限, 提權與審核](permissions.md#router-連不到時). SubagentStart 的 hook 逾時是 60 秒 (原本 5 秒) 才容得下重試, 改的是 worker 的 settings, 已在跑的 worker 要輪替 (`/router session rotate`) 後才生效; hook 執行檔 (`<stateDir>/hooks/cc-hook`) 重新編譯後下一次呼叫就生效.
 
