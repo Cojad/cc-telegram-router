@@ -38,6 +38,8 @@ export type Person = { uid: string; name: string | null; username: string | null
 /** /router perm overrides on top of a conversation's role template. */
 export type OverrideKind = 'tool-allow' | 'tool-deny' | 'path-read' | 'path-write' | 'net' | 'mcp' | 'send' | 'pkg'
 export type Override = { conv: string; kind: OverrideKind; value: string }
+/** The kinds a user's own overrides take (/router perm user): the ones that go into a worker's settings. */
+export type UserOverrideKind = 'tool-allow' | 'tool-deny' | 'path-read' | 'path-write' | 'net' | 'mcp'
 
 /** Cross-conversation send requests (plan 03 Grants). */
 export type Grant = { id: number; from_conv: string; target: string; mode: 'owner' | 'target'; reason: string | null; status: 'pending' | 'approved' | 'denied'; created_at: string; decided_by: string | null; decided_at: string | null }
@@ -79,7 +81,7 @@ export type Elevation = {
 /** What an approved request granted (router/authz.ts), so it can be revoked. */
 export type ApprovalGrant = { id: number; kind: string; ref: number; conv: string; choice: string; overrides: string; status: 'active' | 'revoked'; revoked_by: string | null }
 
-export type ElevLogKind = 'blocked' | 'request' | 'approved' | 'denied' | 'expired'
+export type ElevLogKind = 'blocked' | 'request' | 'approved' | 'denied' | 'expired' | 'auto'
 
 /** Conversation secrets (router/secrets.ts): value is sealed (AES-256-GCM),
  *  allowed is a JSON list of Bot API methods or URL paths ("*" = all). */
@@ -203,6 +205,11 @@ export interface RouterDb {
   addOverride(o: Override): boolean
   removeOverride(conv: string, kinds: OverrideKind[], value: string): number
   clearOverrides(conv: string): number
+  /** A user's own overrides (/router perm user, docs/permissions.md 使用者覆寫); conv is "user:<uid>". */
+  listUserOverrides(uid: string): Override[]
+  addUserOverride(uid: string, kind: UserOverrideKind, value: string): boolean
+  removeUserOverride(uid: string, kinds: UserOverrideKind[], value: string): number
+  clearUserOverrides(uid: string): number
   addGrant(g: Pick<Grant, 'from_conv' | 'target' | 'mode' | 'reason'>): number
   getGrant(id: number): Grant | null
   decideGrant(id: number, status: 'approved' | 'denied', by: string): boolean
@@ -340,6 +347,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
     );
     CREATE INDEX IF NOT EXISTS people_username ON people (lower(username));
     CREATE TABLE IF NOT EXISTS overrides (conv TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (conv, kind, value));
+    CREATE TABLE IF NOT EXISTS user_overrides (uid TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (uid, kind, value));
     CREATE TABLE IF NOT EXISTS grants (
       id INTEGER PRIMARY KEY AUTOINCREMENT, from_conv TEXT NOT NULL, target TEXT NOT NULL, mode TEXT NOT NULL,
       reason TEXT, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_by TEXT, decided_at TEXT
@@ -617,6 +625,14 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
     getGrant: id => (db.prepare('SELECT * FROM grants WHERE id = ?').get(id) as Grant | null) ?? null,
     decideGrant: (id, status, by) => db.prepare("UPDATE grants SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'").run(status, by, now(), id).changes > 0,
     clearOverrides: conv => qOvClear.run(conv).changes,
+    listUserOverrides: uid => (db.prepare('SELECT kind, value FROM user_overrides WHERE uid = ? ORDER BY kind, value').all(uid) as Array<{ kind: OverrideKind; value: string }>).map(o => ({ conv: `user:${uid}`, ...o })),
+    addUserOverride: (uid, kind, value) => db.prepare('INSERT OR IGNORE INTO user_overrides (uid, kind, value, created_at) VALUES (?, ?, ?, ?)').run(uid, kind, value, now()).changes > 0,
+    removeUserOverride(uid, kinds, value) {
+      let n = 0
+      for (const k of kinds) n += db.prepare('DELETE FROM user_overrides WHERE uid = ? AND kind = ? AND value = ?').run(uid, k, value).changes
+      return n
+    },
+    clearUserOverrides: uid => db.prepare('DELETE FROM user_overrides WHERE uid = ?').run(uid).changes,
     setRotate: (key, on) => { qRotSet.run(on ? 1 : 0, key) },
     rotatePending: () => convs(qRotAll.all() as Conversation[]),
     approveSkill: (dir, skill, hash, by) => { db.prepare('INSERT OR REPLACE INTO skill_approvals (dir, skill, hash, approved_by, at) VALUES (?, ?, ?, ?, ?)').run(dir, skill, hash, by, now()) },

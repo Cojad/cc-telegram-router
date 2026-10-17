@@ -239,6 +239,9 @@ export function permanentRule(settings: any, call: Call, folder: string, lay: (s
 // sessions on the machine, schedules, remote runs, desktop notices). The
 // role templates do not mention them, so checkCall lets them through; the
 // router refuses them for power and below and offers elevation, once only.
+// A settings allow rule naming the tool alone (a role template, or a
+// /router perm tool allow ListAgents) opens it below admin; a deny rule
+// naming it closes it for every role.
 export const RISKY_TOOLS = new Set(['ListAgents', 'RemoteTrigger', 'CronCreate', 'CronDelete', 'ScheduleWakeup', 'PushNotification'])
 /** Lowest role that may use the high-risk tools (and SendMessage to other sessions) without elevation. */
 export const RISKY_MIN = 'admin'
@@ -247,10 +250,15 @@ export const RISKY_MIN = 'admin'
 export const sendTarget = (call: Call) => String(call.tool_input?.to ?? call.tool_input?.recipient ?? '').trim()
 
 /** Is this call refused for role by the high-risk rule? isOwn: the SendMessage
- *  recipient is one of the conversation's own subagents (elevation.ts decides). */
-export function riskyRefusal(call: Call, role: string, isOwn: boolean): string | null {
-  if (rank(role) >= RANK[RISKY_MIN]!) return null
-  if (RISKY_TOOLS.has(call.tool_name)) return `power 以下的角色不能使用 ${call.tool_name}`
-  if (call.tool_name === 'SendMessage' && !isOwn) return `power 以下的角色不能傳訊給其他 session (收件對象 ${sendTarget(call).slice(0, 60) || '(空白)'} 不是這個對話自己的 subagent)`
+ *  recipient is one of the conversation's own subagents (elevation.ts decides).
+ *  settings: the role's permission settings, whose allow / deny rules naming the tool decide first. */
+export function riskyRefusal(call: Call, role: string, isOwn: boolean, settings?: any): string | null {
+  const tool = call.tool_name
+  if (!RISKY_TOOLS.has(tool) && tool !== 'SendMessage') return null
+  const named = (k: 'allow' | 'deny') => ((settings?.permissions?.[k] ?? []) as string[]).includes(tool)
+  if (named('deny')) return `${role} 禁止 ${tool}`
+  if (rank(role) >= RANK[RISKY_MIN]! || named('allow')) return null
+  if (RISKY_TOOLS.has(tool)) return `power 以下的角色不能使用 ${tool}`
+  if (!isOwn) return `power 以下的角色不能傳訊給其他 session (收件對象 ${sendTarget(call).slice(0, 60) || '(空白)'} 不是這個對話自己的 subagent)`
   return null
 }

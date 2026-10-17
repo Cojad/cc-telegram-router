@@ -27,7 +27,9 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 ## 權限不足與提權
 
 - 每個工具呼叫都會先由 router 依對話角色檢查; 越權就擋下, worker 會改用不越權的方法, 做不到時告訴你並問要不要向 bot owner 申請.
-- **你的角色高於這個對話時**: 被擋的同時, router 會在對話裡貼出「✅ 允許一次 / ♾️ 永久允許 / ❌ 拒絕」, 120 秒沒人按視為拒絕. 按下的人角色要高於對話, 而且被擋的動作在他的角色下允許; 之後 worker 開的第一個 subagent 以按的人的角色執行. 永久允許會把這類動作加進對話的權限覆寫 (訊息裡會寫明範圍, 例如「執行 python3 開頭的指令」「讀取 /srv/data 底下的檔案」); 跳出 sandbox 與重導向寫檔不能永久允許. 在 worker 終端機直接打字的那一輪不算任何人的訊息, 只看對話角色, 不會在對話裡詢問.
+- **這一輪的發話者**: 從上一輪結束以來送進來的所有訊息的人 (一輪進行中插進來的也算), 取角色最低的那位. 一般成員與 admin 的訊息併成同一輪時, 這一輪只能做一般成員能做的事. 只有表情回應, 或在 worker 終端機直接打字的那一輪, 不算任何人的訊息, 只看對話角色; router 剛重啟時, 已經在跑的 worker 要等它這一輪結束才開始算.
+- **高風險工具自動提權**: ListAgents, RemoteTrigger, 排程 (CronCreate, ScheduleWakeup), PushNotification, 傳訊給其他 session (SendMessage) 被擋時, 若這一輪每個發話者都有權限 (用他的角色加他的使用者覆寫重算), 直接放行, 不跳按鈕, 不用人按; 照樣記在提權紀錄 (「⚡ 自動提權」, 寫明發起者, 以什麼角色, 工具與收件對象).
+- **你的角色高於這個對話時** (這一輪的發話者都要高於對話): 其他被擋的動作 (路徑, 網路, 跳出 sandbox...) router 會在對話裡貼出「✅ 允許一次 / ♾️ 永久允許 / ❌ 拒絕」, 120 秒沒人按視為拒絕. 按下的人角色要高於對話, 而且被擋的動作在他的角色下允許; 之後 worker 開的第一個 subagent 以按的人的角色執行. 永久允許會把這類動作加進對話的權限覆寫 (訊息裡會寫明範圍, 例如「執行 python3 開頭的指令」「讀取 /srv/data 底下的檔案」); 跳出 sandbox 與重導向寫檔不能永久允許.
 - **向 owner 申請**: 你同意後 worker 會呼叫 request_elevation, 申請送到審核群組 (或 owner 私訊), owner 或 admin 決定.
 - 所有被擋下的動作, 提權申請與結果都記在提權紀錄 (審核群組的「📜 提權紀錄」話題, 附原申請的連結).
 
@@ -111,6 +113,7 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 | `/router session restart\|stop [chat_id]` | 重啟或停止某個對話的 worker |
 | `/router session rotate [chat_id\|all]` | 標記 worker 等待輪替: 閒置的一分鐘內停掉, 忙碌的等它閒置; 下一則訊息會用新的程式與設定叫醒. 更新 plugin 或設定後用 |
 | `/router perm [chat_id] show \| role <角色> \| tool allow\|deny\|rm <規則> \| path read\|write\|rm <路徑> \| net allow\|rm <網域> \| mcp allow\|rm <名稱> \| send allow\|rm <chat_id> \| pkg allow\|rm <pypi\|npm:名稱> \| reset` | 調整對話的角色與權限覆寫, 回覆會列出變更; worker 閒置時重啟套用. 私訊的 `role` 等同 `/router role` (改那位使用者的角色) |
+| `/router perm user <uid\|@username> show \| tool\|path\|net\|mcp ... \| reset` | 掛在使用者身上的權限覆寫 (語法同上, 沒有 send, pkg): 他發起的一輪在任何對話重算高風險工具時套用, 他自己的私訊 settings 也套用 (worker 閒置時重啟); 群組裡不改變 worker 的 sandbox |
 | `/router setup [group\|skip\|persona]` | 審核群組與 bot 初次設定 (只限 owner) |
 | `/router cred list \| add <名稱> <token> [方法...] \| allow\|disallow <名稱> <方法...> \| roles <名稱> <角色,...> \| rm <名稱>` | 跨 bot 技能用的憑證; add 只能在自己和 bot 的私訊下, 訊息會被刪除 |
 | `/router botapi <憑證> <方法> <JSON> [--file 欄位=/路徑]` | owner 直接用憑證呼叫 Bot API (終端機用 `cc-telegram-router cli botapi ...`) |

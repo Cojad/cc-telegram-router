@@ -163,13 +163,14 @@ test.skipIf(!LIVE)('skills: admin, power and user cannot write .claude/skills in
 // a router stand-in in this process (ipc + elevation + tool_history, wired as
 // router/main.ts does). Checks which tools reach PreToolUse at all and that
 // the router refuses them; a tool this claude build does not offer is printed,
-// not failed (the run says which). The first runs as an owner's Telegram turn,
-// so the router asks for elevation in the chat (once).
+// not failed (the run says which). A plain user turn: nothing is asked in the
+// chat. An owner's Telegram turn makes ListAgents at once (automatic elevation,
+// autoelev.test.ts); only that read-only tool is tried that way.
 
-type HookRun = { pre: string[]; events: any[]; rows: Array<{ tool: string; decision: string; target: string | null; reason: string | null }>; asked: string[]; text: string; denied: string[] }
+type HookRun = { pre: string[]; events: any[]; rows: Array<{ tool: string; decision: string; target: string | null; reason: string | null; eff_role: string | null }>; asked: string[]; text: string; denied: string[] }
 
 /** One claude -p in a user conversation with its hooks, answered by a router stand-in.
- *  ownerTurn: the turn was started by the owner's Telegram message (elevation is asked in the chat). */
+ *  ownerTurn: the turn was started by the owner's Telegram message (high-risk calls pass at once). */
 async function withHooks(name: string, prompt: string, ownerTurn = false): Promise<HookRun> {
   const home = join(root, name)
   mkdirSync(join(home, '.router'), { recursive: true })
@@ -190,8 +191,9 @@ async function withHooks(name: string, prompt: string, ownerTurn = false): Promi
     onHook: async (_p, ev: any) => {
       events.push(ev)
       const d = await e.onHook(conv, ev)
-      if (ev.event === 'pre') { pre.push(ev.tool_name); history.record(hookUse(conv, ev, d, e.boundRole(conv.key, ev.agent_id))) }
-      return d
+      const { effRole, ...out } = d
+      if (ev.event === 'pre') { pre.push(ev.tool_name); history.record(hookUse(conv, ev, d, effRole ?? e.boundRole(conv.key, ev.agent_id))) }
+      return out
     } })
   mkdirSync(join(home, 'hooks'))
   writeFileSync(join(home, 'hooks', 'cc-hook'), `#!/bin/sh\nexec bun ${join(import.meta.dir, '..', '..', 'hooks', 'hook.ts')} "$@"\n`)
@@ -212,12 +214,12 @@ async function withHooks(name: string, prompt: string, ownerTurn = false): Promi
   const r = Array.isArray(j) ? j.find((x: any) => x.type === 'result') : j
   db.close()
   const ro = new Database(join(home, '.router', 'router.db'), { readonly: true })
-  const rows = ro.query('SELECT tool, decision, target, reason FROM tool_history ORDER BY id').all() as HookRun['rows']
+  const rows = ro.query('SELECT tool, decision, target, reason, eff_role FROM tool_history ORDER BY id').all() as HookRun['rows']
   ro.close()
   return { pre, events, rows, asked, text: String(r?.result ?? ''), denied: (r?.permission_denials ?? []).map((d: any) => String(d.tool_name)) }
 }
 
-test.skipIf(!LIVE)('user: the high-risk tools reach PreToolUse and the router blocks each (CronDelete does not reach it); asked in the chat once; every call is in tool_history', async () => {
+test.skipIf(!LIVE)('user: the high-risk tools reach PreToolUse and the router blocks each (CronDelete does not reach it); nothing asked in the chat; every call is in tool_history', async () => {
   const tools = [...RISKY_TOOLS, 'SendMessage']
   const prompt = [
     '這是權限測試. 依序做下面每一步, 每一步不論成功, 失敗或被拒絕都直接做下一步, 不要重試, 不要改用其他方法:',
@@ -231,7 +233,7 @@ test.skipIf(!LIVE)('user: the high-risk tools reach PreToolUse and the router bl
     '8. 呼叫 RemoteTrigger, action 為 "list".',
     '最後一行輸出 MISSING: 後面接載入不到或沒有這個工具的名稱 (逗號分隔, 都有就寫 none).',
   ].join('\n')
-  const r = await withHooks('risky', prompt, true)
+  const r = await withHooks('risky', prompt)
   const report = tools.map(t => {
     const row = r.rows.find(x => x.tool === t && x.decision === 'deny')
     return `${t}: hook ${r.pre.includes(t) ? '有' : '沒有'}, router ${row ? '擋下' : '沒擋'}, claude 回報被拒 ${r.denied.includes(t) ? '是' : '否'}${row ? `\n  原因: ${row.reason}` : ''}`
@@ -246,13 +248,25 @@ test.skipIf(!LIVE)('user: the high-risk tools reach PreToolUse and the router bl
     expect([t, r.pre.includes(t)]).toEqual([t, true])
     expect([t, r.rows.some(x => x.tool === t && x.decision === 'deny')]).toEqual([t, true])
   }
-  // the owner started the turn: the first block asks in the chat, once only, the rest say it is waiting
-  if (r.rows.some(x => x.decision === 'deny')) {
-    expect(r.asked).toHaveLength(1)
-    expect(r.asked[0]).toContain('♾️ 不能永久允許: 高風險工具')
-  }
+  // a plain user turn: no one to ask in the chat
+  expect(r.asked).toEqual([])
   // ToolSearch itself is an ordinary tool call: recorded, not blocked
   expect(r.rows.some(x => x.tool === 'ToolSearch' && x.decision === 'allow')).toBe(true)
+}, 600_000)
+
+test.skipIf(!LIVE)('user: an owner\'s Telegram turn makes ListAgents at once (automatic elevation): the hook allows it, Claude Code runs it, tool_history has the owner\'s role', async () => {
+  const prompt = [
+    '這是權限測試. 依序做下面每一步, 每一步不論成功, 失敗或被拒絕都直接做下一步, 不要重試, 不要改用其他方法:',
+    '1. 用 ToolSearch 工具, query 為 "select:ListAgents", max_results 1.',
+    '2. 呼叫 ListAgents (不帶參數).',
+    '最後一行輸出 DONE.',
+  ].join('\n')
+  const r = await withHooks('auto', prompt, true)
+  console.log(`[role-live 自動提權]\ntool_history: ${r.rows.map(x => `${x.tool} ${x.decision} ${x.eff_role ?? '-'} ${x.reason ?? ''}`).join('; ')}\nclaude 回報被拒: ${r.denied.join(', ') || '(無)'}\n對話裡的提權詢問: ${r.asked.length} 則`)
+  const row = r.rows.find(x => x.tool === 'ListAgents')
+  expect(row).toMatchObject({ decision: 'allow', eff_role: 'owner', reason: '自動提權 (發起者 1 [owner]), 以 owner 角色執行' })
+  expect(r.denied).not.toContain('ListAgents')
+  expect(r.asked).toEqual([])
 }, 600_000)
 
 test.skipIf(!LIVE)('user: SendMessage to its own named subagent passes the router, to another name is blocked', async () => {

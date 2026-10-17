@@ -5,14 +5,22 @@
 //      Over the line: refused, and the worker is told to find a way within
 //      its permissions, or else tell the person it cannot continue and ask
 //      whether to request permission from the bot owner (request_elevation).
-//   2. If the person whose message started this turn has a higher role than
-//      the conversation (the delivery carries sender_role and elevated), the
-//      router also asks right there in the chat: 「提權執行」 or 「拒絕」,
-//      refused by default after 120 seconds (passive request). A turn typed
-//      in the worker's terminal (its prompt hook says no Telegram message)
-//      has no sender: only the conversation's role counts and nothing is
-//      asked in the chat, until the next Telegram message starts a turn; a
-//      message delivered during a terminal turn waits for its own turn.
+//   2. If every person in this turn has a higher role than the conversation
+//      (each delivery carries sender_role and elevated), the router also asks
+//      right there in the chat: 「提權執行」 or 「拒絕」, refused by default
+//      after 120 seconds (passive request). The turn's people: everyone whose
+//      message was delivered to the worker since its last Stop, including
+//      messages that come in while the turn runs (Claude Code may read them
+//      in this turn or start the next one with them: they count for both);
+//      the lowest role among them is what the turn may do (柯姊 2026-10-17:
+//      a user's message and an admin's, read in one turn, are not the
+//      admin's turn). A turn typed in the worker's terminal (its prompt hook
+//      says no Telegram message) or started by message reactions alone has
+//      no sender: only the conversation's role counts and nothing is asked
+//      in the chat; messages delivered meanwhile wait for their own turn.
+//      After the router starts, a worker that was already running may be in
+//      the middle of a turn whose messages this router never saw: its turns
+//      have no sender until its next Stop (unknownTurns).
 //   3. The prompt offers 允許一次 / 永久允許 / 拒絕. Whoever presses must have
 //      a role above the conversation's that allows the blocked call; the
 //      elevation then runs with *their* role, bound to the next subagent the
@@ -24,6 +32,15 @@
 //      elevated, otherwise at the approvals place for owner/admin.
 // Everything blocked, every request and every outcome goes to the
 // elevation log: router.db, plus the 提權紀錄 topic of the approvals group.
+//
+// Automatic elevation (柯姊 2026-10-17): a high-risk call (below) refused
+// for the conversation's role passes at once, without a subagent or a
+// button, when every person in the turn may make it: their role's settings
+// for this conversation with their own overrides laid on (/router perm user),
+// checked like the conversation's own (checkCall, riskyRefusal, extraCheck).
+// It runs with the lowest of their roles and is logged like any elevation.
+// Only these tools: the hook alone decides them. A blocked path, domain or
+// leaving the sandbox still goes through the subagent elevation above.
 //
 // High-risk tools (permcheck.riskyRefusal, 柯姊 2026-10-17): ListAgents,
 // RemoteTrigger, CronCreate, CronDelete, ScheduleWakeup, PushNotification,
@@ -54,18 +71,25 @@ import { applyOverrides } from './settings'
 import { logKind, type Authz } from './authz'
 import { inParens } from './context'
 
-export type HookDecision = { decision?: 'allow' | 'deny'; reason?: string }
+/** effRole: the role the call ran with when not the conversation's (tool_history 有效角色); not sent to the hook. */
+export type HookDecision = { decision?: 'allow' | 'deny'; reason?: string; effRole?: string }
+
+/** When a process started (/proc/<pid>/stat starttime, clock ticks since boot); null when it cannot be read. */
+function procStart(pid: number): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    const start = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19]
+    return start && /^\d+$/.test(start) ? Number(start) : null
+  } catch { return null }
+}
 
 /** Who a worker process is: its session, its plugin's pid and when that
  *  process started (/proc/<pid>/stat starttime: a pid used again later is
  *  another process). null when the start time cannot be read (no /proc, the
  *  process gone): that worker cannot be told apart, its own subagents never count. */
 export function workerKey(session: string | null | undefined, pid: number): string | null {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
-    const start = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19]
-    return start && /^\d+$/.test(start) ? `${session || '?'}:${pid}:${start}` : null
-  } catch { return null }
+  const start = procStart(pid)
+  return start == null ? null : `${session || '?'}:${pid}:${start}`
 }
 
 /** A tool call in full for the 執行授權 log (only the fields the hook forwards). */
@@ -92,6 +116,21 @@ export interface ElevationDeps {
   extraCheck?(conv: Conversation, call: Call, role: string): string | null
   askTimeoutMs?: number
   grantTtlMs?: number
+  /** The router just started: a worker already running may be mid-turn, so its turns have no sender until its next Stop (main.ts sets it). */
+  unknownTurns?: boolean
+}
+
+/** A worker's current turn: who it comes from. */
+type Turn = {
+  /** everyone whose message was delivered since the worker's last Stop */
+  senders: Set<string>
+  /** of those, delivered while the turn ran: they count for the next turn too */
+  during: Set<string>
+  running: boolean
+  /** started by nobody: typed in the terminal, or message reactions alone */
+  nobody: boolean
+  /** the worker may have been mid-turn when this router started */
+  unknown: boolean
 }
 
 type Grant = { id: number; role: string; by: string; until: number }
@@ -111,7 +150,10 @@ export function createElevation(deps: ElevationDeps) {
   const { db } = deps
   const askTimeout = deps.askTimeoutMs ?? 120_000
   const ttl = deps.grantTtlMs ?? 600_000
-  const lastSender = new Map<string, string>()
+  const turns = new Map<string, Turn>()
+  const freshTurn = (unknown: boolean): Turn => ({ senders: new Set(), during: new Set(), running: false, nobody: false, unknown })
+  const turnOf = (conv: string) => { let t = turns.get(conv); if (!t) turns.set(conv, t = freshTurn(!!deps.unknownTurns)); return t }
+  const routerStart = procStart(process.pid)
   /** conversations whose current turn was typed in the terminal (prompt hook, telegram false) */
   const terminalTurn = new Set<string>()
   /** approved, waiting for the worker's next subagent */
@@ -150,13 +192,34 @@ export function createElevation(deps: ElevationDeps) {
     try { return !!w && db.isOwnAgent(conv, w, to) } catch { return false }
   }
 
-  const senderOf = (conv: Conversation) => terminalTurn.has(conv.key) ? null : lastSender.get(conv.key) ?? null
+  /** Everyone in the conversation's current turn; null when nobody started it or it is not known. */
+  const turnSenders = (conv: Conversation): string[] | null => {
+    const t = turnOf(conv.key)
+    return terminalTurn.has(conv.key) || t.nobody || t.unknown ? null : [...t.senders]
+  }
+  /** The person in this turn with the lowest role: the turn may do what they may. */
+  const senderOf = (conv: Conversation): string | null => {
+    const s = turnSenders(conv)
+    return s?.length ? s.reduce((a, b) => rank(deps.roleOf(b)) < rank(deps.roleOf(a)) ? b : a) : null
+  }
   /** Would role be allowed this call: its permission settings, then extraCheck. */
-  const allowedAs = (conv: Conversation, role: string, call: Call, agent?: string) => {
-    const c = checkCall(deps.settingsAs(conv, role), call, conv.folder, role)
+  const allowedAs = (conv: Conversation, role: string, call: Call, agent?: string, settings: any = deps.settingsAs(conv, role)) => {
+    const c = checkCall(settings, call, conv.folder, role)
     if (!c.ok) return c
-    const why = riskyRefusal(call, role, isOwnTarget(conv.key, call, agent)) ?? deps.extraCheck?.(conv, call, role)
+    const why = riskyRefusal(call, role, isOwnTarget(conv.key, call, agent), settings) ?? deps.extraCheck?.(conv, call, role)
     return why ? { ok: false as const, why } : c
+  }
+  /** Would this person be allowed this call here: their role, with their own overrides laid on (/router perm user). */
+  const allowedFor = (conv: Conversation, uid: string, call: Call, agent?: string) => {
+    const role = deps.roleOf(uid)
+    const own = db.listUserOverrides(uid)
+    return allowedAs(conv, role, call, agent, own.length ? applyOverrides(deps.settingsAs(conv, role), own) : undefined)
+  }
+  /** Everyone in this turn may make this high-risk call: the role it runs with (the lowest of theirs); else null. */
+  const autoRole = (conv: Conversation, call: Call, agent?: string): string | null => {
+    const s = turnSenders(conv)
+    if (!isRisky(call) || !s?.length || !s.every(u => allowedFor(conv, u, call, agent).ok)) return null
+    return deps.roleOf(senderOf(conv)!)
   }
   const elevatedSender = (conv: Conversation) => {
     const s = senderOf(conv)
@@ -178,6 +241,8 @@ export function createElevation(deps: ElevationDeps) {
   }
 
   const who = (uid: string | null) => uid ? `${deps.label(uid)} [${deps.roleOf(uid)}]` : '(不明)'
+  /** Everyone in this turn, for the log. */
+  const whoTurn = (conv: Conversation) => turnSenders(conv)?.map(who).join(', ') || who(null)
 
   /** What 永久允許 would add for this call in this conversation. */
   function ruleFor(conv: Conversation, call: Call | null): Rule | { none: string } {
@@ -203,7 +268,7 @@ export function createElevation(deps: ElevationDeps) {
     const rule = ruleFor(conv, call)
     const text = [
       `🔐 提權請求 #${id}${kind === 'active' ? ' (主動申請)' : ''}`,
-      `${who(sender)} 在 ${conv.key}${conv.title ? ` (${conv.title})` : ''} 的請求需要超過本對話角色 (${conv.role}) 的權限:`,
+      `${whoTurn(conv)} 在 ${conv.key}${conv.title ? ` (${conv.title})` : ''} 的請求需要超過本對話角色 (${conv.role}) 的權限:`,
       action,
       `原因: ${reason || '(未說明)'}`,
       `✅ 允許一次: 下一個 subagent 以按下的人的角色執行這一次.`,
@@ -220,7 +285,7 @@ export function createElevation(deps: ElevationDeps) {
     } else {
       ok = (await postApproval(deps.approvals, conv.bot, 'elev', id, text, [], 'overrides' in rule)).length > 0
     }
-    await record(conv, 'request', `🙋 ${kind === 'active' ? '主動' : '被動'}提權請求 #${id} ${conv.key}: ${action}\n發起者 ${who(sender)}, 原因: ${reason || '(未說明)'}\n${linkOf(id)}`, id)
+    await record(conv, 'request', `🙋 ${kind === 'active' ? '主動' : '被動'}提權請求 #${id} ${conv.key}: ${action}\n發起者 ${whoTurn(conv)}, 原因: ${reason || '(未說明)'}\n${linkOf(id)}`, id)
     return { id, where: ok ? (inChat ? 'chat' : 'owner') : 'none' }
   }
 
@@ -258,8 +323,7 @@ export function createElevation(deps: ElevationDeps) {
 
   async function blocked(conv: Conversation, call: Call, why: string, agent: string | undefined): Promise<HookDecision> {
     const action = describeCall(call)
-    const sender = senderOf(conv)
-    await record(conv, 'blocked', `⛔ ${conv.key} 被擋: ${action}\n${why}${agent ? ` (subagent ${agent})` : ''}\n發起者 ${who(sender)}`, null)
+    await record(conv, 'blocked', `⛔ ${conv.key} 被擋: ${action}\n${why}${agent ? ` (subagent ${agent})` : ''}\n發起者 ${whoTurn(conv)}`, null)
     const guide = `權限不足 (本對話角色 ${conv.role}): ${why}.`
     const elevated = elevatedSender(conv)
     if (elevated && allowedAs(conv, deps.roleOf(elevated), call, agent).ok) {
@@ -273,24 +337,48 @@ export function createElevation(deps: ElevationDeps) {
     return { decision: 'deny', reason: `${guide} 請改用不越權的方法完成. 如果在不越權的情況下無法合理完成, 告訴對方這個請求無法繼續, 並問對方是否要向 bot owner 申請權限; 對方同意後呼叫 request_elevation 說明原因.` }
   }
 
+  /** A high-risk call every person in the turn may make: let through, logged (no button, nobody presses anything). */
+  function autoAllow(conv: Conversation, call: Call, agent: string | undefined, role: string): HookDecision {
+    const by = whoTurn(conv)
+    const to = call.tool_name === 'SendMessage' ? `, 收件對象 ${sendTarget(call).slice(0, 60) || '(空白)'}` : ''
+    void record(conv, 'auto', `⚡ 自動提權 ${conv.key}${conv.title ? ` (${conv.title})` : ''}: ${describeCall(call)}${to}${agent ? ` (subagent ${agent})` : ''}\n發起者 ${by}: 這一輪的發話者都有權限, 以 ${role} 角色執行 (不用按鈕)`, null).catch(e => deps.log?.(`elevation ${conv.key}: ${e}`))
+    return { decision: 'allow', reason: `自動提權 (發起者 ${by}), 以 ${role} 角色執行`, effRole: role }
+  }
+
   return {
-    /** A delivery: remember who started the turn; meta to add to the message. */
+    /** A delivery: its sender is in the worker's current turn; meta to add to the message.
+     *  Reactions alone (router/reactions.ts) carry no sender and add nobody. */
     onDeliver(conv: Conversation, senderUid: string | undefined): Record<string, string> {
       if (!senderUid) return {}
-      lastSender.set(conv.key, senderUid)
+      const t = turnOf(conv.key)
+      t.senders.add(senderUid)
+      if (t.running || t.unknown) t.during.add(senderUid)
       const role = deps.roleOf(senderUid)
       return { sender_role: role, ...(rank(role) > rank(conv.role) ? { elevated: 'true' } : {}) }
     },
-    /** A delivery started by nobody (reactions alone, router/reactions.ts): the turn has no sender, so no one's role can elevate it. */
-    forgetSender(convKey: string): void { lastSender.delete(convKey) },
 
     async onHook(conv: Conversation, ev: Record<string, any>): Promise<HookDecision> {
       const agent: string | undefined = ev.agent_id || undefined
       switch (ev.event) {
         // a turn starts: from a Telegram message (its delivery named the sender) or typed in the terminal
-        case 'prompt':
+        // reactions alone (hooks/hook.ts): nobody started it
+        case 'prompt': {
           if (ev.telegram) terminalTurn.delete(conv.key); else terminalTurn.add(conv.key)
+          const t = turnOf(conv.key)
+          t.running = true
+          t.during = new Set()
+          t.nobody = !ev.telegram || !!ev.reactions
           return {}
+        }
+        // the turn is over: only messages that came in while it ran can still be read in the next one
+        case 'stop': {
+          const t = turnOf(conv.key)
+          t.senders = t.during
+          t.during = new Set()
+          t.running = false
+          t.unknown = false
+          return {}
+        }
         case 'subagent-start': {
           if (agent) {
             addOwn(conv.key, agent)
@@ -328,7 +416,10 @@ export function createElevation(deps: ElevationDeps) {
             if ([...bound.keys()].some(id => to.includes(id))) return { decision: 'deny', reason: '非提權的一輪不能指揮已提權的 subagent' }
           }
           const c = allowedAs(conv, conv.role, call, agent)
-          if (!c.ok) return blocked(conv, call, c.why, agent)
+          if (!c.ok) {
+            const role = autoRole(conv, call, agent)
+            return role ? autoAllow(conv, call, agent, role) : blocked(conv, call, c.why, agent)
+          }
           noteSpawn(conv.key, call)
           // passes only thanks to an approved override (永久允許 earlier): a use of it
           if (deps.authz) {
@@ -372,7 +463,7 @@ export function createElevation(deps: ElevationDeps) {
       const call = e.action.startsWith('{') ? JSON.parse(e.action) as Call : null
       if (p.choice !== 'deny' && call) {
         const c = checkCall(deps.settingsAs(conv, role), call, conv.folder, role)
-        if (!c.ok || riskyRefusal(call, role, false)) return `你的角色 (${role}) 也不允許這個動作`
+        if (!c.ok || riskyRefusal(call, role, false, deps.settingsAs(conv, role))) return `你的角色 (${role}) 也不允許這個動作`
       }
       let permanent: Rule | undefined
       if (p.choice === 'always') {
@@ -421,8 +512,10 @@ export function createElevation(deps: ElevationDeps) {
     note: (conv: Conversation, kind: ElevLogKind, text: string) => record(conv, kind, text, null),
 
     extraCheck: (conv: Conversation, call: Call, role: string): string | null => deps.extraCheck?.(conv, call, role) ?? null,
-    /** Who started the conversation's current turn; null for a turn typed in the terminal (event_raw goes by the conversation's role then). */
+    /** The person in the conversation's current turn with the lowest role; null when nobody started it (terminal, reactions alone) or it is not known (event_raw goes by the conversation's role then). */
     senderOf: (conv: Conversation): string | null => senderOf(conv),
+    /** Everyone in the conversation's current turn (tests, logs); null as for senderOf. */
+    turnSenders: (conv: Conversation): string[] | null => turnSenders(conv),
     /** The conversation's current turn was typed in the worker's terminal (no Telegram message). */
     terminalTurn: (convKey: string): boolean => terminalTurn.has(convKey),
 
@@ -439,7 +532,12 @@ export function createElevation(deps: ElevationDeps) {
     /** A worker's plugin said hello (worker: workerKey). Another worker process
      *  than the rows were kept for: those rows go, their subagents are gone. */
     workerConnected(convKey: string, worker: string): void {
-      if (workers.get(convKey) !== worker) spawning.delete(convKey)
+      if (workers.get(convKey) !== worker) {
+        spawning.delete(convKey)
+        // a process started after this router did: no turn of it was missed, and an earlier process's turn is gone with it
+        const start = Number(worker.split(':').pop())
+        if (routerStart != null && start > routerStart) turns.set(convKey, freshTurn(false))
+      }
       workers.set(convKey, worker)
       try {
         const n = db.dropOwnAgents(convKey, worker)

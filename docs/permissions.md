@@ -10,12 +10,19 @@
 
 - 使用者角色改變 (`/router role`, 對私訊下的 `/router perm ... role`, config `owners` 增減) 時, 他所有私訊的 settings 與 chat context 立刻重寫, worker 標記待輪替 (閒置時停掉, 下一則訊息用新角色叫醒, 跟 `/router session rotate` 同一套), 回覆會列出受影響的私訊.
 - `/router perm <私訊> role <角色>` 等同 `/router role <那位使用者> <角色>`: 同樣的權限檢查 (admin 不能設 owner, 不能異動 owner, config owner 要用 `/router config set owners`), 回覆會說明改成設定使用者角色. chat_id 對應不到使用者時拒絕, 提示改用 `/router role`.
-- 私訊的權限覆寫 (`/router perm <私訊> tool|path|net|mcp|send|pkg ...`) 照常保留, 疊在使用者角色的範本上; `reset` 只清覆寫.
+- 私訊的權限覆寫 (`/router perm <私訊> tool|path|net|mcp|send|pkg ...`) 照常保留, 疊在使用者角色的範本上; `reset` 只清覆寫. 那位使用者自己的[使用者覆寫](#使用者覆寫)也套用在他的私訊: 先疊使用者覆寫, 再疊私訊覆寫 (覆寫只會增加 allow, deny, 路徑與網域, 拒絕規則永遠優先, 順序不影響結果).
 - 遷移: 以前私訊可以有自己的角色. router 啟動時把每個私訊的 `conversations.role` 對齊使用者角色, 有變的記一行 log (`dm role <對話>: <舊> -> <新> (the user's role)`), chat context 版本加一, 並標記待輪替.
 
 ## 權限檢查與提權
 
-每個工具呼叫在 PreToolUse 由 hook 問 router, router 依對話角色的 settings 檢查 (`permcheck.ts`). 越權就擋下並告訴模型改用不越權的方法 (Claude Code 把太長的工具結果存在 `~/.claude/projects/<對話>/<session>/tool-results/`, 非 owner 角色都能讀自己對話的這些檔; 只有唯讀指令白名單的角色, 用 `>` `>>` 等重導向寫檔, 或 `sort -o`, `uniq 輸入 輸出` 這類用選項寫檔也算越權, 跟 Claude Code 一致; 比對白名單時指令依 `&&` `||` `|` `;` 與換行切段, 引號裡與跳脫的字元不算, 所以 `grep -E 'a|b'` 是一個指令); 發話者角色高於對話時, 直接在對話裡貼出「提權執行 / 拒絕」詢問 (120 秒未回應視為拒絕). 發話者綁在那一輪: 在 worker 終端機打的一輪 (prompt hook 沒有 Telegram 訊息) 沒有發話者, 只看對話角色, 不在對話裡詢問, 到下一則 Telegram 訊息開始的那一輪為止. 按下的人角色夠高才算數, 之後的第一個 subagent 以他的角色執行.
+每個工具呼叫在 PreToolUse 由 hook 問 router, router 依對話角色的 settings 檢查 (`permcheck.ts`). 越權就擋下並告訴模型改用不越權的方法 (Claude Code 把太長的工具結果存在 `~/.claude/projects/<對話>/<session>/tool-results/`, 非 owner 角色都能讀自己對話的這些檔; 只有唯讀指令白名單的角色, 用 `>` `>>` 等重導向寫檔, 或 `sort -o`, `uniq 輸入 輸出` 這類用選項寫檔也算越權, 跟 Claude Code 一致; 比對白名單時指令依 `&&` `||` `|` `;` 與換行切段, 引號裡與跳脫的字元不算, 所以 `grep -E 'a|b'` 是一個指令); 這一輪的發話者角色都高於對話時, 直接在對話裡貼出「提權執行 / 拒絕」詢問 (120 秒未回應視為拒絕). 按下的人角色夠高才算數, 之後的第一個 subagent 以他的角色執行. 高風險工具在發話者都有權限時不用詢問, 直接放行 (見[自動提權](#自動提權)).
+
+**這一輪的發話者** (`elevation.ts`): 自上一次 Stop 事件以來送進這個 worker 的所有訊息的發話者, 一輪進行中插進來的訊息也算; 判斷時取其中角色最低的人 (一般成員先說, admin 接著說, 兩則併成同一輪時, 這一輪只能做一般成員能做的事). 細節:
+
+- 一輪進行中送進來的訊息, Claude Code 可能在這一輪讀到, 也可能留到下一輪才讀, 所以兩輪都算它的發話者 (多算只會讓角色變低, 不會變高). Stop 之後只留這些訊息的發話者, 之前的清掉.
+- 只有表情回應摘要 (`kind=reactions`, 沒有 user_id) 的送入不算發話者; 只由它開始的一輪 (prompt hook 標記 reactions) 沒有發話者. 在 worker 終端機打的一輪 (prompt hook 沒有 Telegram 訊息) 也沒有發話者. 沒有發話者的一輪只看對話角色, 不詢問也不自動放行; 期間送進來的訊息留到下一輪.
+- router 啟動時已經在跑的 worker 可能正在一輪中間, router 沒看到這一輪送進去的訊息: 到這個 worker 下一次 Stop 之前都當成沒有發話者 (保守). worker plugin 從 router 啟動之後才開始的程序打招呼時 (輪替, 重開, 新 session), 沒有漏看的一輪, 立刻照常判斷; 換了程序時舊程序的發話者清掉, 還沒確認收到的訊息重送時會再算進來. 讀不到程序啟動時間 (沒有 `/proc`) 時一律等 Stop.
+- Stop 沒送到 (例如一輪被中斷) 時, 發話者會一直累積到下一次 Stop, 只會讓角色變低.
 
 ## 高風險工具
 
@@ -24,15 +31,32 @@
 - `ListAgents` (列出整台機器的 session), `RemoteTrigger`, `CronCreate`, `CronDelete`, `ScheduleWakeup`, `PushNotification`: 一律擋下, 原因是「power 以下的角色不能使用 <工具>」.
 - `SendMessage`: 收件對象不是這個對話自己的 subagent 就擋下, 原因是「power 以下的角色不能傳訊給其他 session (收件對象 <對象> 不是這個對話自己的 subagent)」. 自己的 subagent 是: SubagentStart 回報的 agent id; 以及 router 放行的 Agent 呼叫帶的 `name`, 要等它的 SubagentStart 到了才算 (依 `subagent_type` 對應, 同時開好幾個時依序配對). Agent 呼叫被擋或 subagent 沒有啟動時, 那個名字不算: 沒有同名的 subagent 時, 裸名稱會送到同名的其他 session. 背景 subagent 回報給 `"main"` 只在 subagent 發出時放行, 主 session 送 `"main"` 當成跨 session. `name [ref]`, `uds:`, `bridge:` 這類位址, 空白與不認得的名稱都當成跨 session. 這份名單依對話分開, 存在 `router.db` 的 `own_agents`, router 重啟後仍有效. 每一筆綁定開它的那個 worker 程序 (session id, worker plugin 的 pid 與該程序的啟動時間, 三者都相同才算同一個程序, pid 被系統重用時啟動時間不同; 讀不到啟動時間, 例如沒有 `/proc` 的系統, 那個 worker 的名單一律不算): 只有 router 啟動後 plugin 已經打過招呼 (hello) 的那個 worker 的項目才算數, plugin 沒連上時一律不算; 同一個對話的 plugin 從另一個程序打招呼 (輪替, 重開, 換新 session, 即使 session id 沒變) 時, 舊程序的項目整批刪除, 因為那些 subagent 已經不在, 留著同名項目會讓裸名稱送到同名的其他 session. SubagentStart 到的時候 plugin 沒連上, 這個 subagent 不記 (保守). 還在等 SubagentStart 的 Agent 呼叫名稱只放在記憶體, 不入庫: router 重啟或 worker 換程序時丟棄, 那個名稱就不算. SubagentStop 不移除項目: 已結束的 subagent 可以用 SendMessage 叫回來繼續, 移除會把對自己 subagent 的訊息當成跨 session. 每個 worker 最多保留最新 500 筆; 30 天前加入的項目, 以及已不存在的對話的項目, 在 router 啟動時與之後每天清掉.
 
-擋下的處理跟其他越權一樣走先擋再問: 發話者角色是 admin 以上就在對話裡詢問, 否則告訴模型可以主動申請 (request_elevation). 這些只能「允許一次」, 不提供永久允許 (申請訊息寫明「高風險工具 ... 只能一次一次允許」, 也沒有永久允許的按鈕); 按下的人也要是 admin 以上, power 按了會回「你的角色 (power) 也不允許這個動作」. 核准後下一個 subagent 以按下的人的角色執行, 可以使用這些工具與傳訊給其他 session, 主 session 照舊被擋.
+settings 的規則可以改變這條線: allow 規則**只寫工具名稱** (例如 `ListAgents`, `SendMessage`; 角色範本, `/router perm <對話> tool allow`, 或[使用者覆寫](#使用者覆寫)) 讓 power 以下也能用, `SendMessage` 是任何收件對象; deny 規則只寫工具名稱時所有角色都擋 (原因「<角色> 禁止 <工具>」). 帶括號的規則 (例如 `ListAgents(*)`) 不算.
+
+### 自動提權
+
+被擋的高風險工具呼叫 (上面六個與跨 session 的 `SendMessage`), 若**這一輪的每個發話者**都有權限做這個呼叫, router 在 hook 直接放行: 不開 subagent, 不跳按鈕, 不需要任何人按 (柯姊 2026-10-17). 「有權限」是用那位發話者的角色重算這個對話的 settings, 再疊上他自己的使用者覆寫, 照對話本身的檢查走一遍 (`checkCall`, `riskyRefusal`, 技能參數與憑證的角色限制); 所以角色範本開放某個工具給 power, 或某人被加了使用者覆寫, 自動生效. 放行時以這一輪最低的那個角色執行. 一輪裡有人權限不夠 (例如一般成員與 admin 的訊息併成一輪), 就不自動放行也不在對話裡詢問, 照「發話者不高於對話」處理: 告訴模型可以主動申請 (request_elevation, 送到審核群組).
+
+每次自動放行都照樣記錄: `elev_log` (種類 `auto`) 與審核群組「📜 提權紀錄」話題各一則「⚡ 自動提權 <對話>: <工具與參數>, 收件對象 <對象> (只有 SendMessage) (subagent <id>)」, 下一行寫「發起者 <每位發話者 [角色]>: 這一輪的發話者都有權限, 以 <角色> 角色執行 (不用按鈕)」; 工具呼叫紀錄的決定是 `allow`, 有效角色是放行的角色, 原因是「自動提權 (發起者 ...), 以 <角色> 角色執行」.
+
+只有 hook 能自己決定的這幾個工具會自動放行. 其他被擋的動作 (路徑, 網路, 跳出 sandbox, 技能參數與憑證) 照上面的 subagent 提權流程不變: 發話者角色都高於對話就在對話裡詢問, 否則告訴模型可以主動申請. 高風險工具因此不會再跳按鈕 (發話者夠高就自動放行, 不夠高也不會詢問), 只剩主動申請一途; 核准的申請只能「允許一次」, 不提供永久允許 (申請訊息寫明「高風險工具 ... 只能一次一次允許」, 也沒有永久允許的按鈕); 按下的人也要是 admin 以上 (或 settings 開放了這個工具), power 按了會回「你的角色 (power) 也不允許這個動作」. 核准後下一個 subagent 以按下的人的角色執行, 可以使用這些工具與傳訊給其他 session, 主 session 照舊被擋.
 
 實測 (Claude Code 2.1.302, role-live): 除了 `CronDelete` 都會觸發 PreToolUse 並被 router 擋下; **`CronDelete` 不觸發 PreToolUse**, 模型呼叫了就直接執行, router 看不到也擋不了, 也不會出現在工具呼叫紀錄. 它只能刪除同一個 session 自己用 `CronCreate` 建立的排程 (排程只存在該 session 的記憶體), 而 power 以下建立排程已經要提權, 所以影響限於刪掉提權後建立的排程. role-live 會檢查這件事, Claude Code 哪天開始送 hook 時測試會提醒.
 
 hook 連不到 router 時維持原狀 (只擋跳出 sandbox, 其他交給 worker 自己的設定), 所以 router 不在時這些工具不會被擋.
 
+## 使用者覆寫
+
+權限覆寫原本掛在對話上 (`/router perm <對話> ...`). 使用者覆寫掛在人身上 (`router.db` 的 `user_overrides`), 用 `/router perm user <uid|@username> show | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | reset` 設定 (指令見[部署與維運](operations.md#router-perm-user)). 權限檢查比照對話覆寫與 `/router role`: owner 與 admin 可以下, admin 不能異動 owner (查看可以). `send` 與 `pkg` 是 router 依對話把關的, 不能掛在使用者身上.
+
+生效範圍:
+
+- **他發起的一輪, 在任何對話**: [自動提權](#自動提權)重算他的權限時疊上去. 群組裡這只影響 hook 層的判斷 (高風險工具); 路徑與網域覆寫不會改變群組 worker 的 settings 與 sandbox, worker 照樣讀寫不到那些路徑, 連不到那些網域.
+- **他自己的私訊** (每隻 bot): 私訊角色就是使用者角色, 所以使用者覆寫寫進私訊的 settings (先疊使用者覆寫, 再疊私訊覆寫), `/router perm <私訊> show` 會另列一行「使用者覆寫」. 改了之後他所有私訊的 settings 立刻重寫, worker 標記待輪替 (閒置時停掉, 下一則訊息套用).
+
 ## 工具呼叫紀錄
 
-每個經過 PreToolUse 而由 hook 轉給 router 的工具呼叫, 在 `router.db` 的 `tool_history` 記一筆 (所有角色, 含 owner 對話), 用來觀察平常用到哪些工具, 目前不做白名單. 欄位: 時間, 對話, 對話角色, 有效角色 (已提權的 subagent 以較高角色執行時), 工具名稱, router 的決定 (`allow` 或 `deny`), 原因 (擋下時, 或提權放行時), 收件對象 (只有 SendMessage), 是否來自 subagent. 工具參數一律不存 (指令與檔案內容可能有密鑰), 原因與收件對象先遮蔽已知格式的密鑰再截斷 (160 與 80 字). `allow` 是 router 沒有擋, 之後 Claude Code 仍依 worker 自己的設定判斷.
+每個經過 PreToolUse 而由 hook 轉給 router 的工具呼叫, 在 `router.db` 的 `tool_history` 記一筆 (所有角色, 含 owner 對話), 用來觀察平常用到哪些工具, 目前不做白名單. 欄位: 時間, 對話, 對話角色, 有效角色 (已提權的 subagent 以較高角色執行時, 或自動提權放行時), 工具名稱, router 的決定 (`allow` 或 `deny`), 原因 (擋下時, 或提權放行時), 收件對象 (只有 SendMessage), 是否來自 subagent. 工具參數一律不存 (指令與檔案內容可能有密鑰), 原因與收件對象先遮蔽已知格式的密鑰再截斷 (160 與 80 字). `allow` 是 router 沒有擋, 之後 Claude Code 仍依 worker 自己的設定判斷.
 
 主 session 呼叫的 Telegram plugin 工具 (reply, react...) 不經 hook 轉給 router, 改在 router 執行時記錄, 決定是 `allow` 或 `error` (被拒或 API 失敗); 已提權的 subagent 呼叫時有效角色是提權的角色. 不在 router home 底下的 Claude Code session (例如 owner 自己的終端機, 沒有這個 hook) 不會有紀錄. 寫紀錄失敗只記 log, 不影響放行. 報表與保留期見 [部署與維運](operations.md#工具呼叫紀錄).
 

@@ -4,7 +4,7 @@
 // owner; bot token changes only in the owner's own DM.
 
 import type { Config } from './config'
-import type { Conversation, RouterDb, OverrideKind } from './db'
+import type { Conversation, RouterDb, OverrideKind, UserOverrideKind } from './db'
 import type { Access } from './telegram/policy'
 import type { MessageRecord } from './telegram/store'
 import { gmt8, maskTokens } from './context'
@@ -193,6 +193,7 @@ const HELP = [
   '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] | group rm <chat_id> | policy <pairing|allowlist|disabled>',
   '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒)',
   '/router perm [chat_id] show | role <角色> (私訊等同 /router role) | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
+  '/router perm user <uid|@username> show | tool|path|net|mcp ... | reset (掛在使用者身上的覆寫: 他發起的一輪重算高風險工具, 他的私訊也套用)',
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
   '/router skill list | approve <技能> | revoke <技能> (技能的特權動作: 核准後 user 與 power 對話也能執行, 憑證不外流)',
   '/router cred list | add <名稱> <token> [方法...] (owner 或 admin 的私訊) | allow|disallow <名稱> <方法...> | roles <名稱> <角色,...> | rm <名稱> | reload',
@@ -208,6 +209,19 @@ const HELP = [
   '/id [@username] (回覆某則訊息時查那則): uid, 訊息編號, 對話 id',
   '指定對話的 chat_id 也可以寫對話 key (例如 router-dm-123, /router chat 列表的第一欄); chat_id 預設指這隻 bot 的對話, 加 --bot <名稱> 指別隻 bot; 終端機會找所有 bot, 多隻都有時要加 --bot',
 ].join('\n')
+
+/** /router perm <what> <op> <value>: the override kind each op adds, and the kinds rm removes. */
+const PERM_KINDS: Record<string, { add: Record<string, OverrideKind>; rm: OverrideKind[] }> = {
+  tool: { add: { allow: 'tool-allow', deny: 'tool-deny' }, rm: ['tool-allow', 'tool-deny'] },
+  path: { add: { read: 'path-read', write: 'path-write' }, rm: ['path-read', 'path-write'] },
+  net: { add: { allow: 'net' }, rm: ['net'] },
+  mcp: { add: { allow: 'mcp' }, rm: ['mcp'] },
+  send: { add: { allow: 'send' }, rm: ['send'] },
+  pkg: { add: { allow: 'pkg' }, rm: ['pkg'] },
+}
+/** The ones a user's own overrides take (/router perm user): they go into settings; send and pkg are the router's, per conversation. */
+const USER_PERM = ['tool', 'path', 'net', 'mcp']
+const PERM_USER_USAGE = '用法: /router perm user <uid|@username> show | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | reset'
 
 const CONFIG_KEYS: Record<string, 'string' | 'number' | 'list'> = { model: 'string', autoCompactWindow: 'number', claudeBin: 'string', owners: 'list' }
 
@@ -438,6 +452,44 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     }
 
     case 'perm': {
+      // overrides on a person rather than a conversation (docs/permissions.md 使用者覆寫)
+      if (args[1] === 'user') {
+        const [ref, what, op, ...valueParts] = args.slice(2)
+        if (!ref) return done(PERM_USER_USAGE)
+        const uid = resolveUser(db, ref)
+        if (!uid) return done(`找不到 ${ref}: bot 還沒收過這個人的訊息, 或 username 打錯了`)
+        const value = valueParts.join(' ')
+        const label = personLabel(db, uid) === uid ? uid : `${personLabel(db, uid)} (${uid})`
+        const userRole = roleOf(deps, uid)
+        const dms = db.listConversations().filter(c => c.type === 'dm' && c.chat_id === uid)
+        const list = () => db.listUserOverrides(uid).map(o => `${o.kind} ${o.value}`).join(', ') || '(無)'
+        if (!what || what === 'show') return done([
+          `${label}: 角色 ${userRole}`,
+          `使用者覆寫: ${list()}`,
+          `生效: 他發起的一輪 (這一輪所有發話者都要有權限), 在任何對話用他的角色加這些覆寫重算高風險工具, 夠了就直接放行; 他的私訊${dms.length ? ` ${dms.map(c => c.key).join(', ')}` : ''} 的設定也套用. 群組裡路徑與網域覆寫不會改變 worker 的 sandbox.`,
+        ].join('\n'), { private: true })
+        if (role === 'admin' && userRole === 'owner') return deny('admin 不能異動 owner 的角色與權限')
+        const changed = (note: string) => {
+          for (const c of dms) {
+            deps.applyPermissions(c)
+            if (here?.key !== c.key) logs.push({ conv: c.key, text: `${who} 調整了這個私訊使用者的權限: ${note}` })
+          }
+          return done(`${label} ${note}\n使用者覆寫: ${list()}${dms.length ? `\n私訊 ${dms.map(c => c.key).join(', ')} 的 worker 閒置時會停掉, 下一則訊息套用新權限` : ''}`)
+        }
+        if (what === 'reset') return changed(`清掉 ${db.clearUserOverrides(uid)} 筆使用者覆寫`)
+        if (what === 'send' || what === 'pkg') return done(`${what} 是 router 依對話把關的, 只能掛在對話上: /router perm [chat_id] ${what} ...`)
+        const k = USER_PERM.includes(what) ? PERM_KINDS[what] : undefined
+        if (!k || !op || !value) return done(PERM_USER_USAGE)
+        if (what === 'path' && !value.startsWith('/')) return done('路徑要用絕對路徑, 例如 /srv/data/shared')
+        if (op === 'rm') {
+          if (!db.removeUserOverride(uid, k.rm as UserOverrideKind[], value)) return done(`${label} 沒有 ${what} ${value} 這筆使用者覆寫`)
+          return changed(`移除 ${what} ${value}`)
+        }
+        const kind = k.add[op]
+        if (!kind) return done(`${what} 只能用 ${[...Object.keys(k.add), 'rm'].join(', ')}`)
+        db.addUserOverride(uid, kind as UserOverrideKind, value)
+        return changed(`${what} ${op} ${value}`)
+      }
       const { conv, rest, error } = target(1)
       if (!conv) return done(error ?? '找不到這個對話 (它還沒有任何訊息進來過)')
       const [what, op, ...valueParts] = rest
@@ -454,6 +506,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
           `拒絕: ${(eff.permissions?.deny ?? []).join(', ') || '(無)'}`,
           ...(eff.sandbox ? [`sandbox 可讀: ${(fs.allowRead ?? []).join(', ') || '(無)'}; 可寫: ${(fs.allowWrite ?? []).join(', ') || '(資料夾本身)'}; 網域: ${(eff.sandbox.network?.allowedDomains ?? []).join(', ') || '(全擋)'}`] : []),
           `覆寫: ${ov.length ? ov.map(o => `${o.kind} ${o.value}`).join(', ') : '(無)'}`,
+          ...(c.type === 'dm' ? [`使用者覆寫 (/router perm user ${c.chat_id}): ${db.listUserOverrides(c.chat_id).map(o => `${o.kind} ${o.value}`).join(', ') || '(無)'}`] : []),
           `可跨對話送往: ${by('send').join(', ') || '(只限自己的對話)'}`,
         ].join('\n')
       }
@@ -484,15 +537,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const revoked = await deps.overridesRemoved?.(conv, input.senderId) ?? 0
         return changed(`清掉 ${n} 筆覆寫, 回到 ${conv.role} 的預設${revoked ? `; ${revoked} 筆審核授權一併標為已撤銷` : ''}`)
       }
-      const kinds: Record<string, { add: Record<string, OverrideKind>; rm: OverrideKind[] }> = {
-        tool: { add: { allow: 'tool-allow', deny: 'tool-deny' }, rm: ['tool-allow', 'tool-deny'] },
-        path: { add: { read: 'path-read', write: 'path-write' }, rm: ['path-read', 'path-write'] },
-        net: { add: { allow: 'net' }, rm: ['net'] },
-        mcp: { add: { allow: 'mcp' }, rm: ['mcp'] },
-        send: { add: { allow: 'send' }, rm: ['send'] },
-        pkg: { add: { allow: 'pkg' }, rm: ['pkg'] },
-      }
-      const k = what ? kinds[what] : undefined
+      const k = what ? PERM_KINDS[what] : undefined
       if (!k || !op || !value) return done('用法: /router perm [chat_id] show | role <角色> | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset')
       if (what === 'path' && !value.startsWith('/')) return done('路徑要用絕對路徑, 例如 /srv/data/shared')
       if (what === 'pkg' && !/^((pypi|npm|other):\S+|\*)$/.test(value)) return done('套件寫成 pypi:名稱 或 npm:名稱, 例如 pypi:requests; * 代表不用審核')

@@ -8,6 +8,8 @@
 
 ### Added
 
+- 高風險工具自動提權: `ListAgents`, `RemoteTrigger`, `CronCreate`, `CronDelete`, `ScheduleWakeup`, `PushNotification` 與跨 session 的 `SendMessage` 被擋時, 若這一輪每個發話者都有權限 (用他的角色重算對話 settings, 疊上他的使用者覆寫), router 在 hook 直接放行, 不開 subagent, 不跳按鈕, 以最低的角色執行; 照樣記 `elev_log` (`auto`) 與「📜 提權紀錄」話題, tool_history 記有效角色與原因. 只寫工具名稱的 allow 規則 (角色範本或覆寫) 讓 power 以下也能用, deny 規則所有角色都擋. 其他被擋的動作照原本的 subagent 提權. 見 [docs/permissions.md](docs/permissions.md#自動提權).
+- 使用者覆寫 `/router perm user <uid|@username> show | tool | path | net | mcp | reset` (存 `router.db` 的 `user_overrides`, owner 與 admin, admin 不能異動 owner): 他發起的一輪在任何對話做自動提權重算時套用, 也寫進他自己私訊的 settings (先疊使用者覆寫再疊私訊覆寫, 私訊標記待輪替); 群組裡不改變 worker 的 sandbox. 見 [docs/permissions.md](docs/permissions.md#使用者覆寫).
 - worker 收得到 Telegram 的表情回應 (message reaction): router 累積後整理成 `<reactions>` 區塊 (每則訊息一行, 表情×人數與顯示名稱, 換表情或收回只算最終狀態, 最多 50 則), 附在該對話的下一則訊息前, 或最後一個表情之後 1 分鐘沒有動靜時單獨送出 (不帶發送者, 不提權, 不顯示 🤔). 每個對話用 `/router chat react <all|botself_only|disable|default>` 設定, 全域預設 config `receiveReact` (預設 botself_only, 只收對 bot 自己訊息的表情, 依 `router.db` 新的 `bot_messages` 判斷). getUpdates 的 `allowed_updates` 改為明確列出原本的類型加 `message_reaction`; 群組裡 bot 要是管理員才收得到, `/router chat` 會註明. 見 [docs/operations.md](docs/operations.md#表情回應-reaction).
 - router 停止或重啟 (SIGTERM, SIGINT, `/router restart`) 時先把每個對話還沒送的表情回應單獨送進 worker, 等確認最多 5 秒再結束, 重啟不再遺失; 沒連上的 worker 不叫醒, 留在佇列等下次啟動. 見 [docs/operations.md](docs/operations.md#表情回應-reaction).
 - `cc /usage` 加上 Weekly (all models) 的燃燒速率: 完美速率, 當前速率與 ratio, 剩下的額度與倒數, 到重置剛好用完的每日上限, 可超速多少或要減速, 措辭照群組範例的輕快語氣 (算法見 [docs/operations.md](docs/operations.md#cc--報表腳本)).
@@ -15,6 +17,7 @@
 
 ### Changed
 
+- 提權看「這一輪的發話者」: 自上一次 Stop 以來送進 worker 的所有訊息的發話者 (一輪進行中插進來的也算, 而且也算下一輪), 取角色最低的人; 原本只看最後一則訊息的發話者, 一般成員先說 admin 接著說, 兩則併成一輪時被當成 admin 發起. 表情回應摘要不算發話者; router 啟動時已在跑的 worker 到下一次 Stop 前沒有發話者 (保守). 對話裡的提權按鈕也照這一套: 這一輪有人角色不高於對話就不詢問. 見 [docs/permissions.md](docs/permissions.md#權限檢查與提權).
 - 私訊的角色就是使用者角色: 私訊不再有自己的對話角色, settings, 權限檢查, 提權比較, 套件審核, 分類器, 工具呼叫紀錄, `/router status` 與 `/router chat` 對私訊一律讀使用者角色 (config owners 是 owner), 改使用者角色 (`/router role`, config owners) 時他每隻 bot 的私訊 settings 重寫並在閒置時輪替. `/router perm <私訊> role` 改為等同 `/router role`, 對應不到使用者時拒絕; 私訊的權限覆寫保留. 啟動時把私訊存的角色對齊使用者角色 (log 一行, 標記待輪替). 原本把某人升成 admin 後, 他的私訊仍是 user. 見 [docs/permissions.md](docs/permissions.md#角色).
 - 安裝位置可自選, 不再假設 `/x`: plugin 與 hook 從 `~/.config/cc-telegram-router/router.json` (位置檔, `cc-telegram-router register` 寫入, `deploy/install.sh router` 會執行) 找 router 的 socket 與家目錄, 不再寫死 `/x/cc/.router/router.sock`; `deploy/install.sh` 不再預設 `/x/cc/.router`, 第一次安裝要用 `CC_ROUTER_STATE` 指定, 之後從位置檔讀; 角色範本的 sandbox `denyRead` 由 `/x` 改為依安裝位置隱藏 router 的家目錄, 狀態目錄 (不在家目錄底下時) 與 config 新增的 `sandboxDenyRead` (額外要隱藏的路徑, 預設空), 特權技能的 bwrap 也一樣 (見 [docs/operations.md](docs/operations.md#安裝位置)). 原本裝在 `/x` 以外時 sandbox 看得到其他對話與 router 的資料.
 - 高風險工具改成 power 以下要提權 (只能允許一次): `ListAgents`, `RemoteTrigger`, `CronCreate`, `CronDelete`, `ScheduleWakeup`, `PushNotification`, 以及 `SendMessage` 傳給這個對話自己的 subagent 以外的對象 (其他 session). hook 多轉送 Agent 呼叫的 `name`, `subagent_type` 與 SubagentStart 的 `agent_type`, 用來認得自己的 subagent. 實測 `CronDelete` 不觸發 PreToolUse, router 擋不到 (只能刪同一個 session 建的排程). 見 [docs/permissions.md](docs/permissions.md#高風險工具).

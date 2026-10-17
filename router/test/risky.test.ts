@@ -194,49 +194,53 @@ test.skipIf(!existsSync(`/proc/${process.pid}/stat`))('workerKey: session, pid a
   expect(workerKey('sess-1', 999999999)).toBeNull()
 })
 
-test('elevation: an owner\'s turn in a user conversation is asked in the chat, once only (no 永久允許); approved, the subagent may list agents and message another session; the main session still may not', async () => {
+test('elevation: an owner\'s turn in a user conversation makes the high-risk calls at once (automatic elevation, autoelev.test.ts), without a button, nothing permanent; an approved subagent elevation still covers them', async () => {
   const { conv, e, sent, told } = harness('user')
   e.onDeliver(conv, OWNER)
-  const d = await e.onHook(conv, pre('ListAgents'))
-  expect(d.reason).toContain('權限不足 (本對話角色 user): power 以下的角色不能使用 ListAgents.')
-  expect(d.reason).toContain('router 已在對話裡詢問是否提權 (#1,')
-  expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:deny'])
-  expect(sent[0]!.text).toContain('♾️ 不能永久允許: 高風險工具 (傳訊給其他 session, ListAgents, 排程, 遠端觸發, 推播) 只能一次一次允許.')
-  expect(await e.decide('elev:1:always', OWNER)).toBe('不能永久允許: 高風險工具 (傳訊給其他 session, ListAgents, 排程, 遠端觸發, 推播) 只能一次一次允許')
-  expect(await e.decide('elev:1:once', OWNER)).toBe('已提權一次')
-  expect(told[0]).toContain('提權 #1 已核准')
+  expect(await e.onHook(conv, pre('ListAgents'))).toEqual({ decision: 'allow', reason: `自動提權 (發起者 u${OWNER} [owner]), 以 owner 角色執行`, effRole: 'owner' })
+  expect(sent).toEqual([])
+  expect(told).toEqual([])
+  expect(db.listOverrides(conv.key)).toEqual([]) // nothing permanent
+  // a high-risk call stored in a request (an approval asked before): once only, never 永久允許
+  const id = db.addElevation({ conv: conv.key, kind: 'passive', sender: OWNER, action: JSON.stringify({ tool_name: 'ListAgents', tool_input: {} }), reason: '' })
+  expect(await e.decide(`elev:${id}:always`, OWNER)).toBe('不能永久允許: 高風險工具 (傳訊給其他 session, ListAgents, 排程, 遠端觸發, 推播) 只能一次一次允許')
+  expect(await e.decide(`elev:${id}:once`, OWNER)).toBe('已提權一次')
+  expect(told[0]).toContain(`提權 #${id} 已核准`)
   await e.onHook(conv, { event: 'subagent-start', agent_id: 'S1' })
-  expect(await e.onHook(conv, pre('ListAgents', {}, 'S1'))).toEqual({ decision: 'allow', reason: '提權 #1, 以 owner 角色執行' })
-  expect(await e.onHook(conv, send('worker', 'S1'))).toEqual({ decision: 'allow', reason: '提權 #1, 以 owner 角色執行' })
+  expect(await e.onHook(conv, pre('ListAgents', {}, 'S1'))).toEqual({ decision: 'allow', reason: `提權 #${id}, 以 owner 角色執行` })
+  expect(await e.onHook(conv, send('worker', 'S1'))).toEqual({ decision: 'allow', reason: `提權 #${id}, 以 owner 角色執行` })
   expect(e.boundRole(conv.key, 'S1')).toBe('owner')
   expect(e.boundRole(conv.key, undefined)).toBeNull()
+  // the owner's turn over, a turn from nobody: the main session is back to its role
+  await e.onHook(conv, { event: 'stop' })
   expect((await e.onHook(conv, pre('ListAgents'))).decision).toBe('deny')
-  expect(db.listOverrides(conv.key)).toEqual([]) // nothing permanent
   e.stop()
 })
 
-test('elevation: a power sender in a user conversation is not asked in the chat (power may not either); a power user may not approve one; an active request still goes to the owner', async () => {
+test('elevation: a power sender in a user conversation is not asked in the chat nor passed (power may not either), even when the owner speaks in the same turn; a power user may not approve one', async () => {
   const { conv, e, sent } = harness('user')
   e.onDeliver(conv, POWER)
   const d = await e.onHook(conv, send('worker'))
   expect(d.reason).toContain('請改用不越權的方法完成')
+  e.onDeliver(conv, OWNER) // the same turn: as trusted as power
+  expect((await e.onHook(conv, pre('CronCreate', { cron: '7 9 * * *', prompt: 'x' }))).reason).toContain('請改用不越權的方法完成')
   expect(sent).toEqual([])
-  // asked by an owner's turn, pressed by power
-  e.onDeliver(conv, OWNER)
-  await e.onHook(conv, pre('CronCreate', { cron: '7 9 * * *', prompt: 'x' }))
-  expect(await e.decide('elev:1:once', POWER)).toBe('你的角色 (power) 也不允許這個動作')
-  expect(await e.decide('elev:1:once', ADMIN)).toBe('已提權一次')
+  const id = db.addElevation({ conv: conv.key, kind: 'passive', sender: OWNER, action: JSON.stringify({ tool_name: 'CronCreate', tool_input: { cron: '7 9 * * *', prompt: 'x' } }), reason: '' })
+  expect(await e.decide(`elev:${id}:once`, POWER)).toBe('你的角色 (power) 也不允許這個動作')
+  expect(await e.decide(`elev:${id}:once`, ADMIN)).toBe('已提權一次')
   e.stop()
 })
 
-test('a power conversation: blocked, an admin\'s turn is asked in the chat; an admin conversation is never asked', async () => {
+test('a power conversation: blocked, an admin\'s turn passes at once; an admin conversation never needs it', async () => {
   const p = harness('power')
   p.e.onDeliver(p.conv, ADMIN)
-  expect((await p.e.onHook(p.conv, pre('PushNotification', { message: 'x', status: 'proactive' }))).reason).toContain('router 已在對話裡詢問是否提權')
+  expect(await p.e.onHook(p.conv, pre('PushNotification', { message: 'x', status: 'proactive' }))).toMatchObject({ decision: 'allow', effRole: 'admin' })
+  expect(p.sent).toEqual([])
   const a = harness('admin', '-100777')
   a.e.onDeliver(a.conv, OWNER)
   for (const t of [...TOOLS, 'SendMessage']) expect(await a.e.onHook(a.conv, t === 'SendMessage' ? send('worker') : pre(t))).toEqual({})
   expect(a.sent).toEqual([])
+  expect(db.elevLog(a.conv.key, 5)).toEqual([])
   p.e.stop(); a.e.stop()
 })
 

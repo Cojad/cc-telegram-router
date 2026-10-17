@@ -90,6 +90,23 @@ ListAgents 1 次: power 1; 被擋 1
 角色是對話角色; 提權: 已提權的 subagent 以較高角色執行; 被擋: router 擋下 (原因見提權紀錄); 錯誤: router 端執行的 Telegram 工具被拒或 API 失敗
 ```
 
+## /router perm user
+
+`/router perm user <uid|@username> <子操作>` 把權限覆寫掛在人身上 (使用者覆寫, 存 `router.db` 的 `user_overrides`), 子操作沿用對話覆寫的語法:
+
+| 子操作 | 說明 |
+|---|---|
+| `show` (或不寫) | 這個人的角色, 使用者覆寫與生效範圍 (回覆走私訊) |
+| `tool allow\|deny\|rm <規則>` | 例如 `tool allow ListAgents` (只寫工具名稱的 allow 規則讓 power 以下也能用這個高風險工具) |
+| `path read\|write\|rm <絕對路徑>` | 讀或讀寫某個資料夾 |
+| `net allow\|rm <網域>` | sandbox 可連的網域 |
+| `mcp allow\|rm <名稱>` | 某個 MCP server 的所有工具 |
+| `reset` | 清掉這個人的所有使用者覆寫 |
+
+owner 與 admin 可以下; admin 不能異動 owner (查看可以). `send` 與 `pkg` 是 router 依對話把關的, 只能掛在對話上 (`/router perm [chat_id] send|pkg ...`), 對使用者下會回覆說明. 改了之後他每隻 bot 的私訊 settings 立刻重寫, worker 標記待輪替 (閒置時停掉, 下一則訊息套用), 回覆列出受影響的私訊; `/router perm <私訊> show` 另列一行「使用者覆寫」.
+
+生效範圍 (細節見 [docs/permissions.md](permissions.md#使用者覆寫)): 他發起的一輪在任何對話做[自動提權](permissions.md#自動提權)的重算時疊上去 (這一輪所有發話者都要有權限); 他自己的私訊 settings 也套用. 群組裡只影響 router 在 hook 的判斷, 路徑與網域覆寫不會改變群組 worker 的 sandbox.
+
 ## 時間
 
 時間一律 GMT+8, 不出現 UTC 或 Z: router 的 log 每行開頭是 `2026-10-17 08:06:04.919+08:00`, 交給 worker 的訊息時間 (`<channel ts=...>`) 是 `2026-10-17T08:06:04.919+08:00`, 指令輸出, 通知, router_log 與報表顯示的時間都換算成 GMT+8 (`shared/time.ts`, `router/context.ts` 的 `gmt8`). router.db 與訊息紀錄裡存的仍是 UTC 的 ISO 時間 (比較與查詢用), 顯示時才換算.

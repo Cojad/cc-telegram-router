@@ -48,7 +48,7 @@ import { createPkgGate, claudeReviewer } from './pkgreview'
 import { createClassifier, openClassifyStore, apiJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER, API_PROVIDERS } from './classifier'
 import { escHtml, htmlToText } from './setup'
 import { newClaimCode, isClaim, initBotSetups, adoptBotSetup, tokenBotId, resetNotice, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
-import { createElevation, workerKey } from './elevation'
+import { createElevation, workerKey, type HookDecision } from './elevation'
 import { createToolHistory, hookUse, KEEP_DAYS } from './toolhistory'
 import { dmLabel, personLabel } from './commands'
 import { parseRelay, mayRelay, relay, codeBlock, ROUTER_CMDS, type Exec, type RelayCmd } from './relay'
@@ -196,8 +196,11 @@ let claimCode: string | null = cfg.owners.length ? null : newClaimCode()
 // home and botDir: skills shared by all bots / by this bot are readable (templates/roles);
 // hidden: what the sandbox hides besides ~ (home, stateDir, config sandboxDenyRead)
 const settingsVars = (c: Conversation) => ({ folder: c.folder, home: cfg.home, hidden: hiddenPaths(cfg), botDir: botDir(cfg, c.bot), autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR, transcripts: projectStore(c.folder) })
+/** A conversation's /router perm overrides; a DM's user's own (/router perm user) go first (docs/permissions.md 使用者覆寫). */
+const userOverridesOf = (c: Conversation) => c.type === 'dm' ? db.listUserOverrides(c.chat_id) : []
+const overridesOf = (c: Conversation) => [...userOverridesOf(c), ...db.listOverrides(c.key)]
 const settingsFor = (c: Conversation) =>
-  writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, settingsVars(c), db.listOverrides(c.key))
+  writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, settingsVars(c), overridesOf(c))
 
 // A DM's stored role from before it followed its user's role (or from before
 // config owners changed): align it, and rotate the worker so it picks up the
@@ -469,8 +472,9 @@ const ipc = createIpc({
     }
     const d = await hookDecision(peer, c, ev)
     // a subagent's Telegram tool (quiet) is recorded when the router runs it, unless refused here
-    if (ev.event === 'pre' && (!ev.quiet || d.decision === 'deny')) toolHistory.record(hookUse(c, ev as Record<string, any>, d, elevation.boundRole(c.key, ev.agent_id ? String(ev.agent_id) : undefined)))
-    return d
+    const { effRole, ...out } = d
+    if (ev.event === 'pre' && (!ev.quiet || d.decision === 'deny')) toolHistory.record(hookUse(c, ev as Record<string, any>, d, effRole ?? elevation.boundRole(c.key, ev.agent_id ? String(ev.agent_id) : undefined)))
+    return out
   },
   onProgress(peer, ev) { ipcOnProgress(peer, ev) },
   // the conversation's own subagents count for the worker process that started them (router/elevation.ts)
@@ -498,9 +502,8 @@ const ipc = createIpc({
     if (conn.ctxV !== v) { parts.push(renderContext(ctxOf(c))); conn.ctxV = v }
     const logs = renderLogs(db.bindLogs(key, qid))
     if (logs) parts.push(logs)
+    // reactions alone carry no user_id: nobody is added to the turn (router/reactions.ts)
     const who = elevation.onDeliver(c, params.meta.user_id)
-    // reactions alone: nobody started this turn, no one's role elevates it (router/reactions.ts)
-    if (params.meta.kind === 'reactions') elevation.forgetSender(key)
     if (params.meta.message_id && params.meta.user !== 'router') currentMsg.set(key, Number(params.meta.message_id))
     // the message that starts the turn goes with the classifier's judgements (masked, first 500 characters)
     if (params.meta.user !== 'router') classifier.noteMessage(key, String(params.content ?? ''))
@@ -632,7 +635,9 @@ const elevation = createElevation({
   db, approvals: approvalDeps, notify: notifyConversation, label, log, authz,
   applyPermissions: c => commandDeps.applyPermissions(c),
   roleOf: uid => roleOf(commandDeps, uid),
-  settingsAs: (c, role, keep) => applyOverrides(renderSettings(TEMPLATES, role, settingsVars(c)), db.listOverrides(c.key).filter(o => !keep || keep(o))),
+  // a worker already running when the router starts may be mid-turn: no sender until its next Stop
+  unknownTurns: true,
+  settingsAs: (c, role, keep) => applyOverrides(renderSettings(TEMPLATES, role, settingsVars(c)), [...userOverridesOf(c), ...db.listOverrides(c.key).filter(o => !keep || keep(o))]),
   // a skill argument limited to higher roles (privileged.json args.<name>.roles): elevation, like any other block
   // bot_api / http_api with a credential the conversation's role may not use (a conversation's own secret has no role check)
   extraCheck: (c, call, role) => {
@@ -701,7 +706,7 @@ for (const line of classifier.check()) log(line)
 }
 
 /** The router's answer to a worker hook event (permissions, elevation, package review). */
-async function hookDecision(peer: Peer, c: Conversation, ev: Record<string, any>): Promise<{ decision?: 'allow' | 'deny'; reason?: string }> {
+async function hookDecision(peer: Peer, c: Conversation, ev: Record<string, any>): Promise<HookDecision> {
   // progress events ride along (pre/post/stop/...); subagent events and quiet ones are elevation only
   if (!String(ev.event).startsWith('subagent-') && !ev.quiet) ipcOnProgress(peer, ev)
   // a turn typed in the worker's terminal has no Telegram message for the classifier
@@ -1051,7 +1056,7 @@ const commandDeps: CommandDeps = {
   events: { rawToFile: id => vault.rawToFile(id) },
   classifier: { report: (days, qv) => classifierReport(classifyStore, days, new Date(), classifierCfg().enabled, qv), show: id => classifierShow(classifyStore, id) },
   overridesRemoved: (c, uid) => authz.syncRemoved(c, uid),
-  effectiveSettings: c => applyOverrides(renderSettings(TEMPLATES, c.role, settingsVars(c)), db.listOverrides(c.key)),
+  effectiveSettings: c => applyOverrides(renderSettings(TEMPLATES, c.role, settingsVars(c)), overridesOf(c)),
   async sendTo(botName, chatId, text) {
     await bots.get(botName)?.bot.api.sendMessage(chatId, text)
   },

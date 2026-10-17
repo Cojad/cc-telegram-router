@@ -782,6 +782,7 @@ test('elevation for a skill argument: run_skill with force from a user conversat
   expect((await e.refuse(conv, call, e.extraCheck(conv, call, 'user')!)).reason).toContain('對方同意後呼叫 request_elevation 說明原因')
   expect(sent).toEqual([])
   // the owner asked: an in-chat prompt, no 永久允許
+  await e.onHook(conv, { event: 'stop' }) // the user's turn is over (elevation.ts: a turn's people)
   e.onDeliver(conv, OWNER)
   expect((await e.refuse(conv, call, e.extraCheck(conv, call, 'user')!)).reason).toContain('router 已在對話裡詢問是否提權 (#1')
   expect(sent).toHaveLength(1)
@@ -819,6 +820,7 @@ test('elevation for a credential: bot_api / http_api refused only for the conver
   expect(sent).toEqual([])
   expect(db.elevLog(conv.key, 5).map(l => l.kind)).toEqual(['blocked'])
   // the admin asked: an in-chat prompt, no 永久允許 (the credential's roles are the place for that)
+  await e.onHook(conv, { event: 'stop' }) // the user's turn is over (elevation.ts: a turn's people)
   e.onDeliver(conv, '500')
   expect((await e.refuse(conv, call, e.extraCheck(conv, call, 'user')!)).reason).toContain('router 已在對話裡詢問是否提權 (#1')
   expect(sent).toHaveLength(1)
@@ -880,6 +882,7 @@ test('elevation: a request still waiting for the owner (sent to the owner, no ti
   e.onDeliver(conv, '42')
   expect(await e.request(conv, '要讀 /x', 'ls /x')).toContain('#1') // a plain user: goes to the owner
   expect(db.getElevation(1)!.status).toBe('pending')
+  await e.onHook(conv, { event: 'stop' }) // the user's turn is over (elevation.ts: a turn's people)
   e.onDeliver(conv, OWNER)
   expect((await e.onHook(conv, escape)).reason).toContain('router 已在對話裡詢問是否提權 (#2')
   expect(sent.filter(m => m.chat === '-100555')).toHaveLength(1)

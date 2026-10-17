@@ -34,12 +34,14 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`, 歸給哪隻 bot), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
 | `router/test/poller.test.ts` | [輪詢與重試](operations.md#輪詢與重試)的輪詢: 重試間隔, 2 分鐘才通知與恢復通知, 409, 401, 429, 啟動時的 getMe, status 與通知文字 (e2e 另測 token 失效時經其他 bot 通知與 /router status); 指令回覆重試 (e2e 另測 502 後重送) |
 | `router/test/store.test.ts`, `router/test/inbound.test.ts` | [訊息紀錄](architecture.md#訊息紀錄): 每隻 bot 各自一份 (私訊撞號, 同群組同一則), 舊紀錄分配 bot 一次 (對話, events, outbound, 時間, legacy), legacy 列用時間重新判斷一次, 重複丟掉時寫 log, 引用不跨 bot |
-| `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行 (router 家目錄與 stateDir 都是臨時位置), 驗證 Claude Code 實際放行與擋下的事; 最後兩條帶 user 對話的 hook, 驗證高風險工具真的觸發 PreToolUse 並被 router 擋下, 傳給自己命名的 subagent 則放行; power 的 sandbox 看不到放在 home 與 stateDir 以外的 router socket |
+| `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行 (router 家目錄與 stateDir 都是臨時位置), 驗證 Claude Code 實際放行與擋下的事; 最後三條帶 user 對話的 hook, 驗證高風險工具真的觸發 PreToolUse 並被 router 擋下, owner 的一輪 ListAgents 自動提權放行, 傳給自己命名的 subagent 則放行; power 的 sandbox 看不到放在 home 與 stateDir 以外的 router socket |
 | `router/test/portability.test.ts` | [安裝位置](operations.md#安裝位置): config `sandboxDenyRead` 與隱藏清單, 角色範本的 denyRead, 特權技能 bwrap (含真的 bwrap 在 /var/tmp 的安裝, 與連不上放在別處的 socket), 位置檔與 `register`, plugin 與 hook 經位置檔連上 router, `deploy/install.sh` 不預設位置 |
 | `router/test/toolhistory.test.ts` | [工具呼叫紀錄](permissions.md#工具呼叫紀錄): 一筆的內容 (不存參數, 遮蔽與截斷), 寫入失敗只記 log, 30 天清除, 報表, `/router tools` 的權限與參數 |
 | `router/test/dmrole.test.ts` | [角色](permissions.md#角色)的私訊: 每次讀私訊都是使用者角色 (config owners 是 owner, 每隻 bot 的私訊都跟著), 改角色時私訊的 settings 重寫並標記待輪替, `/router perm <私訊> role` 等同 `/router role` 與對應不到時拒絕, 覆寫保留, `/router status` 與 `/router chat` 顯示, config owners 增減, 高風險工具與 tool_history 讀使用者角色, 遷移 (對齊一次, ctx_v 加一) |
 | `router/test/e2e-dmrole.test.ts` | 真的 router + 假 Bot API: 啟動時把有自己角色的私訊對齊使用者角色, log, settings 與 chat context 用使用者角色, 群組不變 |
-| `router/test/risky.test.ts` | [高風險工具](permissions.md#高風險工具): 每個工具在各角色的放行與擋下, SendMessage 對自己的 subagent 與跨 session 的判斷, 自己的 subagent 名單存在 router.db 並綁定 worker 程序 (`own_agents`, `workerKey`), 提權只能允許一次, 按下的人角色要夠, hook 轉送 Agent 的名稱 |
+| `router/test/risky.test.ts` | [高風險工具](permissions.md#高風險工具): 每個工具在各角色的放行與擋下, SendMessage 對自己的 subagent 與跨 session 的判斷, 自己的 subagent 名單存在 router.db 並綁定 worker 程序 (`own_agents`, `workerKey`), owner 與 admin 的一輪自動提權, 核准的申請只能允許一次, 按下的人角色要夠, hook 轉送 Agent 的名稱 |
+| `router/test/autoelev.test.ts` | [自動提權](permissions.md#自動提權), [這一輪的發話者](permissions.md#權限檢查與提權), [使用者覆寫](permissions.md#使用者覆寫): 純 admin 一輪六個工具與跨 session 傳訊自動放行並記錄 (elev_log, 提權紀錄話題), 混合一輪不放行也不跳按鈕, power 一輪預設不放行但角色範本或使用者覆寫允許就放行, deny 覆寫, `riskyRefusal` 讀 settings, Stop 重置與進行中送入的訊息算兩輪, reaction 與終端機沒有發話者, router 啟動後等 Stop (`unknownTurns`) 與新程序立即判斷, 按鈕提權用同一套發話者, `/router perm user` 指令與權限檢查, 私訊標記待輪替 |
+| `router/test/e2e-autoelev.test.ts` | 真的 router + 真的 hook + 真的 plugin client + 假 Bot API: router 啟動時已在跑的 worker 等 Stop, owner 的一輪在 user 群組自動提權 (hook allow, elev_log, tool_history 有效角色), user 與 owner 的訊息併成一輪被擋且不跳按鈕, `cli perm user` 後私訊 settings 帶覆寫 (群組不帶) 且他在群組的一輪以 user 放行 |
 | `router/test/e2e-toolhistory.test.ts` | 真的 router + 真的 hook + 假 Bot API: 每個 PreToolUse 一筆紀錄 (含 owner 對話), user 的高風險工具被擋而 owner 不擋, 自己命名的 subagent, router 端 Telegram 工具的紀錄, `cli tools` |
 | `router/test/e2e-ownagents.test.ts` | 真的 router (重啟兩次, 同一個 router.db) + 真的 hook + 真的 plugin client: 自己的 subagent 在 router 重啟後, 同一個 worker 的 plugin 重連就仍算數; plugin 沒連上時不算; 另一個 worker 程序打招呼時舊項目刪除; 讀不到程序啟動時間的 plugin 不算; 已不存在的對話的項目啟動時清掉 |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |
@@ -192,8 +194,24 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | ListAgents, RemoteTrigger, CronCreate, CronDelete, ScheduleWakeup, PushNotification: power 以下擋下, admin 與 owner 放行, 原因清楚 | risky「riskyRefusal: …」「every high-risk tool in every conversation role…」; e2e-toolhistory「every PreToolUse…」 |
 | SendMessage: 自己的 subagent (agent id; Agent 的 name 要等 SubagentStart) 與 subagent 回報 main 放行, 其他 session, `name [ref]`, `uds:`, `bridge:`, 不認得的名稱擋下 | risky「SendMessage: own subagents…」「cc-hook forwards an Agent call's name…」; e2e-toolhistory「every PreToolUse…」 |
 | 自己的 subagent 名單存在 router.db (`own_agents`): router 重啟後同一個 worker 的 plugin 重連就仍算數; plugin 沒連上不算; 另一個 worker 程序 (同 session id 也算) 打招呼時舊項目刪除, 回到舊的 worker key 也不會復活; SubagentStop 不移除; plugin 沒連上時的 SubagentStart 不記; 等 SubagentStart 的名稱不跨 worker; 每個 worker 留最新 500 筆; 30 天前與已不存在的對話的項目清掉; worker 以 session, pid 與程序啟動時間辨認, 讀不到啟動時間 (程序不在, 沒有 /proc) 就不算 | risky「own subagents are kept in router.db…」「own subagents: a SubagentStart with no worker…」「own_agents rows…」「workerKey…」; e2e-ownagents「own subagents survive a router restart…」 |
-| 擋下走先擋再問, 只能允許一次 (沒有永久允許), 按下的人要 admin 以上; 核准後 subagent 可用, 主 session 照舊被擋 | risky「elevation: an owner's turn…」「elevation: a power sender…」「a power conversation…」 |
-| 這些工具在真的 Claude Code 會觸發 PreToolUse 並被 router 擋下 (`CronDelete` 例外, 不觸發 hook, 照實記錄); owner 發起的一輪在對話裡詢問提權一次; 傳給自己命名的背景 subagent 放行, 其他名稱擋下 | role-live「user: the high-risk tools reach PreToolUse…」「user: SendMessage to its own named subagent…」(LIVE=1) |
+| 發話者都是 admin 以上的一輪自動放行 (見下方自動提權驗收); 核准的申請只能允許一次 (沒有永久允許), 按下的人要 admin 以上; 核准後 subagent 可用, 主 session 照舊被擋 | risky「elevation: an owner's turn…」「elevation: a power sender…」「a power conversation…」 |
+| 這些工具在真的 Claude Code 會觸發 PreToolUse 並被 router 擋下 (`CronDelete` 例外, 不觸發 hook, 照實記錄), 一般成員的一輪不在對話裡詢問; owner 的一輪 ListAgents 自動提權, Claude Code 照 hook 的 allow 執行; 傳給自己命名的背景 subagent 放行, 其他名稱擋下 | role-live「user: the high-risk tools reach PreToolUse…」「user: an owner's Telegram turn makes ListAgents at once…」「user: SendMessage to its own named subagent…」(LIVE=1, 自動提權那條尚未實測) |
+
+## 自動提權與使用者覆寫驗收對照
+
+| 驗收項目 | 測試 |
+|---|---|
+| 這一輪的發話者 = 上一次 Stop 以來送入的所有訊息的發話者, 取角色最低; 一輪進行中送入的訊息算這一輪也算下一輪; Stop 後重置 | autoelev「the people of a turn: Stop starts afresh…」「a mixed turn…」 |
+| reaction 摘要的送入不算發話者, 只由它開始的一輪沒有發話者; 終端機的一輪沒有發話者 | autoelev「the people of a turn…」; e2e-reactions「a while after the last reaction…」 |
+| router 啟動時已在跑的 worker 到下一次 Stop 前沒有發話者; router 啟動後才開始的 worker 程序立即判斷 | autoelev「after the router starts (unknownTurns)…」; e2e-autoelev「a worker running when the router started…」; e2e-rawvault「event_raw goes by who started the turn…」 |
+| 純 admin (或 owner) 一輪: 六個高風險工具與跨 session 的 SendMessage 直接放行, 不開 subagent, 不跳按鈕, 以最低角色執行 | autoelev「a pure admin turn…」; risky「elevation: an owner's turn…」「a power conversation…」; e2e-autoelev「a worker running when the router started…」 |
+| 每次自動放行都記錄: elev_log `auto` 與提權紀錄話題 (發起者, 角色, 工具, 收件對象, subagent), tool_history 的決定, 有效角色與原因 | autoelev「a pure admin turn…」「the record goes to the 提權紀錄 topic…」; e2e-autoelev「a worker running when the router started…」 |
+| 混合一輪 (user + admin): 不自動放行, 也不在對話裡跳按鈕 (高風險工具與其他越權都一樣) | autoelev「a mixed turn…」「the button elevation uses the same people…」; risky「elevation: a power sender…」; e2e-autoelev「a user's message and the owner's…」 |
+| power 一輪預設不放行; 角色範本或使用者覆寫的 allow 規則 (只寫工具名稱) 允許時放行; deny 規則所有角色都擋 | autoelev「a power turn…」「riskyRefusal reads the settings…」 |
+| 其他被擋的動作 (路徑, 網路, sandbox) 照 subagent 提權流程 | autoelev「a pure admin turn…」(重導向寫檔仍詢問) |
+| `/router perm user <使用者> show\|tool\|path\|net\|mcp\|reset`: owner 與 admin, admin 不能異動 owner, power 不能下; send 與 pkg 只能掛在對話 | autoelev「/router perm user: …」 |
+| 使用者覆寫在任何對話的自動提權重算時套用 | autoelev「a power turn…」; e2e-autoelev「/router perm user from the terminal…」 |
+| 使用者覆寫寫進他私訊的 settings (群組不變), 私訊標記待輪替, `/router perm <私訊> show` 列出 | autoelev「/router perm user: …」; e2e-autoelev「/router perm user from the terminal…」 |
 
 ## 私訊角色驗收對照
 

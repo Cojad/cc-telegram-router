@@ -241,6 +241,9 @@ test('event_raw goes by who started the turn: an owner\'s message in a user grou
   await until(() => q(`SELECT role FROM conversations WHERE key = 'group-${-GROUP}'`)[0]?.role === 'user')
   const w = worker(`group-${-GROUP}`, 15, delivered)
   await until(() => delivered.some(d => d.includes('幫我看 event')))
+  // pid 15 started before this router: no sender until the worker's next Stop (elevation.ts unknownTurns); the message came in before it, so it still counts
+  w.send({ t: 'hook', id: 8999, project_dir: join(dir, 'bot123', `group-${-GROUP}`), ev: { event: 'stop' } })
+  await sleep(300)
   expect((await w.call('event_raw', { event_id: ev, question: 'q' })).isError).toBeFalsy()
   const hook = (telegram: boolean) => w.send({ t: 'hook', id: 9000 + Number(telegram), project_dir: join(dir, 'bot123', `group-${-GROUP}`), ev: { event: 'prompt', telegram } })
   hook(false)
