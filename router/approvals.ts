@@ -15,9 +15,12 @@ export type Button = { text: string; data: string }
  *  deny. "approve" is the old two-button data, read as once. */
 export type Choice = 'once' | 'always' | 'deny'
 
+/** The once button's words where 允許一次 would mislead: a send grant lets that conversation send here from then on (柯姊 2026-10-17). */
+export const ONCE_LABEL: Record<string, string> = { grant: '允許這個對話' }
+
 export function buttons(kind: string, ref: number, always: boolean): Button[] {
   return [
-    { text: '✅ 允許一次', data: `${kind}:${ref}:once` },
+    { text: `✅ ${ONCE_LABEL[kind] ?? '允許一次'}`, data: `${kind}:${ref}:once` },
     ...(always ? [{ text: '♾️ 永久允許', data: `${kind}:${ref}:always` }] : []),
     { text: '❌ 拒絕', data: `${kind}:${ref}:deny` },
   ]
@@ -31,6 +34,8 @@ export function parseChoice(kind: string, data: string): { ref: number; choice: 
 export const revokeButton = (kind: string, ref: number): Button => ({ text: '🚫 撤銷', data: `${kind}:${ref}:revoke` })
 
 export const CHOICE_WORD: Record<Choice, string> = { once: '✅ 已允許一次', always: '♾️ 已永久允許', deny: '❌ 已拒絕' }
+/** CHOICE_WORD with the kind's own once words (ONCE_LABEL). */
+export const choiceWord = (kind: string, c: Choice) => c === 'once' && ONCE_LABEL[kind] ? `✅ 已${ONCE_LABEL[kind]}` : CHOICE_WORD[c]
 
 export interface ApprovalDeps {
   db: RouterDb

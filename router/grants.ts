@@ -5,8 +5,8 @@
 //   target: the target conversation is asked to accept, and the same request
 //           goes to the approvals place too; whoever presses first decides
 //           (anyone in the target chat, or owner/admin).
-// 允許一次 adds that target to the conversation's list (an overrides send
-// row); 永久允許 (owner/admin only, not offered in the target chat) lets the
+// 允許這個對話 (the once button, named so: 柯姊 2026-10-17) adds that target
+// to the conversation's list for good (an overrides send row); 永久允許 (owner/admin only, not offered in the target chat) lets the
 // conversation send to any chat the bot is in (send *). Every copy of the
 // request gets the outcome written under it, and the requesting worker hears
 // it as a <router_status> message. When the target of a target request is
@@ -15,7 +15,7 @@
 // the worker are told so.
 
 import type { Conversation, RouterDb } from './db'
-import { postApproval, settleApproval, mayDecide, parseChoice, approvalPlace, CHOICE_WORD, type ApprovalDeps, type About } from './approvals'
+import { postApproval, settleApproval, mayDecide, parseChoice, approvalPlace, choiceWord, type ApprovalDeps, type About } from './approvals'
 import type { Authz } from './authz'
 
 /** The send overrides allow chat_id: listed, or send * and the bot is in it. */
@@ -52,11 +52,11 @@ export async function requestGrant(deps: GrantDeps, from: Conversation, target: 
     `理由: ${reason}`,
     ...(mode === 'target' ? ['(也已在目標對話詢問, 先按的人決定)'] : []),
     ...(atApprovals ? [`目標對話就是這裡 (${placeName}), 只有這一份申請, 由 owner 或 admin 決定.`] : []),
-    `✅ 允許一次: 把 ${target} 加進這個對話的傳送白名單 (之後送往這個對話不用再問).`,
+    `✅ 允許這個對話: 之後 ${from.key} 都可以傳到 ${deps.label(target)} (加進傳送白名單, 不用再問).`,
     `♾️ 永久允許的範圍: ${from.key} 之後可以送訊息到 bot 所在的任何對話, 不用再申請 (權限覆寫 send *).`,
     `撤銷: /router perm ${from.chat_id} send rm ${target} 或 send rm *`,
   ].join('\n')
-  const extra = mode === 'target' ? [{ place: { chat_id: target }, text: `📨 ${who} 想傳訊息到這個對話 (#${id})\n理由: ${reason}\n✅ 允許一次: 之後 ${from.key} 都可以傳訊息到這個對話.\n要接受嗎?` }] : []
+  const extra = mode === 'target' ? [{ place: { chat_id: target }, text: `📨 ${who} 想傳訊息到這個對話 (#${id})\n理由: ${reason}\n✅ 允許這個對話: 之後這個對話 (${who}) 都可以傳到這裡.\n要接受嗎?` }] : []
   const reached = await postApproval(deps.approvals, from.bot, 'grant', id, ownerText, extra)
   if (!reached.length) return '審核頻道與目標對話都送不到, 申請沒有送出'
   if (atApprovals) return `目標對話就是審核處 (${placeName}), 只送了一份申請, 由 owner 或 admin 決定 (#${id}), 決定後會通知你`
@@ -81,7 +81,7 @@ export async function decideGrant(deps: GrantDeps, data: string, uid: string, ch
   const from = deps.db.getConversation(g.from_conv)
   const value = p.choice === 'always' ? '*' : g.target
   if (p.choice !== 'deny') deps.db.addOverride({ conv: g.from_conv, kind: 'send', value })
-  const word = CHOICE_WORD[p.choice]
+  const word = choiceWord('grant', p.choice)
   const outcome = `${word} (${deps.label(uid)})`
   if (p.choice !== 'deny' && from) deps.authz?.record('grant', g.id, from, p.choice, [{ kind: 'send', value }], outcome)
   await settleApproval(deps.approvals, 'grant', g.id, outcome, p.choice !== 'deny')

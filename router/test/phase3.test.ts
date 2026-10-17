@@ -16,7 +16,7 @@ import { createElevation } from '../elevation'
 import { credRoleRefusal } from '../credentials'
 import { installRefusal, skillScope } from '../skills'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from '../grants'
-import { approvalPlace, noticePlace, requestOriginNoter, type ApprovalDeps } from '../approvals'
+import { approvalPlace, noticePlace, requestOriginNoter, buttons, type ApprovalDeps } from '../approvals'
 import { createAuthz } from '../authz'
 import { createIpc } from '../ipc'
 import type { Access } from '../telegram/policy'
@@ -176,12 +176,14 @@ test('grants: owner mode goes to the approvals place; only owner/admin decide; a
   expect(sent[0]).toMatchObject({ chat: '-100900', thread: 7, buttons: ['grant:1:once', 'grant:1:always', 'grant:1:deny'] })
   expect(sent[0]!.text).toContain('♾️ 永久允許的範圍: group-100555 之後可以送訊息到 bot 所在的任何對話')
   expect(sent[0]!.text).toContain('理由: 回報結果')
+  // the once button of a send grant lets that conversation send there from then on: named so (柯姊 2026-10-17)
+  expect(sent[0]!.text).toContain('✅ 允許這個對話: 之後 group-100555 都可以傳到 -100777 (加進傳送白名單, 不用再問).')
   expect(await decideGrant(g, 'grant:1:once', '999', '-100900')).toBe('你不能決定這個申請')
-  expect(await decideGrant(g, 'grant:1:once', ADMIN, '-100900')).toBe('✅ 已允許一次')
+  expect(await decideGrant(g, 'grant:1:once', ADMIN, '-100900')).toBe('✅ 已允許這個對話')
   expect(await decideGrant(g, 'grant:1:deny', OWNER, '-100900')).toBe('這個申請已經允許了')
   expect(db.listOverrides(from.key)).toEqual([{ conv: from.key, kind: 'send', value: '-100777' }])
-  expect(edits).toEqual([{ chat: '-100900', id: sent[0]!.id, text: `${sent[0]!.text}\n\n✅ 已允許一次 (${ADMIN})` }])
-  expect(told[0]).toContain('跨對話傳訊申請 #1 ✅ 已允許一次')
+  expect(edits).toEqual([{ chat: '-100900', id: sent[0]!.id, text: `${sent[0]!.text}\n\n✅ 已允許這個對話 (${ADMIN})` }])
+  expect(told[0]).toContain('跨對話傳訊申請 #1 ✅ 已允許這個對話')
   expect(await requestGrant(g, from, '-100777', 'owner', 'x')).toBe('已經可以送往 -100777, 直接送出即可')
 })
 
@@ -197,7 +199,7 @@ test('grants: a target request whose target is the approvals group (or the owner
   expect(sent[0]!.text).not.toContain('也已在目標對話詢問')
   expect(db.getGrant(1)!.mode).toBe('owner')
   expect(await decideGrant(g, 'grant:1:once', '42', '-100900')).toBe('你不能決定這個申請') // a member of the group is not the target's say here
-  expect(await decideGrant(g, 'grant:1:once', ADMIN, '-100900')).toBe('✅ 已允許一次')
+  expect(await decideGrant(g, 'grant:1:once', ADMIN, '-100900')).toBe('✅ 已允許這個對話')
   // no approvals group: the approvals place is the owner DM
   db.updateBotSetup('cc', { approvals_chat: null, approvals_topic: null, notices_topic: null })
   expect(await requestGrant(g, from, OWNER, 'target', 'x')).toBe('目標對話就是審核處 (owner 私訊), 只送了一份申請, 由 owner 或 admin 決定 (#2), 決定後會通知你')
@@ -214,6 +216,9 @@ test('grants: target mode asks the target chat and the owner at once; the first 
   expect(sent[0]!.text).toContain('也已在目標對話詢問')
   expect(await decideGrant(g, 'grant:1:deny', '42', '-100999')).toBe('你不能決定這個申請') // a stranger elsewhere
   expect(sent[1]!.buttons).toEqual(['grant:1:once', 'grant:1:deny']) // the target chat cannot open everything up
+  expect(sent[1]!.text).toContain('✅ 允許這個對話: 之後這個對話 (group-100555) 都可以傳到這裡.')
+  expect(buttons('grant', 1, false).map(b => b.text)).toEqual(['✅ 允許這個對話', '❌ 拒絕'])
+  expect(buttons('elev', 1, true).map(b => b.text)).toEqual(['✅ 允許一次', '♾️ 永久允許', '❌ 拒絕']) // other kinds unchanged
   expect(await decideGrant(g, 'grant:1:deny', '42', '-100888')).toBe('❌ 已拒絕') // anyone in the target chat
   expect(await decideGrant(g, 'grant:1:once', OWNER, OWNER)).toBe('這個申請已經拒絕了')
   expect(db.listOverrides(from.key)).toEqual([])
@@ -599,7 +604,7 @@ test('authz: send grants and package approvals settle with a revoke button at th
   const after = edits.slice(before).map((e, i) => ({ ...e, buttons: editButtons[before + i] }))
   expect(after.map(e => e.id).sort()).toEqual([...sent.filter(m => m.buttons.includes('grant:1:once') || m.buttons.includes('grant:1:deny')).map(m => m.id), useMsg.id, useMsg2.id].sort())
   expect(after.every(e => e.buttons!.length === 0 && e.text.endsWith(`🚫 已撤銷 (${ADMIN})`))).toBe(true)
-  expect(after.find(e => e.chat === '-100900' && e.text.includes('跨對話傳訊申請'))!.text).toContain(`✅ 已允許一次 (${OWNER})\n🚫 已撤銷 (${ADMIN})`)
+  expect(after.find(e => e.chat === '-100900' && e.text.includes('跨對話傳訊申請'))!.text).toContain(`✅ 已允許這個對話 (${OWNER})\n🚫 已撤銷 (${ADMIN})`)
   expect(after.find(e => e.id === useMsg.id)!.text).toBe(`${useMsg.text}\n\n🚫 已撤銷 (${ADMIN})`)
   // a stale button pressed later: the messages are tidied again, nothing else changes
   const n = edits.length
