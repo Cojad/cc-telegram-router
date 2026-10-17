@@ -6,7 +6,8 @@
 // handles, the fixed agent, the exit check, haiku refused), secret_from_handle,
 // cli event raw (600 file), /secret handles|revoke, /router secret
 // handles|revoke, /router event raw; text attachments scanned when a worker
-// downloads them; the fixed agent's language rule. Keep in sync with README 「原始事件與密鑰保護」
+// downloads them, and on arrival (kept for download_attachment); the fixed
+// agent's language rule. Keep in sync with README 「原始事件與密鑰保護」
 // and /telegram:doc; end to end in e2e-rawvault.test.ts.
 // Every token here is fake and built at runtime (no token-shaped literal in the repo).
 
@@ -38,6 +39,7 @@ let sent: Array<{ chatId: string; text: string; replyTo?: number; buttons?: unkn
 let canDelete: boolean, removeOk: boolean, clock: number, asked: Array<{ system: string; input: string }>, answer: string | Error, model: string
 const roles: Record<string, string> = { [ADMIN]: 'admin', [OWNER]: 'owner' }
 let globalCreds: Record<string, string>
+let files: Record<string, string>, fetched: string[], fetchDelay: number
 
 function makeVault(extra: Partial<VaultDeps> = {}) {
   const api: VaultApi = {
@@ -64,6 +66,8 @@ function makeVault(extra: Partial<VaultDeps> = {}) {
     async notice(_bot, text) { notices.push(text) },
     personLabel: uid => `p${uid}`, chatLabel: (_b, c) => `chat ${c}`,
     served: (_t, chatId, uid) => chatId === uid ? access.allowFrom.includes(uid) : chatId in access.groups,
+    async fetchFile(_bot, fileId) { fetched.push(fileId); await new Promise(r => setTimeout(r, fetchDelay)); return { buf: Buffer.from(files[fileId]!), file_path: `documents/${fileId}.env`, file_unique_id: `U${fileId}` } },
+    cacheDir: join(dir, '.router', 'attachments'),
     now: () => clock, ...extra,
   })
 }
@@ -77,6 +81,7 @@ beforeEach(() => {
   sent = []; edits = []; removed = []; notices = []; asked = []
   canDelete = true; removeOk = true; clock = Date.parse('2026-10-17T02:00:00Z'); answer = '這是一則貼了 bot token 的訊息, 遮掉的是 h1.'; model = 'claude-opus-5-5'
   globalCreds = { eagle: HELD_TOKEN }
+  files = {}; fetched = []; fetchDelay = 0
 })
 afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
 
@@ -390,7 +395,7 @@ test('docs: README 「原始事件與密鑰保護」, /telegram:doc, /telegram:b
   const root = join(import.meta.dir, '..', '..')
   const readme = readFileSync(join(root, 'README.md'), 'utf8')
   const sec = readme.slice(readme.indexOf('### 原始事件與密鑰保護'), readme.indexOf('### bot 設定提醒'))
-  for (const s of ['`<已遮蔽 #<event id>.<序號>>`', 'event_raw', 'AES-256-GCM', '綁定 event id', '「🔑 密鑰偵測」', '5 分鐘後刪除', '取消刪除', '發送者, owner, admin', 'claude -p', 'haiku', '出口檢查', '預設 10 分鐘, 最多 60 分鐘, 或永久', 'secret_from_handle', '/secret handles', 'cli event raw', '權限 600', '5 筆舊紀錄', '文字類附件', '`download_attachment`', '1 MB', '圖片, 二進位檔']) expect(sec).toContain(s)
+  for (const s of ['`<已遮蔽 #<event id>.<序號>>`', 'event_raw', 'AES-256-GCM', '綁定 event id', '「🔑 密鑰偵測」', '5 分鐘後刪除', '取消刪除', '發送者, owner, admin', 'claude -p', 'haiku', '出口檢查', '預設 10 分鐘, 最多 60 分鐘, 或永久', 'secret_from_handle', '/secret handles', 'cli event raw', '權限 600', '5 筆舊紀錄', '文字類附件', '收到訊息時就檢查', '`attachment_cache`', '`download_attachment`', '1 MB', '圖片, 二進位檔']) expect(sec).toContain(s)
   expect(readme).toContain('### 10e 原始事件與密鑰保護驗收對照')
   expect(readme).toContain('「🔑 密鑰偵測」五個話題')
   const doc = readFileSync(join(root, 'plugin', 'skills', 'doc', 'SKILL.md'), 'utf8')
@@ -402,7 +407,7 @@ test('docs: README 「原始事件與密鑰保護」, /telegram:doc, /telegram:b
   expect(Object.keys(tool('event_raw').inputSchema.properties)).toEqual(['event_id', 'question', 'ttl_minutes', 'permanent'])
   expect(tool('event_raw').description).toContain('owner or admin')
   expect(tool('secret_from_handle').inputSchema.required).toEqual(['handle', 'name'])
-  expect(tool('download_attachment').description).toContain('checked for secrets')
+  expect(tool('download_attachment').description).toContain('already downloaded and checked for secrets when the message came in')
 })
 
 test('text attachments: by name (.env, .env.local, config and source extensions) or mime text/*; images and binaries are not', () => {
@@ -456,4 +461,46 @@ test('download_attachment of a text file with a key: the worker gets markers, th
 test('the fixed agent answers in Taiwan traditional Chinese with half-width punctuation', () => {
   expect(RAW_SYSTEM).toContain('一律使用台灣正體中文與半形標點')
   expect(RAW_SYSTEM).not.toMatch(/[，。：；（）]/)
+})
+
+test('text attachments are downloaded and checked as they come in (served chats, by name or mime, up to 1 MB); the result is kept for download_attachment, with or without a secret; a download meanwhile waits for it', async () => {
+  const v = makeVault()
+  const doc = (id: number, file_id: string, file_name: string, extra: Record<string, unknown> = {}) => ({ update_id: id, message: { message_id: id, date: 0, chat: { id: Number(USER), type: 'private' }, from: { id: Number(USER), is_bot: false, first_name: 'U' }, document: { file_id, file_unique_id: 'u' + id, file_name, mime_type: 'application/octet-stream', file_size: 60, ...extra } } })
+  files = { F9: `KEY=${OPENAI}\n`, F10: 'PLAIN=1\n' }
+  const u = doc(50, 'F9', 'prod.env')
+  v.record('cc', u)
+  await v.prefetch('cc', u, true)
+  expect(fetched).toEqual(['F9'])
+  const ev = db.attachmentEvent('F9')!
+  const c = db.cachedAttachment('cc', 'F9')!
+  expect(c).toMatchObject({ event_id: ev.id, file_path: 'documents/F9.env', file_unique_id: 'UF9' })
+  expect(statSync(c.path).mode & 0o777).toBe(0o600)
+  expect(readFileSync(c.path, 'utf8')).toBe(`KEY=<已遮蔽 #${ev.id}.1: OpenAI API key, 末 4 碼 oooo>\n`)
+  await new Promise(r => setTimeout(r, 20))
+  // answered and scheduled without any worker asking
+  expect(sent.find(m => m.chatId === USER)!.text).toStartWith('⚠️ 這則訊息的附件 prod.env 含有密鑰 (OpenAI API key 末 4 碼 oooo)')
+  expect(db.getDeletion(1)).toMatchObject({ message_id: 50, status: 'pending' })
+  expect(sent.find(m => m.chatId === OWNER)!.text).toContain('附件: prod.env (收到時偵測)')
+  expect((await v.cached('cc', 'F9'))!.buf.toString()).toBe(readFileSync(c.path, 'utf8'))
+  // the same file again is not fetched again
+  expect(v.prefetch('cc', u, true)).toBeNull()
+  // no secret: kept as it is; not fetched: chats not served, images, larger than 1 MB, other bots
+  const plain = doc(51, 'F10', 'notes.txt')
+  v.record('cc', plain)
+  await v.prefetch('cc', plain, true)
+  expect(db.cachedAttachment('cc', 'F10')).toMatchObject({ event_id: null })
+  expect((await v.cached('cc', 'F10'))!.buf.toString()).toBe('PLAIN=1\n')
+  expect(v.prefetch('cc', doc(52, 'F11', 'a.env'), false)).toBeNull()
+  expect(v.prefetch('cc', doc(53, 'F12', 'shot.png', { mime_type: 'image/png' }), true)).toBeNull()
+  expect(v.prefetch('cc', doc(54, 'F13', 'big.json', { file_size: MAX_TEXT_ATTACHMENT + 1 }), true)).toBeNull()
+  expect(await v.cached('other', 'F9')).toBeNull()
+  expect(fetched).toEqual(['F9', 'F10'])
+  // a download_attachment while it is still downloading waits for the result
+  files.F14 = `T=${OPENAI}`
+  fetchDelay = 100
+  const slow = doc(55, 'F14', 'x.yaml')
+  v.record('cc', slow)
+  void v.prefetch('cc', slow, true)
+  expect((await v.cached('cc', 'F14'))!.buf.toString()).toStartWith('T=<已遮蔽 #')
+  expect(fetched.filter(f => f === 'F14')).toHaveLength(1)
 })

@@ -411,6 +411,7 @@ const ipc = createIpc({
       bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store: store.forBot(botName), apiRoot: cfg.apiRoot,
       // plan 10e: secrets in a downloaded text file become markers
       scanDownload: (buf, file) => vault.attachment(botName, file, buf),
+      cachedDownload: fileId => vault.cached(botName, fileId),
       assertAllowedChat: makeAssertAllowedChat(live, loadAccess, chatId => (onBehalf && chatId === target) || !!conv && sendGranted(db.listOverrides(conv.key).filter(o => o.kind === 'send').map(o => o.value), chatId, id => { const a = loadAccess(); return a.allowFrom.includes(id) || id in a.groups })),
       assertSendable: makeAssertSendable(live, cfg.stateDir),
     }))
@@ -673,6 +674,17 @@ const vault = createVault({
   personLabel: uid => personLabel(db, uid),
   chatLabel: (_bot, chatId) => label(chatId),
   served: (type, chatId, uid) => servesChat(loadAccess(), cfg.owners, type, chatId, uid),
+  // text attachments are downloaded and checked as they come in (the URL carries the token: never logged)
+  async fetchFile(name, fileId) {
+    const h = bots.get(name)
+    if (!h) throw new Error(`bot ${name} is not running`)
+    const f = await h.bot.api.getFile(fileId)
+    if (!f.file_path) throw new Error('Telegram returned no file_path')
+    const res = await fetch(`${cfg.apiRoot ?? 'https://api.telegram.org'}/file/bot${h.cfg.token}/${f.file_path}`)
+    if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
+    return { buf: Buffer.from(await res.arrayBuffer()), file_path: f.file_path, file_unique_id: f.file_unique_id }
+  },
+  cacheDir: join(cfg.stateDir, 'attachments'),
   log,
 })
 
@@ -1042,6 +1054,8 @@ function startBot(bc: BotConfig): BotHandle {
       }).catch(e => log(`secret detection ${rec.id}: ${e}`))
     }
     secretOf.set(ctx, { rec, note })
+    // a text attachment is checked as it comes in (plan 10e)
+    if (ctx.chat && ctx.from) void vault.prefetch(bc.name, ctx.update, servesChat(loadAccess(), cfg.owners, ctx.chat.type, String(ctx.chat.id), String(ctx.from.id)))
     try { await next() } finally { note(false) }
   })
   bot.use(async (ctx, next) => {

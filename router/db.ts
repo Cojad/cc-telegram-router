@@ -95,6 +95,8 @@ export type ConvSecret = {
  *  list of findings (path, kind, last 4, hash, held value it equals). */
 export type EventRow = { id: number; ts: string; bot: string; update_json: string; masked: number }
 export type EventRaw = { event_id: number; sealed: string; fields: string; created_at: string }
+/** A text attachment downloaded on arrival (plan 10e): path holds what a worker gets (markers if it held a secret). */
+export type AttachmentCache = { bot: string; file_id: string; file_unique_id: string; file_path: string; path: string; event_id: number | null }
 /** A handle given to one conversation for one value of an event (secret_from_handle). expires_at null: permanent. */
 export type SecretHandle = {
   id: number; code: string; event_id: number; n: number; kind: string; last4: string
@@ -124,6 +126,9 @@ export interface RouterDb {
   eventsWithFile(fileId: string, limit?: number): EventRow[]
   /** The events row a text attachment was stored as (plan 10e, update_json {"attachment": ...}). */
   attachmentEvent(fileId: string): EventRow | null
+  /** Text attachments the router downloaded when they came in (masked when they held a secret). */
+  cacheAttachment(a: AttachmentCache): void
+  cachedAttachment(bot: string, fileId: string): AttachmentCache | null
   addHandle(h: Pick<SecretHandle, 'event_id' | 'n' | 'kind' | 'last4' | 'bot' | 'chat_id' | 'conv' | 'request_id' | 'expires_at'>): SecretHandle
   getHandle(code: string): SecretHandle | null
   /** bot and chat null: every conversation's. */
@@ -319,6 +324,10 @@ export function openRouterDb(path: string): RouterDb {
       bot TEXT NOT NULL, chat_id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL,
       base_url TEXT, allowed TEXT NOT NULL, added_by TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (bot, chat_id, name)
     );
+    CREATE TABLE IF NOT EXISTS attachment_cache (
+      bot TEXT NOT NULL, file_id TEXT NOT NULL, file_unique_id TEXT NOT NULL, file_path TEXT NOT NULL, path TEXT NOT NULL,
+      event_id INTEGER, created_at TEXT NOT NULL, PRIMARY KEY (bot, file_id)
+    );
     CREATE TABLE IF NOT EXISTS event_raw (event_id INTEGER PRIMARY KEY, sealed TEXT NOT NULL, fields TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS secret_handles (
       id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, event_id INTEGER NOT NULL, n INTEGER NOT NULL, kind TEXT NOT NULL, last4 TEXT NOT NULL,
@@ -413,6 +422,8 @@ export function openRouterDb(path: string): RouterDb {
     getEvent: id => (db.prepare('SELECT id, ts, bot, update_json, masked FROM events WHERE id = ?').get(id) as EventRow | null) ?? null,
     eventsWithFile: (fileId, limit = 20) => db.prepare(`SELECT id, ts, bot, update_json, masked FROM events WHERE instr(update_json, ?) > 0 AND update_json NOT LIKE '{"attachment":%' ORDER BY id DESC LIMIT ?`).all(`"file_id":${JSON.stringify(fileId)}`, limit) as EventRow[],
     attachmentEvent: fileId => (db.prepare('SELECT id, ts, bot, update_json, masked FROM events WHERE substr(update_json, 1, ?) = ? ORDER BY id DESC LIMIT 1').get(`{"attachment":{"file_id":${JSON.stringify(fileId)}`.length, `{"attachment":{"file_id":${JSON.stringify(fileId)}`) as EventRow | null) ?? null,
+    cacheAttachment: a => { db.prepare('INSERT OR REPLACE INTO attachment_cache (bot, file_id, file_unique_id, file_path, path, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(a.bot, a.file_id, a.file_unique_id, a.file_path, a.path, a.event_id, now()) },
+    cachedAttachment: (bot, fileId) => (db.prepare('SELECT bot, file_id, file_unique_id, file_path, path, event_id FROM attachment_cache WHERE bot = ? AND file_id = ?').get(bot, fileId) as AttachmentCache | null) ?? null,
     getEventRaw: id => (db.prepare('SELECT * FROM event_raw WHERE event_id = ?').get(id) as EventRaw | null) ?? null,
     addHandle(h) {
       const id = Number(db.prepare('INSERT INTO secret_handles (event_id, n, kind, last4, bot, chat_id, conv, request_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')

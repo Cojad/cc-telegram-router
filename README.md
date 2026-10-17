@@ -82,8 +82,8 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
 - 代號 (`secret_handles`) 只在申請的對話有效, 預設 10 分鐘, 最多 60 分鐘, 或永久. `secret_from_handle(handle, name, scope)` 把代號登記成這個對話的密鑰 (scope 跟 `/secret set` 值後面的寫法一樣, bot token 用 getMe 驗證, 10b 的限制照樣適用), 之後用 `bot_api` / `http_api`, 每次使用都累計在代號的 uses. 查看與撤銷: 對話裡 `/secret handles`, `/secret revoke <代號>`; owner 與 admin 用 `/router secret handles [chat_id]`, `/router secret revoke <代號>`. 撤銷代號不會移除已登記的密鑰.
 - 每次請求與登記記在「🔑 密鑰偵測」話題與 router.db: `secret_requests` (誰, 哪個對話, 哪個 event, 問題, 發出的代號, 結果), `secret_handles` (之後是否登記成密鑰, 使用次數).
 - 明文只限 owner 的終端機: `cc-telegram-router cli event raw <id>` 把原始 update 寫進 `<stateDir>/raw/` (目錄 700) 底下權限 600 的檔案, 只印路徑, 由 owner 自己開檔; 也記在話題. Telegram 裡沒有取得明文的途徑, admin 與 Telegram 裡的 `/router event raw` 一律拒絕.
-- 文字類附件: worker 用 `download_attachment` 下載時, router 對文字檔 (`.txt` `.env` `.env.*` `.json` `.yaml` `.yml` `.ini` `.conf` `.cfg` `.toml` `.properties` `.md` `.csv`, 常見原始碼副檔名, 或 mime 是 `text/*`; 1 MB 以內, 不含 NUL 位元組) 用同一套偵測. 偵測到時原檔存成 events 的一列 (`update_json` 是 `{"attachment": {file_id, 檔名, 對話, 原訊息, 內容}}`, 遮蔽版, `masked` 1), 原文加密存在 `event_raw`; 寫進對話資料夾的檔案是代號版; 附件的原訊息照上面的方式提醒並 5 分鐘後刪除, 「🔑 密鑰偵測」記下檔名. 同一個檔案再下載拿到同樣的代號, 不重複記錄. `event_raw` 與 `cli event raw` 也適用這一列.
-- 限制: 2026-10-17 已遮蔽的 5 筆舊紀錄原始值已覆寫, 救不回來, 這套只保護之後的資料; 圖片, 二進位檔, 超過 1 MB 的文字檔不偵測, 附件也只在 worker 下載時才檢查; 不認得的格式偵測不到, 已登記的值則一定比對得到.
+- 文字類附件: router 收到訊息時就檢查, 不等 worker 下載 (柯姊 2026-10-17). 服務中的對話 (允許的私訊與群組) 裡, 訊息或編輯後的訊息帶的文字檔 (`.txt` `.env` `.env.*` `.json` `.yaml` `.yml` `.ini` `.conf` `.cfg` `.toml` `.properties` `.md` `.csv`, 常見原始碼副檔名, 或 mime 是 `text/*`; 1 MB 以內) 立刻下載, 用同一套偵測 (不含 NUL 位元組的才掃). 偵測到時原檔存成 events 的一列 (`update_json` 是 `{"attachment": {file_id, 檔名, 對話, 原訊息, 內容}}`, 遮蔽版, `masked` 1), 原文加密存在 `event_raw`; 原訊息照上面的方式提醒並 5 分鐘後刪除, 「🔑 密鑰偵測」記下檔名 (收到時偵測). 下載結果 (有密鑰就是代號版, 沒有就是原檔) 存在 `<stateDir>/attachments/<bot>/` (權限 600, `attachment_cache` 表), worker 之後呼叫 `download_attachment` 直接沿用, 不重複下載; 還在下載中就等它完成. 收到時沒有下載的 (引用的舊附件, 其他對話, 下載失敗) 在 worker 下載時用同樣方式檢查, 同一個檔案只記錄一次. `event_raw` 與 `cli event raw` 也適用這一列.
+- 限制: 2026-10-17 已遮蔽的 5 筆舊紀錄原始值已覆寫, 救不回來, 這套只保護之後的資料; 圖片, 二進位檔, 超過 1 MB 的文字檔不偵測; 不認得的格式偵測不到, 已登記的值則一定比對得到.
 
 ### 工具呼叫分類器 (第一階段, 只記錄)
 
@@ -258,7 +258,7 @@ bun test router/test
 | secret_from_handle 登記成對話密鑰 (10b 範圍規則與 getMe), 之後 bot_api / http_api 使用 | rawvault「secret_from_handle…」; e2e-rawvault「event_raw: …」(bot_api 送出真值) |
 | 每次請求與登記記在話題與 router.db | rawvault「event_raw: only when…」「secret_from_handle…」; e2e-rawvault「event_raw: …」 |
 | 明文: 只限 owner 終端機 `cli event raw`, 寫進 600 檔只印路徑, 記在話題; 不提供私訊明文 | rawvault「cli event raw…」「/secret handles | revoke…」(Telegram 與 admin 被拒); e2e-rawvault「event_raw: …」 |
-| 文字類附件 (副檔名或 text/*): 下載時偵測, worker 拿到代號版, 原檔加密保存, 提醒並 5 分鐘後刪除原訊息, 話題記檔名; 圖片與二進位檔不做 | rawvault「text attachments: …」「download_attachment of a text file…」; e2e-rawvault「download_attachment of a .env file…」 |
+| 文字類附件 (副檔名或 text/*, 1 MB 以內): 收到訊息時就下載並偵測, 提醒並 5 分鐘後刪除原訊息, 話題記檔名, 原檔加密保存; 下載結果留著 (遮蔽版), download_attachment 沿用不重複下載, 沒有密鑰也留著; 圖片與二進位檔不做 | rawvault「text attachments: …」「download_attachment of a text file…」「text attachments are downloaded and checked as they come in…」; e2e-rawvault「a .env file with a key is checked as it comes in…」 |
 | 固定 agent 一律台灣正體中文與半形標點 | rawvault「the fixed agent answers in Taiwan…」 |
 | 工具說明, /telegram:doc 與 README 同步 | rawvault「docs: …」 |
 

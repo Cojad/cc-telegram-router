@@ -60,7 +60,7 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 ## 密鑰與原文 (event_raw)
 
 - 訊息裡的密鑰 (Telegram bot token, OpenAI, Anthropic, GitHub, AWS, Google, Slack 的 key, PEM 私鑰, 已登記的憑證與對話密鑰) 由 router 換成 `<已遮蔽 #<event id>.<序號>: 種類, 末 4 碼 xxxx>` 才交給你, 原文加密保存. 不要叫使用者重貼.
-- 文字類附件 (.env, .json, .yaml, .txt, 原始碼等, 1 MB 以內) 用 `download_attachment` 下載時也會檢查: 檔案裡的密鑰同樣換成代號, 原訊息照樣提醒並刪除; 圖片與二進位檔不檢查.
+- 文字類附件 (.env, .json, .yaml, .txt, 原始碼等, 1 MB 以內) 在 router 收到訊息時就檢查: 檔案裡的密鑰換成代號, 原訊息照樣提醒並刪除; 你用 `download_attachment` 拿到的是檢查過的那份 (不會重複下載). 圖片與二進位檔不檢查.
 - 一般對話裡偵測到時, router 會回覆那則訊息提醒, 5 分鐘後刪除 (發送者, owner, admin 可以按「取消刪除」), bot 沒有刪除權限時只提醒. 每次偵測都記在審核群組的「🔑 密鑰偵測」話題.
 - 這一輪的發話者或這個對話是 owner 或 admin 時 (在終端機直接打字的那一輪沒有發話者, 只看對話角色), 可以用 `event_raw` (event_id, question, 可選 ttl_minutes 或 permanent) 問原本是什麼, 任何對話的 event 都行: 你拿到密鑰換成代號 (`h<數字>`) 的原始 update 與固定 agent 的說明, 拿不到值. 代號只在這個對話有效, 預設 10 分鐘, 最多 60 分鐘, 或永久.
 - 要用就呼叫 `secret_from_handle` (handle, name, scope) 把代號登記成這個對話的密鑰 (scope 跟 `/secret set` 值後面的寫法一樣), 再用 `bot_api` / `http_api` 填 name.

@@ -37,6 +37,8 @@ export interface OutboundDeps {
   /** A downloaded file before it is written (plan 10e: secrets in text files
    *  become markers); returns the bytes to write. */
   scanDownload?: (buf: Buffer, file: { file_id: string; file_path: string }) => Promise<Buffer>
+  /** A text attachment the router already downloaded (and checked) when it came in; null: download it now. */
+  cachedDownload?: (file_id: string) => Promise<{ buf: Buffer; file_path: string; file_unique_id: string } | null>
 }
 
 const DEFAULT_LOOKUP_LIMIT = 10
@@ -179,13 +181,21 @@ export async function callTool(name: string, args: Record<string, unknown>, deps
       }
       case 'download_attachment': {
         const file_id = args.file_id as string
-        const file = await bot.api.getFile(file_id)
-        if (!file.file_path) throw new Error('Telegram returned no file_path — file may have expired')
-        const url = `${deps.apiRoot ?? 'https://api.telegram.org'}/file/bot${token}/${file.file_path}`
-        const res = await fetch(url)
-        if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
-        let buf = Buffer.from(await res.arrayBuffer())
-        if (deps.scanDownload) buf = await deps.scanDownload(buf, { file_id, file_path: file.file_path })
+        const cached = deps.cachedDownload ? await deps.cachedDownload(file_id) : null
+        let buf: Buffer, file: { file_path: string; file_unique_id?: string }
+        if (cached) {
+          buf = cached.buf
+          file = cached
+        } else {
+          const got = await bot.api.getFile(file_id)
+          if (!got.file_path) throw new Error('Telegram returned no file_path — file may have expired')
+          file = { file_path: got.file_path, file_unique_id: got.file_unique_id }
+          const url = `${deps.apiRoot ?? 'https://api.telegram.org'}/file/bot${token}/${file.file_path}`
+          const res = await fetch(url)
+          if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
+          buf = Buffer.from(await res.arrayBuffer())
+          if (deps.scanDownload) buf = await deps.scanDownload(buf, { file_id, file_path: file.file_path })
+        }
         // file_path is from Telegram (trusted), but strip to safe chars anyway
         // so nothing downstream can be tricked by an unexpected extension.
         const rawExt = file.file_path.includes('.') ? file.file_path.split('.').pop()! : 'bin'

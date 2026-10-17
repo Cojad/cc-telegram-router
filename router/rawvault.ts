@@ -19,13 +19,13 @@
 // secret_from_handle registers a handle as a conversation secret (10b rules).
 // The owner's terminal can write the plaintext to a 600 file (cli event raw).
 
-import { mkdirSync, writeFileSync, chmodSync } from 'fs'
+import { mkdirSync, writeFileSync, chmodSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import type { Conversation, RouterDb, SecretHandle } from './db'
 import { scanUpdate, replaceFindings, replaceInPlace, valuesOf, eventMarker, workerMarker, ownFindings, isQuoted, pathText, detectSecrets, CMD_KIND, MIN_KNOWN, type Finding, type Known } from './detect'
 import { sealRaw, openRaw, registerSecret, type SecretDeps } from './secrets'
 import { secretPlace, type ApprovalDeps, type Button } from './approvals'
-import { gmt8 } from './context'
+import { gmt8, maskTokens } from './context'
 
 export const DELETE_AFTER_MS = 5 * 60_000
 export const DEFAULT_TTL_MIN = 10
@@ -103,6 +103,10 @@ export interface VaultDeps {
   secretDeps: SecretDeps
   /** Where cli event raw writes (mode 700). */
   rawDir: string
+  /** getFile + download with this bot's token (text attachments on arrival). */
+  fetchFile?(bot: string, fileId: string): Promise<{ buf: Buffer; file_path: string; file_unique_id: string }>
+  /** Where text attachments downloaded on arrival are kept (mode 700; what a worker gets). */
+  cacheDir?: string
   /** Does the router serve this sender in this chat? (reminders only there) */
   served?(chatType: string, chatId: string, senderId: string): boolean
   /** 重要通知 to the owner. */
@@ -162,6 +166,8 @@ export function createVault(deps: VaultDeps) {
     } catch { return null }
   }
 
+  /** Text attachments being downloaded on arrival, so a download_attachment meanwhile waits for it. */
+  const inflight = new Map<string, Promise<void>>()
   const self = {
     /** Log an update: masked into events with the original sealed in event_raw when it holds a secret. */
     record(bot: string, update: unknown): Recorded {
@@ -182,7 +188,7 @@ export function createVault(deps: VaultDeps) {
 
     /** After a detection: remind and schedule the deletion when it is the
      *  sender's own message in a chat the router serves; record it either way. */
-    async detected(bot: string, rec: Recorded, info: { chatId: string | null; chatType: string | null; messageId: number | null; senderId: string | null; served: boolean; command: boolean; fileName?: string | null }): Promise<void> {
+    async detected(bot: string, rec: Recorded, info: { chatId: string | null; chatType: string | null; messageId: number | null; senderId: string | null; served: boolean; command: boolean; fileName?: string | null; fileVia?: string }): Promise<void> {
       const own = ownFindings(rec.findings)
       // a text attachment the worker downloaded (attachment): say it is the file
       const where = info.fileName !== undefined ? `這則訊息的附件${info.fileName ? ` ${info.fileName} ` : ''}` : '這則訊息'
@@ -212,7 +218,7 @@ export function createVault(deps: VaultDeps) {
         `🔑 偵測到密鑰 event #${rec.id}`,
         `對話: ${info.chatId ? deps.chatLabel(bot, info.chatId) : '(沒有對話)'}`,
         `發送者: ${info.senderId ? `${deps.personLabel(info.senderId)} (${info.senderId})` : '(不明)'}`,
-        ...(info.fileName !== undefined ? [`附件: ${info.fileName ?? '(沒有檔名)'} (worker 下載時偵測)`] : []),
+        ...(info.fileName !== undefined ? [`附件: ${info.fileName ?? '(沒有檔名)'} (${info.fileVia ?? 'worker 下載時'}偵測)`] : []),
         `內容: ${describeFindings(rec.findings, true)}`,
         `欄位: ${[...new Set(rec.findings.map(f => pathText(f.path)))].join(', ')}`,
         `處理: ${outcome}`,
@@ -227,7 +233,7 @@ export function createVault(deps: VaultDeps) {
      *  worker gets the file with markers, and the message it came with is
      *  answered and deleted as 10e does. The same file again: the same markers,
      *  recorded once. Anything else is passed on as it is. */
-    async attachment(bot: string, file: { file_id: string; file_path: string }, buf: Buffer): Promise<Buffer> {
+    async attachment(bot: string, file: { file_id: string; file_path: string }, buf: Buffer, via: '收到時' | 'worker 下載時' = 'worker 下載時'): Promise<Buffer> {
       const found = db.eventsWithFile(file.file_id).map(e => ({ e, hit: findAttachmentMessage(e.update_json, file.file_id) })).find(x => x.hit)
       const msg = found?.hit?.msg
       const doc = msg?.document ?? msg?.audio ?? msg?.video ?? msg?.voice ?? msg?.animation
@@ -253,10 +259,43 @@ export function createVault(deps: VaultDeps) {
       const chatType: string | null = msg?.chat?.type ?? null
       // in the message itself (a reply's quoted file: the replied-to message is the one to delete)
       void self.detected(bot, { id, findings }, {
-        chatId, chatType, messageId: msg?.message_id ?? null, senderId, command: false, fileName: name,
+        chatId, chatType, messageId: msg?.message_id ?? null, senderId, command: false, fileName: name, fileVia: via,
         served: !!chatId && !!senderId && !!chatType && (deps.served?.(chatType, chatId, senderId) ?? false),
       }).catch(e => deps.log?.(`attachment detection ${id}: ${e}`))
       return toWorker(id, original, findings)
+    },
+
+    /** A message with a text attachment (by name or mime, file_size up to 1 MB)
+     *  in a chat the router serves: download and check it now, not when a
+     *  worker asks (柯姊 2026-10-17). The result (markers if it held a secret)
+     *  is kept for download_attachment, with or without a secret. */
+    prefetch(bot: string, update: any, served: boolean): Promise<void> | null {
+      const msg = update?.message ?? update?.edited_message
+      const doc = msg?.document
+      if (!served || !doc?.file_id || !deps.fetchFile || !deps.cacheDir) return null
+      if (!isTextAttachment(doc.file_name, doc.mime_type) || (doc.file_size ?? 0) > MAX_TEXT_ATTACHMENT) return null
+      const k = `${bot}\n${doc.file_id}`
+      if (inflight.has(k) || db.cachedAttachment(bot, doc.file_id)) return inflight.get(k) ?? null
+      const run = (async () => {
+        const got = await deps.fetchFile!(bot, doc.file_id)
+        const out = await self.attachment(bot, { file_id: doc.file_id, file_path: got.file_path }, got.buf, '收到時')
+        const dir = join(deps.cacheDir!, bot)
+        mkdirSync(dir, { recursive: true, mode: 0o700 })
+        const ext = (got.file_path.includes('.') ? got.file_path.split('.').pop()! : 'bin').replace(/[^a-zA-Z0-9]/g, '') || 'bin'
+        const path = join(dir, `${(got.file_unique_id || 'f').replace(/[^a-zA-Z0-9_-]/g, '')}-${Date.now()}.${ext}`)
+        writeFileSync(path, out, { mode: 0o600 })
+        db.cacheAttachment({ bot, file_id: doc.file_id, file_unique_id: got.file_unique_id, file_path: got.file_path, path, event_id: db.attachmentEvent(doc.file_id)?.id ?? null })
+      })().catch(e => deps.log?.(`attachment prefetch: ${maskTokens(e instanceof Error ? e.message : String(e))}`)).finally(() => inflight.delete(k))
+      inflight.set(k, run)
+      return run
+    },
+
+    /** download_attachment: what prefetch kept (after it finishes), or null to download now. */
+    async cached(bot: string, fileId: string): Promise<{ buf: Buffer; file_path: string; file_unique_id: string } | null> {
+      await inflight.get(`${bot}\n${fileId}`)
+      const c = db.cachedAttachment(bot, fileId)
+      if (!c || !existsSync(c.path)) return null
+      return { buf: readFileSync(c.path), file_path: c.file_path, file_unique_id: c.file_unique_id }
     },
 
     /** Delete what is due (every few seconds, and right after a restart). */

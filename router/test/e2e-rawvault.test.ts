@@ -8,7 +8,7 @@
 // /secret set is still deleted at once; event_raw from the owner's worker
 // (fixed agent, handles), secret_from_handle and then bot_api with the real
 // token; a user conversation is refused; cli event raw writes a 600 file;
-// a .env file with a key: the worker's download has a marker, the message is answered;
+// a .env file with a key: checked as it comes in, the worker's download has a marker;
 // event_raw in a terminal turn goes by the conversation's role.
 // Keep in sync with README 「原始事件與密鑰保護」; module level in rawvault.test.ts.
 // Every token here is fake and built at runtime.
@@ -205,13 +205,16 @@ test('event_raw: a user conversation is refused; the owner\'s worker gets the ha
   await until(() => sentTo(APPROVALS, `🗝 owner 在終端機取出 event #${ev} 的明文`).length === 1)
 }, 30000)
 
-test('download_attachment of a .env file with a key: the file in the worker\'s folder has a marker, the original is sealed, the message it came with is answered', async () => {
+test('a .env file with a key is checked as it comes in: answered and recorded before any worker asks; download_attachment then gets the kept file with a marker, not downloaded again', async () => {
   const delivered: string[] = []
   const w = worker('dm-666', 14, delivered)
   await until(() => w.state().kind === 'ready')
   const id = mid++
   updates.push({ update_id: id, message: { message_id: id, date: now, chat: { id: 666, type: 'private' }, from: USER, document: { file_id: 'DOC1', file_unique_id: 'uq9', file_name: 'app.env', mime_type: 'text/plain', file_size: 40 } } })
   await until(() => delivered.some(d => d.includes('DOC1')))
+  // no download_attachment yet: the router already fetched it, answered the message and recorded it
+  const reminder = await until(() => sentTo(666, '⚠️ 這則訊息的附件 app.env 含有密鑰')[0])
+  expect(calls.filter(c => c.method === 'file')).toHaveLength(1)
   const r = await w.call('download_attachment', { file_id: 'DOC1' })
   expect(r.isError).toBeFalsy()
   const path = r.content[0]!.text
@@ -221,11 +224,12 @@ test('download_attachment of a .env file with a key: the file in the worker\'s f
   expect(text).toBe(`HOST=example\nGH_TOKEN=<已遮蔽 #${ev.id}.1: GitHub token, 末 4 碼 FFFF>\n`)
   expect(calls.some(c => c.method === 'file' && c.body === '/file/bot123:test/documents/file_9.env')).toBe(true)
   for (const [t, c] of [['events', 'update_json'], ['event_raw', 'sealed'], ['messages', 'content'], ['outbound', 'payload_json'], ['outbound', 'result_json']]) expect(q(`SELECT count(*) n FROM ${t} WHERE CAST(${c} AS TEXT) LIKE '%${IN_FILE}%'`)[0].n).toBe(0)
-  const reminder = await until(() => sentTo(666, '⚠️ 這則訊息的附件 app.env 含有密鑰')[0])
+  expect(calls.filter(c => c.method === 'file')).toHaveLength(1)
+  expect(calls.filter(c => c.method === 'getFile')).toHaveLength(1)
   expect(reminder.body.reply_parameters.message_id).toBe(id)
   expect(reminder.body.text).toContain('(GitHub token 末 4 碼 FFFF)')
   const log = await until(() => sentTo(APPROVALS, `🔑 偵測到密鑰 event #${ev.id}`)[0])
-  expect(log.body.text).toContain('附件: app.env (worker 下載時偵測)')
+  expect(log.body.text).toContain('附件: app.env (收到時偵測)')
   w.close()
 })
 
