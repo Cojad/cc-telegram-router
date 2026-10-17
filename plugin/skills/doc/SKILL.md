@@ -39,7 +39,7 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 
 ## 套件安裝審核 (power 對話)
 
-pip, uv, poetry, npm, bun, yarn, pnpm, npx, uvx 的安裝指令會先由 router 查 PyPI/npm 的資料, 交給模型判斷風險: low 直接放行 (結果快取一週); medium, high, 審核失敗, 或從 URL, 本機路徑, 自訂來源安裝 (含 `--index-url`, `--extra-index-url`, `--find-links`, `--registry` 這類改變來源的選項), 一律送 owner 審核. 選項的值 (例如 `--only-binary :all:`) 不算套件. 核准後該對話之後都能安裝那些套件; owner 也可以直接用 `/router perm [chat_id] pkg allow pypi:名稱`.
+pip, uv, poetry, npm, bun, yarn, pnpm, npx, uvx 的安裝指令會先由 router 查 PyPI/npm 的資料, 交給模型判斷風險: low 直接放行 (結果快取一週); medium, high, 審核失敗, 或從 URL, 本機路徑, 自訂來源安裝 (含 `--index-url`, `--extra-index-url`, `--find-links`, `--registry` 這類改變來源的選項), 一律送 owner 審核. 選項的值 (例如 `--only-binary :all:`) 不算套件. 從自訂來源安裝的套件不查 PyPI/npm 資料, 一律由人審, 核准只放行那一次安裝, 下次再裝要重新申請. 核准後該對話之後都能安裝那些套件; owner 也可以直接用 `/router perm [chat_id] pkg allow pypi:名稱`.
 
 ## 跨對話傳訊
 

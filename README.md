@@ -25,7 +25,7 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 5. 模型呼叫 reply 等工具時, plugin 把呼叫轉給 router; router 檢查目標與附件路徑後代為呼叫 Bot API, 每個呼叫寫進 `outbound`. 群組的 worker 可以不經申請回到提問者的私訊: reply 帶 `on_behalf_of` (提問的那則群組訊息), router 確認發送者就是目標才放行, 不限時間, 私訊開頭標明來自哪個群組與哪則訊息.
 6. 每個工具呼叫在 PreToolUse 由 hook 問 router, router 依對話角色的 settings 檢查 (`permcheck.ts`). 越權就擋下並告訴模型改用不越權的方法 (只有唯讀指令白名單的角色, 用 `>` `>>` 等重導向寫檔也算越權, 跟 Claude Code 一致); 發話者角色高於對話時, 直接在對話裡貼出「提權執行 / 拒絕」詢問 (120 秒未回應視為拒絕). 發話者綁在那一輪: 在 worker 終端機打的一輪 (prompt hook 沒有 Telegram 訊息) 沒有發話者, 只看對話角色, 不在對話裡詢問, 到下一則 Telegram 訊息開始的那一輪為止. 按下的人角色夠高才算數, 之後的第一個 subagent 以他的角色執行.
 7. 「cc /指令」由 router 開一次性的 tmux (`claude attach`) 代打: router 指令直接執行; `/status` `/usage` `/context` `/cost` 有專用報表; 其他指令只取它的輸出交給分身整理; `cc //指令` 直接截當下畫面. 離開前一律關掉留下的選單.
-8. power 對話的套件安裝 (pip, npm, bun...) 由 router 查 registry 資料後交給模型判斷風險, low 直接放行, 其餘送 owner 審核. 指令解析認得各工具帶值的選項 (例如 `--only-binary :all:`, `--target pydeps`, `--omit dev`), 值不算套件; 改變來源的選項 (`-i`/`--index-url`, `--extra-index-url`, `-f`/`--find-links`, `--trusted-host`, `--registry`...) 讓那筆安裝視為自訂來源送審; `uvx --from`, `--with`, `pipx run --spec`, `npx -p` 的值是套件, 這時後面的第一個字是指令.
+8. power 對話的套件安裝 (pip, npm, bun...) 由 router 查 registry 資料後交給模型判斷風險, low 直接放行, 其餘送 owner 審核. 指令解析認得各工具帶值的選項 (例如 `--only-binary :all:`, `--target pydeps`, `--omit dev`), 值不算套件; 帶了改變來源的選項 (`-i`/`--index-url`, `--extra-index-url`, `-f`/`--find-links`, `--trusted-host`, `--registry`...) 時, 那筆安裝的每個套件都列成自訂來源項目「<套件> (來源 <url>)」, 不查 PyPI/npm 的資料, 一律送人審; 核准 (允許一次或永久允許都一樣) 只放行那一次安裝, 不寫任何權限覆寫, 下次再從自訂來源安裝仍要審核 (審核訊息會說明原因); `uvx --from`, `--with`, `pipx run --spec`, `npx -p` 的值是套件, 這時後面的第一個字是指令.
 9. 叫醒 worker 時 router 計算 plugin (`server.js`, `skills/`) 與它看得到的三個技能範圍的雜湊, 記在對話的 `.chat/tools.sha`. 接續舊 session (resume) 而雜湊變了 (部署 plugin, 安裝技能), 下一則訊息的 `<router_log>` 附一次提醒, 請它重新讀取技能 SOP 與工具說明 (`router/freshness.ts`). 新 session 不用提醒.
 10. `/router` 指令裡的 `chat_id` 指這隻 bot 的對話, `--bot <名稱>` 指別隻; 對話 key (`router-dm-123`) 到處都能用. 終端機 CLI 會找所有 bot, 多隻都有時列出候選並要求 `--bot`, 不會默默挑一隻.
 11. 廣播頻道目前不支援: 頻道貼文 (`channel_post`, `edited_channel_post`) 只寫進 events, 不建立對話也不送 worker (頻道裡的 `/router`, `/secret`, `cc /` 一樣不處理). bot 被加入頻道時通知 owner (重要通知話題, 沒有審核群組就私訊), 說明尚未支援並請有實際應用場景的人到 GitHub issues (https://github.com/Cojad/cc-telegram-router/issues) 提交使用情境與需要的功能.
@@ -209,7 +209,7 @@ bun test router/test
 | 提權紀錄: 被擋, 申請, 成功 (附原申請連結), 群組話題 | phase3「…approval runs the next subagent…」(紀錄與連結), 「elevation log: with an approvals group…」 |
 | 跨對話傳訊: owner 審核, 目標對話與 owner 同時詢問; 目標就是審核處時只有一份, 由 owner 或 admin 決定, 文字照實說明 | phase3「grants: owner mode…」「grants: target mode…」「grants: a target request whose target is the approvals group…」 |
 | 群組回到提問者的私訊 (reply on_behalf_of): 不用申請, 不限時間, 標明來源, 其他人一律擋 | e2e「a group worker answers the asker in their DM…」 |
-| power 安裝套件: 低風險放行, 其餘送審, 核准後可裝; 選項的值不算套件, 改變來源的選項送審 | phase3-pkg 全部 |
+| power 安裝套件: 低風險放行, 其餘送審, 核准後可裝; 選項的值不算套件; 自訂來源的套件不查 registry, 一律送審, 核准只放行一次且不寫覆寫 | phase3-pkg 全部 |
 | 新 bot 初次設定與審核群組; 同一隻 bot 加回時沿用既有設定, 名稱給了另一隻 bot 就重置 | e2e-setup 全部; phase2「bot add: a new bot gets the first-run line…」「bot setup follows the Telegram bot id…」; e2e「bot add answers once its getMe is in…」「a name whose token is now another bot's…」 |
 | /router perm 與覆寫 | phase3「/router perm: show…」「admin cannot touch…」「overrides lay paths…」 |
 | 三選一按鈕與永久允許的範圍 | phase3 grants 兩條, 「永久允許 runs it this time…」; phase3-pkg「永久允許 lets the conversation…」 |

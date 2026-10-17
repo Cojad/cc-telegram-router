@@ -217,6 +217,10 @@ export interface RouterDb {
   addPkgRequest(r: Pick<PkgRequest, 'conv' | 'pkgs' | 'reason'>): number
   getPkgRequest(id: number): PkgRequest | null
   decidePkgRequest(id: number, status: 'approved' | 'denied', by: string): boolean
+  /** An approved request lets these items through once (custom sources, no override). */
+  grantPkgOnce(id: number, items: string[]): void
+  /** Use up the oldest unused once-grant of conv covering every item; its request id, or null. */
+  takePkgOnce(conv: string, items: string[]): number | null
   getUserRole(uid: string): string | null
   setUserRole(uid: string, role: string | null): void
   listUsers(): Array<{ uid: string; role: string }>
@@ -343,6 +347,9 @@ export function openRouterDb(path: string): RouterDb {
   if (!setupCols.has('secret_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN secret_topic INTEGER')
   // which Telegram bot the setup belongs to (setup.ts adoptBotSetup): a name reused for another bot starts over
   if (!setupCols.has('bot_id')) db.exec('ALTER TABLE bot_setup ADD COLUMN bot_id TEXT')
+  // custom-source packages an approval lets through once (pkgreview.ts): no override, used up by one install
+  const pkgReqCols = new Set((db.query('PRAGMA table_info(pkg_requests)').all() as Array<{ name: string }>).map(c => c.name))
+  if (!pkgReqCols.has('once_items')) { db.exec('ALTER TABLE pkg_requests ADD COLUMN once_items TEXT'); db.exec('ALTER TABLE pkg_requests ADD COLUMN once_used_at TEXT') }
   const evCols = new Set((db.query('PRAGMA table_info(events)').all() as Array<{ name: string }>).map(c => c.name))
   if (!evCols.has('masked')) db.exec('ALTER TABLE events ADD COLUMN masked INTEGER NOT NULL DEFAULT 0')
   const useCols = new Set((db.query('PRAGMA table_info(auth_uses)').all() as Array<{ name: string }>).map(c => c.name))
@@ -538,6 +545,13 @@ export function openRouterDb(path: string): RouterDb {
     addPkgRequest: r => Number(db.prepare('INSERT INTO pkg_requests (conv, pkgs, reason, created_at) VALUES (?, ?, ?, ?)').run(r.conv, r.pkgs, r.reason, now()).lastInsertRowid),
     getPkgRequest: id => (db.prepare('SELECT id, conv, pkgs, reason, status, created_at, decided_by FROM pkg_requests WHERE id = ?').get(id) as PkgRequest | null) ?? null,
     decidePkgRequest: (id, status, by) => db.prepare("UPDATE pkg_requests SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'").run(status, by, now(), id).changes > 0,
+    grantPkgOnce: (id, items) => { db.prepare('UPDATE pkg_requests SET once_items = ? WHERE id = ?').run(JSON.stringify(items), id) },
+    takePkgOnce(conv, items) {
+      const rows = db.prepare("SELECT id, once_items FROM pkg_requests WHERE conv = ? AND status = 'approved' AND once_items IS NOT NULL AND once_used_at IS NULL ORDER BY id").all(conv) as Array<{ id: number; once_items: string }>
+      const hit = rows.find(r => { const have = new Set(JSON.parse(r.once_items) as string[]); return items.every(i => have.has(i)) })
+      if (!hit) return null
+      return db.prepare('UPDATE pkg_requests SET once_used_at = ? WHERE id = ? AND once_used_at IS NULL').run(now(), hit.id).changes > 0 ? hit.id : null
+    },
     getUserRole: uid => ((qUserGet.get(uid) as { role: string } | null)?.role) ?? null,
     setUserRole: (uid, role) => { if (role) qUserSet.run(uid, role, now()); else qUserDel.run(uid) },
     listUsers: () => qUsers.all() as Array<{ uid: string; role: string }>,
