@@ -31,7 +31,8 @@ export type Provider = typeof PROVIDERS[number]
  *  openrouter: POST <baseUrl>/api/alpha/decisions (OpenRouter's Decisions router, Jev-style
  *              request for both models; usage.cost is the billed cost)
  *  openai:     POST <baseUrl>/v1/decisions (OpenAI native; cost = input tokens x usdPerMTok)
- *  systemone:  POST <baseUrl>/v1/systemone (TypeSafe native, or OrcaRouter; usage.cost if given, else tokens x usdPerMTok) */
+ *  systemone:  POST <baseUrl>/v1/systemone (TypeSafe native: tokens x usdPerMTok; OrcaRouter: asks for and
+ *              records usage.cost_usd, its billed cost, and keeps X-Orca-Request-Id in detail) */
 export type ApiKind = 'openrouter' | 'openai' | 'systemone'
 export const API_KINDS: ApiKind[] = ['openrouter', 'openai', 'systemone']
 export type ApiConfig = { api: ApiKind; credential: string; model: string; usdPerMTok: number }
@@ -270,8 +271,9 @@ export type Judge = {
 const authHeaders = (c: Credential): Record<string, string> =>
   ({ [c.header ?? 'Authorization']: `${c.scheme ?? 'Bearer'} ${c.token}`.trim(), 'content-type': 'application/json' })
 
-async function postJson(url: string, cred: Credential, body: unknown, signal: AbortSignal): Promise<any> {
-  const r = await fetch(url, { method: 'POST', headers: authHeaders(cred), body: JSON.stringify(body), signal })
+async function postJson(url: string, cred: Credential, body: unknown, signal: AbortSignal, extra: Record<string, string> = {}, seen?: (h: Headers) => void): Promise<any> {
+  const r = await fetch(url, { method: 'POST', headers: { ...authHeaders(cred), ...extra }, body: JSON.stringify(body), signal })
+  seen?.(r.headers)
   const text = await r.text()
   // never echo a body that might quote the request back with a key in it: status and a short error only
   if (!r.ok) {
@@ -302,18 +304,30 @@ export function decisionsJudge(o: { cred: () => Credential | undefined; cfg: () 
   }
 }
 
-export function jevJudge(o: { cred: () => Credential | undefined; cfg: () => ApiConfig }): Judge {
+/** OrcaRouter: a baseUrl on orcarouter.ai. */
+export const isOrca = (baseUrl: string | undefined) => { try { return /(^|\.)orcarouter\.ai$/i.test(new URL(baseUrl ?? '').hostname) } catch { return false } }
+export const ORCA_COST_HEADER = 'X-OrcaRouter-Include-Cost'
+
+export function jevJudge(o: { cred: () => Credential | undefined; cfg: () => ApiConfig; isOrca?: (baseUrl: string | undefined) => boolean }): Judge {
   return {
     ready: () => (o.cred()?.token ? null : 'no-key'),
     async run(sent, signal) {
       const c = o.cfg(), cred = o.cred()!
-      const j = await postJson(`${(cred.baseUrl ?? 'https://api.typesafe.ai').replace(/\/+$/, '')}/v1/systemone`, cred, jevBody(c.model, sent), signal)
+      // OrcaRouter puts the billed cost in usage.cost_usd when asked; its request id is for /v1/generation
+      const orca = (o.isOrca ?? isOrca)(cred.baseUrl)
+      let reqId: string | null = null
+      const j = await postJson(`${(cred.baseUrl ?? 'https://api.typesafe.ai').replace(/\/+$/, '')}/v1/systemone`, cred, jevBody(c.model, sent), signal,
+        orca ? { [ORCA_COST_HEADER]: 'true' } : {}, h => { reqId = h.get('x-orca-request-id') })
       const block = j.answers?.block, risk = j.answers?.risk
       const tokens = num(j.usage?.input_tokens)
-      // a hub may give the charged cost itself (usage.cost); else tokens x the price
-      const base = { model: String(j.model ?? c.model), input_tokens: tokens, output_tokens: num(j.usage?.output_tokens), cost_usd: num(j.usage?.cost) ?? (tokens ?? 0) * c.usdPerMTok / 1e6 }
-      if (block?.type !== 'noul' || risk?.type !== 'score') return { ...base, status: 'refusal', p_block: num(block?.noul), risk: num(risk?.score), confidence: num(risk?.confidence), detail: 'missing answer' }
-      return { ...base, status: 'ok', p_block: num(block.noul), risk: num(risk.score), confidence: num(risk.confidence) }
+      // Orca: its usage.cost_usd, never an estimate (0 and said so when missing); TypeSafe native: tokens x the price
+      const orcaCost = num(j.usage?.cost_usd)
+      const notes = orca ? [...(orcaCost === null ? ['no usage.cost_usd in the response'] : []), ...(reqId ? [`orca request ${reqId}`] : [])] : []
+      const base = { model: String(j.model ?? c.model), input_tokens: tokens, output_tokens: num(j.usage?.output_tokens), cost_usd: orca ? orcaCost ?? 0 : num(j.usage?.cost) ?? (tokens ?? 0) * c.usdPerMTok / 1e6 }
+      const detail = (more: string[]) => [...more, ...notes].join('; ') || undefined
+      if (block?.type !== 'noul' || risk?.type !== 'score') return { ...base, status: 'refusal', p_block: num(block?.noul), risk: num(risk?.score), confidence: num(risk?.confidence), detail: detail(['missing answer']) }
+      const d = detail([])
+      return { ...base, status: 'ok', p_block: num(block.noul), risk: num(risk.score), confidence: num(risk.confidence), ...(d ? { detail: d } : {}) }
     },
   }
 }

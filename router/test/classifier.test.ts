@@ -9,7 +9,7 @@ import { tmpdir, homedir } from 'os'
 import { join } from 'path'
 import {
   parseClassifier, DEFAULT_CLASSIFIER, buildSent, maskValue, MAX_FIELD, MAX_STATE, decisionsBody, jevBody, parseClaudeVerdict,
-  decisionsJudge, jevJudge, openrouterJudge, apiJudge, claudeJudge, openClassifyStore, createClassifier, classifierReport, classifierShow, gmt8DayStart,
+  decisionsJudge, jevJudge, openrouterJudge, isOrca, apiJudge, claudeJudge, openClassifyStore, createClassifier, classifierReport, classifierShow, gmt8DayStart,
   CLAUDE_SYSTEM, SETTING, MAX_MESSAGE, TG_NOT_JUDGED, type ApiConfig, type ClassifyStore, type Judge, type Judgement, type MaskEnv, type ClassifierConfig, type Provider,
 } from '../classifier'
 
@@ -149,8 +149,8 @@ test('questions: Decisions gets predicate + score (4 levels) on gpt-6-luna; Jev 
 
 /** A fake API: records requests, answers with the handler. */
 function fakeApi(handler: (path: string, body: any) => Response | Promise<Response>) {
-  const seen: Array<{ path: string; body: any; auth: string | null }> = []
-  const server = Bun.serve({ port: 0, async fetch(req) { const body = await req.json(); const path = new URL(req.url).pathname; seen.push({ path, body, auth: req.headers.get('authorization') }); return handler(path, body) } })
+  const seen: Array<{ path: string; body: any; auth: string | null; orcaCost: string | null }> = []
+  const server = Bun.serve({ port: 0, async fetch(req) { const body = await req.json(); const path = new URL(req.url).pathname; seen.push({ path, body, auth: req.headers.get('authorization'), orcaCost: req.headers.get('x-orcarouter-include-cost') }); return handler(path, body) } })
   return { seen, url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) }
 }
 const SENT = buildSent({ role: 'user', chatType: 'private', tool: 'Bash', input: { command: 'ls' } }, env()).sent
@@ -187,12 +187,24 @@ test('Jev judge: POST /v1/systemone, noul and score answers, the versioned model
   expect(api.seen[0]!.body).toEqual(jevBody('jev-latest', SENT))
   api.stop()
   expect(jevJudge({ cred: () => undefined, cfg: () => NATIVE_JEV }).ready()).toBe('no-key')
-  // through a hub (OrcaRouter: same path; a hub that reports the charged cost: that one)
-  const hub = fakeApi(() => Response.json({ model: 'typesafe/jev-1.13-20260917', answers: { block: { type: 'noul', noul: 0.2 }, risk: { type: 'score', score: 0.5, confidence: 0.8 } }, usage: { input_tokens: 300, output_tokens: 20, cost: 0.0000126 } }))
-  const jh = jevJudge({ cred: () => ({ token: 'hub-key', kind: 'http', baseUrl: hub.url, methods: [], roles: [] }), cfg: () => ({ ...NATIVE_JEV, credential: 'orcarouter', model: 'typesafe/jev-1.13' }) })
-  expect(await jh.run(SENT, signal())).toMatchObject({ status: 'ok', model: 'typesafe/jev-1.13-20260917', cost_usd: 0.0000126 })
-  expect(hub.seen[0]).toMatchObject({ path: '/v1/systemone', auth: 'Bearer hub-key' })
+  // TypeSafe native: no Orca cost header
+  expect(api.seen[0]!.orcaCost).toBeNull()
+})
+
+test('Jev through OrcaRouter: asks for the billed cost (X-OrcaRouter-Include-Cost), records usage.cost_usd, keeps X-Orca-Request-Id in detail; no cost_usd: 0 and said so', async () => {
+  expect(isOrca('https://api.orcarouter.ai')).toBe(true)
+  expect(isOrca('https://api.typesafe.ai')).toBe(false)
+  expect(isOrca('https://orcarouter.ai.example.com')).toBe(false)
+  expect(isOrca(undefined)).toBe(false)
+  let withCost = true
+  const hub = fakeApi(() => Response.json({ model: 'typesafe/jev-1.13-20260917', answers: { block: { type: 'noul', noul: 0.2 }, risk: { type: 'score', score: 0.5, confidence: 0.8 } }, usage: { input_tokens: 278, output_tokens: 20, ...(withCost ? { cost_usd: 0.000012 } : {}) } }, { headers: { 'X-Orca-Request-Id': '202610170142447150664698268d9d6exampl' } }))
+  const cred = { token: 'hub-key', kind: 'http' as const, baseUrl: hub.url, methods: [], roles: [] }
+  const jh = jevJudge({ cred: () => cred, cfg: () => ({ ...NATIVE_JEV, credential: 'orcarouter', model: 'typesafe/jev-1.13' }), isOrca: () => true })
+  expect(await jh.run(SENT, signal())).toEqual({ status: 'ok', model: 'typesafe/jev-1.13-20260917', p_block: 0.2, risk: 0.5, confidence: 0.8, input_tokens: 278, output_tokens: 20, cost_usd: 0.000012, detail: 'orca request 202610170142447150664698268d9d6exampl' })
+  expect(hub.seen[0]).toMatchObject({ path: '/v1/systemone', auth: 'Bearer hub-key', orcaCost: 'true' })
   expect(hub.seen[0]!.body.model).toBe('typesafe/jev-1.13')
+  withCost = false
+  expect(await jh.run(SENT, signal())).toMatchObject({ status: 'ok', cost_usd: 0, detail: 'no usage.cost_usd in the response; orca request 202610170142447150664698268d9d6exampl' })
   hub.stop()
 })
 
