@@ -648,6 +648,9 @@ const skillDeps: SkillRunDeps = {
   extraRo: [join(homedir(), '.local', 'bin'), join(homedir(), '.local', 'lib'), join(homedir(), '.deno', 'bin')],
   botDir: b => botDir(cfg, b),
   httpCred: name => cfg.credentials[name],
+  botCred: name => cfg.credentials[name],
+  apiRoot: cfg.apiRoot,
+  storeRoot: join(cfg.stateDir, 'skill-store'),
   async exec(argv, env, timeoutMs) {
     const p = Bun.spawn(argv, { env, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' })
     const timer = setTimeout(() => p.kill(9), timeoutMs)
@@ -1085,7 +1088,7 @@ const commandDeps: CommandDeps = {
         if (!existsSync(root)) continue
         for (const name of readdirSync(root)) {
           const dir = join(root, name)
-          if (!loadManifest(dir)) continue
+          try { if (!loadManifest(dir)) continue } catch (e) { rows.push(`${name} (${scope}): privileged.json 有誤: ${e instanceof Error ? e.message : e}`); continue }
           const a = db.skillApproval(dir)
           const state = !a ? '未核准' : a.hash === hashSkill(dir) ? `已核准 (${a.approved_by})` : '核准後被改過, 暫停中'
           rows.push(`${name} (${scope}): ${state}`)

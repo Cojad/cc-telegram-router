@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-10-17
+
+### Added
+
+- 特權技能的資料庫 `store`: 動作在 privileged.json 寫 `"store": {"STICKERS": "tg-sticker"}`, 腳本在 `$STICKERS` 拿到這隻 bot 共用資料庫 (`<stateDir>/skill-store/<bot 資料夾名稱>/<資料庫名稱>/`) 的工作副本, 對話與其他動作看不到. 預設 append 模式: 原有檔案不能刪改, `.jsonl` 只能在尾端加合法 JSON 行, 可以新增檔案; `{"name": ..., "mode": "full"}` 可以刪改, 只准 roles 只有 owner, admin 的動作. 動作 exit 0 且全部檢查通過 (非一般檔案, 單檔 5 MB, 一次 20 MB, 憑證內容) 才逐檔原子寫回, 否則整次作廢, 對話收到原因, 通知 owner; 同一個資料庫的執行依序排隊. 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#資料庫-store).
+- 特權技能的 bot 憑證 `bots`: 動作寫 `"bots": {"STICKER_BOT": "baldeagle"}`, 腳本拿到 `$STICKER_BOT_API` = `<apiRoot>/bot<token>`, 只接受 telegram-bot 憑證; token 跟 http 憑證一樣從輸出, 寫出的檔案與資料庫遮蔽或擋下並通知 owner. 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#bot-憑證-bots).
+
 ## [2.11.1] - 2026-10-17
 
 ### Changed

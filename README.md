@@ -20,7 +20,7 @@
 | 工具 | reply, react, edit_message, download_attachment | 另有 send_sticker, lookup_message, get_chat_context, bot_api, http_api, install_skill, run_skill, request_elevation, request_send_grant, event_raw, secret_from_handle, save_bot_profile |
 | 憑證與密鑰 | bot token 存在 `.env` | 跨 bot 憑證與 HTTP API key 由 router 代呼叫 (worker 看不到值); 對話專屬密鑰 (AES-256-GCM) |
 | 密鑰保護 | 沒有 | 每個 update 與文字附件都掃描密鑰, 存遮蔽版, 原文加密, 提醒並 5 分鐘後刪除原訊息 |
-| 技能 | 沒有 | 三層技能範圍與 `install_skill`; 特權技能 (bwrap 沙箱, 雜湊核准, 每日更新憑證) |
+| 技能 | 沒有 | 三層技能範圍與 `install_skill`; 特權技能 (bwrap 沙箱, 雜湊核准, 每日更新憑證, 每隻 bot 一份的附加式資料庫) |
 | 進度 | 輸入中提示 (typing) | hook 回報的即時進度訊息 |
 | 輪詢與斷線 | grammY `bot.start`, 啟動時停掉舊的 poller | router 自己的重試規則, 斷線, 409, token 失效時通知 owner |
 | 工具呼叫分類器 | 沒有 | 選配, 預設關閉; 第一階段只記錄 |

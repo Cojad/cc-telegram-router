@@ -22,6 +22,11 @@
 // An argument may need a higher role (args.<name>.roles, e.g. a "longer than
 // 15 minutes" flag): lower roles get refused, which the router's hook turns
 // into an elevation request (router/elevation.ts extraCheck).
+// An action may use a bot token credential (bots): the script gets
+// $<ENV>_API = <apiRoot>/bot<token>, scrubbed from what comes back like http.
+// An action may keep a database (store, router/skillstore.ts): the bot's copy
+// under <stateDir>/skill-store/, staged writable for the run and written back
+// only when what changed passes the checks of its mode (append or full).
 
 import { createHash } from 'crypto'
 import { existsSync, readdirSync, readFileSync, statSync, lstatSync, rmSync } from 'fs'
@@ -57,7 +62,15 @@ export type Action = {
   /** env var -> http credential name (router config): the script gets
    *  $<ENV>_URL (base URL) and $<ENV>_HEADER ("Authorization: Bearer ..."). */
   http?: Record<string, string>
+  /** env var -> telegram-bot credential name (router config): the script gets
+   *  $<ENV>_API = <apiRoot>/bot<token>. */
+  bots?: Record<string, string>
+  /** env var -> database name, or { name, mode }: the bot's database
+   *  (router/skillstore.ts), its folder path in $<ENV>. mode append (default)
+   *  or full (owner/admin-only actions). */
+  store?: Record<string, StoreDecl>
 }
+export type StoreDecl = string | { name: string; mode?: 'append' | 'full' }
 export type Manifest = { actions: Record<string, Action> }
 
 export const RUNS_PER_HOUR = 10
@@ -68,7 +81,53 @@ export function loadManifest(skillDir: string): Manifest | null {
   if (!existsSync(p)) return null
   const m = JSON.parse(readFileSync(p, 'utf8')) as Manifest
   if (!m.actions || typeof m.actions !== 'object') throw new Error('privileged.json 要有 actions')
+  for (const [n, a] of Object.entries(m.actions)) checkAction(n, a)
   return m
+}
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+const RESERVED_ENV = new Set(['PATH', 'HOME', 'LANG', 'TMPDIR', 'PYTHONUSERBASE'])
+export const STORE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/
+
+/** A database declaration as { name, mode }. */
+export function storeOf(d: StoreDecl): { name: string; mode: 'append' | 'full' } {
+  return typeof d === 'string' ? { name: d, mode: 'append' } : { name: d.name, mode: d.mode ?? 'append' }
+}
+
+/** What loadManifest refuses in one action's store and bots (thrown, shown by /router skill approve). */
+function checkAction(n: string, a: Action) {
+  const envs: string[] = [...Object.keys(a.creds ?? {}), ...Object.keys(a.http ?? {}).flatMap(e => [`${e}_URL`, `${e}_HEADER`])]
+  const add = (e: string, what: string) => {
+    if (!ENV_NAME.test(e) || RESERVED_ENV.has(e)) throw new Error(`動作 ${n} 的 ${what} 環境變數名稱不行: ${e}`)
+    if (envs.includes(e)) throw new Error(`動作 ${n} 的環境變數 ${e} 重複`)
+    envs.push(e)
+  }
+  if (a.store !== undefined) {
+    if (!a.store || typeof a.store !== 'object' || Array.isArray(a.store)) throw new Error(`動作 ${n} 的 store 要是 {環境變數: 資料庫名稱}`)
+    if (a.internal && Object.keys(a.store).length) throw new Error(`動作 ${n} 是 internal, 不能用 store`)
+    const names = new Set<string>()
+    for (const [env, d] of Object.entries(a.store)) {
+      add(env, 'store')
+      const raw = d as unknown
+      if (typeof raw !== 'string' && (!raw || typeof raw !== 'object' || typeof (raw as { name?: unknown }).name !== 'string')) throw new Error(`動作 ${n} 的 store.${env} 要是資料庫名稱或 { name, mode }`)
+      const s = storeOf(d)
+      if (!STORE_NAME.test(s.name)) throw new Error(`動作 ${n} 的資料庫名稱不行: ${s.name} (小寫英數字與 -)`)
+      if (s.mode !== 'append' && s.mode !== 'full') throw new Error(`動作 ${n} 的資料庫 ${s.name} mode 只能是 append 或 full`)
+      if (names.has(s.name)) throw new Error(`動作 ${n} 的資料庫 ${s.name} 重複`)
+      names.add(s.name)
+      if (s.mode === 'full' && (!a.roles?.length || a.roles.some(r => r !== 'owner' && r !== 'admin'))) {
+        throw new Error(`動作 ${n} 的資料庫 ${s.name} 是 full 模式, 動作的 roles 只能有 owner, admin (現在: ${(a.roles ?? ['owner', 'admin', 'power', 'user']).join(', ')})`)
+      }
+    }
+  }
+  if (a.bots !== undefined) {
+    if (!a.bots || typeof a.bots !== 'object' || Array.isArray(a.bots)) throw new Error(`動作 ${n} 的 bots 要是 {環境變數: 憑證名稱}`)
+    if (a.internal && Object.keys(a.bots).length) throw new Error(`動作 ${n} 是 internal, 不能用 bots`)
+    for (const [env, c] of Object.entries(a.bots)) {
+      if (typeof c !== 'string' || !c) throw new Error(`動作 ${n} 的 bots.${env} 要是憑證名稱`)
+      add(`${env}_API`, 'bots')
+    }
+  }
 }
 
 /** Every file of the skill (skipping venv and the like), in order: approval pins this. */
@@ -184,10 +243,10 @@ export type Sandbox = { argv: string[]; env: Record<string, string> }
 
 /** bwrap for one run: the system read-only, a private /tmp, $HOME and the
  *  hidden paths (router home, state dir, sandboxDenyRead) as empty folders,
- *  a hidden file (the router's socket elsewhere) as /dev/null, then the skill and credential folders read-only and the conversation
- *  folder writable. Every tmpfs comes before the binds that reopen what
+ *  a hidden file (the router's socket elsewhere) as /dev/null, then the skill and credential folders read-only, the staged
+ *  databases and the conversation folder writable. Every tmpfs comes before the binds that reopen what
  *  lies inside it. */
-export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: string; creds: Record<string, string>; home: string; hidden: string[]; extraRo?: string[]; env?: Record<string, string>; credsWritable?: boolean }): Sandbox {
+export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: string; creds: Record<string, string>; home: string; hidden: string[]; extraRo?: string[]; env?: Record<string, string>; credsWritable?: boolean; writable?: string[] }): Sandbox {
   const b = ['bwrap', '--die-with-parent', '--unshare-pid', '--new-session', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
     '--tmpfs', '/tmp']
   // already under /tmp: hidden by it; missing: bwrap could not mount it on the read-only root;
@@ -201,6 +260,8 @@ export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: s
   b.push('--ro-bind', o.skillDir, o.skillDir)
   // only the router's own refresh writes credentials; actions a conversation calls read them
   for (const d of Object.values(o.creds)) b.push(o.credsWritable ? '--bind' : '--ro-bind', d, d)
+  // a database's staged copy for this run (router/skillstore.ts), under the hidden state dir
+  for (const d of o.writable ?? []) b.push('--bind', d, d)
   b.push('--bind', o.convFolder, o.convFolder)
   if (existsSync(join(o.convFolder, '.chat'))) b.push('--ro-bind', join(o.convFolder, '.chat'), join(o.convFolder, '.chat'))
   b.push('--chdir', o.convFolder, '--', ...o.argv)

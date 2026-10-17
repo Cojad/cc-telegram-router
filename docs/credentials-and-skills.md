@@ -62,6 +62,20 @@
 
 - 特權技能 (技能的 sudo bit): 技能帶 `privileged.json` 列出動作, owner 或 admin 以 `/router skill approve` 核准 (記下檔案雜湊, 改了自動暫停). 對話用 `run_skill` 呼叫, router 以 bwrap 專屬沙箱執行: 只讀技能與憑證資料夾 (`<stateDir>/creds/`), 只寫對話資料夾, 隱藏 router 的家目錄 (其他對話), stateDir, $HOME, config `sandboxDenyRead` 與放在這些位置以外的 router socket 檔 (見 [部署與維運](operations.md#安裝位置)); 輸出掃描憑證內容; 憑證被拒時執行 internal 的更新動作一次再重試; 每個對話每小時 10 次. 動作可以帶 http API 憑證 (`http`, 腳本拿到授權標頭的環境變數, key 會從輸出遮蔽); 單一參數可以限定角色 (`args.<名稱>.roles`), 較低角色帶這個參數就照一般流程觸發提權申請. 每天固定時間 (config `skillRefreshAt`, 預設 `"05:00"` GMT+8, `"off"` 關閉) router 對所有已核准技能執行一次被 `refresh` 指到的 internal 動作 (同樣的沙箱, 掛載, env 與雜湊檢查, 在 `<stateDir>/skill-refresh/<技能>/` 執行), 讓 cookie 不會放到過期: 雜湊不符就略過並通知 owner, 失敗通知 owner (輸出遮蔽憑證), 成功只記在 router log 與 `skill_runs` (對話欄位 `router:refresh`, 不算進任何對話每小時 10 次的限額). router 啟動一分鐘後補跑: 上次成功的每日更新超過 24 小時 (或從沒成功過) 的技能執行一次, 之後照每天的時間; 每次執行依序排隊, 不會重疊.
 
+### 資料庫 store
+
+- 動作可以有自己的資料庫, 讓 user 與 power 對話不用提權就能累積資料 (例如貼圖紀錄). privileged.json 的動作寫 `"store": {"STICKERS": "tg-sticker"}` (環境變數名稱 -> 資料庫名稱, 預設 append 模式), 或 `"store": {"STICKERS": {"name": "tg-sticker", "mode": "full"}}`. 資料庫名稱是小寫英數字與 `-`, 環境變數不能跟同一個動作的 creds, http, bots 重複, 也不能是 PATH, HOME 這類沙箱自己設定的名稱; internal 動作不能用.
+- 位置: `<stateDir>/skill-store/<bot 資料夾名稱>/<資料庫名稱>/`, bot 資料夾名稱跟家目錄底下那隻 bot 的資料夾一樣 (`bot<id>`), 同一隻 bot 的所有對話共用一份, 技能裝在全部 bot 範圍時也是每隻 bot 各一份. stateDir 對所有對話與其他特權動作都隱藏, 所以資料庫只有宣告它的動作在執行時看得到.
+- 執行時 router 把資料庫複製到 `<stateDir>/skill-store-work/run-*/<環境變數>/` (資料庫不存在就先建空的), 以可寫掛進這次的沙箱, 路徑放在 `$STICKERS`; 憑證被拒重試時重新複製一份. 動作 exit 0 才檢查, 否則整次不寫回 (只在回傳文字註明).
+- append 模式的檢查: 原有的檔案與資料夾 (含子目錄) 一個都不能少; 一般檔案內容不能變; `.jsonl` 檔只能在尾端加 (舊內容必須逐位元是新內容的開頭, 舊內容要以換行結尾, 新加的內容要是合法 UTF-8 且以換行結尾, 每一行都是合法 JSON, 不能有空行); 可以新增檔案與資料夾, 新增的 `.jsonl` 一樣每行都要是合法 JSON.
+- full 模式: 可以新增, 修改, 刪除, 跑完整個同步回資料庫. 只准用在 roles 只有 owner 與 admin 的動作上 (沒寫 roles 等於全部角色, 也不行); 不符時 privileged.json 讀取失敗, `/router skill approve` 回 privileged.json 有誤, 不接受這個技能.
+- 兩種模式共同: symlink, 裝置檔, fifo 等非一般檔案一律不接受; 寫入的單檔上限 5 MB (append 的 `.jsonl` 算新加的部分, 其他算整檔), 一次執行所有資料庫加起來上限 20 MB; 寫入的內容含有這個動作的憑證內容 (cookie, http key, bot token) 也不接受. 全部通過才寫回, 先刪 (full), 再建資料夾, 檔案逐一寫成暫存檔再 rename 蓋上 (每個檔原子替換); 有一項不過就整次作廢, 資料庫不動, 對話收到原因, owner 收到通知 (跟其他特權技能通知同一個地方).
+- 同一個資料庫的執行依序排隊 (同一隻 bot 所有對話共用一個鎖), 不會同時寫; 一個動作用多個資料庫時照固定順序全部拿到才執行.
+
+### bot 憑證 bots
+
+- 動作寫 `"bots": {"STICKER_BOT": "baldeagle"}` (環境變數名稱 -> 憑證名稱), 腳本拿到 `$STICKER_BOT_API` = `<apiRoot>/bot<token>` (config `apiRoot`, 預設 `https://api.telegram.org`), 例如 `curl "$STICKER_BOT_API/getMe"`. 只接受 telegram-bot 類憑證 (沒寫 kind 的就是), http 類或不存在時拒絕執行並說明. 跟 `http` 一樣, 憑證本身的 roles 與 methods 不套用在特權動作上 (由技能的核准與動作的 roles 把關); token 不進對話, 出現在回傳文字就遮蔽, 出現在對話資料夾寫出的檔案就刪除, 都會通知 owner; 寫進資料庫的內容含 token 時整次作廢.
+
 ## worker 端 SOP
 
 - worker 端的 SOP 在 `/telegram:bot-skill`.
@@ -70,3 +84,4 @@
 
 - `router/test/cred-flows.test.ts` (9 項, 模組層級) 與 `router/test/e2e-creds.test.ts` (7 項, 真的 router 對假的 Bot API 與本機假 HTTP 伺服器): 登記訊息的延遲刪除與取消 (私訊 60 秒, 發訊者, owner, admin 能取消, 其他人沒有權限; 群組 10 秒且不附按鈕; 被拒的立刻刪; 重啟後到期照刪), rotate 保留設定, 同名 add 的覆蓋 / 取消與逾時丟棄, 預設標頭 (補上, 被 worker 覆蓋, 不能是被擋的標頭, `/router cred header` 與 `/secret header` 的列出, 更新, rm), json_file (owner 與 admin 可讀資料夾外, user 與 power 限資料夾內, stateDir 一律拒絕, 大小上限, 非法 JSON, 與 json 互斥, 實際送出內容).
 - `router/test/cred-http.test.ts`, `router/test/phase3-cred.test.ts`: key 放哪裡, worker 自帶標頭, /router help cred.
+- `router/test/skillstore.test.ts` (18 項, 真的 bwrap): [資料庫 store](#資料庫-store) 兩種模式的寫回與每一種整次作廢 (刪檔, 刪資料夾, 改檔, 改 `.jsonl` 舊行, 非法 JSON 行, 空行, 沒以換行結尾, 單檔與單次上限, symlink, fifo, 腳本鎖住讀不到的資料夾), 動作失敗不寫回, full 只准 owner 與 admin 的動作, 其他宣告錯誤, 跨對話排隊, 對對話與其他動作隱藏; [bot 憑證 bots](#bot-憑證-bots) 的 `$<ENV>_API`, 只接受 telegram-bot, token 從輸出, 檔案, 資料庫擋下.

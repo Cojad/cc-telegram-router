@@ -22,8 +22,8 @@ export const AREAS: Area[] = [
   },
   {
     name: 'skills', title: '憑證與特權技能',
-    tests: ['phase3-cred.test.ts', 'phase3-privskill.test.ts', 'cred-http.test.ts', 'cred-flows.test.ts', 'e2e-creds.test.ts'],
-    paths: ['router/credentials.ts', 'router/skills.ts', 'router/privskill.ts', 'router/skillrefresh.ts', 'router/skillrun.ts', 'router/rawvault.ts', 'plugin/skills/bot-skill/**'],
+    tests: ['phase3-cred.test.ts', 'phase3-privskill.test.ts', 'skillstore.test.ts', 'cred-http.test.ts', 'cred-flows.test.ts', 'e2e-creds.test.ts'],
+    paths: ['router/credentials.ts', 'router/skills.ts', 'router/privskill.ts', 'router/skillstore.ts', 'router/skillrefresh.ts', 'router/skillrun.ts', 'router/rawvault.ts', 'plugin/skills/bot-skill/**'],
   },
   {
     name: 'sandbox', title: '沙箱與安裝位置',
