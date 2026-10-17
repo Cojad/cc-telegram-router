@@ -13,7 +13,7 @@ import { runCommand, isCommand, type CommandDeps, type CommandInput } from '../c
 import { awaitBotInfo } from '../botinfo'
 import { buildContext, renderContext, renderLogs, maskTokens, gmt8 } from '../context'
 import { iso8, logLine } from '../../shared/time'
-import { initBotSetups, adoptBotSetup, tokenBotId, addedSetupText } from '../setup'
+import { initBotSetups, adoptBotSetup, tokenBotId, addedSetupText, resetNotice } from '../setup'
 import type { Access } from '../telegram/policy'
 
 const OWNER = '137438526', ADMIN = '500', USER = '600'
@@ -96,12 +96,19 @@ test('bot add: a new bot gets the first-run line; one added back under a name wh
   expect(await add()).toStartWith('已新增 bot x: @new_bot\n私訊 @new_bot 任何一句話, 它會帶你完成初次設定')
 })
 
-test('bot setup follows the Telegram bot id: kept for the same bot added back, started over for another bot under a reused name; ids filled in at start', () => {
+test('bot setup follows the Telegram bot id: kept for the same bot added back, started over for another bot under a reused name (at bot add and at start); ids filled in at start', () => {
   // start: a row from before bot_id was kept gets the configured bot's id; a new bot gets a row with its id
   db.updateBotSetup('cc', { persona_done: 1 })
   initBotSetups(db, [{ name: 'cc', id: '42' }, { name: 'fresh', id: '77' }])
   expect(db.getBotSetup('cc')).toMatchObject({ bot_id: '42', persona_done: 1 })
   expect(db.getBotSetup('fresh')).toMatchObject({ bot_id: '77', persona_done: 0 })
+  // config.json now has another bot's token under a name: that setup starts over, like bot add
+  db.updateBotSetup('swapped', { bot_id: '90', persona_done: 1, persona: '你是 S', approvals_chat: '-100900', approvals_topic: 7 })
+  expect(initBotSetups(db, [{ name: 'cc', id: '42' }, { name: 'swapped', id: '91' }])).toEqual([{ name: 'swapped', was: '90', now: '91' }])
+  expect(db.getBotSetup('swapped')).toMatchObject({ bot_id: '91', persona_done: 0, persona: null, approvals_chat: null, approvals_topic: null })
+  expect(db.getBotSetup('cc')).toMatchObject({ bot_id: '42', persona_done: 1 }) // the same bot: untouched
+  expect(initBotSetups(db, [{ name: 'swapped', id: '91' }])).toEqual([]) // once
+  expect(resetNotice({ name: 'swapped', was: '90', now: '91' })).toBe('⚠️ config.json 裡 bot swapped 的 token 換成了另一隻 bot (id 90 → 91): 它的設定已重置 (人設, 審核群組), 當成新 bot. 私訊它任何一句話就會開始初次設定.')
   expect(tokenBotId('42:AAAA')).toBe('42')
   expect(tokenBotId('weird')).toBeNull()
   // bot add

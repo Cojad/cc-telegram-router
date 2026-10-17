@@ -42,7 +42,7 @@ import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants
 import { postNotice, requestOriginNoter, type ApprovalDeps } from './approvals'
 import { createPkgGate, claudeReviewer } from './pkgreview'
 import { createClassifier, openClassifyStore, decisionsJudge, jevJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER } from './classifier'
-import { newClaimCode, isClaim, initBotSetups, adoptBotSetup, tokenBotId, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
+import { newClaimCode, isClaim, initBotSetups, adoptBotSetup, tokenBotId, resetNotice, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
 import { createElevation } from './elevation'
 import { dmLabel, personLabel } from './commands'
 import { parseRelay, mayRelay, relay, codeBlock, ROUTER_CMDS, type Exec, type RelayCmd } from './relay'
@@ -149,7 +149,9 @@ if (!cfg.secretKey) {
   log('generated config.json secretKey for conversation secrets')
 }
 
-initBotSetups(db, cfg.bots.map(b => ({ name: b.name, id: tokenBotId(b.token) })))
+// a name whose token is now another bot's: its setup starts over (told to the owner once the bots are up)
+const setupResets = initBotSetups(db, cfg.bots.map(b => ({ name: b.name, id: tokenBotId(b.token) })))
+for (const r of setupResets) log(`bot ${r.name}: token is another bot (${r.was} -> ${r.now}), setup starts over`)
 for (const b of cfg.bots) ensureBotDir(cfg, b.name)
 const ctxFile = (c: Conversation) => writeContextFile(cfg, c)
 const ctxOf = (c: Conversation) => buildContext(cfg, c)
@@ -1185,6 +1187,13 @@ for (const c of db.listConversations()) {
 }
 
 for (const bc of cfg.bots) startBot(bc)
+// through that bot to the owner's DM; when it cannot reach the owner (never started by them), through the others
+for (const r of setupResets) {
+  void (async () => {
+    for (const b of [r.name, ...cfg.bots.map(x => x.name).filter(n => n !== r.name)]) if (await postNotice(approvalDeps, b, resetNotice(r)).catch(() => false)) return
+    log(`bot ${r.name}: setup reset notice reached no one`)
+  })()
+}
 
 // 🔑 密鑰偵測 for approvals groups set up before it existed; deletions due
 // while the router was down go now, the rest as they come due.

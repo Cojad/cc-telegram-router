@@ -10,6 +10,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { Database } from 'bun:sqlite'
 import { connectRouter } from '../../plugin/client'
+import { openRouterDb } from '../db'
 
 const dir = mkdtempSync(join(tmpdir(), 'cctr-e2e-'))
 const state = join(dir, '.router')
@@ -80,6 +81,8 @@ writeFileSync(join(state, 'access.json'), JSON.stringify({
   dmPolicy: 'allowlist', allowFrom: ['111', '222'], groups: { '-100777': { requireMention: false, allowFrom: [] } }, pending: {},
 }))
 
+// a setup left from another bot under the name cc (config.json now has bot 123's token): reset at start, the owner told
+{ const pre = openRouterDb(join(state, 'router.db')); pre.updateBotSetup('cc', { bot_id: '999', persona_done: 1, persona: '舊的人設', group_skipped: 1 }); pre.close() }
 const router = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json')], { stdout: 'ignore', stderr: 'pipe' })
 let stderr = ''
 void (async () => { for await (const c of router.stderr) stderr += new TextDecoder().decode(c) })()
@@ -120,6 +123,13 @@ test('every update is logged; allowlisted messages become conversations, setting
   await until(() => calls.filter(c => c.method === 'sendMessage' && String(c.body.chat_id) === '111' && String(c.body.text).startsWith('🆕 新對話')).length === 2)
   // the stranger (333) is in events but never queued
   expect(q("SELECT count(*) n FROM queue WHERE params LIKE '%let me in%'")[0].n).toBe(0)
+})
+
+test('a name whose token is now another bot\'s: its setup starts over at start, logged, and the owner is told', async () => {
+  const notice = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('⚠️ config.json 裡 bot cc')))
+  expect(notice.body).toMatchObject({ chat_id: '111', text: '⚠️ config.json 裡 bot cc 的 token 換成了另一隻 bot (id 999 → 123): 它的設定已重置 (人設, 審核群組), 當成新 bot. 私訊它任何一句話就會開始初次設定.' })
+  expect(q("SELECT bot_id, persona_done, persona, group_skipped FROM bot_setup WHERE bot = 'cc'")[0]).toEqual({ bot_id: '123', persona_done: 0, persona: null, group_skipped: 0 })
+  expect(stderr).toContain('bot cc: token is another bot (999 -> 123), setup starts over')
 })
 
 test('a plugin for the conversation gets the queued message, and its reply goes out and is logged', async () => {
@@ -294,7 +304,7 @@ test('bot add answers once its getMe is in: bot list right after shows the new b
   expect(added.body.text).toStartWith('已新增 bot two: @two_bot\n')
   expect(added.body.text).toContain('它會帶你完成初次設定') // a new bot
   expect(q("SELECT bot_id FROM bot_setup WHERE bot = 'two'")[0].bot_id).toBe('456') // the setup belongs to that bot
-  expect(q("SELECT bot_id FROM bot_setup WHERE bot = 'cc'")[0].bot_id).toBe('123') // filled in at start from the token
+  expect(q("SELECT bot_id FROM bot_setup WHERE bot = 'cc'")[0].bot_id).toBe('123') // from the token at start
   // the new bot's poller is still waiting on its own (slow) getMe
   laterUpdates.push({ update_id: 81, message: { message_id: 91, date: now, chat: { id: 111, type: 'private' }, from, text: '/router bot list' } })
   const list = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('cc: @')))

@@ -33,14 +33,29 @@ export function tokenBotId(token: string): string | null {
 /** Rows for bots seen for the first time. A bot that already has
  *  conversations was in use before setup existed: treat it as set up, with
  *  approvals going to the owner's DM. A row from before bot_id was kept
- *  gets the configured bot's id. */
-export function initBotSetups(db: RouterDb, bots: Array<{ name: string; id: string | null }>): void {
+ *  gets the configured bot's id. A row of another bot (config.json now has
+ *  another bot's token under that name) starts over like a new bot, as
+ *  /router bot add does. Returns those names with the old and new id. */
+export function initBotSetups(db: RouterDb, bots: Array<{ name: string; id: string | null }>): Array<{ name: string; was: string; now: string }> {
   const used = new Set(db.listConversations().map(c => c.bot))
+  const reset: Array<{ name: string; was: string; now: string }> = []
   for (const { name, id } of bots) {
     const s = db.getBotSetup(name)
     if (!s) db.updateBotSetup(name, { ...(used.has(name) ? { persona_done: 1, group_skipped: 1 } : {}), bot_id: id })
     else if (!s.bot_id && id) db.updateBotSetup(name, { bot_id: id })
+    else if (s.bot_id && id && s.bot_id !== id) { resetBotSetup(db, name, id); reset.push({ name, was: s.bot_id, now: id }) }
   }
+  return reset
+}
+
+/** A bot under this name is another Telegram bot: no persona, no approvals place. */
+function resetBotSetup(db: RouterDb, name: string, botId: string): void {
+  db.updateBotSetup(name, { bot_id: botId, persona_done: 0, persona: null, approvals_chat: null, approvals_topic: null, notices_topic: null, elevlog_topic: null, authuse_topic: null, secret_topic: null, group_skipped: 0 })
+}
+
+/** What the owner is told when the start found another bot under a name. */
+export function resetNotice(r: { name: string; was: string; now: string }): string {
+  return `⚠️ config.json 裡 bot ${r.name} 的 token 換成了另一隻 bot (id ${r.was} → ${r.now}): 它的設定已重置 (人設, 審核群組), 當成新 bot. 私訊它任何一句話就會開始初次設定.`
 }
 
 /** /router bot add: the setup stored under this name is kept only for the
@@ -55,7 +70,7 @@ export function adoptBotSetup(db: RouterDb, name: string, botId: string, hasBotF
     if (!s.bot_id) db.updateBotSetup(name, { bot_id: botId })
     return 'kept'
   }
-  db.updateBotSetup(name, { bot_id: botId, persona_done: 0, persona: null, approvals_chat: null, approvals_topic: null, notices_topic: null, elevlog_topic: null, authuse_topic: null, secret_topic: null, group_skipped: 0 })
+  resetBotSetup(db, name, botId)
   return 'reset'
 }
 
