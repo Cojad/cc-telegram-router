@@ -14,7 +14,7 @@ import type { RouterDb, ConvSecret, SecretHandle } from './db'
 import type { Access } from './telegram/policy'
 import type { CommandInput, CommandOutput } from './commands'
 import { maskTokens, gmt8 } from './context'
-import { badPath, parseHttpScope, placementText } from './credentials'
+import { badPath, parseHttpScope, placementText, BOT_TOKEN_FULL, httpExample } from './credentials'
 
 export const MAX_SECRETS = 20
 export const MAX_SECRET_BYTES = 4096
@@ -116,7 +116,7 @@ const scope = (s: Pick<ConvSecret, 'kind' | 'base_url' | 'allowed' | 'header' | 
 export const describeSecrets = (list: ConvSecret[]) => list.map(s => `${s.name}: ${scope(s)}`).join('\n')
 
 const USAGE = [
-  '/secret set <名稱> <token> [方法...] (Telegram bot token, 沒寫方法就是全部)',
+  '/secret set <名稱> <token> [方法...] (Telegram bot token, 沒寫方法就是全部; 不像 bot token 的值不會拿去 getMe)',
   '/secret set <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...] (結尾 * 代表前綴, 沒寫路徑就是全部; 預設 Authorization: Bearer <key>, 只寫 --header 時值原樣放進那個標頭, --query 改放在網址的 query 參數)',
   '/secret list | rm <名稱>',
   '/secret handles (router 發給這個對話的密鑰代號) | revoke <代號>',
@@ -228,6 +228,16 @@ export async function registerSecret(deps: SecretDeps, bot: string, chatId: stri
     allowed = rest
     const bad = allowed.find(x => !/^([A-Za-z]+\*?|\*)$/.test(x))
     if (bad) return no(`方法 ${bad} 不像 Bot API 方法名稱, 例如 sendMessage 或 get* (要登記一般 API key 請加 --http <網址>)`)
+    // not a bot token: never sent to getMe (an API key without --http)
+    if (!BOT_TOKEN_FULL.test(value)) {
+      const ex = httpExample(value)
+      return no([
+        `這看起來不是 Telegram bot token${ex.what ? ` (像是 ${ex.what})` : ''}, 沒有登記, 也沒有拿去 Telegram 驗證.`,
+        'API key 要加 --http <網址>, 例如:',
+        `/secret set ${name} <key> ${ex.flags}`,
+        '(沒寫路徑就是那個網址底下全部路徑; 完整說明: /router help secret)',
+      ].join('\n'))
+    }
     // a bot token must be one: getMe with it (no switch to skip this)
     try { label = await deps.verifyBot(value) } catch (e) { return no(`這不是可用的 bot token (getMe 失敗: ${e instanceof Error ? e.message : e}), 沒有登記`) }
   }

@@ -47,7 +47,7 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能裝在哪�
 - `/secret set <名稱> <token> [方法...]` (Telegram bot token, 沒寫方法就是全部)
 - `/secret set <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...]` (一般 API, 結尾 `*` 代表前綴, 沒寫路徑就是全部; 預設 `Authorization: Bearer <key>`, 像 `x-api-key` 這種 API 用 `--header x-api-key`, 用 `?key=` 傳 key 的用 `--query key`)
 
-bot token 會先用 getMe 驗證, 不是有效的 bot token 就不會存.
+bot token 會先用 getMe 驗證, 不是有效的 bot token 就不會存; 沒加 `--http` 而值不像 bot token (例如 API key) 時 router 不拿去 getMe, 直接提示要加 `--http`.
 
 router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到 `<已遮蔽>`), 加密存起來, 私訊裡立刻刪掉; 群組裡 bot 沒有刪除權限時會提醒發送者自己刪.
 之後用 `bot_api` 或 `http_api`, credential 填那個名稱: 對話自己的密鑰優先於全域憑證, 不看角色也不用授權, 只能呼叫登記時的方法或網址與路徑.
@@ -62,7 +62,7 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 沒寫路徑就是那個網址底下全部路徑, 要收窄就列出路徑 (結尾 `*` 代表前綴). 範例 (Anthropic):
 `/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key`. 完整說明: 使用者打 `/router help cred`.
 技能裡用 `http_api` (credential, path, json 或 form + files, 可選 headers) 呼叫. key 放哪裡由憑證決定, 你不用也不能自己放:
-`headers` 只放 API 需要的其他標頭 (例如 `{"anthropic-version": "2023-06-01"}`), 帶 Authorization, Cookie, x-api-key 這類認證標頭會被擋. 回應裡的 base64
+`headers` 只放 API 需要的其他標頭 (例如 `{"anthropic-version": "2023-06-01"}`), 帶 key 所在的那個標頭 (例如 x-api-key 憑證的 x-api-key), Authorization, Proxy-Authorization, Cookie, Host, Content-Type 這類會被擋; 用 `--query` 的憑證, path 裡也不能自己帶那個參數. 回應裡的 base64
 大檔 (例如產生的圖) 用 `save_b64` `{ "at": "data.0.b64_json", "to": "相對路徑" }` 直接存進自己資料夾,
 不要讓它回到對話裡.
 

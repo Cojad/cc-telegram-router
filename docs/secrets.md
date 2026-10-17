@@ -7,7 +7,7 @@
 ## 對話專屬密鑰
 
 - 任何角色的對話都能有自己的 token 或 API key, 不用提權: 在那個對話傳 `/secret set <名稱> <值> [方法...]` (Telegram bot token, 沒寫方法就是全部) 或 `/secret set <名稱> <值> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...]` (一般 API key, 結尾 `*` 代表前綴, 沒寫路徑就是全部). 跟全域憑證 (`/router cred`) 的差別: 對話密鑰只屬於那個對話, 任何角色都能登記, 不用授權; 全域憑證由 owner 或 admin 在私訊登記, 預設給 owner 與 admin 角色的對話用 (`/router help secret` 有同樣的說明). 也可以用 `cc /secret ...`.
-- bot token 登記前一律用 getMe 驗證, getMe 不接受的值不會存 (沒有略過的開關).
+- bot token 登記前一律用 getMe 驗證, getMe 不接受的值不會存 (沒有略過的開關). 沒帶 `--http` 而值不像 bot token (數字, `:`, 35 字元) 時不呼叫 getMe, 不把它送去 Telegram, 回覆它像哪種 key (Anthropic `sk-ant-`, OpenAI `sk-`, Google `AIza`) 與加上 `--http` 的打法, 訊息照樣刪除 (群組沒有刪除權限時提醒); `secret_from_handle` 也一樣.
 - API key 預設以 `Authorization: Bearer <key>` 送出; `--header x-api-key` 改放進那個標頭且不加前綴, `--scheme Token` 改前綴 (`none` 不加), 兩個可以一起用; `--query key` 改放在網址的 query 參數. 跟全域 http 憑證的寫法與 config.json 的 `header`, `scheme`, `query` 欄位意思相同, 細節與 worker 自帶標頭的規則見 [http 憑證的 key 放哪裡](credentials-and-skills.md#http-憑證的-key-放哪裡). Host, Content-Type, Cookie, Proxy-Authorization 這類標頭不能用.
 - router 自己處理, 不轉給 worker. 私訊裡立刻刪掉那則訊息; 群組裡任何成員都能登記 (不看角色, 但要是 bot 有開放的群組與發話者), bot 有刪除權限就刪, 沒有就回覆提醒發送者自己刪.
 - 值以 AES-256-GCM 加密存在 `router.db` 的 `conv_secrets` (綁定 bot, 對話, 名稱), 金鑰是 `config.json` 的 `secretKey`, 沒有就在啟動時自動產生. 每個對話最多 20 把, 每把最長 4096 bytes; 名稱 `self` 保留, router 自己的 bot token 不能登記.

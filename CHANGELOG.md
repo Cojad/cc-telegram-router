@@ -36,6 +36,8 @@
 
 ### Fixed
 
+- `/secret set` (與 `secret_from_handle`) 沒帶 `--http` 時, 不像 Telegram bot token 的值也會拿去呼叫 getMe: 現在比照 `/router cred add`, 不呼叫 getMe, 回覆它像哪種 key 與加上 `--http` 的打法, 訊息照樣刪除.
+- `http_api` 的額外標頭改成只擋精確名單: key 所在的標頭, Authorization, Proxy-Authorization, Cookie 與 Host, Content-Type, Content-Length 等傳輸層標頭; 原本依名稱片段 (auth, token, api-key...) 擋, 會誤擋 `x-csrf-token` 這類. 用 `--query` 的憑證, path 裡不能自己帶那個參數. 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#http-憑證的-key-放哪裡).
 - 句子中間提到登記指令 (例如「我是要你教我 /router cred add 的用法」) 被判成含密鑰並準備刪除: 現在只有訊息開頭就是 `/secret set`, `/router cred add`, `/router bot add|rotate` (可加 `cc ` 前綴) 而且參數位置有值時才算; 格式比對與已登記的值不變. 見 [docs/secrets.md](docs/secrets.md#原始事件與密鑰保護).
 - `/router cred add` 與 `cred-import` 沒帶 `--http` 時, 不像 Telegram bot token 的值 (例如 Anthropic key) 會被拿去呼叫 getMe, 回「getMe failed (404)」: 現在不呼叫 getMe, 回覆它像哪種 key 與加上 `--http` 的打法, 訊息照樣刪除.
 - `/usage` 的重置日期在 12 月看到 1 月時算成下一年.

@@ -22,6 +22,8 @@ import { privacyNotice, botSettingsNotice, B2B_NOTICE, escHtml, htmlToText } fro
 const OWNER = '137438526', MEMBER = '700', STRANGER = '800', GROUP = '-100700'
 let dir: string, db: RouterDb, deps: SecretDeps, access: Access
 const key = newSecretKey()
+/** A fake value in the shape of a bot token (id, ":", 35 characters): only such a value goes to getMe. */
+const T = (id: number, tag: string) => `${id}:${tag.padEnd(35, 'A')}`
 // stands in for getMe: tokens "<digits>:..." are bots, anything else 401
 const verifyBot = async (t: string) => { if (!/^\d+:/.test(t)) throw new Error('401: Unauthorized'); return '@fake_bot (1)' }
 beforeEach(() => {
@@ -77,8 +79,8 @@ test('/secret set in a DM (any role): stored sealed, the message deleted, the wo
   expect(row.value).not.toContain('sk-fake-1')
   expect(openSecret(key, 'cc', MEMBER, 'openai', row.value)).toBe('sk-fake-1')
   // telegram-bot kind: methods optional, none = all
-  expect((await runSecretCommand(dm(MEMBER, '/secret set mybot 123:fake-token'), deps))!.reply).toStartWith('已登記這個對話的密鑰 mybot: telegram-bot @fake_bot (1), 方法 全部')
-  expect((await runSecretCommand(dm(MEMBER, '/secret set mybot 123:fake-token sendMessage get*'), deps))!.reply).toStartWith('已更新這個對話的密鑰 mybot: telegram-bot @fake_bot (1), 方法 sendMessage, get*')
+  expect((await runSecretCommand(dm(MEMBER, `/secret set mybot ${T(123, 'fake-token')}`), deps))!.reply).toStartWith('已登記這個對話的密鑰 mybot: telegram-bot @fake_bot (1), 方法 全部')
+  expect((await runSecretCommand(dm(MEMBER, `/secret set mybot ${T(123, 'fake-token')} sendMessage get*`), deps))!.reply).toStartWith('已更新這個對話的密鑰 mybot: telegram-bot @fake_bot (1), 方法 sendMessage, get*')
   const list = (await runSecretCommand(dm(MEMBER, '/secret list'), deps))!
   expect(list.reply).toBe(`這個對話的密鑰 (2/${MAX_SECRETS}):\nmybot: telegram-bot @fake_bot (1), 方法 sendMessage, get*\nopenai: http https://api.example.com, 路徑 /v1/images/*, /v1/models`)
   expect(list.deleteMessage).toBeUndefined()
@@ -101,15 +103,15 @@ test('/secret set refusals: bad name, self, too long, the router\'s own token, b
   expect((await say('/secret set k v send-message')).reply).toStartWith('方法 send-message 不像 Bot API 方法名稱')
   const r = await say('/secret set Bad v')
   expect(r.deleteMessage).toBe(true)
-  for (let i = 0; i < MAX_SECRETS; i++) await say(`/secret set k${i} 9:v${i}`)
-  expect((await say('/secret set one-more 9:x')).reply).toBe(`這個對話已經有 ${MAX_SECRETS} 把密鑰, 先 /secret rm 不用的`)
-  expect((await say('/secret set k0 9:replaced')).reply).toStartWith('已更新') // replacing does not count
+  for (let i = 0; i < MAX_SECRETS; i++) await say(`/secret set k${i} ${T(9, `v${i}`)}`)
+  expect((await say(`/secret set one-more ${T(9, 'x')}`)).reply).toBe(`這個對話已經有 ${MAX_SECRETS} 把密鑰, 先 /secret rm 不用的`)
+  expect((await say(`/secret set k0 ${T(9, 'replaced')}`)).reply).toStartWith('已更新') // replacing does not count
   expect(db.listConvSecrets('cc', MEMBER)).toHaveLength(MAX_SECRETS)
 })
 
 test('/secret in a group: any member, any role; only groups (and senders) the router serves; DMs only from allowed senders', async () => {
   db.setUserRole(MEMBER, 'guest')
-  const r = (await runSecretCommand(grp(MEMBER, '/secret set gk 9:sk-group'), deps))!
+  const r = (await runSecretCommand(grp(MEMBER, `/secret set gk ${T(9, 'sk-group')}`), deps))!
   expect(r.reply).toStartWith('已登記這個對話的密鑰 gk')
   expect(r.deleteMessage).toBe(true)
   expect(db.getConvSecret('cc', GROUP, 'gk')!.added_by).toBe(MEMBER)
@@ -133,9 +135,9 @@ test('refuseSecret: only the kind, methods or paths given at registration; no ro
 })
 
 test('/router secret list|rm: owner and admin see and remove any conversation\'s secrets; others are refused', async () => {
-  await runSecretCommand(dm(MEMBER, '/secret set a 9:v1'), deps)
+  await runSecretCommand(dm(MEMBER, `/secret set a ${T(9, 'v1')}`), deps)
   await runSecretCommand(dm(MEMBER, '/secret set b v2 --http https://x.example'), deps)
-  await runSecretCommand(grp(MEMBER, '/secret set g 9:v3'), deps)
+  await runSecretCommand(grp(MEMBER, `/secret set g ${T(9, 'v3')}`), deps)
   const cdeps = { cfg: { owners: [OWNER], bots: [{ name: 'cc', token: '1:routerbot' }], secretKey: key, credentials: {} }, db, loadAccess: () => access, verifyBot } as unknown as CommandDeps
   const run = (uid: string, text: string) => runCommand(dm(uid, text), cdeps)
   expect((await run(OWNER, '/router secret list'))!).toMatchObject({ reply: `cc ${GROUP}: 1 把\ncc ${MEMBER}: 2 把`, private: true })
@@ -162,16 +164,27 @@ test('the worker is told: bot_api / http_api descriptions, /telegram:bot-skill a
   for (const s of ['/secret set', '/router secret list|rm <chat_id>']) expect(doc).toContain(s)
 })
 
-test('telegram-bot secrets are checked with getMe before they are stored: a token getMe refuses is not stored, the message still deleted; http keys are not', async () => {
+test('telegram-bot secrets are checked with getMe before they are stored: a token getMe refuses is not stored, the message still deleted; http keys and values that are not bot tokens are not sent to getMe', async () => {
   const seen: string[] = []
-  deps.verifyBot = async t => { seen.push(t); if (t !== '42:real') throw new Error('401: Unauthorized'); return '@real_bot (42)' }
-  const bad = (await runSecretCommand(dm(MEMBER, '/secret set b 42:fake'), deps))!
+  deps.verifyBot = async t => { seen.push(t); if (t !== T(42, 'real')) throw new Error('401: Unauthorized'); return '@real_bot (42)' }
+  const bad = (await runSecretCommand(dm(MEMBER, `/secret set b ${T(42, 'fake')}`), deps))!
   expect(bad).toMatchObject({ reply: '這不是可用的 bot token (getMe 失敗: 401: Unauthorized), 沒有登記', deleteMessage: true })
   expect(db.getConvSecret('cc', MEMBER, 'b')).toBeNull()
-  expect((await runSecretCommand(dm(MEMBER, '/secret set b 42:real'), deps))!.reply).toStartWith('已登記這個對話的密鑰 b: telegram-bot @real_bot (42), 方法 全部')
+  expect((await runSecretCommand(dm(MEMBER, `/secret set b ${T(42, 'real')}`), deps))!.reply).toStartWith('已登記這個對話的密鑰 b: telegram-bot @real_bot (42), 方法 全部')
   expect(db.getConvSecret('cc', MEMBER, 'b')!.label).toBe('@real_bot (42)')
   await runSecretCommand(dm(MEMBER, '/secret set h sk-x --http https://x.example'), deps)
-  expect(seen).toEqual(['42:fake', '42:real'])
+  expect(seen).toEqual([T(42, 'fake'), T(42, 'real')])
+  // an API key without --http (柯姊 2026-10-17): not a bot token, never sent to getMe; the reply says how to type it; the message is deleted
+  const key = (await runSecretCommand(dm(MEMBER, '/secret set ant sk-ant-TESTxxxxxxxxxxxxxxxxxxxx'), deps))!
+  expect(key).toMatchObject({ deleteMessage: true, reply: [
+    '這看起來不是 Telegram bot token (像是 Anthropic API key), 沒有登記, 也沒有拿去 Telegram 驗證.',
+    'API key 要加 --http <網址>, 例如:',
+    '/secret set ant <key> --http https://api.anthropic.com --header x-api-key',
+    '(沒寫路徑就是那個網址底下全部路徑; 完整說明: /router help secret)',
+  ].join('\n') })
+  expect((await runSecretCommand(dm(MEMBER, '/secret set x 42:short'), deps))!.reply).toStartWith('這看起來不是 Telegram bot token, 沒有登記')
+  expect(seen).toEqual([T(42, 'fake'), T(42, 'real')])
+  expect(db.getConvSecret('cc', MEMBER, 'ant')).toBeNull()
 })
 
 test('--header / --scheme: default Authorization: Bearer; --header alone sends the key as it is; both together; reserved or malformed headers refused; same fields as a global http credential', async () => {

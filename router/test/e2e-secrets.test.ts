@@ -27,7 +27,7 @@ mkdirSync(state)
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const GROUP = -100700, OWNER = { id: 555, is_bot: false, first_name: 'Boss', username: 'boss' }
 const USER = { id: 666, is_bot: false, first_name: 'U', username: 'u' }, MEMBER = { id: 777, is_bot: false, first_name: 'M', username: 'm' }
-const HTTP_KEY = 'sk-fake-e2e-0001', BOT_KEY = '999:fake-group-token-AAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+const HTTP_KEY = 'sk-fake-e2e-0001', BOT_KEY = '999:fake-group-token-AAAAAAAAAAAAAAAAAA'
 
 const calls: Array<{ method: string; body: any; token?: string; auth?: string | null; xkey?: string | null }> = []
 const updates: unknown[] = []
@@ -170,7 +170,7 @@ test('group: any member registers a telegram-bot secret; the bot cannot delete t
   const text = `/secret set gbot ${BOT_KEY} sendMessage`
   const msg = inGroup(MEMBER, text)
   // a token getMe does not accept is not stored
-  inGroup(MEMBER, '/secret set nobot 555:unknown-token-AAAAAAAAAAAAAAAAAAAAAAAAA')
+  inGroup(MEMBER, '/secret set nobot 555:unknown-token-AAAAAAAAAAAAAAAAAAAAA')
   expect((await until(() => sentTo(GROUP, '這不是可用的 bot token')[0])).body.text).toStartWith('這不是可用的 bot token (getMe 失敗: 401: Unauthorized), 沒有登記')
   const r = await until(() => sentTo(GROUP, '已登記')[0])
   expect(r.body.text).toStartWith('已登記這個對話的密鑰 gbot: telegram-bot @group_tool_bot (9), 方法 sendMessage')

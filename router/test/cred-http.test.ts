@@ -12,7 +12,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import type { Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
-import { parseHttpScope, refuseHeaders, httpApiCall, describeCreds, BOT_TOKEN_FULL } from '../credentials'
+import { parseHttpScope, refuseHeaders, refuseKeyParam, httpApiCall, describeCreds, BOT_TOKEN_FULL } from '../credentials'
 import { runCommand, HELP_TOPICS, type CommandDeps } from '../commands'
 import { runSecretCommand, secretCred, newSecretKey, type SecretDeps } from '../secrets'
 
@@ -52,7 +52,7 @@ test('/router help: the cred line shows the --http form and points to the topics
   expect(all).toContain('/router help <主題>: 完整用法與範例, 主題: cred, secret, perm, bot')
   const cred = (await run('/router help cred'))!.reply
   expect(cred).toBe(HELP_TOPICS.cred!)
-  for (const s of ['只能在你 (owner 或 admin) 自己和 bot 的私訊', '不會進 worker, 那則訊息會立刻刪除', 'Anthropic: /router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', 'anthropic-version: 2023-06-01', 'OpenAI: /router cred add openai sk-...', '/router cred add eagle 123456789:AA...', '沒寫路徑就是那個網址底下全部路徑', '不能帶 Authorization, Cookie, x-api-key', 'cred-import']) expect(cred).toContain(s)
+  for (const s of ['只能在你 (owner 或 admin) 自己和 bot 的私訊', '不會進 worker, 那則訊息會立刻刪除', 'Anthropic: /router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', 'anthropic-version: 2023-06-01', 'OpenAI: /router cred add openai sk-...', '/router cred add eagle 123456789:AA...', '沒寫路徑就是那個網址底下全部路徑', '不能帶 key 所在的標頭, Authorization, Proxy-Authorization, Cookie', 'cred-import']) expect(cred).toContain(s)
   const secret = (await run('/router help SECRET'))!.reply
   for (const s of ['/secret (對話密鑰)', '/router cred (全域憑證)', '任何角色都能登記', '句子中間提到指令名稱不算']) expect(secret).toContain(s)
   expect((await run('/router help perm'))!.reply).toContain('/router perm user <uid|@username>')
@@ -138,20 +138,29 @@ test('the key\'s place, same syntax in /router cred add, cred-import and /secret
   expect(JSON.parse(readFileSync(cfg.path!, 'utf8')).credentials.gem).toMatchObject({ query: 'key', methods: ['/v1beta/a', '/v1beta/b'] })
 }, 20000)
 
-test('http_api extra headers: passed on as they are; the key\'s own header, Authorization, Cookie, Proxy-Authorization and other auth-like names are refused', () => {
+test('http_api extra headers: passed on as they are (x-csrf-token, X-Auth-Token too); only an exact list is refused: the key\'s own header, Authorization, Proxy-Authorization, Cookie and transport headers; a --query parameter may not be in the path', () => {
   const xk = { header: 'x-api-key' }
   expect(refuseHeaders(xk, undefined)).toBeNull()
-  expect(refuseHeaders(xk, { 'anthropic-version': '2023-06-01', 'anthropic-beta': 'x', 'Idempotency-Key': 'k1', 'OpenAI-Organization': 'org' })).toBeNull()
+  // no name fragments: these are the API's business (柯姊 2026-10-17)
+  expect(refuseHeaders(xk, { 'anthropic-version': '2023-06-01', 'anthropic-beta': 'x', 'Idempotency-Key': 'k1', 'OpenAI-Organization': 'org', 'x-csrf-token': 'c', 'X-Auth-Token': 't', 'x-session-id': 's', 'x-goog-api-key': 'g', 'X-Secret-Mode': 'on' })).toBeNull()
+  expect(refuseHeaders({}, { 'x-api-key': 'other' })).toBeNull()
   expect(refuseHeaders(xk, { 'X-API-KEY': 'other' })).toBe('標頭 X-API-KEY 是憑證放 key 的地方, 由 router 設定, 不能自己帶')
-  for (const h of ['Authorization', 'authorization', 'Cookie', 'Proxy-Authorization', 'x-goog-api-key', 'X-Auth-Token', 'x-amz-security-token', 'Set-Cookie', 'Host', 'Content-Type', 'Content-Length']) expect(refuseHeaders(xk, { [h]: 'v' })).toStartWith(`標頭 ${h} 不能自己帶`)
-  // with the key in a query parameter there is no key header, auth headers are still refused
+  expect(refuseHeaders({}, { authorization: 'x' })).toBe('標頭 authorization 是憑證放 key 的地方, 由 router 設定, 不能自己帶')
+  for (const h of ['Authorization', 'Proxy-Authorization', 'Cookie', 'Host', 'Content-Length', 'Transfer-Encoding', 'Connection', 'Keep-Alive', 'TE', 'Trailer', 'Upgrade', 'Expect', 'Content-Type']) expect(refuseHeaders(xk, { [h]: 'v' })).toStartWith(`標頭 ${h} 不能自己帶`)
+  // with the key in a query parameter there is no key header; Authorization is still refused
   expect(refuseHeaders({ query: 'key' }, { Authorization: 'Bearer other' })).toStartWith('標頭 Authorization 不能自己帶')
-  expect(refuseHeaders({}, { 'x-api-key': 'other' })).toStartWith('標頭 x-api-key 不能自己帶')
   expect(refuseHeaders(xk, { 'bad name': 'v' })).toBe('標頭 bad name 不行: 只能用英數與 -')
   expect(refuseHeaders(xk, { a: 'x\r\nInjected: 1' })).toBe('標頭 a 的值要是一行文字 (最多 2000 字)')
   expect(refuseHeaders(xk, { a: 1 })).toBe('標頭 a 的值要是一行文字 (最多 2000 字)')
   expect(refuseHeaders(xk, ['a'])).toStartWith('headers 要是物件')
   expect(refuseHeaders(xk, Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`h${i}`, 'v'])))).toBe('headers 最多 20 個')
+  // the --query parameter is the router's: not in the path, encoded or not
+  const q = { query: 'key' }
+  expect(refuseKeyParam(q, '/v1/models?page=2')).toBeNull()
+  expect(refuseKeyParam(q, '/v1/models')).toBeNull()
+  expect(refuseKeyParam(q, '/v1/models?page=2&key=other')).toBe('query 參數 key 是憑證放 key 的地方, 由 router 設定, path 裡不能自己帶')
+  expect(refuseKeyParam(q, '/v1/models?k%65y=other')).toStartWith('query 參數 key')
+  expect(refuseKeyParam({}, '/v1/models?key=x')).toBeNull()
 })
 
 test('httpApiCall puts the key only where the credential says (a local server sees every header and the query)', async () => {
@@ -191,5 +200,5 @@ test('/telegram:doc and /telegram:bot-skill teach registering keys: where to typ
   const { TOOL_DEFINITIONS } = await import('../../shared/tools')
   const http = (TOOL_DEFINITIONS as any[]).find(t => t.name === 'http_api')
   expect(http.inputSchema.properties.headers.type).toBe('object')
-  expect(http.description).toContain('never send Authorization, Cookie, x-api-key')
+  expect(http.description).toContain('never send the header the key goes in, Authorization, Proxy-Authorization, Cookie')
 })

@@ -224,7 +224,7 @@ export const HELP_TOPICS: Record<string, string> = {
     '/router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...]',
     '- 只能呼叫 --http 的網址 (同一個 host); 沒寫路徑就是那個網址底下全部路徑, 寫了就只開放那些 (結尾 * 代表前綴)',
     '- key 預設放在 Authorization: Bearer <key>; --header x-api-key 改放進那個標頭且不加前綴; --scheme Token 改前綴 (none: 不加); --query key 改放在網址的 ?key=',
-    '- worker 呼叫時可以自帶其他標頭 (例如 anthropic-version), 但不能帶 Authorization, Cookie, x-api-key 這類認證標頭',
+    '- worker 呼叫時可以自帶其他標頭 (例如 anthropic-version, x-csrf-token), 但不能帶 key 所在的標頭, Authorization, Proxy-Authorization, Cookie, 也不能改寫 --query 的那個參數',
     '範例:',
     'Anthropic: /router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key',
     '  (worker 呼叫時自帶 anthropic-version: 2023-06-01)',

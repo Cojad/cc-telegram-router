@@ -147,13 +147,17 @@ export function placementText(p: KeyPlacement): string {
   return h === 'Authorization' && sc === 'Bearer' ? '' : `, 標頭 ${h}${sc ? ` (${sc} <key>)` : ''}`
 }
 
-/** Auth-like header names a worker may not send: the key's place is the router's. */
-const AUTH_LIKE = /auth|cookie|token|api-?key|secret|session|passw|credential/i
+/** Headers a worker may never send with http_api: authentication the
+ *  router does not hand out, and transport headers fetch sets itself.
+ *  Content-Type too: the router sets it for the body it builds (JSON, form,
+ *  multipart with its boundary). An exact list, not name fragments: an
+ *  x-csrf-token or idempotency-key is the API's business. */
+export const WORKER_DENIED_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie', 'host', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', 'te', 'trailer', 'upgrade', 'expect', 'content-type'])
 export const MAX_EXTRA_HEADERS = 20
 
 /** Why the extra headers a worker gave http_api are refused, or null. Any
- *  header is passed on as it is, except the one the key goes in and anything
- *  that looks like authentication (Authorization, Cookie, x-api-key...). */
+ *  header is passed on as it is, except the one the key goes in and
+ *  WORKER_DENIED_HEADERS. */
 export function refuseHeaders(cred: Pick<Credential, 'header' | 'query'>, headers: unknown): string | null {
   if (headers == null) return null
   if (typeof headers !== 'object' || Array.isArray(headers)) return 'headers 要是物件, 例如 {"anthropic-version": "2023-06-01"}'
@@ -165,9 +169,17 @@ export function refuseHeaders(cred: Pick<Credential, 'header' | 'query'>, header
     if (typeof v !== 'string' || /[\r\n\0]/.test(v) || v.length > 2000) return `標頭 ${k} 的值要是一行文字 (最多 2000 字)`
     const low = k.toLowerCase()
     if (low === keyHeader) return `標頭 ${k} 是憑證放 key 的地方, 由 router 設定, 不能自己帶`
-    if (AUTH_LIKE.test(low) || RESERVED_HEADERS.has(low)) return `標頭 ${k} 不能自己帶: 認證類 (Authorization, Cookie, x-api-key...) 只由 router 依憑證放, Host, Content-Type 這類由 router 設定`
+    if (WORKER_DENIED_HEADERS.has(low)) return `標頭 ${k} 不能自己帶: Authorization, Proxy-Authorization, Cookie 只由 router 依憑證放, Host, Content-Type, Content-Length 這類由 router 設定`
   }
   return null
+}
+
+/** Why the path's query is refused, or null: with --query the key's
+ *  parameter is the router's, the worker may not write it. */
+export function refuseKeyParam(cred: Pick<Credential, 'query'>, path: string): string | null {
+  if (!cred.query) return null
+  const q = path.includes('?') ? path.slice(path.indexOf('?') + 1) : ''
+  return [...new URLSearchParams(q).keys()].includes(cred.query) ? `query 參數 ${cred.query} 是憑證放 key 的地方, 由 router 設定, path 裡不能自己帶` : null
 }
 
 export function describeCreds(cfg: Pick<Config, 'credentials'>): string {

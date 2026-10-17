@@ -89,8 +89,8 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, 群組回到提問者的私訊 (on_behalf_of), /router 指令不轉給 worker, CLI, bot add 後立刻 bot list 就有新 bot 的資訊, log 行與 worker 收到的訊息時間是 GMT+8 |
 | `router/test/phase3.test.ts` | 規劃 03, 07: 角色範本, /router perm, 權限檢查, 跨對話傳訊申請, 審核頻道, 提權 (詢問, 核准, 逾時, 主動申請, 紀錄), hook, bot 資料夾與搬遷 |
 | `router/test/phase3-cred.test.ts` | 憑證的角色與方法限制, Bot API 呼叫 (含上傳), install_skill 的來源, 範圍與檢查, /router cred 與 botapi |
-| `router/test/cred-http.test.ts` | [http 憑證的 key 放哪裡](credentials-and-skills.md#http-憑證的-key-放哪裡)與 [/router help 主題](operations.md#router-help-主題): help 主題的內容, 沒帶 --http 又不像 bot token 時不呼叫 getMe 並提示, `--header` `--scheme` `--query` 在 `/router cred add`, `cred-import`, `/secret set` 三處一致, 沒寫路徑就是全部, 清單顯示 (全部, 空路徑, 空角色), http_api 額外標頭的放行與擋下, 本機假 HTTP 伺服器確認 key 只出現在指定位置 |
-| `router/test/secrets.test.ts` | 規劃 10b 對話專屬密鑰: 加密與綁定, 遮蔽 (句子中間提到登記指令不算密鑰的回歸測試), /secret 指令 (私訊, 群組, 拒絕, 上限, getMe 驗證, --header), 使用範圍檢查, /router secret; events 遮蔽與一次性 migration, 全域 http 路徑, bot 設定提醒 |
+| `router/test/cred-http.test.ts` | [http 憑證的 key 放哪裡](credentials-and-skills.md#http-憑證的-key-放哪裡)與 [/router help 主題](operations.md#router-help-主題): help 主題的內容, 沒帶 --http 又不像 bot token 時不呼叫 getMe 並提示 (`/router cred add` 與 `/secret set`), `--header` `--scheme` `--query` 在 `/router cred add`, `cred-import`, `/secret set` 三處一致, 沒寫路徑就是全部, 清單顯示 (全部, 空路徑, 空角色), http_api 額外標頭的放行與擋下, 本機假 HTTP 伺服器確認 key 只出現在指定位置 |
+| `router/test/secrets.test.ts` | 規劃 10b 對話專屬密鑰: 加密與綁定, 遮蔽 (句子中間提到登記指令不算密鑰的回歸測試), /secret 指令 (私訊, 群組, 拒絕, 上限, getMe 驗證 (不像 bot token 的值不送 getMe), --header), 使用範圍檢查, /router secret; events 遮蔽與一次性 migration, 全域 http 路徑, bot 設定提醒 |
 | `router/test/e2e-secrets.test.ts` | 真的 router + 假 Bot API 與 HTTP API: secretKey 自動產生, 舊 events 遮蔽, 私訊登記與刪訊息, 群組登記與提醒, getMe 驗證, 引用遮蔽, http_api (含 --header) 與 bot_api 使用, 其他對話用不到, list / rm, 加入群組, 初次設定與 setup group 的設定提醒 |
 | `router/test/rawvault.test.ts` | 規劃 10e 原始事件與密鑰保護: 偵測 (格式, 指令的值, 已登記的值, 不猜熵), 掃描範圍, event_raw 加密與綁定, events 遮蔽與 worker 代號, 🔑 話題紀錄, 提醒與 5 分鐘刪除 (取消, 誰能按, 沒權限, 重啟後), event_raw (角色, 代號, 固定 agent, 出口檢查, haiku, 語言), secret_from_handle, cli event raw, /secret handles, /router secret handles, 文字類附件, 文件與工具說明 |
 | `router/test/e2e-rawvault.test.ts` | 真的 router + 假 Bot API 與假 claude: 啟動時補建 🔑 話題與補刪到期的訊息, 私訊貼 token (events, event_raw, messages, worker 都沒有明文), 提醒與取消刪除, 編輯訊息, /secret set, event_raw (user 對話被拒, owner 對話拿到代號與回答), secret_from_handle 後 bot_api 用到真值, cli event raw 寫 600 檔, 下載含 key 的 .env 附件 |
@@ -339,9 +339,9 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 |---|---|
 | `/router help` 的 cred 那行寫出 `--http` 形式並指向主題; `/router help <主題>` (cred, secret, perm, bot) 給完整用法與範例: Anthropic, OpenAI 的 http 憑證與 Telegram bot token 範例, 在哪裡打, 訊息會刪除, key 不進 worker, /secret 與 /router cred 的差別; 不認得的主題列出主題 | cred-http「/router help: …」 |
 | 句子中間提到登記指令 (例如「教我 /router cred add 的用法」) 不算密鑰; 訊息開頭 (或 `cc /`, 引用) 是指令而且參數位置有值才算; 已知格式照樣比對 | secrets「a sentence that only names a token command…」, rawvault「detection: …」 |
-| `/router cred add` 沒帶 `--http` 而值不像 bot token (數字:35 字元) 時不呼叫 getMe, 回覆像哪種 key 與該怎麼打, 照樣刪除訊息; `cred-import` 一樣不呼叫 getMe; 真的 bot token 照舊 getMe | cred-http「/router cred add without --http…」; e2e-setup「API keys without --http are never sent to getMe…」 |
+| `/router cred add` 與 `/secret set` 沒帶 `--http` 而值不像 bot token (數字:35 字元) 時不呼叫 getMe, 回覆像哪種 key 與該怎麼打, 照樣刪除訊息; `cred-import` 一樣不呼叫 getMe; 真的 bot token 照舊 getMe | cred-http「/router cred add without --http…」, secrets「telegram-bot secrets are checked with getMe…」; e2e-setup「API keys without --http are never sent to getMe…」 |
 | `--header`, `--scheme <前綴\|none>`, `--query` 在 `/router cred add`, `cred-import`, `/secret set` 語法一致; http 憑證沒寫路徑就是全部 | cred-http「the key's place, same syntax…」; e2e-setup「API keys without --http…」 |
-| worker 的 `http_api` 可以自帶額外標頭 (原樣轉送); key 所在的標頭, Authorization, Cookie, Proxy-Authorization 與名稱像認證的標頭被擋, 什麼都沒送出 | cred-http「http_api extra headers…」; e2e-setup「API keys without --http…」 |
+| worker 的 `http_api` 可以自帶額外標頭 (原樣轉送); 只擋精確名單: key 所在的標頭, Authorization, Proxy-Authorization, Cookie 與 Host, Content-Type 等傳輸層標頭, `--query` 的參數不能出現在 path; `x-csrf-token`, `X-Auth-Token` 這類照樣轉送; 被擋時什麼都沒送出 | cred-http「http_api extra headers…」; e2e-setup「API keys without --http…」 |
 | key 只出現在憑證指定的位置 (標頭或 query 參數), 本機假伺服器確認實際收到的標頭與網址; 回顯的 key (含 query) 遮蔽 | cred-http「httpApiCall puts the key only where…」; e2e-setup「API keys without --http…」 |
 
 ## Phase 4 驗收對照

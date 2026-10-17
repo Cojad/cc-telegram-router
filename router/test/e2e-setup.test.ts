@@ -262,7 +262,7 @@ test('http credentials end to end: cred-import --http stores an API key; http_ap
 }, 30000)
 
 
-test('API keys without --http are never sent to getMe (/router cred add and cred-import); --header puts the key in that header only, worker headers pass through, auth headers are refused; --query puts it in the URL; no paths means every path', async () => {
+test('API keys without --http are never sent to getMe (/router cred add and cred-import); --header puts the key in that header only, worker headers pass through (x-csrf-token too), the key header, Authorization, Cookie and transport headers are refused; --query puts it in the URL; no paths means every path', async () => {
   const KEY = 'sk-ant-TESTxxxxxxxxxxxxxxxxxxxx'
   const base = `http://127.0.0.1:${api.port}/x`
   const getMes = () => calls.filter(c => c.method === 'getMe' && c.token === KEY).length
@@ -298,14 +298,18 @@ test('API keys without --http are never sent to getMe (/router cred add and cred
   expect(got.headers['x-api-key']).toBe(KEY)
   expect(got.headers['anthropic-version']).toBe('2023-06-01')
   expect(got.headers['anthropic-beta']).toBe('b1')
+  // not auth for the router: passed on as they are
+  await owner.call('http_api', { credential: 'anthropic', path: '/v1/messages', json: {}, headers: { 'x-csrf-token': 'c1', 'X-Auth-Token': 't1' } })
+  const more = calls.filter(c => c.method === 'http /x/v1/messages').at(-1)!.body.headers
+  expect([more['x-csrf-token'], more['x-auth-token'], more['x-api-key']]).toEqual(['c1', 't1', KEY])
   expect(got.headers.authorization).toBeUndefined()
   expect(got.search).toBe('')
   // the key is nowhere else in the request
   expect(Object.entries(got.headers).filter(([, v]) => String(v).includes(KEY)).map(([k]) => k)).toEqual(['x-api-key'])
-  // auth headers from the worker are refused before anything is sent
+  // the key's header, Authorization, Cookie and transport headers from the worker are refused before anything is sent
   const sentHttp = () => calls.filter(c => c.method.startsWith('http ')).length
   const n = sentHttp()
-  for (const h of ['Authorization', 'X-Api-Key', 'Cookie', 'Proxy-Authorization', 'x-goog-api-key']) {
+  for (const h of ['Authorization', 'X-Api-Key', 'Cookie', 'Proxy-Authorization', 'Host']) {
     const bad = await owner.call('http_api', { credential: 'anthropic', path: '/v1/messages', json: {}, headers: { [h]: 'other' } })
     expect(bad.isError).toBe(true)
     expect(bad.content[0]!.text).toContain(`標頭 ${h}`)
@@ -323,6 +327,9 @@ test('API keys without --http are never sent to getMe (/router cred add and cred
   expect(qr.content[0]!.text).not.toContain(KEY)
   expect(JSON.parse(qr.content[0]!.text).body.echo).toContain('key=<密鑰>')
   expect((await owner.call('http_api', { credential: 'gq', method: 'GET', path: '/v2/models' })).content[0]!.text).toContain('沒有開放 /v2/models')
+  const before = sentHttp()
+  expect((await owner.call('http_api', { credential: 'gq', method: 'GET', path: '/v1/models?key=other' })).content[0]!.text).toBe('query 參數 key 是憑證放 key 的地方, 由 router 設定, path 裡不能自己帶')
+  expect(sentHttp()).toBe(before)
   owner.close()
 }, 30000)
 

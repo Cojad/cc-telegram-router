@@ -27,7 +27,7 @@ import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens, 
 import { isCommand, runCommand, roleOf, type CommandDeps, type CommandInput } from './commands'
 import { runCli } from './cli'
 import { importV1Messages } from './importv1'
-import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, refuseHeaders, parseHttpScope, placementText, BOT_TOKEN_FULL, httpExample, takeB64, shorten, DEFAULT_CRED_ROLES, type KeyPlacement } from './credentials'
+import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, refuseHeaders, refuseKeyParam, parseHttpScope, placementText, BOT_TOKEN_FULL, httpExample, takeB64, shorten, DEFAULT_CRED_ROLES, type KeyPlacement } from './credentials'
 import { newSecretKey, maskSecretUpdate, openSecret, refuseSecret, secretCred, scrubSecret, servesChat } from './secrets'
 import { createVault, claudeAsk, SECRET_TOPIC, SECRET_TOPIC_INTRO } from './rawvault'
 import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
@@ -268,7 +268,7 @@ async function convSecretCall(live: Peer, conv: Conversation, s: ConvSecret, too
     return { content: [{ type: 'text', text: out }], isError: !res.ok }
   }
   const cred = secretCred(s, value)
-  const badHeaders = refuseHeaders(cred, args.headers)
+  const badHeaders = refuseHeaders(cred, args.headers) ?? refuseKeyParam(cred, path)
   if (badHeaders) return fail(badHeaders)
   const headers = args.headers as Record<string, string> | undefined
   const save = args.save_b64 as { at?: string; to?: string } | undefined
@@ -356,7 +356,7 @@ const ipc = createIpc({
       const call = { tool_name: 'mcp__plugin_telegram_telegram__http_api', tool_input: args }
       const roleWhy = elevation.extraCheck(conv, call, role)
       if (roleWhy) return fail((await elevation.refuse(conv, call, roleWhy)).reason ?? roleWhy)
-      const why = refuseUse(cred, name, role, path, 'http') ?? refuseHeaders(cred!, args.headers)
+      const why = refuseUse(cred, name, role, path, 'http') ?? refuseHeaders(cred!, args.headers) ?? refuseKeyParam(cred!, path)
       if (why) return fail(why)
       const headers = args.headers as Record<string, string> | undefined
       const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
