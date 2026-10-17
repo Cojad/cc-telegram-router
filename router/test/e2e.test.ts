@@ -81,6 +81,8 @@ writeFileSync(join(state, 'access.json'), JSON.stringify({
 }))
 
 const router = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json')], { stdout: 'ignore', stderr: 'pipe' })
+let stderr = ''
+void (async () => { for await (const c of router.stderr) stderr += new TextDecoder().decode(c) })()
 
 afterAll(async () => {
   router.kill('SIGTERM')
@@ -121,11 +123,11 @@ test('every update is logged; allowlisted messages become conversations, setting
 })
 
 test('a plugin for the conversation gets the queued message, and its reply goes out and is logged', async () => {
-  const delivered: string[] = []
+  const delivered: string[] = [], metas: Array<Record<string, string>> = []
   const client = connectRouter({
     socketPath: join(state, 'router.sock'),
     hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-111'), pid: 1 },
-    onMessage(m) { if (m.t === 'deliver') { delivered.push(m.params.content); client.send({ t: 'ack', qid: m.qid }) } },
+    onMessage(m) { if (m.t === 'deliver') { delivered.push(m.params.content); metas.push(m.params.meta as Record<string, string>); client.send({ t: 'ack', qid: m.qid }) } },
   })
   await until(() => delivered.length >= 1)
   // first delivery on a connection carries the chat_context (plan 06)
@@ -133,6 +135,14 @@ test('a plugin for the conversation gets the queued message, and its reply goes 
   expect(delivered[0]).toStartWith('<chat_context v="')
   expect(delivered[0]).toContain('role: owner')
   expect(delivered[0]).toEndWith('\nhello router')
+  // the router's log lines carry GMT+8 time, never UTC or Z
+  const lines = stderr.split('\n').filter(Boolean)
+  expect(lines.some(l => l.includes('router up'))).toBe(true)
+  for (const l of lines.filter(l => /^\d{4}-/.test(l))) expect(l).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}\+08:00 /)
+  expect(stderr).not.toMatch(/\d\d:\d\d:\d\d(\.\d+)?Z/)
+  // so does the message time the worker sees
+  expect(metas[0]!.ts).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}\+08:00$/)
+  expect(Date.parse(metas[0]!.ts!)).toBe(now * 1000)
   const r = await client.call('reply', { chat_id: '111', text: 'pong' })
   expect(r.isError).toBeFalsy()
   expect(calls.some(c => c.method === 'sendMessage' && c.body.text === 'pong')).toBe(true)

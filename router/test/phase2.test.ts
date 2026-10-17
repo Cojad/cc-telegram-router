@@ -12,6 +12,7 @@ import { ensureConversation, findByFolder } from '../conversations'
 import { runCommand, isCommand, type CommandDeps, type CommandInput } from '../commands'
 import { awaitBotInfo } from '../botinfo'
 import { buildContext, renderContext, renderLogs, maskTokens, gmt8 } from '../context'
+import { iso8, logLine } from '../../shared/time'
 import type { Access } from '../telegram/policy'
 
 const OWNER = '137438526', ADMIN = '500', USER = '600'
@@ -164,6 +165,11 @@ test('chat_context block and router_log: GMT+8 times, tokens masked', () => {
   expect(block).toContain('role: user (只能讀寫自己的資料夾')
   expect(maskTokens('bot add x 9000000006:AAH1234567890abcdefghijklmnopqrstuv')).toBe('bot add x 9000000006:…stuv')
   expect(gmt8('2026-10-15T18:30:00.000Z')).toBe('2026-10-16 02:30')
+  // log lines and times handed to workers: GMT+8 with its offset, never UTC or Z (shared/time.ts)
+  expect(iso8('2026-10-15T18:30:00.123Z')).toBe('2026-10-16T02:30:00.123+08:00')
+  expect(iso8(Date.parse('2026-12-31T16:00:00Z'), ' ')).toBe('2027-01-01 00:00:00.000+08:00') // across the year
+  expect(Date.parse(iso8('2026-10-15T18:30:00.123Z'))).toBe(Date.parse('2026-10-15T18:30:00.123Z'))
+  expect(logLine('router up', Date.parse('2026-10-17T00:06:04.919Z'))).toBe('2026-10-17 08:06:04.919+08:00 router up\n')
   db.addLog(c.key, 'u1(owner) /router bot rotate cc 9000000006:AAH1234567890abcdefghijklmnopqrstuv → 已更換')
   const q = db.enqueue(c.key, { content: 'x', meta: {} })
   const logs = db.bindLogs(c.key, q)

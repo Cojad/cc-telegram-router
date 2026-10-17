@@ -54,8 +54,10 @@ import { registerTransport } from './telegram/transport'
 import { callTool } from './telegram/outbound'
 import { chunk } from './telegram/format'
 import type { ChannelParams } from '../shared/protocol'
+import { iso8, logLine } from '../shared/time'
 
-const log = (msg: string) => process.stderr.write(`${new Date().toISOString()} ${msg}\n`)
+// log lines carry GMT+8 time (shared/time.ts), never UTC
+const log = (msg: string) => process.stderr.write(logLine(msg))
 const startedAt = new Date()
 
 const configPath = defaultConfigPath(process.argv, process.execPath)
@@ -512,7 +514,7 @@ function notifyConversation(c: Conversation, text: string, about?: { kind: strin
     const m: Mirror = { ...pressed, label: `↪ ${c.type === 'dm' ? dmLabel(db, c.chat_id) : (c.title ?? c.key)} (${c.key}) 收到結果, 處理中:` }
     if (!progress.attach(c.key, m)) pendingMirrors.set(c.key, [...(pendingMirrors.get(c.key) ?? []), m])
   }
-  db.enqueue(c.key, { content: text, meta: { chat_id: c.chat_id, user: 'router', ts: new Date().toISOString() } })
+  db.enqueue(c.key, { content: text, meta: { chat_id: c.chat_id, user: 'router', ts: iso8() } })
   if (ipc.isConnected(c.key)) ipc.pushQueue(c.key)
   else void supervisor.ensureAwake(c)
 }

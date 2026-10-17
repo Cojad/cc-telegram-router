@@ -117,6 +117,16 @@ test('handleInbound includes reply_to_attachment_file_id in the notification met
   expect(meta.reply_to_attachment_size).toBe('40199')
 })
 
+test('handleInbound: the worker gets the message time in GMT+8 (+08:00, no Z); the store keeps it in UTC', async () => {
+  const { handleInbound, notifications, recorded } = harness({ action: 'deliver', access: accessAllowingEveryone() })
+  const date = Date.parse('2026-10-17T00:06:04Z') / 1000 // 08:06:04 GMT+8
+  await handleInbound(ctxFor({ message_id: 101, date }), 'hi', undefined)
+  const meta = notifications[0].params.meta as Record<string, unknown>
+  expect(meta.ts).toBe('2026-10-17T08:06:04.000+08:00')
+  expect(Date.parse(String(meta.ts))).toBe(date * 1000)
+  expect(recorded[0]!.ts).toBe('2026-10-17T00:06:04.000Z')
+})
+
 test('reply_to_attachment_file_id falls back to the store when Telegram omits the whole replied-to message (old message)', async () => {
   const { handleInbound, notifications } = harness(
     { action: 'deliver', access: accessAllowingEveryone() },

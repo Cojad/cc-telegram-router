@@ -10,6 +10,7 @@ import type { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import type { Access, GateResult, InboundContext } from './policy'
 import type { Store } from './store'
 import { maskSecretText } from '../secrets'
+import { iso8 } from '../../shared/time'
 
 // handleInbound needs one thing gate()/isMentioned() never touch: a way to
 // send the "pairing required" reply. Kept as its own extension of
@@ -312,7 +313,8 @@ export function createHandleInbound(deps: InboundDeps) {
           ...(msgId != null ? { message_id: String(msgId) } : {}),
           user: from.username ?? String(from.id),
           user_id: String(from.id),
-          ts: tsForStore,
+          // the worker sees GMT+8 (+08:00); the store keeps UTC
+          ts: iso8(tsForStore),
           // String literal, not a bare boolean — every other field in this
           // meta object is a string (String(msgId), String(attachment.size),
           // ...), and the downstream consumer renders meta as <channel ...>

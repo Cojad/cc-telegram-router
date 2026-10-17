@@ -10,6 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { TOOL_DEFINITIONS } from '../shared/tools'
 import { DEFAULT_SOCKET, type RouterToPlugin, type ToolResult } from '../shared/protocol'
+import { iso8 } from '../shared/time'
 import { dirname } from 'path'
 import { connectRouter } from './client'
 
@@ -133,7 +134,7 @@ function notifyRecovered(chatId: string | undefined): void {
     ] : []),
     '</router_status>',
   ].join('\n')
-  mcp.notification({ method: 'notifications/claude/channel', params: { content, meta: { ...(chatId ? { chat_id: chatId } : {}), user: 'router', ts: new Date().toISOString() } } })
+  mcp.notification({ method: 'notifications/claude/channel', params: { content, meta: { ...(chatId ? { chat_id: chatId } : {}), user: 'router', ts: iso8() } } })
     .catch(e => process.stderr.write(`telegram: recovery notification failed: ${e}\n`))
 }
 
