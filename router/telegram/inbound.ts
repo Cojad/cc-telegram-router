@@ -162,7 +162,7 @@ export interface InboundDeps {
    *  This bot's messages only (store.ts forBot): another bot's message with
    *  the same chat and message id is not this one. */
   store: Pick<Store, 'record' | 'lookup'>
-  /** Where a dropped duplicate is noted (default stderr). */
+  /** Where a dropped duplicate and a store or delivery failure are noted (default stderr). */
   log?: (msg: string) => void
 }
 
@@ -198,7 +198,7 @@ export function createHandleInbound(deps: InboundDeps) {
           return
         }
       } catch (err) {
-        process.stderr.write(`telegram channel: store.lookup (dedup check) failed: ${err}\n`)
+        log(`telegram channel: store.lookup (dedup check) failed: ${err}`)
       }
     }
 
@@ -221,7 +221,7 @@ export function createHandleInbound(deps: InboundDeps) {
           rich_message: ctx.message?.rich_message != null,
         })
       } catch (err) {
-        process.stderr.write(`telegram channel: store.record (inbound) failed: ${err}\n`)
+        log(`telegram channel: store.record (inbound) failed: ${err}`)
       }
     }
 
@@ -264,7 +264,7 @@ export function createHandleInbound(deps: InboundDeps) {
           } : {}),
         }
       } catch (err) {
-        process.stderr.write(`telegram channel: store.lookup (reply fallback) failed: ${err}\n`)
+        log(`telegram channel: store.lookup (reply fallback) failed: ${err}`)
       }
     }
 
@@ -342,7 +342,7 @@ export function createHandleInbound(deps: InboundDeps) {
         },
       },
     }).catch((err: unknown) => {
-      process.stderr.write(`telegram channel: failed to deliver inbound to Claude: ${err}\n`)
+      log(`telegram channel: failed to deliver inbound to Claude: ${err}`)
     })
   }
 }

@@ -164,6 +164,8 @@ systemctl --user enable --now cc-telegram-router
 bun test router/test
 ```
 
+輸出裡以「✅ 預期中 (測試刻意模擬, 屬正確行為)」開頭的行, 是測試刻意製造的錯誤 (例如模擬 db locked, disk full, 重複的訊息), 用來驗證 router 遇到這些狀況仍正常運作, 不是真的錯誤.
+
 | 檔案 | 對應 |
 |---|---|
 | `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor (含 resume 後的說明更新提醒 freshness), plugin MCP, router 離線告知 |

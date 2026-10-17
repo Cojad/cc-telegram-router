@@ -4,12 +4,22 @@
 // exercise the real handleInbound with stubbed gate/bot/mcp/store deps and
 // assert on what actually got sent/recorded — not just that a helper
 // computes the right value in isolation.
+// Log lines a test causes on purpose (simulated store failures, a dropped
+// duplicate) are checked and printed as 「✅ 預期中 ...」 (expectedLog), see
+// README 「測試」.
 
 import { expect, test } from 'bun:test'
 import type { Context } from 'grammy'
 import { buildReplyMeta, createHandleInbound, extractAttachmentMeta, type InboundDeps } from '../telegram/inbound'
 import { type Access, type GateResult } from '../telegram/policy'
 import { openStore, type MessageRecord } from '../telegram/store'
+
+/** A log line a test causes on purpose (a simulated store failure, a dropped
+ *  duplicate): kept for the test to check, and printed marked as expected,
+ *  so the test output never reads like a real error (柯姊 2026-10-17). */
+function expectedLog(lines: string[]) {
+  return (m: string) => { lines.push(m); process.stderr.write(`✅ 預期中 (測試刻意模擬, 屬正確行為): ${m}\n`) }
+}
 
 test('buildReplyMeta: no reply_to_message produces no reply fields', () => {
   expect(buildReplyMeta(undefined)).toEqual({})
@@ -173,11 +183,14 @@ interface Harness {
   handleInbound: ReturnType<typeof createHandleInbound>
   notifications: Array<{ method: string; params: Record<string, unknown> }>
   recorded: MessageRecord[]
+  /** Log lines the run produced (printed marked as expected). */
+  logs: string[]
 }
 
 function harness(gateResult: GateResult, seeded: Record<string, MessageRecord> = {}): Harness {
   const notifications: Array<{ method: string; params: Record<string, unknown> }> = []
   const recorded: MessageRecord[] = []
+  const logs: string[] = []
   const deps: InboundDeps = {
     gate: () => gateResult,
     bot: { api: { sendChatAction: async () => {}, setMessageReaction: async () => {} } } as never,
@@ -186,8 +199,9 @@ function harness(gateResult: GateResult, seeded: Record<string, MessageRecord> =
       record: (r: MessageRecord) => { recorded.push(r) },
       lookup: (chat_id: string, message_id: string) => seeded[`${chat_id}:${message_id}`] ?? null,
     },
+    log: expectedLog(logs),
   }
-  return { handleInbound: createHandleInbound(deps), notifications, recorded }
+  return { handleInbound: createHandleInbound(deps), notifications, recorded, logs }
 }
 
 function ctxFor(overrides: { message_id: number; date?: number; text?: string; reply_to_message?: unknown; from?: unknown; chat?: unknown; richBlocks?: unknown[] }): Context {
@@ -206,13 +220,14 @@ function ctxFor(overrides: { message_id: number; date?: number; text?: string; r
 }
 
 test('handleInbound skips a (chat_id, message_id) that is already in the store — duplicate delivery guard', async () => {
-  const { handleInbound, notifications, recorded } = harness(
+  const { handleInbound, notifications, recorded, logs } = harness(
     { action: 'deliver', access: accessAllowingEveryone() },
     { '1:1': { chat_id: '1', message_id: '1', direction: 'in', ts: '2026-09-15T00:00:00.000Z', delivered: true } },
   )
   const ctx = ctxFor({ message_id: 1 })
   await handleInbound(ctx, 'already seen', undefined)
   expect(notifications).toHaveLength(0)
+  expect(logs).toEqual(['telegram channel: duplicate message dropped (chat 1, message 1): already recorded for this bot'])
   expect(recorded).toHaveLength(0) // not even a second store.record() call
 })
 
@@ -313,17 +328,20 @@ test('a pairing-code response is recorded as delivered: false (nothing reached C
 
 test('a store.record failure never blocks message delivery to Claude', async () => {
   const notifications: Array<{ method: string; params: Record<string, unknown> }> = []
+  const logs: string[] = []
   const handleInbound = createHandleInbound({
     gate: () => ({ action: 'deliver', access: accessAllowingEveryone() }),
     bot: { api: { sendChatAction: async () => {}, setMessageReaction: async () => {} } } as never,
     mcp: { notification: async (n: unknown) => { notifications.push(n as never); return undefined } } as never,
-    store: { record: () => { throw new Error('disk full') }, lookup: () => null },
+    store: { record: () => { throw new Error('disk full (simulated)') }, lookup: () => null },
+    log: expectedLog(logs),
   })
   const ctx = ctxFor({ message_id: 300, text: 'still gets through' })
 
   await handleInbound(ctx, 'still gets through', undefined)
 
   expect(notifications).toHaveLength(1) // store blowing up didn't swallow the real delivery
+  expect(logs).toEqual(['telegram channel: store.record (inbound) failed: Error: disk full (simulated)'])
 })
 
 // ---- reply_to_text fallback to the store (plan.html §06 phase 4) --------
@@ -378,17 +396,23 @@ test('Telegram-inlined reply_to_text is used as-is, without an extra store consu
 
 test('a store.lookup failure during the reply fallback never blocks delivery', async () => {
   const notifications: Array<{ method: string; params: Record<string, unknown> }> = []
+  const logs: string[] = []
   const handleInbound = createHandleInbound({
     gate: () => ({ action: 'deliver', access: accessAllowingEveryone() }),
     bot: { api: { sendChatAction: async () => {}, setMessageReaction: async () => {} } } as never,
     mcp: { notification: async (n: unknown) => { notifications.push(n as never); return undefined } } as never,
-    store: { record: () => {}, lookup: () => { throw new Error('db locked') } },
+    store: { record: () => {}, lookup: () => { throw new Error('db locked (simulated)') } },
+    log: expectedLog(logs),
   })
   const ctx = ctxFor({ message_id: 103, reply_to_message: { message_id: 55 } })
 
   await handleInbound(ctx, 'my answer', undefined)
 
   expect(notifications).toHaveLength(1)
+  expect(logs).toEqual([
+    'telegram channel: store.lookup (dedup check) failed: Error: db locked (simulated)',
+    'telegram channel: store.lookup (reply fallback) failed: Error: db locked (simulated)',
+  ])
 })
 
 test('two bots, one store: the same chat and message id reaches each bot\'s worker (a DM to both, a group both are in); a real duplicate for one bot is dropped with a log line, never silently', async () => {
