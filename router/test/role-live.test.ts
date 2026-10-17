@@ -99,6 +99,7 @@ test.skipIf(!LIVE)('power: a router socket outside home and the state dir (confi
     expect(hidden).toContain(sock)
     // one claude run: the socket's file type, the folder's other file, a connection attempt.
     // In a script: with the socket path in the command the model declined to run it (it is in its denyRead).
+    // 2026-10-17, Claude Code 2.1.302: TYPE=character special file, NEIGHBOUR-OK, connect: Operation not permitted.
     writeFileSync(join(run, 'check.sh'), `stat -c 'TYPE=%F' ${sock}\ncat ${join(run, 'neighbour.txt')}\npython3 -c "import socket; c=socket.socket(socket.AF_UNIX); c.connect('${sock}'); print(c.recv(32))" 2>&1 | tail -1\n`)
     const r = await asRole('power', bash(`bash ${join(run, 'check.sh')}`), hidden)
     console.log(`[role-live socket]\n${r.text.trim()}`)

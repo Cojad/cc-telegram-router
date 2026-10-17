@@ -171,7 +171,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | 特權技能 bwrap: tmpfs 隱藏同一份清單 (存在, 不在 /tmp 底下, 不重疊), 都在 bind 之前; 真的執行時看不到其他對話, 家目錄以外的 stateDir 與 `sandboxDenyRead` | portability「skill bwrap: tmpfs over /tmp…」「skill bwrap, real run: other conversations…」 |
 | config `socket` 在 home, stateDir 與 `sandboxDenyRead` 以外時, 隱藏清單列入 socket 檔本身 (不是它的資料夾); 系統資料夾, 使用者家目錄與它的上層不列; 角色範本的 denyRead 帶到它 | portability「hiddenPaths: a socket outside…」 |
 | 特權技能 bwrap: 隱藏的檔案蓋 `/dev/null`, 資料夾蓋 tmpfs, 不存在的略過; 真的執行時連不上放在別處的 socket, 同資料夾其他檔照常可讀 (沒列入時連得上) | portability「skill bwrap: a hidden file…」「skill bwrap, real run: a router socket…」 |
-| 真的 claude: power 的 sandbox 看不到放在別處的 router socket (不是 socket 型別, 連不上), 同資料夾其他檔照常可讀 | role-live「power: a router socket outside…」(LIVE=1) |
+| 真的 claude: power 的 sandbox 看不到放在別處的 router socket (不是 socket 型別, 連不上), 同資料夾其他檔照常可讀 | role-live「power: a router socket outside…」(LIVE=1; 2026-10-17 Claude Code 2.1.302 通過: `character special file`, 連線 `Operation not permitted`) |
 | plugin 與 hook 從位置檔找到 router (含 owner 的終端機 session); 沒有位置檔時 plugin 說明原因, hook 不准跳出 sandbox | portability「plugin finds the router…」「cc-hook finds the router…」「findRouter…」 |
 | `register` 依 config.json 寫位置檔; router 啟動只在位置檔指向自己時更新, 不會建立或改寫別人的 | portability「cc-telegram-router register…」「locator…」 |
 | `deploy/install.sh` 不預設安裝位置, 沒指定也沒有位置檔就停下說明 | portability「install.sh: no fixed default…」 |
