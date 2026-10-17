@@ -6,15 +6,17 @@
 //   any medium/high, any URL/path/custom index, or the review failed
 //                           -> refused; the request goes to the approvals
 //                              place. 允許一次: this conversation may install
-//                              those packages (pkg <eco:name>); 永久允許: any
-//                              registry package without review (pkg *), while
-//                              URLs, paths and custom indexes still ask.
-// Packages from a custom source (an install with --index-url, --registry...,
-// packages.ts custom items "<package> (來源 <url>)") are not looked up on
-// PyPI/npm and always go to a person; approving them (once or always) lets
-// that one install through and writes no override for them: what the source
-// serves next time may differ (柯姊's rule: URLs and custom sources are
-// always reviewed). The request says so.
+//                              those registry packages (pkg <eco:name>);
+//                              永久允許: any registry package without review
+//                              (pkg *).
+// URLs, local paths, editable installs and packages from a custom source (an
+// install with --index-url, --registry..., packages.ts custom items
+// "<package> (來源 <url>)") are not looked up on PyPI/npm and always go to a
+// person; approving them (once or always) lets the next identical install
+// through once and writes no override for them: what such a source serves
+// next time may differ (柯姊's rule: URLs and custom sources are always
+// reviewed). The request says so. (An other:<item> override an owner adds
+// by hand with /router perm still counts.)
 // Verdicts are cached for a week across conversations; approvals are per
 // conversation (overrides kind pkg, value "<eco>:<name>").
 
@@ -31,9 +33,9 @@ export type Reviewer = (pkgs: Pkg[]) => Promise<Verdict[]>
 
 const CACHE_MS = 7 * 86_400_000
 export const key = (p: { eco: string; name: string }) => `${p.eco}:${p.name}`
-/** A custom-source item in a request's item list (never an override). */
-const SOURCE = 'source:'
-const shown = (item: string) => item.startsWith(SOURCE) ? item.slice(SOURCE.length) : item
+/** An item an approval lets through once (URL, path, editable, custom source): never an override. */
+const ONCE = 'once:'
+const shown = (item: string) => item.startsWith(ONCE) ? item.slice(ONCE.length) : item
 
 export interface PkgDeps {
   db: RouterDb
@@ -78,8 +80,9 @@ export function createPkgGate(deps: PkgDeps) {
   }
 
   async function escalate(conv: Conversation, vs: Verdict[], unusual: string[], custom: string[] = []): Promise<string> {
-    const regular = [...vs.filter(v => v.risk !== 'low').map(v => key(v)), ...unusual.map(u => `other:${u}`)]
-    const items = [...regular, ...custom.map(c => `${SOURCE}${c}`)]
+    const regular = vs.filter(v => v.risk !== 'low').map(v => key(v))
+    const onceOnly = [...unusual, ...custom]
+    const items = [...regular, ...onceOnly.map(c => `${ONCE}${c}`)]
     const sig = `${conv.key}|${items.slice().sort().join(',')}`
     const known = open.get(sig)
     if (known && db.getPkgRequest(known)?.status === 'pending') return `套件安裝已在等 owner 審核 (#${known}), 決定後會通知你`
@@ -97,12 +100,12 @@ export function createPkgGate(deps: PkgDeps) {
       `${conv.key}${conv.title ? ` (${conv.title})` : ''} 想安裝:`,
       reason,
       ...(passed.length ? [`(自動審核已通過: ${passed.join(', ')})`] : []),
-      ...(custom.length ? [`🔂 自訂來源的項目核准後只放行這一次安裝, 不寫進權限覆寫, 下次再從這個來源安裝仍要審核: 那個來源之後提供的內容可能不同, PyPI/npm 的資料也不適用.`] : []),
-      regular.length ? `✅ 允許一次: 這個對話可以安裝上面列出的套件 (之後再裝同樣的不用再問${custom.length ? '; 自訂來源的項目除外' : ''}).` : `✅ 允許一次: 放行這一次安裝.`,
+      ...(onceOnly.length ? [`🔂 URL, 本機路徑與自訂來源的項目核准後只放行下一次完全相同的安裝, 不寫進權限覆寫, 之後再裝仍要審核: 那些來源之後提供的內容可能不同, PyPI/npm 的資料也不適用.`] : []),
+      regular.length ? `✅ 允許一次: 這個對話可以安裝上面列出的套件 (之後再裝同樣的不用再問${onceOnly.length ? '; URL, 本機路徑與自訂來源的項目除外' : ''}).` : `✅ 允許一次: 放行這一次安裝.`,
       ...(regular.length ? [`♾️ 永久允許的範圍: ${conv.key} 之後安裝 PyPI 與 npm 上的任何套件都不用審核 (權限覆寫 pkg *); 從 URL, 本機路徑或自訂來源安裝仍要審核. 這次列出的也一併允許.`] : []),
       ...(regular.length ? [`撤銷: /router perm ${conv.chat_id} pkg rm <eco:名稱> 或 pkg rm *`] : []),
     ].join('\n')
-    // custom sources alone: nothing to allow for good
+    // URLs, paths and custom sources alone: nothing to allow for good
     const reached = await postApproval(deps.approvals, conv.bot, 'pkg', id, text, [], regular.length > 0)
     return reached.length ? `已送 owner 審核 (#${id}): ${items.map(shown).join(', ')}. 決定後會通知你, 到時再重新安裝` : '審核頻道送不到, 這次安裝不能放行'
   }
@@ -141,11 +144,12 @@ export function createPkgGate(deps: PkgDeps) {
       })
       return { decision: 'deny', reason: '套件審核還在進行, 結果出來會通知你, 到時再重新安裝' }
     }
-    if (!vs.some(v => v.risk !== 'low') && !odd.length) {
-      // custom sources pass only on an approval given for exactly this install, used up now
-      const once = custom.length ? db.takePkgOnce(conv.key, custom) : null
-      if (!custom.length || once != null) {
-        deps.log?.(`${conv.key}: install allowed (${[...vs.map(v => key(v)), ...custom].join(', ')})${once != null ? ` once by #${once}` : ''}`)
+    if (!vs.some(v => v.risk !== 'low')) {
+      // URLs, paths and custom sources pass only on an approval given for exactly this install, used up now
+      const onceOnly = [...odd, ...custom]
+      const once = onceOnly.length ? db.takePkgOnce(conv.key, onceOnly) : null
+      if (!onceOnly.length || once != null) {
+        deps.log?.(`${conv.key}: install allowed (${[...vs.map(v => key(v)), ...onceOnly].join(', ')})${once != null ? ` once by #${once}` : ''}`)
         return {}
       }
     }
@@ -163,9 +167,9 @@ export function createPkgGate(deps: PkgDeps) {
     const status = p.choice === 'deny' ? 'denied' : 'approved'
     if (!db.decidePkgRequest(r.id, status, uid)) return '這個申請已經處理過了'
     const items = JSON.parse(r.pkgs) as string[]
-    // custom-source items: let the next install through once, never an override
-    const custom = items.filter(i => i.startsWith(SOURCE)).map(shown)
-    const regular = items.filter(i => !i.startsWith(SOURCE))
+    // URLs, paths and custom sources: let the next identical install through once, never an override
+    const custom = items.filter(i => i.startsWith(ONCE)).map(shown)
+    const regular = items.filter(i => !i.startsWith(ONCE))
     const added = status === 'approved' ? [...regular, ...(p.choice === 'always' && regular.length ? ['*'] : [])] : []
     for (const v of added) db.addOverride({ conv: r.conv, kind: 'pkg', value: v })
     if (status === 'approved' && custom.length) db.grantPkgOnce(r.id, custom)
@@ -174,7 +178,7 @@ export function createPkgGate(deps: PkgDeps) {
     const conv = db.getConversation(r.conv)
     if (added.length && conv) deps.authz?.record('pkg', r.id, conv, p.choice, added.map(value => ({ kind: 'pkg' as const, value })), outcome)
     await settleApproval(deps.approvals, 'pkg', r.id, outcome, added.length > 0)
-    const scope = status !== 'approved' ? '' : `${p.choice === 'always' && regular.length ? ', 之後安裝 PyPI 與 npm 的套件都不用審核' : ''}${custom.length ? '; 自訂來源的項目只放行下一次同樣的安裝, 之後再裝要重新審核' : ''}, 現在可以重新安裝了`
+    const scope = status !== 'approved' ? '' : `${p.choice === 'always' && regular.length ? ', 之後安裝 PyPI 與 npm 的套件都不用審核' : ''}${custom.length ? '; URL, 本機路徑與自訂來源的項目只放行下一次同樣的安裝, 之後再裝要重新審核' : ''}, 現在可以重新安裝了`
     if (conv) deps.notify(conv, `<router_status>\n套件安裝審核 #${r.id} ${word} (${deps.label(uid)}): ${items.map(shown).join(', ')}${scope}.\n</router_status>`, { kind: 'pkg', ref: r.id })
     return word
   }

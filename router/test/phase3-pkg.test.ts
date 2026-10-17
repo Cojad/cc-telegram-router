@@ -143,12 +143,12 @@ test('pkg gate: low passes untouched and is cached; non-installs are not reviewe
   expect(sent).toEqual([])
 })
 
-test('pkg gate: medium/high or unknown sources are refused and go to the approvals place once; approval lets this conversation install them', async () => {
+test('pkg gate: medium/high or unknown sources are refused and go to the approvals place once; approval lets this conversation install the registry ones, a URL only this once', async () => {
   const review = judge({ requests: 'low', reqeusts: 'high' })
   const { conv, gate, sent, told } = harness(review)
   const d = await gate.check(conv, 'pip install requests reqeusts git+https://x/y.git')
   expect(d.decision).toBe('deny')
-  expect(d.reason).toBe('已送 owner 審核 (#1): pypi:reqeusts, other:git+https://x/y.git. 決定後會通知你, 到時再重新安裝')
+  expect(d.reason).toBe('已送 owner 審核 (#1): pypi:reqeusts, git+https://x/y.git. 決定後會通知你, 到時再重新安裝')
   expect(sent).toHaveLength(1)
   expect(sent[0]).toMatchObject({ chat: OWNER, buttons: ['pkg:1:once', 'pkg:1:always', 'pkg:1:deny'] })
   expect(sent[0]!.text).toContain('♾️ 永久允許的範圍: group-100555 之後安裝 PyPI 與 npm 上的任何套件都不用審核')
@@ -160,8 +160,22 @@ test('pkg gate: medium/high or unknown sources are refused and go to the approva
   expect(await gate.decide('pkg:1:once', '42')).toBe('你不能決定這個申請')
   expect(await gate.decide('pkg:1:once', ADMIN)).toBe('✅ 已允許一次')
   expect(told[0]).toContain('套件安裝審核 #1 ✅ 已允許一次')
-  expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value).sort()).toEqual(['other:git+https://x/y.git', 'pypi:reqeusts'])
+  // the URL is never written as an override (URLs and custom sources are always reviewed): it passes this once
+  expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value)).toEqual(['pypi:reqeusts'])
+  expect(told[0]).toContain('URL, 本機路徑與自訂來源的項目只放行下一次同樣的安裝')
   expect(await gate.check(conv, 'pip install requests reqeusts git+https://x/y.git')).toEqual({})
+  expect((await gate.check(conv, 'pip install requests reqeusts git+https://x/y.git')).reason).toBe('已送 owner 審核 (#2): git+https://x/y.git. 決定後會通知你, 到時再重新安裝')
+  expect(sent.at(-1)!.buttons).toEqual(['pkg:2:once', 'pkg:2:deny'])
+  expect(await gate.check(conv, 'pip install reqeusts')).toEqual({}) // the registry approval stays
+  // a local path and an editable install: the same
+  expect((await gate.check(conv, 'pip install -e ./mylib')).reason).toBe('已送 owner 審核 (#3): editable ./mylib. 決定後會通知你, 到時再重新安裝')
+  expect(await gate.decide('pkg:3:always', OWNER)).toBe('♾️ 已永久允許')
+  expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value)).toEqual(['pypi:reqeusts']) // nothing for good
+  expect(await gate.check(conv, 'pip install -e ./mylib')).toEqual({})
+  expect((await gate.check(conv, 'pip install -e ./mylib')).decision).toBe('deny')
+  // an other:<item> override an owner adds by hand still counts
+  db.addOverride({ conv: conv.key, kind: 'pkg', value: 'other:./vendored' })
+  expect(await gate.check(conv, 'pip install ./vendored')).toEqual({})
 })
 
 test('pkg gate: an option value is not sent for review nor written as an override (pip --only-binary :all: --target pydeps)', async () => {
@@ -182,20 +196,20 @@ test('pkg gate: a custom source (--index-url...) is never looked up on PyPI, alw
   expect((await gate.check(conv, cmd)).reason).toBe('已送 owner 審核 (#1): hello-pypi-demo (來源 https://pypi.org/simple). 決定後會通知你, 到時再重新安裝')
   expect(review.calls).toEqual([]) // not judged on PyPI facts
   expect(sent[0]!.text).toContain('hello-pypi-demo (來源 https://pypi.org/simple) [自訂來源: 不查 PyPI/npm 的資料, 由人判斷]')
-  expect(sent[0]!.text).toContain('🔂 自訂來源的項目核准後只放行這一次安裝, 不寫進權限覆寫')
+  expect(sent[0]!.text).toContain('🔂 URL, 本機路徑與自訂來源的項目核准後只放行下一次完全相同的安裝, 不寫進權限覆寫')
   expect(sent[0]!.text).toContain('✅ 允許一次: 放行這一次安裝.')
   expect(sent[0]!.text).not.toContain('♾️')
   expect(sent[0]!.buttons).toEqual(['pkg:1:once', 'pkg:1:deny']) // nothing to allow for good
   expect(await gate.decide('pkg:1:once', ADMIN)).toBe('✅ 已允許一次')
   expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg')).toEqual([]) // no override
-  expect(told.at(-1)).toContain('自訂來源的項目只放行下一次同樣的安裝, 之後再裝要重新審核')
+  expect(told.at(-1)).toContain('URL, 本機路徑與自訂來源的項目只放行下一次同樣的安裝, 之後再裝要重新審核')
   expect(await gate.check(conv, cmd)).toEqual({}) // that one install
   expect((await gate.check(conv, cmd)).reason).toStartWith('已送 owner 審核 (#2)') // the next asks again
   // with a registry package too: 永久允許 covers the registry, the custom source still passes once only
   const mixed = 'pip install reqeusts && pip install -i https://pkgs.example/simple foo'
   expect((await gate.check(conv, mixed)).reason).toBe('已送 owner 審核 (#3): pypi:reqeusts, foo (來源 https://pkgs.example/simple). 決定後會通知你, 到時再重新安裝')
   expect(sent.at(-1)!.buttons).toEqual(['pkg:3:once', 'pkg:3:always', 'pkg:3:deny'])
-  expect(sent.at(-1)!.text).toContain('自訂來源的項目除外')
+  expect(sent.at(-1)!.text).toContain('URL, 本機路徑與自訂來源的項目除外')
   expect(await gate.decide('pkg:3:always', OWNER)).toBe('♾️ 已永久允許')
   expect(db.listOverrides(conv.key).filter(o => o.kind === 'pkg').map(o => o.value).sort()).toEqual(['*', 'pypi:reqeusts'])
   expect(await gate.check(conv, mixed)).toEqual({})
