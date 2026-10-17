@@ -65,7 +65,7 @@ systemctl --user enable --now cc-telegram-router
 | `usage_report.py [--now <ISO 時間>]` | 從 stdin 讀 `/usage` 畫面, 印報表; `--now` 固定現在時間 (測試用) |
 | `tg-context-chart.py <out.png>` | 從 stdin 讀 JSON, 畫 `/context` 的 donut chart (需要 matplotlib) |
 
-兩支 `.sh` 讀完畫面後按 Esc 離開 `/status` 與 `/usage` 的畫面 (比對整個畫面, 第一次 Esc 沒有變化才再按一次).
+腳本一律用 python3 執行 (`.py` 的 shebang 是 `#!/usr/bin/env python3`, `.sh` 裡呼叫 `python3`), 需要 3.7 以上, 不相容 python2. 兩支 `.sh` 讀完畫面後按 Esc 離開 `/status` 與 `/usage` 的畫面 (比對整個畫面, 第一次 Esc 沒有變化才再按一次).
 
 安裝: `deploy/install.sh router` 把 `scripts/` 整個複製到 `<stateDir>/scripts` (預設 `/x/cc/.router/scripts`). 編譯後的 router 用 `<stateDir>/scripts`, 從原始碼執行時用 repo 的 `scripts/`. 腳本在每次代打時才執行, 只改腳本時重跑 `deploy/install.sh router` 即可, 不用重啟 router.
 

@@ -13,11 +13,17 @@
 ### Changed
 
 - `cc /status`, `cc /usage`, `cc /context` 的報表腳本收進 repo 的 `scripts/`, `deploy/install.sh router` 裝到 `<stateDir>/scripts`, router 改用這個位置 (原本是 `~/.claude/bin`). `/usage` 的解析與排版抽成 `scripts/usage_report.py`.
+- README 的 Requirements: python3 (3.7 以上) 列為必要; 「選配」改名「強烈建議」, 加上 curl 與 jq; bubblewrap 與 socat 附官方 sandbox 文件連結與 Ubuntu 24.04 AppArmor 的注意事項.
+- `plugin/package.json` 的版本對齊 2.9.0.
 - `cc /usage` 的倒數一律只顯示最大的兩個單位, 最小到分鐘 (`5d23h`, `8h5m`, `5m`), 原本週額度會顯示成 `143h15m`.
 
 ### Fixed
 
 - `/usage` 的重置日期在 12 月看到 1 月時算成下一年.
+
+### Removed
+
+- 根目錄 `package.json` 指向不存在的 `./server.ts` 的 `bin` 與 `start` (v1 遺留).
 
 ## [2.9.0] - 2026-10-17
 

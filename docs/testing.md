@@ -36,6 +36,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/store.test.ts`, `router/test/inbound.test.ts` | [訊息紀錄](architecture.md#訊息紀錄): 每隻 bot 各自一份 (私訊撞號, 同群組同一則), 舊紀錄分配 bot 一次 (對話, events, outbound, 時間, legacy), legacy 列用時間重新判斷一次, 重複丟掉時寫 log, 引用不跨 bot |
 | `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行, 驗證 Claude Code 實際放行與擋下的事 |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |
+| `router/test/requirements.test.ts` | README 的 Requirements 與 package 檔: 根目錄 package.json 沒有 v1 的 `bin` 與 `start`, plugin 版本與 repo 和 CHANGELOG 一致, 報表腳本一律用 python3 (shebang 與呼叫), curl 與 jq 列在強烈建議且 repo 自己的程式與腳本不用它們 |
 | `router/test/usage-report.test.ts` | [cc / 報表腳本](operations.md#cc--報表腳本): `/usage` 報表的列, 倒數只顯示最大的兩個單位, 燃燒速率 (柯姊的範例, 週期剛開始, 超速中, 接近重置, 用完, 跨年, 沒有 Weekly 或重置時間), 腳本可執行, 兩支 `.sh` 以假 tmux 送指令與離開畫面, `/status` 只印白名單欄位 |
 | `router/test/channel.test.ts` | [廣播頻道](architecture.md#廣播頻道): 加入頻道的通知內容, /telegram:doc 的頻道一節 |
 | `router/test/e2e-channel.test.ts` | 真的 router + 假 Bot API 送 channel_post: 頻道貼文 (含編輯, 指令) 只進 events, 就算列在 access.json 也不建立對話不送 worker, bot 不在頻道發言; 加入頻道時通知 owner |
