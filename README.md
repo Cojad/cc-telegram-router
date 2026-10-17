@@ -101,7 +101,11 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
   - `api: "openrouter"` (預設): 全域憑證 `openrouter` (baseUrl `https://openrouter.ai`), `POST <baseUrl>/api/alpha/decisions`. OpenRouter 帳號的允許供應商設定要包含 openai 與 typesafe.
   - `api: "openai"`: OpenAI 原生 `POST <baseUrl>/v1/decisions` (predicate + score, 模型 `gpt-6-luna`), 例如全域憑證 `openai`.
   - `api: "systemone"`: `POST <baseUrl>/v1/systemone` (noul + score). TypeSafe 原生是 `https://api.typesafe.ai` (模型 `jev-latest`); OrcaRouter 是 `https://api.orcarouter.ai` (模型 `typesafe/jev-1.13`, 2026-10-17 實測 `jev-latest` 在那裡沒有容量; Orca 沒有 Decisions).
-- 開關與設定 (config.json): 選配功能, 預設關閉, 只有寫了 `"enabled": true` 才開 (沒寫, `{}`, 或只寫其他欄位都是關閉). 區塊格式錯 (型別不對, 負數, 不認得的 `api`) 時 router 照常啟動, 分類器關閉並在 router log 寫一行原因; 開啟時啟動 log 會列出兩家的 api 與模型. 某家缺憑證或 claude 的 model 是 haiku 時, 只略過那家 (log 記一次), 其他照跑:
+- 開關與設定 (config.json): 選配功能, 預設關閉, 只有明確寫 `"classifier": {"enabled": true, ...}` 或 `"classifier": true` 才開; 沒寫, `{}`, 或區塊裡沒寫 `enabled` 都是關閉. 區塊格式錯 (型別不對, 負數, 不認得的 `api`) 時 router 照常啟動, 分類器關閉, router log 寫一行說明是哪個欄位. 開啟時啟動 log 列出兩家的 api 與模型.
+- 每家需要什麼, 沒有就略過那一家 (記 `skipped`, 啟動時 log 一次, 其他家照跑, 工具呼叫的放行完全不受影響):
+  - openai (Decisions) 與 typesafe (Jev): 各自 `credential` 指定的全域憑證 (config.json 的 `credentials`), 預設兩家都是 `openrouter`; 沒有這個憑證記 `no-key`.
+  - claude: config 的 `claudeBin` 找得到 claude CLI (沒有記 `no-cli`), 且 `model` 不是 haiku (是的話記 `model`).
+- 設定範例:
 
   ```json
   "classifier": { "enabled": true, "telegramTools": true, "dailyUsd": { "openai": 0.5, "typesafe": 0.5, "claude": 50 }, "keepDays": 30 }
@@ -173,6 +177,7 @@ bun test router/test
 | `router/test/e2e-rawvault.test.ts` | 真的 router + 假 Bot API 與假 claude: 啟動時補建 🔑 話題與補刪到期的訊息, 私訊貼 token (events, event_raw, messages, worker 都沒有明文), 提醒與取消刪除, 編輯訊息, /secret set, event_raw (user 對話被拒, owner 對話拿到代號與回答), secret_from_handle 後 bot_api 用到真值, cli event raw 寫 600 檔, 下載含 key 的 .env 附件 |
 | `router/test/phase3-privskill.test.ts` | 規劃 10d 特權技能: 參數比對與逐一傳入 (不經 shell), 沙箱的 HOME 與 PATH, 核准與雜湊暫停, 角色與 internal 動作, 憑證不外流 (回傳與寫出的檔案, 通知 owner), 憑證被拒時更新一次再重試, 額外掛載只給 internal 動作, 參數限角色走提權, http API 憑證, 每日更新 (GMT+8 時間計算與 `skillRefreshAt`, 啟動時補跑超過 24 小時沒成功的技能, 執行與寫入憑證, 不佔對話限額, 雜湊不符略過並通知, 失敗通知且遮蔽憑證) |
 | `router/test/classifier.test.ts` | 選配 1 工具呼叫分類器 (第一階段, 只記錄): config 預設與覆寫 (含 `telegramTools`, claude $50), 遮蔽 (格式, 已登記的值, 資料夾, chat id, 截斷), 外送內容與題目, 觸發的訊息 (遮蔽, 500 字, 終端機那一輪沒有), Telegram 工具 (角色, 不判斷的工具, 開關, 自己的說明), 舊表補 kind, hub 回報的費用, OpenRouter Decisions router (兩個模型, `usage.cost`, 沒有就記 0) 與依 `api` 選路徑, Decisions / Jev / claude 三種呼叫 (假 API 與假 claude), 只送 user 與 power, 不等判斷, 錯誤與逾時, no-key 與 haiku, 每天上限 (GMT+8), 併發與略過, 報表與單筆, 30 天清除, `/router classifier` |
+| `router/test/e2e-classifier-off.test.ts` | 真的 router + 假 Bot API: classifier 區塊格式錯時 router 照常啟動並服務, log 寫明欄位, 分類器關閉; 開啟但沒有憑證時兩家在啟動時各 log 一次略過, 工具呼叫照常放行或擋下, 紀錄是 no-key |
 | `router/test/e2e-classifier.test.ts` | 真的 router + 假 Bot API, 假 OpenRouter Decisions router (兩個模型), 假 claude: hook 立刻放行後三家都記錄, 外送內容 (含觸發的訊息) 沒有已登記的值, 資料夾與 chat id; 擋下的, owner 對話與 hook 裡的 telegram 工具不送; user 對話的 reply 在 router 端判斷 (Telegram 類), owner 的不判斷; 終端機 `cli classifier` |
 | `router/test/phase3-pkg.test.ts` | 規劃 07 套件安裝審核: 指令解析, manifest, 審核快取, 送審與核准, 慢審核, 審核模型的呼叫方式, hook |
 | `router/test/e2e-setup.test.ts` | 真的 router + 假 Bot API, 從沒有 owner 開始: 認領碼, 人設訪談與 bot CLAUDE.md, 審核群組的檢查與話題, 略過 |
@@ -274,7 +279,8 @@ bun test router/test
 
 | 驗收項目 | 測試 |
 |---|---|
-| 選配功能預設關閉, 只有 `"enabled": true` 才開; 設定錯不讓 router 啟動失敗 (關閉並記 log 原因); 缺憑證或 haiku 只略過那家並記 log 一次 | classifier「config: on only with…」「config.json: loadConfig…」「no key and haiku are skipped…」; e2e-classifier「a user call the rules allow…」(啟動 log) |
+| 選配功能預設關閉, 只有 `"enabled": true` 或 `true` 才開, `{}` 與沒寫 enabled 都是關閉; 設定錯不讓 router 啟動失敗 (分類器關閉, log 寫明欄位) | classifier「config: on only with…」「config.json: loadConfig…」; e2e-classifier-off「an unusable classifier block…」 |
+| 開啟但缺憑證, claude CLI 不在或 haiku: 那家記 skipped, 啟動時 log 一次, 放行不受影響; 關閉時不保留任何訊息 | classifier「check at start…」「no key and haiku are skipped…」「off: the turn message is not kept」; e2e-classifier-off「on with no credentials…」; e2e-classifier「a user call the rules allow…」(啟動 log) |
 | 只送 user 與 power 規則放行的呼叫; owner/admin, 擋下的不送; 沒開就不送 | classifier「only user and power…」; e2e-classifier「not sent: …」 |
 | Telegram 工具在 router 端判斷: user/power (以實際角色), 不含只問人的工具, 說明是要送到 Telegram 的內容, `telegramTools` 可單獨關 | classifier「Telegram tools (router-side)…」「the message that started the turn…」; e2e-classifier「Telegram tools are judged router-side…」 |
 | 一併送觸發這一輪的使用者訊息 (遮蔽密鑰與 chat id, 前 500 字) | classifier「the message that started the turn…」「Telegram tools (router-side)…」(終端機那一輪沒有); e2e-classifier「a user call the rules allow…」 |

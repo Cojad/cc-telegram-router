@@ -65,8 +65,9 @@ export const DEFAULT_CLASSIFIER: ClassifierConfig = {
   keepDays: 30,
 }
 
-/** config.json "classifier": on only with "enabled": true (an optional feature of a
- *  public repo); fields left out keep their defaults. A block that is not
+/** config.json "classifier": on only with "enabled": true, or "classifier": true (an
+ *  optional feature of a public repo; {} or a block without enabled is off);
+ *  fields left out keep their defaults. A block that is not
  *  usable never stops the router: the classifier is off and error says why. */
 export function parseClassifier(v: unknown): ClassifierConfig {
   try {
@@ -78,8 +79,9 @@ export function parseClassifier(v: unknown): ClassifierConfig {
 
 function readClassifier(v: unknown): ClassifierConfig {
   const d = DEFAULT_CLASSIFIER
-  if (v === undefined || v === null) return { ...d }
-  if (typeof v !== 'object' || Array.isArray(v)) throw new Error(`classifier 要是物件, 例如 {"enabled": true}, 收到 ${JSON.stringify(v)}`)
+  if (v === undefined || v === null || v === false) return { ...d }
+  if (v === true) return { ...d, enabled: true }
+  if (typeof v !== 'object' || Array.isArray(v)) throw new Error(`classifier 要是物件 (例如 {"enabled": true}) 或 true/false, 收到 ${JSON.stringify(v)}`)
   const r = v as Record<string, any>
   if (r.enabled !== undefined && typeof r.enabled !== 'boolean') throw new Error(`classifier.enabled 要是 true 或 false, 收到 ${JSON.stringify(r.enabled)}`)
   if (r.telegramTools !== undefined && typeof r.telegramTools !== 'boolean') throw new Error(`classifier.telegramTools 要是 true 或 false, 收到 ${JSON.stringify(r.telegramTools)}`)
@@ -348,7 +350,8 @@ export function apiJudge(o: { cfg: () => ApiConfig; cred: (name: string) => Cred
 /** claude -p with no tools, settings or MCP, in a scratch folder (as pkgreview). */
 export function claudeJudge(o: { claudeBin: string; model: () => string; cwd: string }): Judge {
   return {
-    ready: () => (/haiku/i.test(o.model()) ? 'model' : null),
+    // a haiku model is never used; a claude CLI that is not there is skipped like a missing key
+    ready: () => (/haiku/i.test(o.model()) ? 'model' : Bun.which(o.claudeBin) ? null : 'no-cli'),
     async run(sent, signal) {
       const env = { ...process.env }
       for (const k of Object.keys(env)) if (k.startsWith('TELEGRAM_')) delete env[k]
@@ -458,6 +461,8 @@ export function createClassifier(deps: ClassifierDeps) {
   const pending = new Set<Promise<void>>()
   const limit = (p: Provider) => ({ ...LIMITS[p], ...deps.limits?.[p] })
 
+  const skipLine = (p: Provider, why: string) => `classifier: ${p} skipped (${why === 'no-key' ? `credential ${p === 'claude' ? '' : (deps.cfg()[p] as ApiConfig).credential} is not in config.json credentials` : why === 'model' ? 'config model is haiku' : why === 'no-cli' ? 'the claude CLI (config claudeBin) is not found' : why}); the others still run`
+
   /** The message that started each conversation's current turn. */
   const turnMessage = new Map<string, string>()
   const restricted = (role: string) => role === 'user' || role === 'power'
@@ -501,7 +506,7 @@ export function createClassifier(deps: ClassifierDeps) {
     const why = judge.ready()
     if (why) {
       // logged once per reason until the provider runs again
-      if (skipTold.get(p) !== why) { skipTold.set(p, why); deps.log?.(`classifier: ${p} skipped (${why === 'no-key' ? 'its credential is not in config.json credentials' : why === 'model' ? 'config model is haiku' : why}); the others still run`) }
+      if (skipTold.get(p) !== why) { skipTold.set(p, why); deps.log?.(skipLine(p, why)) }
       return record(callId, p, { status: 'skipped', detail: why })
     }
     skipTold.delete(p)
@@ -555,9 +560,19 @@ export function createClassifier(deps: ClassifierDeps) {
         return null
       }
     },
-    /** The message delivered to start a turn; null for a turn typed in the worker's terminal. */
+    /** At start, when on: one log line per provider that will be skipped (no key, haiku, no CLI). */
+    check(): string[] {
+      if (!deps.cfg().enabled) return []
+      const out: string[] = []
+      for (const p of PROVIDERS) {
+        const why = deps.judges[p].ready()
+        if (why) { skipTold.set(p, why); out.push(skipLine(p, why)) }
+      }
+      return out
+    },
+    /** The message delivered to start a turn; null for a turn typed in the worker's terminal. Kept only when on. */
     noteMessage(convKey: string, text: string | null): void {
-      if (text) turnMessage.set(convKey, text)
+      if (text && deps.cfg().enabled) turnMessage.set(convKey, text)
       else turnMessage.delete(convKey)
     },
     /** Tests and shutdown: wait for everything in flight. */

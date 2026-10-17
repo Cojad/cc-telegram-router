@@ -24,13 +24,16 @@ const env = (o: Partial<MaskEnv> = {}): MaskEnv => ({ folder: FOLDER, routerHome
 const USER = { key: 'cc-dm-66600001', role: 'user', type: 'private', folder: FOLDER }
 const pre = (tool_name: string, tool_input: object) => ({ event: 'pre', tool_name, tool_input })
 
-test('config: on only with "enabled": true (an optional feature of a public repo); fields override; an unusable block turns it off with the reason, never throws', () => {
+test('config: on only with "enabled": true or "classifier": true (an optional feature of a public repo); fields override; an unusable block turns it off with the reason, never throws', () => {
   expect(parseClassifier(undefined)).toEqual(DEFAULT_CLASSIFIER)
   expect(parseClassifier(undefined).enabled).toBe(false)
   expect(parseClassifier({}).enabled).toBe(false)
   expect(parseClassifier({ dailyUsd: { claude: 1 } }).enabled).toBe(false)
   expect(parseClassifier({ enabled: false }).enabled).toBe(false)
   expect(parseClassifier({ enabled: true })).toEqual(ON)
+  expect(parseClassifier(true)).toEqual(ON)
+  expect(parseClassifier(false).enabled).toBe(false)
+  expect(parseClassifier(null).enabled).toBe(false)
   // claude runs on the subscription: $50 a day of its API price estimate
   expect(DEFAULT_CLASSIFIER.dailyUsd).toEqual({ openai: 0.5, typesafe: 0.5, claude: 50 })
   expect(DEFAULT_CLASSIFIER.telegramTools).toBe(true)
@@ -55,7 +58,6 @@ test('config: on only with "enabled": true (an optional feature of a public repo
   expect(bad({ enabled: true, dailyUsd: { openai: -1 } })).toContain('classifier.dailyUsd.openai')
   expect(bad({ enabled: 'yes' })).toContain('classifier.enabled 要是 true 或 false')
   expect(bad({ enabled: true, telegramTools: 1 })).toContain('classifier.telegramTools')
-  expect(bad(true)).toContain('classifier 要是物件')
   expect(bad('yes')).toContain('classifier 要是物件')
   expect(bad([1])).toContain('classifier 要是物件')
 })
@@ -225,6 +227,32 @@ test('OpenRouter judge: POST /api/alpha/decisions with the Jev request shape for
   api.stop()
 })
 
+test('check at start: one line per provider that will be skipped (no key, haiku, no claude CLI); nothing when off; not logged again on the first call', async () => {
+  const logs: string[] = []
+  const missing = claudeJudge({ claudeBin: join(dir, 'no-such-claude'), model: () => 'claude-opus-5-5', cwd: dir })
+  expect(missing.ready()).toBe('no-cli')
+  const c = make({ openai: { ready: () => 'no-key', run: async () => { throw new Error('x') } }, claude: missing }, { log: logs })
+  expect(c.check()).toEqual([
+    'classifier: openai skipped (credential openrouter is not in config.json credentials); the others still run',
+    'classifier: claude skipped (the claude CLI (config claudeBin) is not found); the others still run',
+  ])
+  const id = c.submit(USER, pre('Bash', { command: 'ls' }))!
+  await c.idle()
+  expect(logs).toEqual([])
+  expect(store.resultsFor(id).map(r => [r.provider, r.status, r.detail])).toEqual([['claude', 'skipped', 'no-cli'], ['openai', 'skipped', 'no-key'], ['typesafe', 'ok', null]])
+  expect(make({ openai: { ready: () => 'no-key', run: async () => { throw new Error('x') } } }, { cfg: DEFAULT_CLASSIFIER }).check()).toEqual([])
+})
+
+test('off: the turn message is not kept', async () => {
+  let conf: ClassifierConfig = DEFAULT_CLASSIFIER
+  const c = createClassifier({ cfg: () => conf, store, judges: { openai: judge(0), typesafe: judge(0), claude: judge(0) }, maskEnv: () => env() })
+  c.noteMessage(USER.key, '關閉時收到的訊息')
+  conf = ON
+  const id = c.submit(USER, pre('Bash', { command: 'ls' }))!
+  await c.idle()
+  expect(JSON.parse(store.getCall(id)!.sent)).not.toHaveProperty('user_message')
+})
+
 test('claude judge: claude -p with the config model, no tools, settings or MCP, the fixed system prompt; the call JSON on stdin; never haiku', async () => {
   const bin = join(dir, 'fake-claude.sh')
   writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$@" > ${dir}/args\ncat > ${dir}/stdin\necho '{"type":"result","result":"{\\"p_block\\":0.7,\\"risk\\":2,\\"reason\\":\\"外送資料\\"}","total_cost_usd":0.0021,"usage":{"input_tokens":3,"cache_read_input_tokens":2900,"output_tokens":40}}'\n`, { mode: 0o755 })
@@ -342,7 +370,7 @@ test('no key and haiku are skipped, the others still run; each reason is logged 
   c.submit(USER, pre('Bash', { command: 'ls -la' }))
   await c.idle()
   expect(logs).toEqual([
-    'classifier: typesafe skipped (its credential is not in config.json credentials); the others still run',
+    'classifier: typesafe skipped (credential openrouter is not in config.json credentials); the others still run',
     'classifier: claude skipped (config model is haiku); the others still run',
   ])
   expect(store.resultsFor(id).map(r => [r.provider, r.status, r.detail])).toEqual([['claude', 'skipped', 'model'], ['openai', 'ok', null], ['typesafe', 'skipped', 'no-key']])

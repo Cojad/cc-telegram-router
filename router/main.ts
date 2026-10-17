@@ -640,6 +640,7 @@ const classifier = createClassifier({
   }),
   log,
 })
+for (const line of classifier.check()) log(line)
 {
   const purge = () => { try { const n = classifier.purge(); if (n) log(`classifier: removed ${n} old records`) } catch (e) { log(`classifier purge: ${e}`) } }
   purge()
