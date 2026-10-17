@@ -22,6 +22,7 @@ const calls: Array<{ method: string; body: any; token?: string }> = []
 let updatesServed = false
 const laterUpdates: unknown[] = []
 const twoUpdates: unknown[] = [] // for the second bot (added by bot add)
+let helpFailed = false
 const now = Math.floor(Date.now() / 1000)
 const UPDATES = [
   { update_id: 1, message: { message_id: 10, date: now, chat: { id: 111, type: 'private' }, from: { id: 111, is_bot: false, first_name: 'O', username: 'owner' }, text: 'hello router' } },
@@ -37,6 +38,11 @@ const api = Bun.serve({
     const body = req.headers.get('content-type')?.includes('json') ? await req.json() : {}
     calls.push({ method, body, token })
     const ok = (result: unknown) => Response.json({ ok: true, result })
+    // a bot whose token dies right after bot add checked it: its poller gets 401
+    if (token.startsWith('789:')) {
+      if (method === 'getMe' && calls.filter(c => c.method === 'getMe' && c.token === token).length === 1) return ok({ id: 789, is_bot: true, first_name: 'Dead', username: 'dead_bot' })
+      return Response.json({ ok: false, error_code: 401, description: 'Unauthorized' })
+    }
     // a second bot (bot add): its poller's own getMe is slow, its updates empty
     if (token.startsWith('456:')) {
       if (method === 'getMe') {
@@ -52,7 +58,10 @@ const api = Bun.serve({
         if (!updatesServed) { updatesServed = true; return ok(UPDATES) }
         await sleep(200)
         return ok(laterUpdates.splice(0))
-      case 'sendMessage': return ok({ message_id: 900 + calls.length, date: now, chat: { id: Number(body.chat_id) }, text: body.text })
+      case 'sendMessage':
+        // the first reply to /router help hits a Telegram 502 (the router tries again)
+        if (String(body.text).startsWith('/router status\n') && !helpFailed) { helpFailed = true; return Response.json({ ok: false, error_code: 502, description: 'Bad Gateway' }) }
+        return ok({ message_id: 900 + calls.length, date: now, chat: { id: Number(body.chat_id) }, text: body.text })
       case 'deleteMessage':
         // like Telegram: the bot is not an admin in groups, so it cannot delete others' messages there
         if (String(body.chat_id).startsWith('-')) return Response.json({ ok: false, error_code: 400, description: "Bad Request: message can't be deleted" })
@@ -323,3 +332,31 @@ test('two bots in the same group get the same message: each records it and deliv
   expect(queued).toEqual(['group-100777', 'two-group-100777'])
   expect(stderr).not.toContain('duplicate message dropped')
 }, 20000)
+
+test('a bot whose token stops working: polling stops, the owner hears it through a bot that still works, /router status says so', async () => {
+  const from = { id: 111, is_bot: false, first_name: 'O', username: 'owner' }
+  laterUpdates.push({ update_id: 95, message: { message_id: 96, date: now, chat: { id: 111, type: 'private' }, from, text: '/router bot add dead 789:DEADDEADDEADDEADDEADDEADDEADDEADDEAD0' } })
+  await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('已新增 bot dead')))
+  const notice = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('⛔ bot dead')), 10000)
+  expect(notice.token).not.toStartWith('789:') // sent by another bot
+  expect(notice.body.chat_id).toBe('111')
+  expect(notice.body.text).toContain('token 失效 (401 Unauthorized)')
+  expect(notice.body.text).toContain('/router bot rotate dead <新 token>')
+  const getUpdatesAfter = () => calls.filter(c => c.method === 'getUpdates' && c.token?.startsWith('789:')).length
+  expect(getUpdatesAfter()).toBe(0) // it never polled
+  const statuses = () => calls.filter(c => c.method === 'sendMessage' && String(c.body.text).startsWith('router 已運作'))
+  const before = statuses().length
+  laterUpdates.push({ update_id: 97, message: { message_id: 98, date: now, chat: { id: 111, type: 'private' }, from, text: '/router status' } })
+  const status = await until(() => statuses().length > before && statuses().at(-1))
+  expect(status.body.text).toMatch(/Dead\(@dead_bot\) token 失效 \(\d\d:\d\d 起, 請用 \/router bot rotate\)/)
+  expect(status.body.text).toMatch(/cc\(@cc_bot\) 收訊中/)
+  expect(stderr).toContain('dead: getMe: 401 Unauthorized; the token no longer works, polling stopped')
+}, 20000)
+
+test('a command reply that hits a Telegram 5xx is sent again', async () => {
+  const from = { id: 111, is_bot: false, first_name: 'O', username: 'owner' }
+  laterUpdates.push({ update_id: 99, message: { message_id: 100, date: now, chat: { id: 111, type: 'private' }, from, text: '/router help' } })
+  await until(() => calls.filter(c => c.method === 'sendMessage' && String(c.body.text).startsWith('/router status\n')).length === 2, 10000)
+  expect(helpFailed).toBe(true)
+  expect(stderr).not.toContain('command reply failed')
+}, 15000)

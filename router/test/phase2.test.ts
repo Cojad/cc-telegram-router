@@ -10,7 +10,6 @@ import type { Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
 import { ensureConversation, findByFolder } from '../conversations'
 import { runCommand, isCommand, type CommandDeps, type CommandInput } from '../commands'
-import { awaitBotInfo } from '../botinfo'
 import { buildContext, renderContext, renderLogs, maskTokens, gmt8 } from '../context'
 import { iso8, logLine } from '../../shared/time'
 import { initBotSetups, adoptBotSetup, tokenBotId, addedSetupText, resetNotice } from '../setup'
@@ -712,24 +711,3 @@ test('relay: a worker already stuck on a view is brought back to the prompt firs
   const keys = seen.filter(s => s.args[1] === 'send-keys').map(s => s.args[4])
   expect(keys).toEqual(['Escape', '/cost', 'Escape']) // healed, ran, closed — never two Escs in a row
 }, 20000)
-
-test('bot info not in yet: getMe again 30 seconds later, then every 30 seconds until it works; stops once the info is in or the bot is gone', async () => {
-  const slept: number[] = []
-  let calls = 0, info: { id: number; username: string; first_name: string } | null = null
-  const logs: string[] = []
-  await awaitBotInfo({
-    ready: () => !!info, current: () => true,
-    getMe: async () => { if (++calls < 3) throw new Error('Network request failed'); return { id: 42, username: 'cc_bot', first_name: '柯柯' } },
-    set: me => { info = me }, log: m => logs.push(m), sleep: async ms => { slept.push(ms) },
-  })
-  expect(slept).toEqual([30_000, 30_000, 30_000])
-  expect(calls).toBe(3)
-  expect(info).toEqual({ id: 42, username: 'cc_bot', first_name: '柯柯' })
-  expect(logs).toEqual(['getMe failed (1): Error: Network request failed; retry in 30s', 'getMe failed (2): Error: Network request failed; retry in 30s'])
-  // the poller got it first: no getMe at all
-  let n = 0
-  await awaitBotInfo({ ready: () => true, current: () => true, getMe: async () => { n++; return info! }, set: () => {}, log: () => {}, sleep: async () => {} })
-  // removed or rotated meanwhile: stop
-  await awaitBotInfo({ ready: () => false, current: () => false, getMe: async () => { n++; return info! }, set: () => {}, log: () => {}, sleep: async () => {} })
-  expect(n).toBe(0)
-})

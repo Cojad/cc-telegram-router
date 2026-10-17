@@ -31,6 +31,8 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 11. 廣播頻道目前不支援: 頻道貼文 (`channel_post`, `edited_channel_post`) 只寫進 events, 不建立對話也不送 worker (頻道裡的 `/router`, `/secret`, `cc /` 一樣不處理). bot 被加入頻道時通知 owner (重要通知話題, 沒有審核群組就私訊), 說明尚未支援並請有實際應用場景的人到 GitHub issues (https://github.com/Cojad/cc-telegram-router/issues) 提交使用情境與需要的功能.
 12. 時間一律 GMT+8, 不出現 UTC 或 Z: router 的 log 每行開頭是 `2026-10-17 08:06:04.919+08:00`, 交給 worker 的訊息時間 (`<channel ts=...>`) 是 `2026-10-17T08:06:04.919+08:00`, 指令輸出, 通知, router_log 與報表顯示的時間都換算成 GMT+8 (`shared/time.ts`, `router/context.ts` 的 `gmt8`). router.db 與訊息紀錄裡存的仍是 UTC 的 ISO 時間 (比較與查詢用), 顯示時才換算.
 13. 訊息紀錄 (`router.db` 的 `messages`, `lookup_message`, 回覆引用的補全, `/router log` 讀的那份) 每一筆屬於一隻 bot, 以 (bot, chat_id, message_id) 為唯一鍵, 每隻 bot 只讀寫自己的. 同一個人私訊兩隻 bot 時各自從 1 編號, 群組裡兩隻 bot 收到的是同一個編號, 以前只看 (chat_id, message_id) 會把另一隻 bot 的訊息當成重複而靜默丟掉, 引用也可能拿到另一隻 bot 的訊息. 加欄位前的舊紀錄只在升級時分配一次: 那個 chat 只有一隻 bot 有對話就歸它, 否則看 `events` (收到的) 或 `outbound` (送出的) 是哪隻 bot, 還是判斷不了 (例如兩隻 bot 剛好同號) 就標 `legacy` 歸給第一隻 bot (原本唯一的那隻). 被當成重複丟掉的訊息一律在 router log 寫一行. `import-v1 <messages.db> [--bot <名稱>]` 匯入的訊息歸給第一隻 bot 或 `--bot` 指定的.
+14. 輪詢由 router 自己做 (`poller.ts`, 不用 grammY 的 bot.start), 啟動 (getMe) 與之後收訊都套用同一套規則: 網路錯誤與 Telegram 5xx 以 5 秒, 10 秒, 30 秒, 1 分, 2 分, 5 分逐步拉長, 之後每 5 分鐘一直重試 (429 照 retry_after); 斷線超過 2 分鐘才通知 owner 一次, 恢復時再通知一次. 409 衝突 (別的程式在用這個 token 收訊息) 每 60 秒重試並立刻通知. 401 (token 失效) 不再重試, 立刻通知 owner 用 `/router bot rotate`. 通知經其他還正常的 bot 送到它的重要通知話題或 owner 私訊, 全部斷時只記 log. `/router status` 每隻 bot 後面標狀態: 收訊中, 重試中 (從幾點開始, 原因), token 失效.
+15. `/router` 指令的回覆遇到網路錯誤, Telegram 5xx 或 429 (照 retry_after) 時, 第一次送出後 1 分鐘內最多再試 3 次 (間隔 2 秒, 5 秒, 15 秒; `sendretry.ts`), 其他 4xx 不重試, 最後還是失敗就在 router log 記一行.
 
 ### 目錄
 
@@ -108,7 +110,7 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
 
 ### bot 設定提醒
 
-- `/router bot add` 與 `rotate` 等 getMe 完成才回覆, 之後馬上 `/router bot list` 就看得到新 bot. 某隻 bot 的資訊還沒取得時 (例如 router 剛啟動連不上 Telegram), `bot list` 與 `status` 顯示「讀取中」, router 30 秒後自己重新 getMe, 失敗就每 30 秒再試直到成功.
+- `/router bot add` 與 `rotate` 等 getMe 完成才回覆, 之後馬上 `/router bot list` 就看得到新 bot. 某隻 bot 的資訊還沒取得時 (例如 router 剛啟動連不上 Telegram), `bot list` 與 `status` 顯示「讀取中」, getMe 照輪詢的重試規則 (運作方式 14) 重試到成功.
 - 新增 bot (`/router bot add`), 新 bot 初次設定 (審核群組說明那則), `/router setup group` (設定成功或不符條件都附), 以及 bot 被加入群組時 (通知送到重要通知話題或 owner 私訊), router 會附上這隻 bot 的設定提醒.
 - 群組隱私模式: 說明開啟與關閉的差別, 依 getMe 的 `can_read_all_group_messages` 顯示目前設定 (true 是關閉, 符合建議; 其他是開啟, 建議關閉), 關閉方式 (@BotFather `/setprivacy`). 重點一定寫出: 改完要把 bot 從群組移除再重新加入才生效; bot 是群組管理員就不受限制 (以管理員身分加入群組時不附這段).
 - Bot-to-Bot Communication Mode (@BotFather 的設定): Bot API 的 getMe 沒有對應欄位, 查不到開了沒, 只附固定說明: 開與關的差別, 設定方式 (@BotFather `/setbot2bot` 或 BotFather Mini App), 以及風險 (router 不分辨發話者是人還是 bot, 其他 bot 的訊息與 /secret 這類指令會照常處理; 可能互相回覆停不下來).
@@ -158,7 +160,7 @@ bun test router/test
 | 檔案 | 對應 |
 |---|---|
 | `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor (含 resume 後的說明更新提醒 freshness), plugin MCP, router 離線告知 |
-| `router/test/phase2.test.ts` | 規劃 03 的 /router 指令表與拒絕訊息 (含 chat_id 跨 bot 指定, --bot, 對話 key), 06 chat_context, router_log, hook, 「cc /」代打, 即時進度訊息, bot list 與 status 對資訊還沒取得的 bot 顯示讀取中, 每 30 秒重新 getMe 直到成功, GMT+8 時間格式 (`iso8`, log 行) |
+| `router/test/phase2.test.ts` | 規劃 03 的 /router 指令表與拒絕訊息 (含 chat_id 跨 bot 指定, --bot, 對話 key), 06 chat_context, router_log, hook, 「cc /」代打, 即時進度訊息, bot list 與 status 對資訊還沒取得的 bot 顯示讀取中, GMT+8 時間格式 (`iso8`, log 行) |
 | `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, 群組回到提問者的私訊 (on_behalf_of), /router 指令不轉給 worker, CLI, bot add 後立刻 bot list 就有新 bot 的資訊, log 行與 worker 收到的訊息時間是 GMT+8 |
 | `router/test/phase3.test.ts` | 規劃 03, 07: 角色範本, /router perm, 權限檢查, 跨對話傳訊申請, 審核頻道, 提權 (詢問, 核准, 逾時, 主動申請, 紀錄), hook, bot 資料夾與搬遷 |
 | `router/test/phase3-cred.test.ts` | 憑證的角色與方法限制, Bot API 呼叫 (含上傳), install_skill 的來源, 範圍與檢查, /router cred 與 botapi |
@@ -172,6 +174,7 @@ bun test router/test
 | `router/test/phase3-pkg.test.ts` | 規劃 07 套件安裝審核: 指令解析, manifest, 審核快取, 送審與核准, 慢審核, 審核模型的呼叫方式, hook |
 | `router/test/e2e-setup.test.ts` | 真的 router + 假 Bot API, 從沒有 owner 開始: 認領碼, 人設訪談與 bot CLAUDE.md, 審核群組的檢查與話題, 略過 |
 | `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`, 歸給哪隻 bot), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
+| `router/test/poller.test.ts` | 運作方式 14 的輪詢: 重試間隔, 2 分鐘才通知與恢復通知, 409, 401, 429, 啟動時的 getMe, status 與通知文字 (e2e 另測 token 失效時經其他 bot 通知與 /router status); 運作方式 15 的指令回覆重試 (e2e 另測 502 後重送) |
 | `router/test/store.test.ts`, `router/test/inbound.test.ts` | 訊息紀錄 (運作方式 13): 每隻 bot 各自一份 (私訊撞號, 同群組同一則), 舊紀錄分配 bot 一次 (對話, events, outbound, legacy), 重複丟掉時寫 log, 引用不跨 bot |
 | `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行, 驗證 Claude Code 實際放行與擋下的事 |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |

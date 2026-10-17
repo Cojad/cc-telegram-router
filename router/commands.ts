@@ -37,7 +37,7 @@ export interface CommandDeps {
   saveAccess(a: Access): void
   bots: {
     /** id, username, first_name are null until the bot's getMe is in (shown as 讀取中). */
-    list(): Promise<Array<{ name: string; id: number | null; username: string | null; first_name: string | null }>>
+    list(): Promise<Array<{ name: string; id: number | null; username: string | null; first_name: string | null; poll?: string }>>
     add(name: string, token: string): Promise<string>
     rotate(name: string, token: string): Promise<string>
     remove(name: string): Promise<void>
@@ -147,7 +147,7 @@ const MAX_BOTS = 5
 export function renderStatus(
   now: number,
   startedAt: Date,
-  bots: Array<{ name: string; username: string | null; first_name: string | null }>,
+  bots: Array<{ name: string; username: string | null; first_name: string | null; poll?: string }>,
   convs: Conversation[],
   o: { isConnected(key: string): boolean; label(c: Conversation): string; backlog(c: Conversation): number },
 ): string {
@@ -161,7 +161,8 @@ export function renderStatus(
   // "ago" is right-aligned in a column at least 6 wide ("12h34m").
   const width = Math.max(6, ...groups.flatMap(g => g.list.map(c => ago(now - lastAt(c)).length)))
   for (const { b, list } of groups) {
-    out.push('', b.username ? `${b.first_name}(@${b.username})` : `${b.name} (讀取中)`)
+    // each bot's polling: 收訊中, 重試中 (since when, why), token 失效 (router/pollnotice.ts)
+    out.push('', `${b.username ? `${b.first_name}(@${b.username})` : `${b.name} (讀取中)`}${b.poll ? ` ${b.poll}` : ''}`)
     if (!list.length) out.push(' (還沒有對話)')
     for (const c of list) {
       const extra = [o.backlog(c) ? `待送 ${o.backlog(c)}` : '', c.rotate_pending ? '待輪替' : ''].filter(Boolean)

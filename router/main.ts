@@ -9,7 +9,7 @@
 // lands the message in the router queue instead of a Claude Code session.
 
 import { AsyncLocalStorage } from 'async_hooks'
-import { Bot, GrammyError, InputFile } from 'grammy'
+import { Bot, InputFile } from 'grammy'
 import { randomBytes } from 'crypto'
 import { spawn } from 'child_process'
 import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFileSync, realpathSync, readdirSync } from 'fs'
@@ -34,7 +34,9 @@ import { fingerprint, noteStart, STALE_NOTE } from './freshness'
 import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
 import { scheduleRefresh } from './skillrefresh'
-import { awaitBotInfo } from './botinfo'
+import { createPoller, type PollEvent } from './poller'
+import { sendWithRetry } from './sendretry'
+import { pollNoticeText, describePoll } from './pollnotice'
 import { hashSkill, loadManifest, argRoleRefusal } from './privskill'
 import { createProgress, type ProgressEvent, type Mirror } from './progress'
 import { rotateTick } from './rotate'
@@ -178,7 +180,7 @@ const callConv = new AsyncLocalStorage<string>()
 // channel notification itself only carries chat_id).
 const chats = new Map<string, { type: string; title: string | null }>()
 
-type BotHandle = { cfg: BotConfig; bot: Bot; info: { id: number; username: string; first_name: string } | null }
+type BotHandle = { cfg: BotConfig; bot: Bot; info: { id: number; username: string; first_name: string } | null; poller: ReturnType<typeof createPoller>; stop(): Promise<void> }
 const bots = new Map<string, BotHandle>()
 // getMe of each bot (privacy mode: can_read_all_group_messages), from bot add / rotate and polling start
 const meOf = new Map<string, { username: string; can_read_all_group_messages?: boolean }>()
@@ -786,7 +788,7 @@ const commandDeps: CommandDeps = {
   cfg, db, loadAccess, saveAccess, writeConfig, startedAt,
   bots: {
     async list() {
-      return [...bots.values()].map(h => ({ name: h.cfg.name, id: h.info?.id ?? null, username: h.info?.username ?? null, first_name: h.info?.first_name ?? null }))
+      return [...bots.values()].map(h => ({ name: h.cfg.name, id: h.info?.id ?? null, username: h.info?.username ?? null, first_name: h.info?.first_name ?? null, poll: describePoll(h.poller.state()) }))
     },
     async add(name, token) {
       if (bots.has(name)) throw new Error(`已經有名為 ${name} 的 bot`)
@@ -814,7 +816,7 @@ const commandDeps: CommandDeps = {
       writeConfig(r => { r.bots = (r.bots as BotConfig[]).map(b => b.name === name ? bc : b) })
       cfg.bots.splice(cfg.bots.findIndex(b => b.name === name), 1, bc)
       // Old poller stops first: Telegram allows one getUpdates consumer per bot.
-      await old.bot.stop().catch(() => {})
+      await old.stop().catch(() => {})
       meOf.set(name, me)
       startBot(bc).info = me
       return me.username
@@ -823,7 +825,7 @@ const commandDeps: CommandDeps = {
       const h = bots.get(name)
       if (!h) throw new Error(`沒有名為 ${name} 的 bot`)
       if (cfg.bots.length === 1) throw new Error('不能移除最後一隻 bot')
-      await h.bot.stop().catch(() => {})
+      await h.stop().catch(() => {})
       bots.delete(name)
       writeConfig(r => { r.bots = (r.bots as BotConfig[]).filter(b => b.name !== name) })
       cfg.bots.splice(cfg.bots.findIndex(b => b.name === name), 1)
@@ -963,11 +965,12 @@ async function answerCommand(bot: Bot, input: CommandInput & { messageId: number
   const parts = chunk(toDm ? `(${input.text.trim()} 的結果, 來自群組 ${chats.get(String(chatId))?.title ?? chatId})\n${reply}` : reply, 4000, 'newline')
   let sent = true
   for (let i = 0; i < parts.length && sent; i++) {
-    sent = await bot.api.sendMessage(target, parts[i]!, !toDm && i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {})
-      .then(() => true, e => { log(`command reply failed: ${e}`); return false })
+    // network errors, 5xx and 429 are tried again within a minute (router/sendretry.ts)
+    sent = await sendWithRetry(() => bot.api.sendMessage(target, parts[i]!, !toDm && i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {}), { what: 'command reply', log })
+      .then(() => true, () => false)
   }
   if (toDm) {
-    await bot.api.sendMessage(chatId, sent ? '已私訊給你' : '⛔ 這個指令的結果只會私訊給你, 但我私訊不到你. 請先私訊我一次 (例如 /start) 再試', { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } }).catch(e => log(`command reply failed: ${e}`))
+    await sendWithRetry(() => bot.api.sendMessage(chatId, sent ? '已私訊給你' : '⛔ 這個指令的結果只會私訊給你, 但我私訊不到你. 請先私訊我一次 (例如 /start) 再試', { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } }), { what: 'command reply', log }).catch(() => {})
   }
   out.after?.()
 }
@@ -1038,9 +1041,23 @@ function notePerson(bot: Bot, from: { id: number; first_name: string; last_name?
   }).catch(() => {})
 }
 
+/** A bot's polling trouble (router/poller.ts) to the owner, through another
+ *  bot that still works (its notices topic or the owner's DM); a recovery
+ *  may go through the bot itself. None left: only the log. */
+function pollNotice(name: string, e: PollEvent): void {
+  const text = pollNoticeText(name, bots.get(name)?.info?.username ?? null, e, cfg.bots.length)
+  log(`${name}: ${text.split('\n')[0]}`)
+  const ok = (n: string) => bots.get(n)?.poller.state().kind === 'ok'
+  const via = [...cfg.bots.map(b => b.name).filter(n => n !== name && ok(n)), ...(e.kind === 'recovered' ? [name] : [])]
+  void (async () => {
+    for (const b of via) if (await postNotice(approvalDeps, b, text).catch(() => false)) return
+    log(`${name}: polling notice reached no one (no other bot is working)`)
+  })()
+}
+
 function startBot(bc: BotConfig): BotHandle {
   const bot = new Bot(bc.token, apiOpts())
-  const h: BotHandle = { cfg: bc, bot, info: null }
+  const h = { cfg: bc, bot, info: null } as BotHandle
   bots.set(bc.name, h)
 
   bot.api.config.use(async (prev, method, payload, signal) => {
@@ -1177,36 +1194,29 @@ function startBot(bc: BotConfig): BotHandle {
   registerTransport({ bot, mcp: fakeMcp as never, dmCommandGate, loadAccess, handleInbound, token: bc.token, inboxDir: INBOX })
   bot.catch(err => log(`${bc.name}: handler error: ${err.error}`))
 
-  void (async () => {
-    for (let attempt = 1; bots.get(bc.name) === h; attempt++) {
-      try {
-        await bot.start({ onStart: info => {
-          h.info = info
-          meOf.set(bc.name, info)
-          // The bot itself never appears as a sender in its own updates; record it so /id shows its name.
-          db.seePerson({ uid: String(info.id), name: info.first_name, username: info.username, chat_id: null })
-          log(`${bc.name}: polling as @${info.username}`)
-        } })
-        return
-      } catch (err) {
-        if (err instanceof GrammyError && err.error_code === 409) {
-          const delay = Math.min(1000 * attempt, 15000)
-          log(`${bc.name}: 409 Conflict (another getUpdates consumer), retry in ${delay / 1000}s`)
-          await new Promise(r => setTimeout(r, delay))
-          continue
-        }
-        log(`${bc.name}: polling failed: ${err}`)
-        return
-      }
-    }
-  })()
-  // bot list and status show 讀取中 until the info is in: getMe again every 30s (router/botinfo.ts)
-  void awaitBotInfo({
-    ready: () => !!h.info, current: () => bots.get(bc.name) === h,
-    getMe: () => bot.api.getMe(),
-    set: me => { h.info ??= me; if (!meOf.has(bc.name)) meOf.set(bc.name, me) },
+  // our own long polling with the retry and notice policy (router/poller.ts), at start and later on
+  h.poller = createPoller({
+    getMe: signal => bot.api.getMe(signal),
+    deleteWebhook: signal => bot.api.deleteWebhook({}, signal),
+    getUpdates: (offset, first, signal) => bot.api.getUpdates({ offset, timeout: 30, ...(first ? { allowed_updates: [] } : {}) }, signal),
+    onInfo: info => {
+      bot.botInfo = info
+      h.info = info
+      meOf.set(bc.name, info)
+      // The bot itself never appears as a sender in its own updates; record it so /id shows its name.
+      db.seePerson({ uid: String(info.id), name: info.first_name, username: info.username, chat_id: null })
+      log(`${bc.name}: polling as @${info.username}`)
+    },
+    handle: u => bot.handleUpdate(u),
+    notify: e => { if (bots.get(bc.name) === h) pollNotice(bc.name, e) },
     log: m => log(`${bc.name}: ${m}`),
   })
+  h.stop = async () => {
+    const offset = h.poller.stop()
+    // confirm what was handled, like grammY's stop
+    if (offset > 0) await bot.api.getUpdates({ offset, limit: 1 }).catch(() => {})
+  }
+  void h.poller.start().catch(e => log(`${bc.name}: polling ended: ${e}`))
   return h
 }
 
@@ -1313,7 +1323,7 @@ async function shutdown(sig: string, respawn = false) {
   if (stopping) return
   stopping = true
   log(`shutdown (${sig})`)
-  await Promise.allSettled([...bots.values()].map(h => h.bot.stop()))
+  await Promise.allSettled([...bots.values()].map(h => h.stop()))
   ipc.stop()
   elevation.stop()
   try { db.close(); store.close() } catch {}
