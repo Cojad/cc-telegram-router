@@ -18,7 +18,7 @@ import { openRouterDb, type RouterDb } from '../db'
 import { buildArgv, hashSkill, secretsIn, scrubOutputs, redact, argRoleRefusal } from '../privskill'
 import { runSkill, describeActions, type SkillRunDeps } from '../skillrun'
 import { nextRefreshAt, refreshAll, scheduleRefresh, REFRESH_CONV, type RefreshDeps } from '../skillrefresh'
-import { parseRefreshAt } from '../config'
+import { parseRefreshAt, refreshAtOrOff, loadConfig } from '../config'
 import type { Conversation } from '../db'
 
 const COOKIE = 'SAPISIDabcdefghijklmnopqrstuvwxyz0123456789'
@@ -233,6 +233,17 @@ test('daily refresh time: the next skillRefreshAt in GMT+8, strictly after now, 
   expect(parseRefreshAt(false)).toBeNull()
   expect(() => parseRefreshAt('25:00')).toThrow('skillRefreshAt 要是 "HH:MM" (GMT+8) 或 "off"')
   expect(() => parseRefreshAt('5am')).toThrow()
+  // in config.json it is an optional feature: a wrong value turns it off with a warning, the router still starts
+  const warnings: string[] = []
+  expect(refreshAtOrOff('25:00', warnings)).toBeNull()
+  expect(warnings).toEqual(['skillRefreshAt 要是 "HH:MM" (GMT+8) 或 "off", 收到 "25:00"; 特權技能的每日憑證更新已關閉'])
+  const p = join(dir, 'bad-config.json')
+  writeFileSync(p, JSON.stringify({ bots: [{ name: 'cc', token: '1:x' }], skillRefreshAt: 'noon' }))
+  const c = loadConfig(p)
+  expect(c.skillRefreshAt).toBeNull()
+  expect(c.warnings).toEqual(['skillRefreshAt 要是 "HH:MM" (GMT+8) 或 "off", 收到 "noon"; 特權技能的每日憑證更新已關閉'])
+  writeFileSync(p, JSON.stringify({ bots: [{ name: 'cc', token: '1:x' }] }))
+  expect([loadConfig(p).skillRefreshAt, loadConfig(p).warnings]).toEqual(['05:00', []])
 })
 
 function refreshDeps(): RefreshDeps {

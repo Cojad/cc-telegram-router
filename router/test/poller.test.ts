@@ -10,7 +10,7 @@
 
 import { test, expect } from 'bun:test'
 import { createPoller, classify, type PollEvent } from '../poller'
-import { pollNoticeText, describePoll } from '../pollnotice'
+import { pollNoticeText, describePoll, noticeVia } from '../pollnotice'
 import { sendWithRetry } from '../sendretry'
 
 const net = () => Object.assign(new Error('fetch failed'), { name: 'HttpError' })
@@ -132,4 +132,15 @@ test('command replies: network errors, 5xx and 429 are tried again at most 3 tim
   expect([tooLong.tries, tooLong.sleeps, tooLong.logs]).toEqual([1, [], ['command reply failed: 429 請求太頻繁']])
   const bad = await run([api(400)])
   expect([bad.tries, bad.logs]).toEqual([1, ['command reply failed: 400 code 400']])
+})
+
+test('notices go through other bots that still work; a 409 or a recovery may also go through the bot itself (a single-bot router hears of a conflict); a down or dead bot alone: nobody (only the log)', () => {
+  const two = [{ name: 'cc', ok: false }, { name: 'router', ok: true }]
+  expect(noticeVia('cc', 'down', two)).toEqual(['router'])
+  expect(noticeVia('cc', 'conflict', two)).toEqual(['router', 'cc'])
+  expect(noticeVia('cc', 'recovered', two)).toEqual(['router', 'cc'])
+  const one = [{ name: 'cc', ok: false }]
+  expect(noticeVia('cc', 'conflict', one)).toEqual(['cc']) // polling stopped, sending still works
+  expect(noticeVia('cc', 'down', one)).toEqual([])
+  expect(noticeVia('cc', 'unauthorized', one)).toEqual([])
 })

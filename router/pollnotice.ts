@@ -17,6 +17,15 @@ export function pollNoticeText(name: string, username: string | null, e: PollEve
   }
 }
 
+/** Which bots to send a polling notice about name through, in order: other
+ *  bots that still work first; then the bot itself where it can still send
+ *  (a 409 only stops its polling; a recovery means it works again). A
+ *  single-bot router thus still hears of a conflict; when nothing can send,
+ *  the caller only logs. */
+export function noticeVia(name: string, kind: PollEvent['kind'], bots: Array<{ name: string; ok: boolean }>): string[] {
+  return [...bots.filter(b => b.name !== name && b.ok).map(b => b.name), ...(kind === 'recovered' || kind === 'conflict' ? [name] : [])]
+}
+
 /** One line for /router status. */
 export function describePoll(s: PollState): string {
   switch (s.kind) {

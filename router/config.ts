@@ -56,6 +56,13 @@ export type Config = {
   skillRefreshAt?: string | null
   /** Tool call classifier, stage 1 (router/classifier.ts): record only; off when missing. */
   classifier?: ClassifierConfig
+  /** Optional settings that were wrong and so turned off (logged at start): the router still runs. */
+  warnings?: string[]
+}
+
+/** skillRefreshAt as loadConfig takes it: a wrong value turns the daily refresh off with a warning instead of stopping the router (an optional feature). */
+export function refreshAtOrOff(v: unknown, warnings: string[]): string | null {
+  try { return parseRefreshAt(v) } catch (e) { warnings.push(`${e instanceof Error ? e.message : e}; 特權技能的每日憑證更新已關閉`); return null }
 }
 
 /** config skillRefreshAt: "HH:MM" (GMT+8), "off" (or false) to disable, missing = 05:00. */
@@ -82,6 +89,7 @@ export function loadConfig(path: string): Config {
     if (!b.name || !b.token) throw new Error(`${path}: every bot needs name and token`)
   }
   const stateDir = abs(raw.stateDir, '.')
+  const warnings: string[] = []
   return {
     path,
     bots: raw.bots,
@@ -95,7 +103,8 @@ export function loadConfig(path: string): Config {
     apiRoot: raw.apiRoot,
     credentials: raw.credentials ?? {},
     secretKey: raw.secretKey,
-    skillRefreshAt: parseRefreshAt(raw.skillRefreshAt),
+    skillRefreshAt: refreshAtOrOff(raw.skillRefreshAt, warnings),
     classifier: parseClassifier(raw.classifier),
+    warnings,
   }
 }

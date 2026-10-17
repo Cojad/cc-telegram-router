@@ -86,6 +86,8 @@ chmodSync(fakeClaude, 0o755)
 writeFileSync(join(state, 'config.json'), JSON.stringify({
   bots: [{ name: 'cc', token: '123:test' }], home: dir, stateDir: state, owners: ['111'],
   model: 'claude-opus-5-5', claudeBin: fakeClaude, apiRoot: `http://127.0.0.1:${api.port}`,
+  // a wrong optional setting: that feature is off, the router runs all the same (checked below)
+  skillRefreshAt: '25:00',
 }))
 writeFileSync(join(state, 'access.json'), JSON.stringify({
   dmPolicy: 'allowlist', allowFrom: ['111', '222'], groups: { '-100777': { requireMention: false, allowFrom: [] } }, pending: {},
@@ -155,6 +157,9 @@ test('a plugin for the conversation gets the queued message, and its reply goes 
   expect(delivered[0]).toStartWith('<chat_context v="')
   expect(delivered[0]).toContain('role: owner')
   expect(delivered[0]).toEndWith('\nhello router')
+  // the wrong optional setting was logged and turned off, nothing else stopped
+  expect(stderr).toContain('config.json: skillRefreshAt 要是 "HH:MM" (GMT+8) 或 "off", 收到 "25:00"; 特權技能的每日憑證更新已關閉')
+  expect(stderr).not.toContain('skill refresh: daily at')
   // the router's log lines carry GMT+8 time, never UTC or Z
   const lines = stderr.split('\n').filter(Boolean)
   expect(lines.some(l => l.includes('router up'))).toBe(true)

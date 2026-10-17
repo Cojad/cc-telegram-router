@@ -36,7 +36,7 @@ import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skill
 import { scheduleRefresh } from './skillrefresh'
 import { createPoller, type PollEvent } from './poller'
 import { sendWithRetry } from './sendretry'
-import { pollNoticeText, describePoll } from './pollnotice'
+import { pollNoticeText, describePoll, noticeVia } from './pollnotice'
 import { hashSkill, loadManifest, argRoleRefusal } from './privskill'
 import { createProgress, type ProgressEvent, type Mirror } from './progress'
 import { rotateTick } from './rotate'
@@ -1057,11 +1057,10 @@ function notePerson(bot: Bot, from: { id: number; first_name: string; last_name?
 function pollNotice(name: string, e: PollEvent): void {
   const text = pollNoticeText(name, bots.get(name)?.info?.username ?? null, e, cfg.bots.length)
   log(`${name}: ${text.split('\n')[0]}`)
-  const ok = (n: string) => bots.get(n)?.poller.state().kind === 'ok'
-  const via = [...cfg.bots.map(b => b.name).filter(n => n !== name && ok(n)), ...(e.kind === 'recovered' ? [name] : [])]
+  const via = noticeVia(name, e.kind, cfg.bots.map(b => ({ name: b.name, ok: bots.get(b.name)?.poller.state().kind === 'ok' })))
   void (async () => {
     for (const b of via) if (await postNotice(approvalDeps, b, text).catch(() => false)) return
-    log(`${name}: polling notice reached no one (no other bot is working)`)
+    log(`${name}: polling notice reached no one (no bot that can send, or no owner to send to)`)
   })()
 }
 
@@ -1349,4 +1348,6 @@ process.on('uncaughtException', e => log(`uncaught exception: ${e.stack ?? e.mes
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 process.on('SIGINT', () => void shutdown('SIGINT'))
 log(`router up: config ${configPath}, home ${cfg.home}, ${cfg.bots.length} bot(s)`)
+// optional settings that were wrong: turned off, the router runs on (config.ts warnings)
+for (const w of cfg.warnings ?? []) log(`config.json: ${w}`)
 if (claimCode) log(`沒有 owner: 私訊任一隻 bot「/start ${claimCode}」認領 owner (這個碼只在這次執行有效)`)
