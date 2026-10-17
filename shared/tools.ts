@@ -138,7 +138,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'http_api',
-    description: 'Call an HTTP API (e.g. OpenAI image generation) with this conversation\'s own secret (/secret set <名稱> <key> --http <網址> [路徑...] in this chat; any role, only that URL and those paths) or else an API-key credential the owner stored in the router; the key never reaches you (it is replaced with <密鑰> in responses). path must be one the credential allows. json for a JSON body, or form + files (field -> absolute path in your folder) for multipart. save_b64 {at: "data.0.b64_json", to: "stickers/raw.png"} writes a base64 field of the response to a file in your folder instead of returning it. headers: extra request headers passed on as they are (e.g. {"anthropic-version": "2023-06-01"}); the router puts the key where the credential says (a header or a query parameter), so never send the header the key goes in, Authorization, Proxy-Authorization, Cookie, Host, Content-Type or other transport headers, and never put the key parameter of a --query credential in path (refused). See /telegram:bot-skill.',
+    description: 'Call an HTTP API (e.g. OpenAI image generation) with this conversation\'s own secret (/secret set <名稱> <key> --http <網址> [路徑...] in this chat; any role, only that URL and those paths) or else an API-key credential the owner stored in the router; the key never reaches you (it is replaced with <密鑰> in responses). path must be one the credential allows. json for a JSON body, or json_file (a file in your folder, relative to it or absolute, up to 20 MB) whose content is sent as the JSON body (use it for large requests instead of writing them out as json), or form + files (field -> absolute path in your folder) for multipart; only one of them. save_b64 {at: "data.0.b64_json", to: "stickers/raw.png"} writes a base64 field of the response to a file in your folder instead of returning it. headers: extra request headers passed on as they are (e.g. {"anthropic-version": "2023-06-01"}); a credential may have default headers the router adds when you send none of that name (yours win); the router puts the key where the credential says (a header or a query parameter), so never send the header the key goes in, Authorization, Proxy-Authorization, Cookie, Host, Content-Type or other transport headers, and never put the key parameter of a --query credential in path (refused). See /telegram:bot-skill.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -146,6 +146,7 @@ export const TOOL_DEFINITIONS = [
         method: { type: 'string', description: 'GET or POST (default POST)' },
         path: { type: 'string', description: 'e.g. /v1/images/generations' },
         json: { type: 'object' },
+        json_file: { type: 'string', description: 'A JSON file in your folder (relative or absolute, up to 20 MB) sent as the body; not with json, form or files' },
         form: { type: 'object' },
         files: { type: 'object' },
         save_b64: { type: 'object', properties: { at: { type: 'string' }, to: { type: 'string' } } },
@@ -176,7 +177,7 @@ export const TOOL_DEFINITIONS = [
       properties: {
         handle: { type: 'string', description: 'e.g. h7' },
         name: { type: 'string', description: 'Secret name: lowercase letters, digits, - or _' },
-        scope: { type: 'string', description: 'What follows the value in /secret set: Bot API methods ("sendMessage get*", empty = all), or "--http <網址> [--header <標頭>] [--scheme <前綴>] [路徑...]" for an API key' },
+        scope: { type: 'string', description: 'What follows the value in /secret set: Bot API methods ("sendMessage get*", empty = all), or "--http <網址> [--header <標頭>] [--scheme <前綴>] [--default-header <名稱>:<值>]... [路徑...]" for an API key' },
       },
       required: ['handle', 'name'],
     },

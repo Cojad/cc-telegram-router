@@ -24,10 +24,10 @@ import { createSupervisor, bunRunner } from './supervisor'
 import { createIpc, type Peer } from './ipc'
 import { makeAssertAllowedChat, makeAssertSendable } from './guard'
 import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens, gmt8 } from './context'
-import { isCommand, runCommand, roleOf, type CommandDeps, type CommandInput } from './commands'
+import { isCommand, runCommand, roleOf, decideCredOverwrite, type CommandDeps, type CommandInput } from './commands'
 import { runCli } from './cli'
 import { importV1Messages } from './importv1'
-import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, refuseHeaders, refuseKeyParam, parseHttpScope, placementText, BOT_TOKEN_FULL, httpExample, takeB64, shorten, DEFAULT_CRED_ROLES, type KeyPlacement } from './credentials'
+import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, refuseHeaders, refuseKeyParam, parseHttpScope, placementText, defaultHeadersText, setHeader, readJsonFile, createCredStaging, BOT_TOKEN_FULL, httpExample, takeB64, shorten, DEFAULT_CRED_ROLES, type HttpScope } from './credentials'
 import { newSecretKey, maskSecretUpdate, openSecret, refuseSecret, secretCred, scrubSecret, servesChat } from './secrets'
 import { createVault, claudeAsk, SECRET_TOPIC, SECRET_TOPIC_INTRO } from './rawvault'
 import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
@@ -78,17 +78,17 @@ if (cliAt > 0) process.exit(await runCli(cfg.socket, process.argv.slice(cliAt + 
 // being printed (router/credentials.ts). Tells a running router to reload.
 const credAt = process.argv.indexOf('cred-import')
 if (credAt > 0) {
-  const usage = '用法: cc-telegram-router cred-import <名稱> <env 檔> <變數> [方法或路徑,...] [--http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>]]'
+  const usage = '用法: cc-telegram-router cred-import <名稱> <env 檔> <變數> [方法或路徑,...] [--http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]...]'
   const rest = process.argv.slice(credAt + 1)
   const [name, file, varName] = rest
   if (!name || !file || !varName || [name, file, varName].some(a => a.startsWith('--'))) { console.error(usage); process.exit(2) }
   // the list of methods or paths is one comma-separated word
   const words = rest.slice(3).flatMap(w => w.startsWith('--') || /^https?:/.test(w) ? [w] : w.split(',').filter(Boolean))
-  let http: ({ baseUrl: string } & KeyPlacement) | undefined, methods: string[] | undefined = words.length ? words : undefined
+  let http: HttpScope | undefined, methods: string[] | undefined = words.length ? words : undefined
   if (words.includes('--http')) {
     const h = parseHttpScope(words)
     if ('error' in h) { console.error(`${h.error}\n${usage}`); process.exit(2) }
-    http = { baseUrl: h.baseUrl, ...h.placement }
+    http = { baseUrl: h.baseUrl, ...h.placement, ...(Object.keys(h.defaultHeaders).length ? { defaultHeaders: h.defaultHeaders } : {}) }
     // no paths: every path under the URL (only the host is fixed)
     methods = h.paths.length ? h.paths : ['*']
   } else if (words.some(w => w.startsWith('--'))) { console.error(`${words.find(w => w.startsWith('--'))} 只能跟 --http 一起用\n${usage}`); process.exit(2) }
@@ -108,11 +108,11 @@ if (credAt > 0) {
   }
   const raw = JSON.parse(readFileSync(configPath, 'utf8'))
   raw.credentials ??= {}
-  const { header: _h, scheme: _s, query: _q, ...old } = raw.credentials[name] ?? {}
+  const { header: _h, scheme: _s, query: _q, defaultHeaders: _d, ...old } = raw.credentials[name] ?? {}
   raw.credentials[name] = { ...old, token, label, ...(http ? { kind: 'http', ...http } : {}), methods: methods ?? (raw.credentials[name]?.methods ?? []), roles: raw.credentials[name]?.roles ?? DEFAULT_CRED_ROLES, addedBy: raw.credentials[name]?.addedBy ?? 'terminal' }
   writeFileSync(configPath + '.tmp', JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 })
   renameSync(configPath + '.tmp', configPath)
-  console.log(`已存入憑證 ${name}: ${label}${http ? placementText(http) : ''}, ${http ? '路徑' : '方法'} ${raw.credentials[name].methods.join(', ') || '(無)'}`)
+  console.log(`已存入憑證 ${name}: ${label}${http ? `${placementText(http)}${defaultHeadersText(http.defaultHeaders)}` : ''}, ${http ? '路徑' : '方法'} ${raw.credentials[name].methods.join(', ') || '(無)'}`)
   if (existsSync(cfg.socket)) await runCli(cfg.socket, ['cred', 'reload'])
   process.exit(0)
 }
@@ -271,16 +271,19 @@ async function convSecretCall(live: Peer, conv: Conversation, s: ConvSecret, too
   const badHeaders = refuseHeaders(cred, args.headers) ?? refuseKeyParam(cred, path)
   if (badHeaders) return fail(badHeaders)
   const headers = args.headers as Record<string, string> | undefined
+  // json_file: a file in the folder sent as the JSON body
+  const jf = readJsonFile(args, conv.folder, makeAssertSendable(live, cfg.stateDir))
+  if (jf && 'error' in jf) return fail(jf.error)
   const save = args.save_b64 as { at?: string; to?: string } | undefined
   const dest = save?.to ? (save.to.startsWith('/') ? save.to : join(conv.folder, save.to)) : null
   if (dest && (!dest.startsWith(conv.folder + '/') || dest.startsWith(join(conv.folder, '.chat') + '/'))) return fail('save_b64.to 要在這個對話的資料夾裡 (不能是 .chat)')
-  const res = await httpApiCall({ cred, method, path, json: args.json, form: args.form as Record<string, unknown> | undefined, files, headers }).catch(e => ({ status: 0, body: String(e) }))
+  const res = await httpApiCall({ cred, method, path, json: args.json, ...(jf ? { jsonText: jf.text } : {}), form: args.form as Record<string, unknown> | undefined, files, headers }).catch(e => ({ status: 0, body: String(e) }))
   let body = res.body
   if (dest && save?.at && res.status < 300) {
     const t = takeB64(body, save.at)
     if (t.bytes) { mkdirSync(dirname(dest), { recursive: true }); writeFileSync(dest, t.bytes); body = { saved: dest, bytes: t.bytes.length, response: t.body } }
   }
-  db.logApiCall(label, `${method} ${path}`, { json: shorten(args.json), form: shorten(args.form), files, ...(headers ? { headers } : {}) }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
+  db.logApiCall(label, `${method} ${path}`, { json: shorten(args.json), ...(jf ? { json_file: { path: jf.path, bytes: jf.bytes } } : {}), form: shorten(args.form), files, ...(headers ? { headers } : {}) }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
   return { content: [{ type: 'text', text: scrubSecret(JSON.stringify({ status: res.status, body: shorten(body) }), value) }], isError: res.status === 0 || res.status >= 300 }
 }
 
@@ -361,16 +364,19 @@ const ipc = createIpc({
       const headers = args.headers as Record<string, string> | undefined
       const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
       try { for (const p of Object.values(files)) makeAssertSendable(live, cfg.stateDir)(p) } catch (e) { return fail(String(e instanceof Error ? e.message : e)) }
+      // json_file: a file in the folder sent as the JSON body
+      const jf = readJsonFile(args, conv.folder, makeAssertSendable(live, cfg.stateDir))
+      if (jf && 'error' in jf) return fail(jf.error)
       const save = args.save_b64 as { at?: string; to?: string } | undefined
       const dest = save?.to ? (save.to.startsWith('/') ? save.to : join(conv.folder, save.to)) : null
       if (dest && (!dest.startsWith(conv.folder + '/') || dest.startsWith(join(conv.folder, '.chat') + '/'))) return fail('save_b64.to 要在這個對話的資料夾裡 (不能是 .chat)')
-      const res = await httpApiCall({ cred: cred!, method, path, json: args.json, form: args.form as Record<string, unknown> | undefined, files, headers }).catch(e => ({ status: 0, body: String(e) }))
+      const res = await httpApiCall({ cred: cred!, method, path, json: args.json, ...(jf ? { jsonText: jf.text } : {}), form: args.form as Record<string, unknown> | undefined, files, headers }).catch(e => ({ status: 0, body: String(e) }))
       let body = res.body
       if (dest && save?.at && res.status < 300) {
         const t = takeB64(body, save.at)
         if (t.bytes) { mkdirSync(dirname(dest), { recursive: true }); writeFileSync(dest, t.bytes); body = { saved: dest, bytes: t.bytes.length, response: t.body } }
       }
-      db.logApiCall(`cred:${name}`, `${method} ${path}`, { json: shorten(args.json), form: args.form, files, ...(headers ? { headers } : {}) }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
+      db.logApiCall(`cred:${name}`, `${method} ${path}`, { json: shorten(args.json), ...(jf ? { json_file: { path: jf.path, bytes: jf.bytes } } : {}), form: args.form, files, ...(headers ? { headers } : {}) }, { status: res.status }, res.status >= 300 || res.status === 0 ? `HTTP ${res.status}` : null, conv.key)
       // an API may echo the auth header (httpbin /anything does): the key never goes back to the worker
       return { content: [{ type: 'text', text: scrubSecret(JSON.stringify({ status: res.status, body: shorten(body) }), cred!.token) }], isError: res.status === 0 || res.status >= 300 }
     }
@@ -945,6 +951,14 @@ function apiOpts() {
   return cfg.apiRoot ? { client: { apiRoot: cfg.apiRoot } } : undefined
 }
 
+// /router cred add for a name that exists: the new value waits here for 覆蓋 or 取消 (router memory only)
+const credStaging = createCredStaging({
+  onExpire: s => {
+    if (s.messageId == null) return
+    void bots.get(s.bot)?.bot.api.editMessageText(s.chatId, s.messageId, `已逾時, 沒有覆蓋憑證 ${s.name}, 新的值已丟棄. 要覆蓋請重新 /router cred add`, { reply_markup: { inline_keyboard: [] } }).catch(() => {})
+  },
+})
+
 const commandDeps: CommandDeps = {
   cfg, db, loadAccess, saveAccess, writeConfig, startedAt,
   bots: {
@@ -1027,6 +1041,22 @@ const commandDeps: CommandDeps = {
       cfg.credentials[name] = c
       return label
     },
+    async rotate(name, token, defaultHeaders) {
+      const old = cfg.credentials[name]
+      if (!old) throw new Error(`沒有名為 ${name} 的憑證`)
+      // a bot token is checked with getMe before anything changes
+      let label = old.label
+      if (old.kind !== 'http') { const me = await new Bot(token, apiOpts()).api.getMe(); label = `@${me.username} (${me.id})` }
+      const change = (c: Record<string, any>) => {
+        c.token = token
+        if (label) c.label = label
+        if (defaultHeaders) { const h = { ...c.defaultHeaders }; for (const [k, v] of Object.entries(defaultHeaders)) setHeader(h, k, v); c.defaultHeaders = h }
+      }
+      writeConfig(r => { change((r.credentials as Record<string, any>)[name]) })
+      change(old)
+      return label ?? name
+    },
+    staging: credStaging,
     update(name, change) {
       writeConfig(r => {
         const all = (r.credentials ?? {}) as Record<string, any>
@@ -1111,13 +1141,16 @@ const exec: Exec = async (args, env) => {
 /** Run a /router (or /restart, /id) command and send its reply: listings to
  *  the sender's DM when asked in a group, long ones in parts. Also used for
  *  「cc /router ...」. */
-async function answerCommand(bot: Bot, input: CommandInput & { messageId: number }): Promise<void> {
+async function answerCommand(bot: Bot, input: CommandInput & { messageId: number; eventId?: number }): Promise<void> {
   const chatId = input.chatId, messageId = input.messageId, senderId = input.senderId
   const out = await runCommand(input, commandDeps)
   if (!out) return
   for (const l of out.logs) db.addLog(l.conv, l.text)
   let reply = out.reply
-  if (out.deleteMessage) {
+  // a registration command in a DM: deleted 60 seconds after this answer
+  // unless its sender cancels (rawvault scheduleCommand); anywhere else at once
+  const later = !!out.deleteMessage && !!out.deleteLater && input.chatType === 'private'
+  if (out.deleteMessage && !later) {
     // Say what actually happened: in a group the bot can only delete
     // other people's messages when it is an admin there.
     const ok = await bot.api.deleteMessage(chatId, messageId).then(() => true, e => { log(`delete command message failed: ${e}`); return false })
@@ -1132,13 +1165,18 @@ async function answerCommand(bot: Bot, input: CommandInput & { messageId: number
   // Long listings (log, chat) can exceed Telegram's 4096 per message.
   const head = toDm ? `(${input.text.trim()} 的結果, 來自群組 ${chats.get(String(chatId))?.title ?? chatId})\n` : ''
   const parts = chunk(`${out.html ? escHtml(head) : head}${reply}`, 4000, 'newline')
-  let sent = true
+  let sent = true, lastId: number | null = null
   for (let i = 0; i < parts.length && sent; i++) {
-    const part = (t: string, html: boolean) => bot.api.sendMessage(target, t, { ...(html ? { parse_mode: 'HTML' as const } : {}), ...(!toDm && i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {}) })
+    // buttons (覆蓋 / 取消) under the last part
+    const markup = out.buttons?.length && i === parts.length - 1 ? { reply_markup: { inline_keyboard: [out.buttons.map(b => ({ text: b.text, callback_data: b.data }))] } } : {}
+    const part = (t: string, html: boolean) => bot.api.sendMessage(target, t, { ...(html ? { parse_mode: 'HTML' as const } : {}), ...(!toDm && i === 0 ? { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } } : {}), ...markup })
     // network errors, 5xx and 429 are tried again within a minute; HTML refused: once more as plain text (router/sendretry.ts)
     sent = await sendWithRetry(() => out.html ? htmlOrPlain(() => part(parts[i]!, true), () => part(htmlToText(parts[i]!), false), { what: 'command reply', log }) : part(parts[i]!, false), { what: 'command reply', log })
-      .then(() => true, () => false)
+      .then(m => { lastId = (m as { message_id?: number } | undefined)?.message_id ?? null; return true }, () => false)
   }
+  // the question an expiry edits
+  if (out.staged != null && lastId != null) credStaging.attach(out.staged, lastId)
+  if (later) await vault.scheduleCommand(input.bot, { chatId, messageId, senderId, eventId: input.eventId ?? null }).catch(e => log(`command message deletion: ${e}`))
   if (toDm) {
     await sendWithRetry(() => bot.api.sendMessage(chatId, sent ? '已私訊給你' : '⛔ 這個指令的結果只會私訊給你, 但我私訊不到你. 請先私訊我一次 (例如 /start) 再試', { reply_parameters: { message_id: messageId, allow_sending_without_reply: true } }), { what: 'command reply', log }).catch(() => {})
   }
@@ -1287,7 +1325,7 @@ function startBot(bc: BotConfig): BotHandle {
     }
     // Buttons: send grants, package reviews, setup. Each settles every copy itself.
     const data = ctx.callbackQuery?.data
-    if (data && ctx.from && /^(grant|pkg|elev|setup|sdel):/.test(data)) {
+    if (data && ctx.from && /^(grant|pkg|elev|setup|sdel|credow):/.test(data)) {
       const uid = String(ctx.from.id)
       let answer = null as string | null
       // the request message that was pressed: the turn this decision starts mirrors its progress there
@@ -1299,6 +1337,12 @@ function startBot(bc: BotConfig): BotHandle {
         else if (data.startsWith('pkg:')) answer = await pkgGate.decide(data, uid)
         else if (data.startsWith('elev:')) answer = await elevation.decide(data, uid)
         else if (data.startsWith('sdel:')) answer = await vault.cancel(data, uid)
+        else if (data.startsWith('credow:')) {
+          // 覆蓋 / 取消 under a /router cred add for a name that exists
+          const r = await decideCredOverwrite(data, uid, commandDeps)
+          answer = r.answer
+          if (r.text != null) await ctx.editMessageText(r.text, { reply_markup: { inline_keyboard: [] } }).catch(() => {})
+        }
       })
       if (data === `setup:${bc.name}:skip`) {
         if (!cfg.owners.includes(uid)) answer = '只有 owner 能決定'
@@ -1346,8 +1390,9 @@ function startBot(bc: BotConfig): BotHandle {
         chatId: String(chatId), chatType: ctx.chat.type, messageId, botUsername: h.info?.username,
         ...(replied?.from ? { reply: { uid: String(replied.from.id), messageId: replied.message_id } } : {}),
       }
-      secretOf.get(ctx)?.note(true)
-      void answerCommand(bot, input).catch(e => log(`command failed: ${e}`))
+      const sec = secretOf.get(ctx)
+      sec?.note(true)
+      void answerCommand(bot, { ...input, ...(sec ? { eventId: sec.rec.id } : {}) }).catch(e => log(`command failed: ${e}`))
       return
     }
     // from here on (store, worker) the values are markers with kind and last 4

@@ -9,18 +9,51 @@
 
 ## 憑證
 
-- 跨 bot 技能需要的 token 存在 `config.json` 的 `credentials` (token, 允許的方法, 允許的角色), 由 owner 或 admin 在私訊用 `/router cred add <名稱> <token> [方法...]` 登記 (訊息會被刪), 或在終端機用 `cc-telegram-router cred-import <名稱> <檔案> <變數> [方法,...]` 從檔案搬進來. 只有像 bot token 的值 (數字, `:`, 35 字元) 才用 getMe 驗證; 沒帶 `--http` 又不像 bot token 時兩處都不呼叫 getMe (不把 API key 送去 Telegram), 回覆它像哪種 key (Anthropic `sk-ant-`, OpenAI `sk-`, Google `AIza`) 與加上 `--http` 的打法, `/router cred add` 那則訊息照樣刪除. 沒寫方法就是還沒開放任何方法. worker 用 `bot_api` 工具使用, 看不到 token; owner 在終端機可用 `cc-telegram-router cli botapi`. 對話角色不在憑證允許的角色 (含 `self`) 時跟其他越權動作一樣擋下並走提權 (發話者角色較高就在對話裡詢問, 只能允許一次); 憑證不存在或方法, 路徑沒開放則直接拒絕.
-- 一般 API key (例如 OpenAI, Anthropic) 也存成憑證, 種類 http: 私訊 `/router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...]` 或終端機 `cred-import <名稱> <檔案> <變數> [路徑,...] --http <網址> [同樣的選項]`, worker 用 `http_api`. 只能打那個網址 (同一個 host); 沒寫路徑就是網址底下全部路徑 (存成 `*`), 寫了就只開放那些 (結尾 `*` 代表前綴). `/router cred list` 的路徑 `全部` 是 `*`, `(無, 全部擋下)` 是空清單, 每次呼叫都會被拒; 角色 `(無, 沒有對話能用)` 是空的角色清單. 回應裡的 base64 可直接存成對話資料夾裡的檔案. 路徑先擋掉 `..`, `.`, `%2e`, 編碼過的 `/` 與 `\`, `#` 再比對前綴 (fetch 會把 `/v1/images/../files` 解析成 `/v1/files`), 對話密鑰也一樣. `bot_api` 與 `http_api` 的回應若回顯了 token 或 key (例如回聲 API), router 先遮蔽成 `<密鑰>` 才交給 worker.
+- 跨 bot 技能需要的 token 存在 `config.json` 的 `credentials` (token, 允許的方法, 允許的角色), 由 owner 或 admin 在私訊用 `/router cred add <名稱> <token> [方法...]` 登記 (那則訊息 60 秒後刪除, 見 [登記訊息的延遲刪除](#登記訊息的延遲刪除)), 或在終端機用 `cc-telegram-router cred-import <名稱> <檔案> <變數> [方法,...]` 從檔案搬進來. 只有像 bot token 的值 (數字, `:`, 35 字元) 才用 getMe 驗證; 沒帶 `--http` 又不像 bot token 時兩處都不呼叫 getMe (不把 API key 送去 Telegram), 回覆它像哪種 key (Anthropic `sk-ant-`, OpenAI `sk-`, Google `AIza`) 與加上 `--http` 的打法, `/router cred add` 那則訊息照樣在 60 秒後刪除. 沒寫方法就是還沒開放任何方法. worker 用 `bot_api` 工具使用, 看不到 token; owner 在終端機可用 `cc-telegram-router cli botapi`. 對話角色不在憑證允許的角色 (含 `self`) 時跟其他越權動作一樣擋下並走提權 (發話者角色較高就在對話裡詢問, 只能允許一次); 憑證不存在或方法, 路徑沒開放則直接拒絕.
+- 一般 API key (例如 OpenAI, Anthropic) 也存成憑證, 種類 http: 私訊 `/router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...]` 或終端機 `cred-import <名稱> <檔案> <變數> [路徑,...] --http <網址> [同樣的選項]`, worker 用 `http_api`. 只能打那個網址 (同一個 host); 沒寫路徑就是網址底下全部路徑 (存成 `*`), 寫了就只開放那些 (結尾 `*` 代表前綴). `/router cred list` 的路徑 `全部` 是 `*`, `(無, 全部擋下)` 是空清單, 每次呼叫都會被拒; 角色 `(無, 沒有對話能用)` 是空的角色清單. 回應裡的 base64 可直接存成對話資料夾裡的檔案. 路徑先擋掉 `..`, `.`, `%2e`, 編碼過的 `/` 與 `\`, `#` 再比對前綴 (fetch 會把 `/v1/images/../files` 解析成 `/v1/files`), 對話密鑰也一樣. `bot_api` 與 `http_api` 的回應若回顯了 token 或 key (例如回聲 API), router 先遮蔽成 `<密鑰>` 才交給 worker.
 - owner 與 admin 的對話用 `bot_api` 的 credential `self` 以這隻 bot 自己的身分呼叫任何 Bot API (getUpdates, setWebhook, deleteWebhook, logOut, close 除外).
 
 對話自己登記的 token 與 API key (不用提權) 見 [密鑰](secrets.md#對話專屬密鑰).
 
+## 登記訊息的延遲刪除
+
+- 含值的登記訊息 (`/router cred add|rotate`, `/router bot add|rotate`, `/secret set`) 在私訊裡不再立刻刪除: router 先回覆結果, 再回一則「⏳ 這則訊息含有 key, 60 秒後 (HH:MM) 刪除」的提示, 附「取消刪除」按鈕, 只有發訊者本人能按 (owner, admin 也不行). 時間到自動刪, 提示改成「🗑 已刪除含 key 的登記訊息」; 按了就保留, 提示改成已取消刪除並提醒不需要時自己刪. 登記失敗 (格式不對, 不像 bot token, getMe 不接受) 的訊息同樣 60 秒後刪, 方便照著改好再傳.
+- 立刻刪除, 不給取消: 在群組打的 (`/router cred` 與 `/router bot` 在群組會被拒, `/secret set` 在群組照常登記但訊息立刻刪), 被拒的 (角色不夠, admin 動別人加入的憑證), router 沒有服務的對話. 群組裡 bot 沒有刪除權限時回覆提醒自己刪.
+- 排程跟 10e 密鑰偵測共用 router.db 的 `secret_deletions` (`kind` 欄: `detect` 是偵測, `command` 是登記訊息), router 重啟後照常執行, 停機期間到期的在啟動時刪 (每 10 秒檢查一次). 取消與刪除結果也記在「🔑 密鑰偵測」紀錄 (`secret_log`). 偵測紀錄的處理欄寫「登記或 router 指令: router 處理 (登記指令的訊息 60 秒後刪除, 發送者可取消; 被拒的立刻刪除)」.
+- 在終端機打的指令 (`cc-telegram-router cli`) 沒有訊息要刪.
+
+## 同名憑證: 覆蓋或取消
+
+- `/router cred add` 遇到已經有的名稱不再直接取代: router 回覆現有設定摘要 (類型, 網址, key 的標頭, 預設標頭, 路徑, 角色, 加入者; 不含值), 附「覆蓋 / 取消」按鈕, 並提示只想換 key 用 `/router cred rotate`.
+- 這次 add 的值與設定只暫存在 router 記憶體 2 分鐘 (不寫進任何檔案或 router.db, router 重啟就沒了); 逾時, 按取消, 或按過一次之後就丟棄, 再按會回「已逾時或處理過」. 只有下指令的人能按. 按覆蓋時重新檢查角色, 然後用這次 add 的設定整個取代 (網址, 標頭, 預設標頭, 路徑都換成這次的, 角色回到預設 owner, admin, 加入者換成按的人).
+- owner 能覆蓋任何憑證; admin 只能覆蓋自己加入的, 別人加入的同名憑證照舊直接拒絕 (訊息立刻刪除, 不給按鈕).
+
+## 換 key: cred rotate
+
+- `/router cred rotate <名稱> <新的 key 或 token> [--default-header <名稱>:<值>]...`: 只換值, 網址, key 的標頭, scheme, query, 路徑, 角色, 加入者全部保留. 跟 add 一樣只能在自己和 bot 的私訊打, 權限比照 add (owner, 或加入它的 admin), 訊息 60 秒後刪除.
+- bot token 憑證換之前先用 getMe 驗證新的 token, 失敗就不換; 新值不像 bot token 時不送 getMe, 直接拒絕. 標籤 (@username) 換成新 token 的.
+- http 憑證可以順便帶 `--default-header`, 依名稱新增或取代那幾個預設標頭, 其他預設標頭保留; bot token 憑證不接任何選項. 其他字 (路徑, `--header` 等) 一律拒絕: 要整個換掉用 add 再按覆蓋.
+
+## 預設標頭
+
+- http 憑證可以有預設標頭: worker 呼叫 `http_api` 沒帶同名標頭 (不分大小寫) 時 router 自動補上, worker 有帶就用 worker 的. 例如替 Anthropic 憑證加 `anthropic-version:2023-06-01`, worker 就不必每次自帶.
+- 登記時寫 `--default-header <名稱>:<值>` (可多次, 值可以含 `:`): `/router cred add`, `/router cred rotate`, `cred-import`, `/secret set --http` 都支援, `secret_from_handle` 的 scope 也是. 規則跟 worker 自帶的標頭一樣: 不能是 key 所在的標頭, 也不能是 Authorization, Proxy-Authorization, Cookie, Host, Content-Type 這類被擋的標頭.
+- 不用重貼 key 調整現有憑證: `/router cred header <名稱> set <標頭>:<值>` (同名就取代), `/router cred header <名稱> rm <標頭>`. 不含 key, 所以可以在任何對話打, 權限是 owner 或加入它的 admin. bot token 憑證沒有標頭可設.
+- 預設標頭不是秘密: `/router cred list`, `/secret list` 與覆蓋提示都會列出名稱與值. config.json 存在憑證的 `defaultHeaders` 物件, 對話密鑰存在 `conv_secrets.default_headers` (JSON). `cred-import` 重新匯入時跟 `--header` 等一樣以這次的選項為準.
+- 替現有的 anthropic 憑證加上版本: `/router cred header anthropic set anthropic-version:2023-06-01`.
+
+## http_api 的 json_file
+
+- `http_api` 的 `json_file`: 對話資料夾裡的檔案路徑 (相對於資料夾, 或資料夾內的絕對路徑), router 讀檔當 JSON body 原樣送出 (Content-Type: application/json). 用在很大的請求, 例如量 26 萬 token 的 `count_tokens`: 內容塞進工具參數的成本比實際送出還高.
+- 檢查: 跟 `files` 一樣不能是 router 狀態目錄, 而且不論角色都必須在這個對話的資料夾裡 (跟著符號連結算, 連到外面的不行); 最大 20 MB; 內容要是合法的 JSON, 否則拒絕並說明哪裡錯. `json_file` 與 `json`, `form`, `files` 只能擇一. 任何一項不通過就不送出.
+- `outbound` 的請求欄記檔案路徑與大小, 不記內容.
+
 ## http 憑證的 key 放哪裡
 
 - 憑證決定 key 放哪裡, worker 改不了: 預設 `Authorization: Bearer <key>`; `--header <標頭>` 改放進那個標頭且不加前綴 (例如 Anthropic 的 `x-api-key`, Google 的 `x-goog-api-key`); `--scheme <前綴>` 改前綴 (`none` 不加前綴, 只寫 `--scheme` 時標頭仍是 Authorization); `--query <參數>` 改放在網址的 query 參數 (少數用 `?key=` 傳 key 的 API), 這時不放任何標頭, 不能跟 `--header`, `--scheme` 一起用. 三個選項在 `/router cred add`, `cred-import`, `/secret set` 寫法相同, 可以放在 `--http <網址>` 後面任何位置. config.json 對應 `header`, `scheme`, `query` 欄位, 對話密鑰存在 `conv_secrets` 同名欄位. Host, Content-Type, Cookie, Proxy-Authorization 這類標頭不能放 key.
-- worker 呼叫 `http_api` 時可以用 `headers` 自帶額外標頭 (例如 `anthropic-version: 2023-06-01`, `anthropic-beta`), router 原樣轉送 (最多 20 個, 值是一行文字). 只擋精確的名單 (不看名稱片段, `x-csrf-token`, `Idempotency-Key`, `X-Auth-Token` 這類照樣轉送): key 所在的那個標頭, Authorization, Proxy-Authorization, Cookie, 以及 router 自己設定的 Host, Content-Type (依 json, form 或 multipart 設定), Content-Length, Transfer-Encoding, Connection, Keep-Alive, TE, Trailer, Upgrade, Expect; 用 `--query` 的憑證, path 裡也不能帶那個參數 (含編碼過的寫法). 擋下時回錯誤, 什麼都不送, 避免 worker 把 key 搬到別處或混入別的認證. key 的標頭最後才設, 同名的額外標頭也蓋不掉. 額外標頭記在 `outbound` 的請求欄.
+- worker 呼叫 `http_api` 時可以用 `headers` 自帶額外標頭 (例如 `anthropic-version: 2023-06-01`, `anthropic-beta`), router 原樣轉送 (最多 20 個, 值是一行文字); 憑證的預設標頭 (見 [預設標頭](#預設標頭)) 在 worker 沒帶同名標頭時補上. 只擋精確的名單 (不看名稱片段, `x-csrf-token`, `Idempotency-Key`, `X-Auth-Token` 這類照樣轉送): key 所在的那個標頭, Authorization, Proxy-Authorization, Cookie, 以及 router 自己設定的 Host, Content-Type (依 json, form 或 multipart 設定), Content-Length, Transfer-Encoding, Connection, Keep-Alive, TE, Trailer, Upgrade, Expect; 用 `--query` 的憑證, path 裡也不能帶那個參數 (含編碼過的寫法). 擋下時回錯誤, 什麼都不送, 避免 worker 把 key 搬到別處或混入別的認證. key 的標頭最後才設, 同名的額外標頭也蓋不掉. 額外標頭記在 `outbound` 的請求欄.
 - 網域與路徑限制不變: 只能打憑證的網址, 路徑照允許清單, `..` 等照樣擋. 回應若回顯了 key (含 URL 編碼過的 query 值), 照樣遮蔽成 `<密鑰>`.
-- Anthropic 範例: 私訊打 `/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key`; worker 呼叫 `http_api(credential: "anthropic", path: "/v1/messages", headers: {"anthropic-version": "2023-06-01"}, json: {...})`.
+- Anthropic 範例: 私訊打 `/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key --default-header anthropic-version:2023-06-01`; worker 呼叫 `http_api(credential: "anthropic", path: "/v1/messages", json: {...})`. 沒有預設標頭時 worker 自帶 `headers: {"anthropic-version": "2023-06-01"}`.
 
 ## 特權技能
 
@@ -29,3 +62,8 @@
 ## worker 端 SOP
 
 - worker 端的 SOP 在 `/telegram:bot-skill`.
+
+## 驗證
+
+- `router/test/cred-flows.test.ts` (7 項, 模組層級) 與 `router/test/e2e-creds.test.ts` (7 項, 真的 router 對假的 Bot API 與本機假 HTTP 伺服器): 登記訊息的延遲刪除與取消 (只限發訊者, 群組立刻刪, 重啟後到期照刪), rotate 保留設定, 同名 add 的覆蓋 / 取消與逾時丟棄, 預設標頭 (補上, 被 worker 覆蓋, 不能是被擋的標頭), json_file (路徑, 大小上限, 非法 JSON, 與 json 互斥, 實際送出內容).
+- `router/test/cred-http.test.ts`, `router/test/phase3-cred.test.ts`: key 放哪裡, worker 自帶標頭, /router help cred.

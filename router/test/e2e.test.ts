@@ -255,7 +255,7 @@ test('a plugin or hook reporting a subfolder of a conversation is still that con
   sub.close(); other.close()
 }, 15000)
 
-test('bot rotate (owner DM): the poller moves to the new token, the token message is deleted, nothing sent meanwhile is lost', async () => {
+test('bot rotate (owner DM): the poller moves to the new token, the token message is deleted 60 seconds later (a notice with 取消刪除), nothing sent meanwhile is lost', async () => {
   const from = { id: 111, is_bot: false, first_name: 'O', username: 'owner' }
   const NEW = '123:ROTATEDROTATEDROTATEDROTATEDROTATED00'
   const delivered: string[] = []
@@ -267,8 +267,10 @@ test('bot rotate (owner DM): the poller moves to the new token, the token messag
   await until(() => client.state().kind === 'ready')
   laterUpdates.push({ update_id: 30, message: { message_id: 40, date: now, chat: { id: 111, type: 'private' }, from, text: `/router bot rotate cc ${NEW}` } })
   const done = await until(() => calls.find(c => c.method === 'sendMessage' && String(c.body.text).startsWith('已更換 bot cc')))
-  expect(done.body.text).toBe('已更換 bot cc: @cc_bot\n已刪除含 token 的訊息')
-  expect(calls.some(c => c.method === 'deleteMessage' && c.body.message_id === 40)).toBe(true)
+  expect(done.body.text).toBe('已更換 bot cc: @cc_bot')
+  const notice = await until(() => calls.find(c => c.method === 'sendMessage' && c.body.reply_parameters?.message_id === 40 && String(c.body.text).startsWith('⏳ 這則訊息含有 key, 60 秒後')))
+  expect(notice.body.reply_markup.inline_keyboard[0][0].text).toBe('取消刪除')
+  expect(calls.some(c => c.method === 'deleteMessage' && c.body.message_id === 40)).toBe(false)
   // a message that arrives right after the switch is picked up by the new poller
   laterUpdates.push({ update_id: 31, message: { message_id: 41, date: now, chat: { id: 111, type: 'private' }, from, text: 'after rotate' } })
   await until(() => delivered.some(d => d.endsWith('after rotate')))

@@ -5,6 +5,8 @@
 // router checks the conversation's role and the method against the
 // credential's lists and makes the Bot API call itself.
 
+import { realpathSync, statSync, readFileSync } from 'fs'
+import { isAbsolute, join, sep } from 'path'
 import type { Config, Credential } from './config'
 
 export const DEFAULT_CRED_ROLES = ['owner', 'admin']
@@ -100,13 +102,23 @@ export const RESERVED_HEADERS = new Set(['host', 'content-length', 'content-type
 /** Where an http key goes: a header (default Authorization) with a scheme
  *  (default Bearer, "" for the bare key), or a query parameter. */
 export type KeyPlacement = { header?: string; scheme?: string; query?: string }
+/** An http credential's URL, key placement and default headers (cred add, cred-import). */
+export type HttpScope = { baseUrl: string; defaultHeaders?: Record<string, string> } & KeyPlacement
 
 /** The words after an API key: "--http <網址> [--header <標頭>] [--scheme
  *  <前綴|none>] [--query <參數>] [路徑...]", the options anywhere. Same
  *  syntax for /router cred add, cred-import and /secret set. */
-export function parseHttpScope(words: string[]): { baseUrl: string; placement: KeyPlacement; paths: string[] } | { error: string } {
+export function parseHttpScope(words: string[]): { baseUrl: string; placement: KeyPlacement; paths: string[]; defaultHeaders: Record<string, string> } | { error: string } {
   const rest = [...words]
   const opt: Record<string, string> = {}
+  // --default-header <名稱>:<值>, any number of times
+  const defaults: Array<[string, string]> = []
+  for (let i = rest.indexOf('--default-header'); i >= 0; i = rest.indexOf('--default-header')) {
+    const d = parseDefaultHeader(rest[i + 1])
+    if ('error' in d) return d
+    defaults.push([d.name, d.value])
+    rest.splice(i, 2)
+  }
   for (const flag of ['--http', '--header', '--scheme', '--query']) {
     const i = rest.indexOf(flag)
     if (i < 0) continue
@@ -137,7 +149,39 @@ export function parseHttpScope(words: string[]): { baseUrl: string; placement: K
   if (placement.header && placement.scheme == null) placement.scheme = ''
   const bad = rest.find(p => !p.startsWith('/') || badPath(p.replace(/\*$/, '')))
   if (bad) return { error: `路徑 ${bad} 不行: 要以 / 開頭, 不能含 .. 等, 例如 /v1/images/generations (結尾 * 代表前綴)` }
-  return { baseUrl: opt['--http']!.replace(/\/+$/, ''), placement, paths: rest }
+  const defaultHeaders: Record<string, string> = {}
+  for (const [n, v] of defaults) {
+    const why = refuseDefaultHeader(placement, n, v)
+    if (why) return { error: why }
+    setHeader(defaultHeaders, n, v)
+  }
+  return { baseUrl: opt['--http']!.replace(/\/+$/, ''), placement, paths: rest, defaultHeaders }
+}
+
+/** "<名稱>:<值>" after --default-header (or /router cred header set). */
+export function parseDefaultHeader(word: string | undefined): { name: string; value: string } | { error: string } {
+  const at = word ? word.indexOf(':') : -1
+  if (!word || word.startsWith('--') || at <= 0) return { error: '--default-header 後面要接 <名稱>:<值>, 例如 --default-header anthropic-version:2023-06-01' }
+  return { name: word.slice(0, at), value: word.slice(at + 1) }
+}
+
+/** Set a header by name, replacing one that differs only in case. */
+export function setHeader(all: Record<string, string>, name: string, value: string): void {
+  for (const k of Object.keys(all)) if (k.toLowerCase() === name.toLowerCase()) delete all[k]
+  all[name] = value
+}
+
+/** Why a default header (sent when the worker does not send one of that
+ *  name) is refused, or null: the same rules as a worker's own headers. */
+export function refuseDefaultHeader(cred: Pick<Credential, 'header' | 'query'>, name: string, value: string): string | null {
+  const why = refuseHeaders(cred, { [name]: value })
+  return why ? `預設${why}` : null
+}
+
+/** Default headers for lists: "" when none. */
+export function defaultHeadersText(h: Record<string, string> | undefined | null): string {
+  const all = Object.entries(h ?? {})
+  return all.length ? `, 預設標頭 ${all.map(([k, v]) => `${k}: ${v}`).join(', ')}` : ''
 }
 
 /** How the key is sent, for lists: "" for Authorization: Bearer. */
@@ -187,15 +231,17 @@ export function describeCreds(cfg: Pick<Config, 'credentials'>): string {
   if (!all.length) return '沒有任何憑證. owner 或 admin 可以在私訊用 /router cred add <名稱> <token> [方法...] 加入'
   // "*" is every path or method; an empty list blocks every call, no roles means no conversation may use it
   const list = (xs: string[], none: string) => xs.length === 1 && xs[0] === '*' ? '全部' : xs.join(', ') || none
-  return all.map(([n, c]) => `${n}: ${c.kind === 'http' ? `http ${c.baseUrl}${placementText(c)}` : (c.label ?? '(未驗證)')}, ${c.kind === 'http' ? '路徑' : '方法'} ${list(c.methods, '(無, 全部擋下)')}, 角色 ${list(c.roles ?? DEFAULT_CRED_ROLES, '(無, 沒有對話能用)')}${c.addedBy ? `, 加入者 ${c.addedBy}` : ''}`).join('\n')
+  return all.map(([n, c]) => `${n}: ${c.kind === 'http' ? `http ${c.baseUrl}${placementText(c)}${defaultHeadersText(c.defaultHeaders)}` : (c.label ?? '(未驗證)')}, ${c.kind === 'http' ? '路徑' : '方法'} ${list(c.methods, '(無, 全部擋下)')}, 角色 ${list(c.roles ?? DEFAULT_CRED_ROLES, '(無, 沒有對話能用)')}${c.addedBy ? `, 加入者 ${c.addedBy}` : ''}`).join('\n')
 }
 
-/** Call an HTTP API with a credential's key (kind http). json or form +
- *  files (multipart); headers: the worker's extra headers (refuseHeaders
- *  first), the key's own header set last. Returns the status and the parsed
- *  body (text when not JSON). */
-export async function httpApiCall(o: { cred: Credential; method: string; path: string; json?: unknown; form?: Record<string, unknown>; files?: Record<string, string>; headers?: Record<string, string> }): Promise<{ status: number; body: any }> {
-  const headers = new Headers(o.headers ?? {})
+/** Call an HTTP API with a credential's key (kind http). json (or jsonText,
+ *  a json_file's content sent as it is) or form + files (multipart);
+ *  headers: the credential's default headers, then the worker's extra
+ *  headers (refuseHeaders first; one of the same name wins), the key's own
+ *  header set last. Returns the status and the parsed body (text when not JSON). */
+export async function httpApiCall(o: { cred: Credential; method: string; path: string; json?: unknown; jsonText?: string; form?: Record<string, unknown>; files?: Record<string, string>; headers?: Record<string, string> }): Promise<{ status: number; body: any }> {
+  const headers = new Headers(o.cred.defaultHeaders ?? {})
+  for (const [k, v] of Object.entries(o.headers ?? {})) headers.set(k, v)
   let url = `${o.cred.baseUrl!.replace(/\/+$/, '')}${o.path}`
   if (o.cred.query) {
     const u = new URL(url)
@@ -210,6 +256,9 @@ export async function httpApiCall(o: { cred: Credential; method: string; path: s
     body = form
   } else if (o.form) {
     body = new URLSearchParams(Object.entries(o.form).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)]))
+  } else if (o.jsonText !== undefined) {
+    headers.set('content-type', 'application/json')
+    body = o.jsonText
   } else if (o.json !== undefined) {
     headers.set('content-type', 'application/json')
     body = JSON.stringify(o.json)
@@ -217,6 +266,33 @@ export async function httpApiCall(o: { cred: Credential; method: string; path: s
   const r = await fetch(url, { method: o.method, headers, body, signal: AbortSignal.timeout(300_000) })
   const text = await r.text()
   try { return { status: r.status, body: JSON.parse(text) } } catch { return { status: r.status, body: text } }
+}
+
+/** Largest json_file http_api sends. */
+export const MAX_JSON_FILE = 20 * 1024 * 1024
+
+/** http_api json_file: a file in the conversation's folder (relative to it,
+ *  or absolute) sent as the JSON body, so a large request is not written out
+ *  as tool arguments. Only one body: not with json, form or files. The path
+ *  check is the files one (assertSendable: never router state) and, for
+ *  every role, inside the folder after symlinks. Returns the text to send. */
+export function readJsonFile(args: { json?: unknown; json_file?: unknown; form?: unknown; files?: unknown }, folder: string, assertSendable: (path: string) => void): { text: string; path: string; bytes: number } | { error: string } | null {
+  if (args.json_file == null) return null
+  if (typeof args.json_file !== 'string' || !args.json_file) return { error: 'json_file 要是檔案路徑 (相對於這個對話的資料夾, 或資料夾內的絕對路徑)' }
+  if (args.json !== undefined || args.form != null || (args.files != null && Object.keys(args.files as object).length)) return { error: 'json_file 與 json, form, files 只能擇一: 請求內容只能有一種' }
+  const path = isAbsolute(args.json_file) ? args.json_file : join(folder, args.json_file)
+  let real: string
+  try { real = realpathSync(path) } catch { return { error: `找不到 json_file ${args.json_file}` } }
+  let root = folder
+  try { root = realpathSync(folder) } catch {}
+  if (!real.startsWith(root + sep)) return { error: `json_file ${args.json_file} 要在這個對話的資料夾裡` }
+  try { assertSendable(real) } catch (e) { return { error: e instanceof Error ? e.message : String(e) } }
+  const st = statSync(real)
+  if (!st.isFile()) return { error: `json_file ${args.json_file} 不是檔案` }
+  if (st.size > MAX_JSON_FILE) return { error: `json_file ${args.json_file} 有 ${st.size} bytes, 超過上限 ${MAX_JSON_FILE} bytes (20 MB)` }
+  const text = readFileSync(real, 'utf8')
+  try { JSON.parse(text) } catch (e) { return { error: `json_file ${args.json_file} 不是合法的 JSON (${e instanceof Error ? e.message : e}), 沒有送出` } }
+  return { text, path: real, bytes: st.size }
 }
 
 /** Take the base64 at a dotted path out of a response (e.g. data.0.b64_json):
@@ -241,3 +317,46 @@ export function shorten(v: any, max = 2000): any {
   return v
 }
 
+
+/** A /router cred add for a name that exists, waiting for 覆蓋 or 取消. */
+export type StagedCred = { bot: string; name: string; token: string; methods: string[]; http?: HttpScope; addedBy: string; chatId: string; messageId?: number }
+export const STAGE_TTL_MS = 2 * 60_000
+
+/** New values held in router memory only (never written anywhere) until the
+ *  sender presses 覆蓋 or 取消; dropped after ttlMs (onExpire may edit the
+ *  question). A restart drops them too. */
+export function createCredStaging(o: { ttlMs?: number; onExpire?(s: StagedCred): void } = {}) {
+  const all = new Map<number, { s: StagedCred; timer: ReturnType<typeof setTimeout> }>()
+  let next = 1
+  return {
+    stage(s: StagedCred): number {
+      const id = next++
+      const timer = setTimeout(() => { if (all.delete(id)) o.onExpire?.(s) }, o.ttlMs ?? STAGE_TTL_MS)
+      ;(timer as { unref?(): void }).unref?.()
+      all.set(id, { s, timer })
+      return id
+    },
+    /** The question message, so an expiry can edit it. */
+    attach(id: number, messageId: number): void { const e = all.get(id); if (e) e.s.messageId = messageId },
+    peek: (id: number): StagedCred | null => all.get(id)?.s ?? null,
+    /** Taken out (pressed): the value leaves memory here. */
+    take(id: number): StagedCred | null {
+      const e = all.get(id)
+      if (!e) return null
+      clearTimeout(e.timer)
+      all.delete(id)
+      return e.s
+    },
+    size: () => all.size,
+  }
+}
+export type CredStaging = ReturnType<typeof createCredStaging>
+
+/** What a credential is, without its value (the 覆蓋 question, rotate). */
+export function credSummary(name: string, c: Credential): string {
+  const roles = c.roles ?? DEFAULT_CRED_ROLES
+  const list = (xs: string[], none: string) => xs.length === 1 && xs[0] === '*' ? '全部' : xs.join(', ') || none
+  return c.kind === 'http'
+    ? `${name}: http ${c.baseUrl}${placementText(c)}${defaultHeadersText(c.defaultHeaders)}, 路徑 ${list(c.methods, '(無, 全部擋下)')}, 角色 ${list(roles, '(無, 沒有對話能用)')}${c.addedBy ? `, 加入者 ${c.addedBy}` : ''}`
+    : `${name}: Telegram bot token ${c.label ?? '(未驗證)'}, 方法 ${list(c.methods, '(無, 全部擋下)')}, 角色 ${list(roles, '(無, 沒有對話能用)')}${c.addedBy ? `, 加入者 ${c.addedBy}` : ''}`
+}

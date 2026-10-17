@@ -119,7 +119,7 @@ test('/router cred: add only in your own DM (message deleted), admin cannot repl
   expect(ok.deleteMessage).toBe(true)
   expect(ok.reply).toStartWith('已加入憑證 eagle: @eagle_bot (99)\n方法: addStickerToSet')
   expect(ok.reply).not.toContain(TOKEN)
-  expect((await run(d, `/router cred add eagle ${TOKEN}`, ADMIN))!.reply).toBe('⛔ 已經有名為 eagle 的憑證, 只有 owner 能取代')
+  expect((await run(d, `/router cred add eagle ${TOKEN}`, ADMIN))!.reply).toBe('⛔ 已經有名為 eagle 的憑證, 不是你加入的, 只有 owner 能取代')
   expect((await run(d, '/router cred allow eagle getStickerSet', ADMIN))!.reply).toBe('⛔ admin 只能調整自己加入的憑證')
   expect((await run(d, '/router cred allow eagle getStickerSet createNewStickerSet', OWNER))!.reply).toBe('eagle 的方法: addStickerToSet, getStickerSet, createNewStickerSet')
   expect((await run(d, '/router cred disallow eagle getStickerSet', OWNER))!.reply).toBe('eagle 的方法: addStickerToSet, createNewStickerSet')
@@ -179,7 +179,7 @@ test('/router cred add --http: owner or admin add an API key from their own DM; 
   expect(r.logs).toHaveLength(1)
   expect(r.logs[0]!.text).toContain('/router cred add openai <已遮蔽> --http')
   expect(JSON.stringify(r)).not.toContain(KEY)
-  expect((await run(d, `/router cred add x ${KEY} --http not-a-url`, OWNER))!).toMatchObject({ reply: '--http 後面要接網址, 例如 --http https://api.example.com (不含帳密, ? 或 #)\n這則訊息已刪除, 改好再傳一次 (/router help cred 有範例)', deleteMessage: true })
+  expect((await run(d, `/router cred add x ${KEY} --http not-a-url`, OWNER))!).toMatchObject({ reply: '--http 後面要接網址, 例如 --http https://api.example.com (不含帳密, ? 或 #)\n改好再傳一次 (/router help cred 有範例)', deleteMessage: true, deleteLater: true })
   expect((await run(d, `/router cred add x ${KEY} --http https://a.example v1/x`, OWNER))!.reply).toStartWith('路徑 v1/x 不行: 要以 / 開頭')
   expect((await run(d, `/router cred add y ${KEY} --http https://a.example /x`, '777'))!.reply).toContain('只開放 owner 與 admin') // user role
 })

@@ -2,7 +2,7 @@
 // Only formats one can tell at a glance (Telegram bot token, OpenAI sk-,
 // Anthropic sk-ant-, GitHub ghp_ / github_pat_, AWS AKIA, Google AIza, Slack
 // xox, PEM private key blocks), the value of a token-carrying router command
-// (/secret set, /router cred add, /router bot add|rotate; only a message
+// (/secret set, /router cred add|rotate, /router bot add|rotate; only a message
 // that starts with the command, not a sentence naming it), and exact matches
 // of values the router already holds (global credentials, its own bot
 // tokens, conversation secrets). No entropy guessing.

@@ -28,6 +28,9 @@ export type Credential = {
   scheme?: string
   /** http: query parameter carrying the key instead of a header (e.g. "key"). */
   query?: string
+  /** http: headers sent when the worker's http_api call has none of that
+   *  name (e.g. anthropic-version); not secret, shown by /router cred list. */
+  defaultHeaders?: Record<string, string>
   /** Conversation roles that may use it; default owner and admin. */
   roles?: string[]
   /** "@username (id)" from getMe when it was added. */

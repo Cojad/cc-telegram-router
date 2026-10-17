@@ -127,14 +127,17 @@ test('the router generates config.json secretKey (32 bytes) when missing; tokens
   expect(stderr).not.toContain('OLDOLD')
 })
 
-test('DM: a user registers an http secret; the message is deleted, the value is sealed, masked in events and in the worker log; only this conversation can use it, within its paths', async () => {
+test('DM: a user registers an http secret; the message is deleted 60 seconds later, the value is sealed, masked in events and in the worker log; only this conversation can use it, within its paths', async () => {
   dm(USER, 'hi')
   dm(OWNER, 'hi')
   await until(() => q("SELECT key FROM conversations WHERE key IN ('dm-666', 'dm-555')").length === 2)
   const msg = dm(USER, `/secret set img ${HTTP_KEY} --http http://127.0.0.1:${api.port} /api/*`)
   const r = await until(() => sentTo(666, '已登記')[0])
-  expect(r.body.text).toBe(`已登記這個對話的密鑰 img: http http://127.0.0.1:${api.port}, 路徑 /api/*\n值加密存在 router, 只有這個對話能用 (http_api 工具, credential 填 img)\n已刪除含密鑰的訊息`)
-  expect(calls.some(c => c.method === 'deleteMessage' && Number(c.body.chat_id) === 666 && c.body.message_id === msg)).toBe(true)
+  expect(r.body.text).toBe(`已登記這個對話的密鑰 img: http http://127.0.0.1:${api.port}, 路徑 /api/*\n值加密存在 router, 只有這個對話能用 (http_api 工具, credential 填 img)`)
+  // in a DM: a notice with 取消刪除, the deletion kept in router.db (router/rawvault.ts scheduleCommand)
+  await until(() => sentTo(666, '⏳ 這則訊息含有 key, 60 秒後').length === 1)
+  expect(q(`SELECT kind, status FROM secret_deletions WHERE message_id = ${msg}`)).toEqual([{ kind: 'command', status: 'pending' }])
+  expect(calls.some(c => c.method === 'deleteMessage' && Number(c.body.chat_id) === 666 && c.body.message_id === msg)).toBe(false)
   const row = q("SELECT * FROM conv_secrets WHERE name = 'img'")[0]
   expect(row).toMatchObject({ bot: 'cc', chat_id: '666', kind: 'http', added_by: '666' })
   expect(row.value).toStartWith('v1:')

@@ -1,6 +1,6 @@
 ---
 name: doc
-description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, 登記 API key 與 bot token (/router cred add, /secret set), 角色與權限, 提權, 套件安裝審核, 密鑰遮蔽與原文請求 (event_raw), 審核群組與新 bot 初次設定, 頻道 (目前不支援), 「cc /」代打, 即時進度訊息. 有人問「怎麼設定角色」「怎麼查 uid」「/router 怎麼用」「/router cred add 怎麼用」「API key 要怎麼給 bot」「為什麼被擋」「怎麼提權」「這個 bot 能做什麼」時使用.
+description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, 登記 API key 與 bot token (/router cred add|rotate|header, /secret set), 角色與權限, 提權, 套件安裝審核, 密鑰遮蔽與原文請求 (event_raw), 審核群組與新 bot 初次設定, 頻道 (目前不支援), 「cc /」代打, 即時進度訊息. 有人問「怎麼設定角色」「怎麼查 uid」「/router 怎麼用」「/router cred add 怎麼用」「API key 要怎麼給 bot」「為什麼被擋」「怎麼提權」「這個 bot 能做什麼」時使用.
 ---
 
 # cc-telegram-router 使用說明
@@ -66,34 +66,39 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 | | `/router cred` (全域憑證) | `/secret` (對話密鑰) |
 |---|---|---|
 | 誰能登記 | owner 或 admin | 任何角色 (群組裡任何成員) |
-| 在哪裡打 | 只能在他自己和 bot 的私訊 (群組會被拒絕並刪除) | 要用 key 的那個對話 (私訊或群組) |
+| 在哪裡打 | 只能在他自己和 bot 的私訊 (群組會被拒絕並立刻刪除) | 要用 key 的那個對話 (私訊或群組) |
 | 誰能用 | 預設 owner 與 admin 角色的對話 (`/router cred roles` 可放寬) | 只有那個對話, 不看角色, 不用授權 |
 | 適合 | 整隻 bot 或技能共用的 key | 這個對話自己要用的 key |
 
-**共通點:** router 自己處理那則訊息, **不會送進 worker** (你只會在 router_log 看到 `<已遮蔽>`), 私訊裡**立刻刪除**那則訊息 (群組 bot 沒有刪除權限時提醒發送者自己刪), key 加密或存在 router 設定檔, **你永遠拿不到值**; 呼叫時 `credential` 填名稱.
+**共通點:** router 自己處理那則訊息, **不會送進 worker** (你只會在 router_log 看到 `<已遮蔽>`), 私訊裡那則訊息**60 秒後刪除**: router 回一則提示附「取消刪除」按鈕, 只有發訊者本人能按, 按了就保留 (群組裡立刻刪除, bot 沒有刪除權限時提醒發送者自己刪), key 加密或存在 router 設定檔, **你永遠拿不到值**; 呼叫時 `credential` 填名稱.
 
 **一般 API key (用 `http_api`):** 一定要加 `--http <網址>`, 不然 router 會當成 Telegram bot token, 不像 bot token 就拒絕並提示.
 
-- `/router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...]`
+- `/router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...]`
 - `/secret set <名稱> <API key> --http <網址> [同樣的選項] [路徑...]`
 - 只能打那個網址; 沒寫路徑就是那個網址底下全部路徑, 寫了就只開放那些 (結尾 `*` 代表前綴)
 - key 預設放 `Authorization: Bearer <key>`; `--header x-api-key` 改放那個標頭且不加前綴; `--scheme none` 不加前綴; `--query key` 改放在網址 `?key=`
+- `--default-header <名稱>:<值>` (可多次): 你呼叫時沒帶同名標頭, router 自動補上; 你有帶就用你的. 不能是 key 所在的標頭或被擋的標頭
 
 範例:
 
-- Anthropic: `/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key` (你呼叫時自帶 `headers: {"anthropic-version": "2023-06-01"}`)
+- Anthropic: `/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key --default-header anthropic-version:2023-06-01` (沒加 `--default-header` 時, 你呼叫要自帶 `headers: {"anthropic-version": "2023-06-01"}`)
 - OpenAI: `/router cred add openai sk-... --http https://api.openai.com /v1/chat/completions /v1/images/*`
 - Google Gemini: `/router cred add gemini AIza... --http https://generativelanguage.googleapis.com --header x-goog-api-key`
 
 **Telegram bot token (用 `bot_api`, 操作另一隻 bot):** `/router cred add <名稱> <bot token> [方法...]`, 例如 `/router cred add eagle 123456789:AA... addStickerToSet getStickerSet`. router 用 getMe 驗證; 沒寫方法就還沒開放任何方法, 用 `/router cred allow <名稱> <方法...>` 加入. 對話自己用的 bot token: `/secret set <名稱> <bot token> [方法...]` (沒寫方法就是全部).
 
-**終端機 (owner):** `cc-telegram-router cred-import <名稱> <env 檔> <變數> [路徑,...] --http <網址> [--header ...]`, 值從檔案讀, 不印出.
+**換 key:** `/router cred rotate <名稱> <新的 key 或 token> [--default-header <名稱>:<值>]...` (一樣只在自己和 bot 的私訊): 只換值, 網址, 標頭, 路徑, 角色都不變; bot token 先用 getMe 驗證.
 
-**管理:** `/router cred list` (不顯示值; 路徑 `全部` 是 `*`, `(無, 全部擋下)` 是一條都沒開, 角色 `(無, 沒有對話能用)` 要用 `/router cred roles <名稱> owner,admin` 補) | `allow|disallow <名稱> <路徑或方法...>` | `rm <名稱>`; 同名再 add 一次就是取代 (只有 owner 能取代). `/secret list` | `/secret rm <名稱>`.
+**預設標頭 (不用重貼 key):** `/router cred header <名稱> set <標頭>:<值>` | `/router cred header <名稱> rm <標頭>`, 例如 `/router cred header anthropic set anthropic-version:2023-06-01`.
+
+**終端機 (owner):** `cc-telegram-router cred-import <名稱> <env 檔> <變數> [路徑,...] --http <網址> [--header ...] [--default-header <名稱>:<值>]`, 值從檔案讀, 不印出.
+
+**管理:** `/router cred list` (不顯示值; 路徑 `全部` 是 `*`, `(無, 全部擋下)` 是一條都沒開, 角色 `(無, 沒有對話能用)` 要用 `/router cred roles <名稱> owner,admin` 補) | `allow|disallow <名稱> <路徑或方法...>` | `rm <名稱>`; 同名再 add 一次不會直接取代: router 列出現有設定 (不含值) 附「覆蓋 / 取消」按鈕, 新的值只在 router 記憶體留 2 分鐘, 按覆蓋才用這次的設定整個取代 (admin 只能覆蓋自己加入的); 只想換 key 用 `rotate`. `/secret list` | `/secret rm <名稱>`.
 
 **誤判:** 句子中間提到指令 (例如「教我 /router cred add 的用法」) 不會被當成密鑰; 只有訊息開頭就是登記指令時, 參數位置的值才算.
 
-任何角色的對話都能有自己的密鑰: 使用者在這個對話傳 `/secret set <名稱> <值> [方法...]` 或 `/secret set <名稱> <值> --http <網址> [路徑...]`, router 加密保存並刪掉那則訊息 (群組沒有刪除權限時提醒發送者刪), worker 用 `bot_api` / `http_api` 填那個名稱使用, 不看角色也不用授權, 值不會進到對話. `/secret list` 看有哪些, `/secret rm <名稱>` 移除; owner 與 admin 用 `/router secret list|rm <chat_id>` 管理任何對話的密鑰.
+任何角色的對話都能有自己的密鑰: 使用者在這個對話傳 `/secret set <名稱> <值> [方法...]` 或 `/secret set <名稱> <值> --http <網址> [路徑...]`, router 加密保存並刪掉那則訊息 (私訊 60 秒後, 發訊者可按「取消刪除」; 群組立刻刪, 沒有刪除權限時提醒發送者刪), worker 用 `bot_api` / `http_api` 填那個名稱使用, 不看角色也不用授權, 值不會進到對話. `/secret list` 看有哪些, `/secret rm <名稱>` 移除; owner 與 admin 用 `/router secret list|rm <chat_id>` 管理任何對話的密鑰.
 
 ## 密鑰與原文 (event_raw)
 
@@ -151,7 +156,7 @@ owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 B
 | `/router perm [chat_id] show \| role <角色> \| tool allow\|deny\|rm <規則> \| path read\|write\|rm <路徑> \| net allow\|rm <網域> \| mcp allow\|rm <名稱> \| send allow\|rm <chat_id> \| pkg allow\|rm <pypi\|npm:名稱> \| reset` | 調整對話的角色與權限覆寫, 回覆會列出變更; worker 閒置時重啟套用. 私訊的 `role` 等同 `/router role` (改那位使用者的角色) |
 | `/router perm user <uid\|@username> show \| tool\|path\|net\|mcp ... \| reset` | 掛在使用者身上的權限覆寫 (語法同上, 沒有 send, pkg): 他發起的一輪在任何對話重算高風險工具時套用, 他自己的私訊 settings 也套用 (worker 閒置時重啟); 群組裡不改變 worker 的 sandbox |
 | `/router setup [group\|skip\|persona]` | 審核群組與 bot 初次設定 (只限 owner) |
-| `/router cred list \| add <名稱> <bot token> [方法...] \| add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴\|none>] [--query <參數>] [路徑...] \| allow\|disallow <名稱> <方法或路徑...> \| roles <名稱> <角色,...> \| rm <名稱>` | 全域憑證 (見上方「登記 API key 與 bot token」); add 只能在自己和 bot 的私訊下, 訊息會被刪除 |
+| `/router cred list \| add <名稱> <bot token> [方法...] \| add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴\|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...] \| rotate <名稱> <新的 key> \| header <名稱> set\|rm ... \| allow\|disallow <名稱> <方法或路徑...> \| roles <名稱> <角色,...> \| rm <名稱>` | 全域憑證 (見上方「登記 API key 與 bot token」); add 與 rotate 只能在自己和 bot 的私訊下, 訊息 60 秒後刪除 (可按「取消刪除」) |
 | `/router botapi <憑證> <方法> <JSON> [--file 欄位=/路徑]` | owner 直接用憑證呼叫 Bot API (終端機用 `cc-telegram-router cli botapi ...`) |
 | `/router config` | 列出 router 設定; `get`/`set <key>` 讀寫單項 (owners 與 claudeBin 只有 owner 能改) |
 | `/router log [chat_id] [筆數]` | 最近的訊息紀錄 |

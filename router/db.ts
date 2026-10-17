@@ -97,6 +97,8 @@ export type ConvSecret = {
   label: string | null
   /** Registered from a handle (secret_from_handle, plan 10e): its code; null for /secret set. */
   source?: string | null
+  /** http: JSON object of default headers (--default-header), as Credential defaultHeaders; null: none. */
+  default_headers?: string | null
 }
 
 /** Plan 10e 原始事件: events rows with masked = 1 have their original update in
@@ -113,9 +115,11 @@ export type SecretHandle = {
   uses: number; registered: string | null; revoked_by: string | null; revoked_at: string | null; created_at: string
 }
 export type SecretRequest = { id: number; ts: string; conv: string; sender: string | null; event_id: number; question: string; handles: string | null; status: 'pending' | 'answered' | 'blocked' | 'no-answer' | 'refused'; note: string | null }
-/** A message with a secret, deleted 5 minutes after the reminder unless someone cancels (survives restarts). */
+/** A message with a secret, deleted 5 minutes after the reminder unless someone cancels (survives restarts).
+ *  kind command: a registration command's own message (/secret set, /router cred add|rotate,
+ *  /router bot add|rotate), deleted 60 seconds after the router answered; only the sender may cancel. */
 export type SecretDeletion = {
-  id: number; event_id: number; bot: string; chat_id: string; message_id: number; sender: string
+  id: number; event_id: number; bot: string; chat_id: string; message_id: number; sender: string; kind: 'detect' | 'command'
   notice_id: number | null; log_chat: string | null; log_msg: number | null; log_text: string | null
   due_at: string; status: 'pending' | 'deleted' | 'failed' | 'cancelled'; decided_by: string | null; done_at: string | null
 }
@@ -167,7 +171,7 @@ export interface RouterDb {
   /** The 🔑 密鑰偵測 record in router.db (also posted to the topic). */
   addSecretLog(bot: string, kind: string, text: string, ref: number | null): void
   secretLog(limit: number): Array<{ ts: string; bot: string; kind: string; text: string; ref: number | null }>
-  scheduleDeletion(d: Pick<SecretDeletion, 'event_id' | 'bot' | 'chat_id' | 'message_id' | 'sender' | 'notice_id' | 'due_at'>): number
+  scheduleDeletion(d: Pick<SecretDeletion, 'event_id' | 'bot' | 'chat_id' | 'message_id' | 'sender' | 'notice_id' | 'due_at'> & { kind?: SecretDeletion['kind'] }): number
   getDeletion(id: number): SecretDeletion | null
   dueDeletions(nowIso: string): SecretDeletion[]
   updateDeletion(id: number, fields: Partial<Pick<SecretDeletion, 'notice_id' | 'log_chat' | 'log_msg' | 'log_text'>>): void
@@ -440,7 +444,9 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
   const setupCols = new Set((db.query('PRAGMA table_info(bot_setup)').all() as Array<{ name: string }>).map(c => c.name))
   const secCols = new Set((db.query('PRAGMA table_info(conv_secrets)').all() as Array<{ name: string }>).map(c => c.name))
-  for (const n of ['header', 'scheme', 'label', 'source', 'query']) if (!secCols.has(n)) db.exec(`ALTER TABLE conv_secrets ADD COLUMN ${n} TEXT`)
+  for (const n of ['header', 'scheme', 'label', 'source', 'query', 'default_headers']) if (!secCols.has(n)) db.exec(`ALTER TABLE conv_secrets ADD COLUMN ${n} TEXT`)
+  const delCols = new Set((db.query('PRAGMA table_info(secret_deletions)').all() as Array<{ name: string }>).map(c => c.name))
+  if (!delCols.has('kind')) db.exec("ALTER TABLE secret_deletions ADD COLUMN kind TEXT NOT NULL DEFAULT 'detect'")
   if (!setupCols.has('elevlog_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN elevlog_topic INTEGER')
   if (!setupCols.has('authuse_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN authuse_topic INTEGER')
   if (!setupCols.has('secret_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN secret_topic INTEGER')
@@ -580,8 +586,8 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
     getSecretRequest: id => (db.prepare('SELECT * FROM secret_requests WHERE id = ?').get(id) as SecretRequest | null) ?? null,
     addSecretLog: (bot, kind, text, ref) => { db.prepare('INSERT INTO secret_log (ts, bot, kind, text, ref) VALUES (?, ?, ?, ?, ?)').run(now(), bot, kind, text, ref) },
     secretLog: limit => db.prepare('SELECT ts, bot, kind, text, ref FROM secret_log ORDER BY id DESC LIMIT ?').all(limit) as any,
-    scheduleDeletion: d => Number(db.prepare('INSERT INTO secret_deletions (event_id, bot, chat_id, message_id, sender, notice_id, due_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(d.event_id, d.bot, d.chat_id, d.message_id, d.sender, d.notice_id, d.due_at).lastInsertRowid),
+    scheduleDeletion: d => Number(db.prepare('INSERT INTO secret_deletions (event_id, bot, chat_id, message_id, sender, notice_id, due_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(d.event_id, d.bot, d.chat_id, d.message_id, d.sender, d.notice_id, d.due_at, d.kind ?? 'detect').lastInsertRowid),
     getDeletion: id => (db.prepare('SELECT * FROM secret_deletions WHERE id = ?').get(id) as SecretDeletion | null) ?? null,
     dueDeletions: at => db.prepare("SELECT * FROM secret_deletions WHERE status = 'pending' AND due_at <= ? ORDER BY id").all(at) as SecretDeletion[],
     updateDeletion(id, fields) {
@@ -763,8 +769,8 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
       return changed
     },
     setConvSecret: s => {
-      db.prepare('INSERT OR REPLACE INTO conv_secrets (bot, chat_id, name, kind, value, base_url, allowed, header, scheme, query, label, added_by, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(s.bot, s.chat_id, s.name, s.kind, s.value, s.base_url, s.allowed, s.header ?? null, s.scheme ?? null, s.query ?? null, s.label ?? null, s.added_by, s.created_at, s.source ?? null)
+      db.prepare('INSERT OR REPLACE INTO conv_secrets (bot, chat_id, name, kind, value, base_url, allowed, header, scheme, query, label, added_by, created_at, source, default_headers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(s.bot, s.chat_id, s.name, s.kind, s.value, s.base_url, s.allowed, s.header ?? null, s.scheme ?? null, s.query ?? null, s.label ?? null, s.added_by, s.created_at, s.source ?? null, s.default_headers ?? null)
     },
     getConvSecret: (bot, chat_id, name) => (db.prepare('SELECT * FROM conv_secrets WHERE bot = ? AND chat_id = ? AND name = ?').get(bot, chat_id, name) as ConvSecret | null) ?? null,
     listConvSecrets: (bot, chat_id) => db.prepare('SELECT * FROM conv_secrets WHERE bot = ? AND chat_id = ? ORDER BY name').all(bot, chat_id) as ConvSecret[],

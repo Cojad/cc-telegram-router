@@ -266,14 +266,15 @@ test('API keys without --http are never sent to getMe (/router cred add and cred
   const KEY = 'sk-ant-TESTxxxxxxxxxxxxxxxxxxxx'
   const base = `http://127.0.0.1:${api.port}/x`
   const getMes = () => calls.filter(c => c.method === 'getMe' && c.token === KEY).length
-  // a DM from the owner without --http: a hint, the message deleted, no getMe with the key
+  // a DM from the owner without --http: a hint, the message deleted later, no getMe with the key
   const msg = mid++
   updates.push({ update_id: msg, message: { message_id: msg, date: now, chat: { id: 555, type: 'private' }, from: OWNER, text: `/router cred add anthropic ${KEY}`, entities: [{ type: 'bot_command', offset: 0, length: 7 }] } })
   const hint = await until(() => sentTo(555, '這看起來不是 Telegram bot token')[0])
   expect(hint.body.text).toContain('像是 Anthropic API key')
   expect(hint.body.text).toContain('/router cred add anthropic <key> --http https://api.anthropic.com --header x-api-key')
   expect(hint.body.text).not.toContain(KEY)
-  await until(() => calls.some(c => c.method === 'deleteMessage' && c.body.message_id === msg))
+  // deleted 60 seconds later unless the owner cancels (router/rawvault.ts scheduleCommand)
+  await until(() => q(`SELECT kind FROM secret_deletions WHERE message_id = ${msg} AND status = 'pending'`)[0]?.kind === 'command')
   expect(getMes()).toBe(0)
   // cred-import of the same key without --http: refused in the terminal, no getMe either
   writeFileSync(join(dir, 'anthropic.env'), `ANTHROPIC_API_KEY=${KEY}\n`)

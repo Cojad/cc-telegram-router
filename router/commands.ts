@@ -8,7 +8,7 @@ import type { Conversation, RouterDb, OverrideKind, UserOverrideKind } from './d
 import type { Access } from './telegram/policy'
 import type { MessageRecord } from './telegram/store'
 import { gmt8, maskTokens } from './context'
-import { describeCreds, placementText, parseHttpScope, BOT_TOKEN_FULL, httpExample, type KeyPlacement } from './credentials'
+import { describeCreds, placementText, defaultHeadersText, parseHttpScope, parseDefaultHeader, refuseDefaultHeader, setHeader, BOT_TOKEN_FULL, httpExample, credSummary, STAGE_TTL_MS, type HttpScope, type CredStaging } from './credentials'
 import { SECRET_RE, runSecretCommand, describeSecrets, describeHandles } from './secrets'
 import { addedSetupText, escHtml } from './setup'
 import { toolReport, KEEP_DAYS } from './toolhistory'
@@ -31,7 +31,11 @@ export type CommandInput = {
 /** private: the reply lists other conversations or people; in a group it
  *  goes to the sender's DM instead. */
 /** html: the reply is written for parse_mode HTML (the bot settings notices, router/setup.ts). */
-export type CommandOutput = { reply: string; private?: boolean; deleteMessage?: boolean; deleteLabel?: string; html?: boolean; logs: Array<{ conv: string; text: string }>; after?: () => void }
+/** deleteLater: the command message carries a value and is deleted 60 seconds
+ *  after the answer unless its sender cancels (rawvault scheduleCommand);
+ *  without it deleteMessage deletes at once (a refusal, a wrong place).
+ *  buttons go under the reply; staged: a /router cred add waiting for 覆蓋. */
+export type CommandOutput = { reply: string; private?: boolean; deleteMessage?: boolean; deleteLater?: boolean; deleteLabel?: string; html?: boolean; buttons?: Array<{ text: string; data: string }>; staged?: number; logs: Array<{ conv: string; text: string }>; after?: () => void }
 
 export interface CommandDeps {
   cfg: Config
@@ -67,7 +71,12 @@ export interface CommandDeps {
   /** Credentials for cross-bot skills (router/credentials.ts). */
   creds: {
     /** Validate with getMe (a bot token) or not at all (http), store in config.json; returns "@username (id)" or "http <網址>". */
-    add(name: string, token: string, methods: string[], addedBy: string, http?: { baseUrl: string } & KeyPlacement): Promise<string>
+    add(name: string, token: string, methods: string[], addedBy: string, http?: HttpScope): Promise<string>
+    /** Only the value of an existing credential (getMe first for a bot token),
+     *  plus default headers to set by name (http); returns its label. */
+    rotate(name: string, token: string, defaultHeaders?: Record<string, string>): Promise<string>
+    /** /router cred add for a name that exists: the new value until 覆蓋 or 取消 (router memory only). */
+    staging: CredStaging
     /** Change a stored credential (methods, roles) or remove it (null). */
     update(name: string, change: ((c: import('./config').Credential) => void) | null): void
     /** Re-read credentials from config.json (after cred-import in the terminal). */
@@ -196,7 +205,7 @@ const HELP = [
   '/router perm user <uid|@username> show | tool|path|net|mcp ... | reset (掛在使用者身上的覆寫: 他發起的一輪重算高風險工具, 他的私訊也套用)',
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
   '/router skill list | approve <技能> | revoke <技能> (技能的特權動作: 核准後 user 與 power 對話也能執行, 憑證不外流)',
-  '/router cred list | add <名稱> <bot token> [方法...] | add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...] (add 只在 owner 或 admin 自己的私訊) | allow|disallow <名稱> <方法或路徑...> | roles <名稱> <角色,...> | rm <名稱> | reload',
+  '/router cred list | add <名稱> <bot token> [方法...] | add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...] | rotate <名稱> <新的 key> [--default-header <名稱>:<值>]... (add 與 rotate 只在 owner 或 admin 自己的私訊) | header <名稱> set <名稱>:<值> | header <名稱> rm <標頭> | allow|disallow <名稱> <方法或路徑...> | roles <名稱> <角色,...> | rm <名稱> | reload',
   '/router secret list [chat_id] (不寫就列出所有有密鑰的對話) | rm <chat_id> [名稱] (不寫名稱就全部移除): 各對話用 /secret 登記的密鑰',
   '/router secret handles [chat_id] (原文請求發出的密鑰代號, 不寫就列出全部) | revoke <代號>',
   '/router event raw <event id> (只在終端機: 遮蔽過的原始 update 明文寫進權限 600 的檔案, 只印路徑)',
@@ -211,23 +220,26 @@ const HELP = [
   '指定對話的 chat_id 也可以寫對話 key (例如 router-dm-123, /router chat 列表的第一欄); chat_id 預設指這隻 bot 的對話, 加 --bot <名稱> 指別隻 bot; 終端機會找所有 bot, 多隻都有時要加 --bot',
 ].join('\n')
 
-const CRED_ADD_USAGE = '/router cred add <名稱 (小寫英數)> <bot token> [方法...] 或 /router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...]'
+const CRED_ADD_USAGE = '/router cred add <名稱 (小寫英數)> <bot token> [方法...] 或 /router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...]'
+const CRED_ROTATE_USAGE = '/router cred rotate <名稱> <新的 key 或 token> [--default-header <名稱>:<值>]... (只換值, 網址, 標頭, 路徑, 角色不變; bot token 先用 getMe 驗證)'
+const CRED_HEADER_USAGE = '/router cred header <名稱> set <標頭>:<值> | /router cred header <名稱> rm <標頭> (http 憑證的預設標頭, 不用重貼 key)'
 
 /** /router help <主題>: full usage with examples. */
 export const HELP_TOPICS: Record<string, string> = {
   cred: [
     '全域憑證 /router cred: 存在 router 設定檔 (config.json), 給 owner 與 admin 角色的對話 (可用 roles 放寬) 透過工具使用; worker 只拿到名稱, 看不到值.',
     '',
-    '在哪裡打: 只能在你 (owner 或 admin) 自己和 bot 的私訊. router 自己處理, 不會進 worker, 那則訊息會立刻刪除. 在群組打會被拒絕並刪除, 值已外流, 請換一把新的.',
+    '在哪裡打: add 與 rotate 只能在你 (owner 或 admin) 自己和 bot 的私訊. router 自己處理, 不會進 worker; 含 key 的那則訊息 60 秒後刪除, router 會回一則提示附「取消刪除」按鈕 (只有你能按, 按了就保留). 在群組打會被拒絕並立刻刪除, 值已外流, 請換一把新的.',
     '',
     '一般 API key (用 http_api 工具):',
     '/router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...]',
     '- 只能呼叫 --http 的網址 (同一個 host); 沒寫路徑就是那個網址底下全部路徑, 寫了就只開放那些 (結尾 * 代表前綴)',
     '- key 預設放在 Authorization: Bearer <key>; --header x-api-key 改放進那個標頭且不加前綴; --scheme Token 改前綴 (none: 不加); --query key 改放在網址的 ?key=',
     '- worker 呼叫時可以自帶其他標頭 (例如 anthropic-version, x-csrf-token), 但不能帶 key 所在的標頭, Authorization, Proxy-Authorization, Cookie, 也不能改寫 --query 的那個參數',
+    '- --default-header <名稱>:<值> (可多次): worker 沒帶同名標頭時 router 自動補上, worker 有帶就用 worker 的; 一樣不能是 key 所在的標頭或上面那些被擋的標頭',
     '範例:',
-    'Anthropic: /router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key',
-    '  (worker 呼叫時自帶 anthropic-version: 2023-06-01)',
+    'Anthropic: /router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key --default-header anthropic-version:2023-06-01',
+    '  (沒加 --default-header 時, worker 呼叫要自帶 anthropic-version: 2023-06-01)',
     'OpenAI: /router cred add openai sk-... --http https://api.openai.com /v1/chat/completions /v1/images/*',
     'Google: /router cred add gemini AIza... --http https://generativelanguage.googleapis.com --header x-goog-api-key',
     '',
@@ -237,9 +249,15 @@ export const HELP_TOPICS: Record<string, string> = {
     '- 沒寫方法就還沒開放任何方法, 用 allow 加入',
     '範例: /router cred add eagle 123456789:AA... addStickerToSet getStickerSet',
     '',
-    '管理: /router cred list (不顯示值) | allow|disallow <名稱> <方法或路徑...> | roles <名稱> <角色,...> (預設 owner, admin) | rm <名稱> | reload',
-    '同名再 add 一次就是取代 (只有 owner 能取代).',
-    '終端機: cc-telegram-router cred-import <名稱> <env 檔> <變數> [方法或路徑,...] [--http <網址> --header ... --scheme ... --query ...] (值從檔案讀, 不印出)',
+    '換 key: ' + CRED_ROTATE_USAGE,
+    '範例: /router cred rotate anthropic sk-ant-...',
+    '預設標頭: ' + CRED_HEADER_USAGE,
+    '範例: /router cred header anthropic set anthropic-version:2023-06-01',
+    '',
+    '管理: /router cred list (不顯示值, 顯示預設標頭) | allow|disallow <名稱> <方法或路徑...> | roles <名稱> <角色,...> (預設 owner, admin) | rm <名稱> | reload',
+    'rotate, header, allow, disallow, roles, rm: owner, 或加入它的 admin.',
+    '同名再 add 一次不會直接取代: router 回覆現有設定 (不含值) 與「覆蓋 / 取消」按鈕, 新的值只暫存在 router 記憶體 2 分鐘, 逾時或取消就丟棄; 按覆蓋才用這次 add 的設定整個取代. 別人 (admin) 加入的同名憑證只有 owner 能取代.',
+    '終端機: cc-telegram-router cred-import <名稱> <env 檔> <變數> [方法或路徑,...] [--http <網址> --header ... --scheme ... --query ... --default-header <名稱>:<值>] (值從檔案讀, 不印出)',
     '',
     '跟 /secret 的差別: /router help secret',
   ].join('\n'),
@@ -249,15 +267,15 @@ export const HELP_TOPICS: Record<string, string> = {
     '- /router cred (全域憑證): owner 或 admin 在自己私訊登記, 存在 router 設定檔, 預設給 owner 與 admin 角色的對話用, 可用 roles 放寬. 適合整隻 bot 或技能共用的 key.',
     'worker 都用 bot_api / http_api 工具, credential 填名稱 (先找對話密鑰, 再找全域憑證); 值不會進 worker, 回應裡出現的值換成 <密鑰>.',
     '',
-    '在哪裡打: 要用 key 的那個對話 (私訊或群組). router 自己處理, 不會進 worker; 私訊立刻刪除那則訊息, 群組 bot 有刪除權限就刪, 沒有會提醒你自己刪.',
+    '在哪裡打: 要用 key 的那個對話 (私訊或群組). router 自己處理, 不會進 worker; 私訊裡那則訊息 60 秒後刪除, router 會回一則提示附「取消刪除」按鈕 (只有發訊者能按); 群組立刻刪除, bot 沒有刪除權限會提醒你自己刪.',
     '',
     '/secret set <名稱> <bot token> [方法...] (getMe 驗證, 沒寫方法就是全部)',
-    '/secret set <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...] (沒寫路徑就是全部)',
-    '範例: /secret set anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key',
+    '/secret set <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...] (沒寫路徑就是全部; --default-header: worker 沒帶同名標頭時 router 補上)',
+    '範例: /secret set anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key --default-header anthropic-version:2023-06-01',
     '/secret list | rm <名稱> | handles | revoke <代號>',
     'owner 與 admin: /router secret list [chat_id] | rm <chat_id> [名稱] | handles [chat_id] | revoke <代號>',
     '',
-    '偵測: 訊息開頭就是 /secret set, /router cred add, /router bot add|rotate 時, 參數位置的值當成密鑰; 句子中間提到指令名稱不算. 其他地方只認 sk-ant-, sk-, bot token 這類格式與已登記的值.',
+    '偵測: 訊息開頭就是 /secret set, /router cred add|rotate, /router bot add|rotate 時, 參數位置的值當成密鑰; 句子中間提到指令名稱不算. 其他地方只認 sk-ant-, sk-, bot token 這類格式與已登記的值.',
   ].join('\n'),
   perm: [
     '/router perm [chat_id] show: 看對話的角色與權限覆寫',
@@ -274,8 +292,8 @@ export const HELP_TOPICS: Record<string, string> = {
   ].join('\n'),
   bot: [
     '/router bot list: 列出 bot',
-    '/router bot add <名稱> <bot token>: 新增一隻 bot (只限 owner 私訊, 訊息會刪除)',
-    '/router bot rotate <名稱> <bot token>: 換 token (只限 owner 私訊, 訊息會刪除)',
+    '/router bot add <名稱> <bot token>: 新增一隻 bot (只限 owner 私訊, 含 token 的訊息 60 秒後刪除, 可按「取消刪除」保留)',
+    '/router bot rotate <名稱> <bot token>: 換 token (只限 owner 私訊, 同上)',
     '/router bot remove <名稱>',
     '這是 router 自己收發訊息的 bot; 給技能操作另一隻 bot 的 token 用 /router cred add (見 /router help cred).',
   ].join('\n'),
@@ -305,6 +323,39 @@ function parseCompact(v: string | undefined): number | null | undefined {
   return n >= 100_000 && n <= 1_000_000 ? Math.round(n) : undefined
 }
 
+/** The reply for a credential just stored (cred add, or 覆蓋). */
+function addedText(name: string, label: string, methods: string[], http?: HttpScope): string {
+  return [
+    `已加入憑證 ${name}: ${label}${http ? `${placementText(http)}${defaultHeadersText(http.defaultHeaders)}` : ''}`,
+    `${http ? '路徑' : '方法'}: ${methods.length === 1 && methods[0] === '*' ? '全部' : methods.join(', ') || '(還沒有, 用 /router cred allow 加入)'}`,
+    '角色: owner, admin',
+    `${http ? 'API key' : 'token'} 只存在 router 設定檔, worker 用 ${http ? 'http_api' : 'bot_api'} 工具使用`,
+  ].join('\n')
+}
+
+/** 覆蓋 / 取消 under a /router cred add for a name that exists (credow:<id>:ok|cancel).
+ *  Only the sender decides; 覆蓋 checks the role again and stores this add's
+ *  settings in place of the old ones. text: the question message's new text
+ *  (null: leave it). */
+export async function decideCredOverwrite(data: string, uid: string, deps: Pick<CommandDeps, 'cfg' | 'db' | 'creds'>): Promise<{ answer: string; text: string | null }> {
+  const m = /^credow:(\d+):(ok|cancel)$/.exec(data)
+  const id = m ? Number(m[1]) : -1
+  const s = deps.creds.staging.peek(id)
+  if (!s) return { answer: '已逾時或處理過, 新的值已丟棄', text: '已逾時或處理過, 沒有覆蓋, 新的值已丟棄. 要覆蓋請重新 /router cred add' }
+  if (uid !== s.addedBy) return { answer: '只有下指令的人能決定', text: null }
+  deps.creds.staging.take(id)
+  if (m![2] === 'cancel') return { answer: '已取消', text: `已取消, 沒有覆蓋憑證 ${s.name}, 新的值已丟棄` }
+  const role = roleOf(deps, uid)
+  const old = deps.cfg.credentials?.[s.name]
+  if (role !== 'owner' && (role !== 'admin' || (old && old.addedBy !== uid))) return { answer: '權限不足', text: `⛔ 沒有覆蓋憑證 ${s.name}: 只有 owner, 或加入它的 admin 能取代; 新的值已丟棄` }
+  try {
+    const label = await deps.creds.add(s.name, s.token, s.methods, uid, s.http)
+    return { answer: '已覆蓋', text: `已覆蓋. ${addedText(s.name, label, s.methods, s.http)}` }
+  } catch (e) {
+    return { answer: '覆蓋失敗', text: `覆蓋失敗, 沒有更動憑證 ${s.name}: ${e instanceof Error ? e.message : e}` }
+  }
+}
+
 export async function runCommand(input: CommandInput, deps: CommandDeps): Promise<CommandOutput | null> {
   // /secret: any role, in any chat the router serves (router/secrets.ts)
   if (SECRET_RE.test(input.text.trim())) return runSecretCommand(input, deps)
@@ -318,7 +369,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
   const who = `${input.senderName}(${role})`
   // the log reaches the worker: never with a token or API key in it
   const words = cmdText.split(/\s+/)
-  const secretAt = /^\/router(@\w+)?$/.test(words[0] ?? '') && ((words[1] === 'cred' && words[2] === 'add') || (words[1] === 'bot' && (words[2] === 'add' || words[2] === 'rotate'))) ? 4 : -1
+  const secretAt = /^\/router(@\w+)?$/.test(words[0] ?? '') && ((words[1] === 'cred' && (words[2] === 'add' || words[2] === 'rotate')) || (words[1] === 'bot' && (words[2] === 'add' || words[2] === 'rotate'))) ? 4 : -1
   const shown = secretAt > 0 && words[secretAt] ? words.map((w, i) => i === secretAt ? '<已遮蔽>' : w).join(' ') : cmdText
   const done = (reply: string, extra: Partial<CommandOutput> = {}): CommandOutput => {
     if (here) logs.push({ conv: here.key, text: `${who} ${shown} → ${reply.split('\n')[0]}` })
@@ -333,7 +384,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
   let botOpt: string | undefined
   { const at = args.indexOf('--bot'); if (at > 0) { botOpt = args[at + 1]; args.splice(at, 2) } }
   const sub = args[0] ?? 'help'
-  const hasToken = (sub === 'bot' && (args[1] === 'add' || args[1] === 'rotate') && args.length >= 4) || (sub === 'cred' && args[1] === 'add' && args.length >= 4)
+  const hasToken = (sub === 'bot' && (args[1] === 'add' || args[1] === 'rotate') && args.length >= 4) || (sub === 'cred' && (args[1] === 'add' || args[1] === 'rotate') && args.length >= 4)
 
   // /id and /info are common names; in a group they may be meant for another
   // bot, so only owner and admin get an answer (the /router refusal stays).
@@ -425,7 +476,9 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return deny(`/router bot ${op} 只能在 owner 私訊使用${leaked ? '; token 曾出現在群組, 建議 /router bot rotate' : ''}`, { deleteMessage: hasToken })
       }
       const name = args[2]
-      if (!name) return done(`用法: /router bot ${op} <名稱>${op === 'remove' ? '' : ' <token>'}`, { deleteMessage: hasToken })
+      // in the owner's DM a message with the token is deleted 60 seconds after the answer unless the owner cancels
+      const later = { deleteMessage: hasToken, deleteLater: true }
+      if (!name) return done(`用法: /router bot ${op} <名稱>${op === 'remove' ? '' : ' <token>'}`, later)
       try {
         if (op === 'remove') {
           await deps.bots.remove(name)
@@ -437,9 +490,9 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const notice = op === 'add' ? deps.botNotice?.(name) : undefined
         const said = op === 'add' ? `已新增 bot ${name}: @${username}\n${addedSetupText(username, db.getBotSetup(name))}` : `已更換 bot ${name}: @${username}`
         // the settings notice is HTML (bold): the rest of the reply is escaped around it
-        return notice ? done(`${escHtml(said)}\n\n${notice}`, { deleteMessage: true, html: true }) : done(said, { deleteMessage: true })
+        return notice ? done(`${escHtml(said)}\n\n${notice}`, { ...later, html: true }) : done(said, later)
       } catch (e) {
-        return done(`bot ${op} 失敗: ${e instanceof Error ? e.message : e}`, { deleteMessage: hasToken })
+        return done(`bot ${op} 失敗: ${e instanceof Error ? e.message : e}`, later)
       }
     }
 
@@ -762,46 +815,77 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         if (role !== 'owner') return deny('/router cred reload 只開放 owner')
         return done(`已重新讀取 ${deps.creds.reload()} 個憑證`)
       }
-      if (op === 'add') {
+      if (op === 'add' || op === 'rotate') {
         const inOwnDm = input.chatType === 'private' && input.chatId === input.senderId
-        if (!inOwnDm) return deny(`/router cred add 只能在你自己和 bot 的私訊使用${hasToken && input.chatType !== 'private' ? '; token 曾出現在群組, 請到發 token 的地方換一把新的' : ''}`, { deleteMessage: hasToken })
+        if (!inOwnDm) return deny(`/router cred ${op} 只能在你自己和 bot 的私訊使用${hasToken && input.chatType !== 'private' ? '; token 曾出現在群組, 請到發 token 的地方換一把新的' : ''}`, { deleteMessage: hasToken })
+        // the message carries the value: deleted 60 seconds after this answer unless its sender cancels (refused: at once)
+        const later = { deleteMessage: hasToken, deleteLater: true }
         const token = args[3]
-        if (!name || !token || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) return done(`用法: ${CRED_ADD_USAGE}\n完整說明與範例: /router help cred`, { deleteMessage: hasToken })
-        if (cfg.credentials?.[name] && role !== 'owner') return deny(`已經有名為 ${name} 的憑證, 只有 owner 能取代`, { deleteMessage: true })
+        if (op === 'rotate') {
+          if (!name || !token) return done(`用法: ${CRED_ROTATE_USAGE}`, later)
+          const old = cfg.credentials?.[name]
+          if (!old) return done(`找不到憑證 ${name}; 新增用 /router cred add`, later)
+          if (role !== 'owner' && old.addedBy !== input.senderId) return deny('admin 只能更換自己加入的憑證', { deleteMessage: hasToken })
+          const isHttp = old.kind === 'http'
+          // after the value only --default-header (http); everything else stays as it is
+          const rest = args.slice(4), headers: Record<string, string> = {}
+          for (let i = 0; i < rest.length; i += 2) {
+            if (rest[i] !== '--default-header' || !isHttp) return done(`${rest[i]} 不行: rotate 只換值${isHttp ? ', 後面只能接 --default-header <名稱>:<值>' : ''}; 網址, 標頭, 路徑, 角色不變 (要整個換掉用 /router cred add 再按覆蓋)`, later)
+            const d = parseDefaultHeader(rest[i + 1])
+            if ('error' in d) return done(d.error, later)
+            const why = refuseDefaultHeader(old, d.name, d.value)
+            if (why) return done(`${why}; 沒有更換`, later)
+            setHeader(headers, d.name, d.value)
+          }
+          if (!isHttp && !BOT_TOKEN_FULL.test(token)) return done(`${name} 是 Telegram bot token 憑證, 這個值不像 bot token (數字:35 字元), 沒有更換, 也沒有拿去 Telegram 驗證`, later)
+          try {
+            const label = await deps.creds.rotate(name, token, Object.keys(headers).length ? headers : undefined)
+            return done(`已更換憑證 ${name} 的${old.kind === 'http' ? ' key' : ' token'}${old.kind === 'http' ? '' : `: ${label}`}\n其他設定不變: ${credSummary(name, cfg.credentials[name]!)}`, later)
+          } catch (e) {
+            return done(`cred rotate 失敗, 沒有更換: ${e instanceof Error ? e.message : e}`, later)
+          }
+        }
+        if (!name || !token || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) return done(`用法: ${CRED_ADD_USAGE}\n完整說明與範例: /router help cred`, later)
+        const old = cfg.credentials?.[name]
+        if (old && role !== 'owner' && old.addedBy !== input.senderId) return deny(`已經有名為 ${name} 的憑證, 不是你加入的, 只有 owner 能取代`, { deleteMessage: hasToken })
         const rest = args.slice(4)
-        let methods = rest, http: ({ baseUrl: string } & KeyPlacement) | undefined
+        let methods = rest, http: HttpScope | undefined
         if (rest.includes('--http')) {
           const h = parseHttpScope(rest)
-          if ('error' in h) return done(`${h.error}\n這則訊息已刪除, 改好再傳一次 (/router help cred 有範例)`, { deleteMessage: true })
+          if ('error' in h) return done(`${h.error}\n改好再傳一次 (/router help cred 有範例)`, later)
           // no paths: every path under the URL (only the host is fixed)
           methods = h.paths.length ? h.paths : ['*']
-          http = { baseUrl: h.baseUrl, ...h.placement }
+          http = { baseUrl: h.baseUrl, ...h.placement, ...(Object.keys(h.defaultHeaders).length ? { defaultHeaders: h.defaultHeaders } : {}) }
         } else if (!BOT_TOKEN_FULL.test(token)) {
           // not a bot token: never sent to getMe
           const ex = httpExample(token)
           return done([
-            `這看起來不是 Telegram bot token${ex.what ? ` (像是 ${ex.what})` : ''}, 沒有登記, 也沒有拿去 Telegram 驗證. 這則訊息已刪除.`,
+            `這看起來不是 Telegram bot token${ex.what ? ` (像是 ${ex.what})` : ''}, 沒有登記, 也沒有拿去 Telegram 驗證.`,
             'API key 要加 --http <網址>, 例如:',
             `/router cred add ${name} <key> ${ex.flags}`,
             '(沒寫路徑就是那個網址底下全部路徑)',
             '完整說明與範例: /router help cred',
-          ].join('\n'), { deleteMessage: true })
-        } else if (rest.some(m => m.startsWith('--'))) return done(`${rest.find(m => m.startsWith('--'))} 只能跟 --http 一起用 (API key); bot token 後面只接方法\n這則訊息已刪除`, { deleteMessage: true })
-        try {
-          const label = await deps.creds.add(name, token, methods, input.senderId, http)
+          ].join('\n'), later)
+        } else if (rest.some(m => m.startsWith('--'))) return done(`${rest.find(m => m.startsWith('--'))} 只能跟 --http 一起用 (API key); bot token 後面只接方法`, later)
+        // the name is taken: never replaced silently; the new value waits in memory for 覆蓋 or 取消
+        if (old) {
+          const id = deps.creds.staging.stage({ bot: input.bot, name, token, methods, ...(http ? { http } : {}), addedBy: input.senderId, chatId: input.chatId })
           return done([
-            `已加入憑證 ${name}: ${label}${http ? placementText(http) : ''}`,
-            `${http ? '路徑' : '方法'}: ${methods.length === 1 && methods[0] === '*' ? '全部' : methods.join(', ') || '(還沒有, 用 /router cred allow 加入)'}`,
-            '角色: owner, admin',
-            `${http ? 'API key' : 'token'} 只存在 router 設定檔, worker 用 ${http ? 'http_api' : 'bot_api'} 工具使用`,
-          ].join('\n'), { deleteMessage: true })
+            `已經有名為 ${name} 的憑證:`,
+            credSummary(name, old),
+            `要用這次的設定整個取代嗎? (新的值只暫存在 router 記憶體 ${Math.round(STAGE_TTL_MS / 60_000)} 分鐘, 逾時或取消就丟棄)`,
+            `只想換 key, 其他設定不變: /router cred rotate ${name} <新的 key>`,
+          ].join('\n'), { ...later, buttons: [{ text: '覆蓋', data: `credow:${id}:ok` }, { text: '取消', data: `credow:${id}:cancel` }], staged: id })
+        }
+        try {
+          return done(addedText(name, await deps.creds.add(name, token, methods, input.senderId, http), methods, http), later)
         } catch (e) {
-          return done(`cred add 失敗: ${e instanceof Error ? e.message : e}`, { deleteMessage: true })
+          return done(`cred add 失敗: ${e instanceof Error ? e.message : e}`, later)
         }
       }
       const cred = name ? cfg.credentials?.[name] : undefined
       if (!cred) return done(`找不到憑證 ${name ?? ''}
-用法: /router cred list | add | allow | disallow | roles | rm | reload`)
+用法: /router cred list | add | rotate | header | allow | disallow | roles | rm | reload`)
       if (role !== 'owner' && cred.addedBy !== input.senderId) return deny('admin 只能調整自己加入的憑證')
       if (op === 'allow' || op === 'disallow') {
         const ms = args.slice(3)
@@ -816,7 +900,25 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return done(`${name} 開放給: ${rs.join(', ')} 角色的對話`)
       }
       if (op === 'rm') { deps.creds.update(name!, null); return done(`已移除憑證 ${name}`) }
-      return done('用法: /router cred list | add | allow | disallow | roles | rm | reload')
+      if (op === 'header') {
+        // default headers of an http credential, without the key again
+        const how = args[3], what = args[4]
+        if (cred.kind !== 'http') return done(`${name} 是 Telegram bot token 憑證, 沒有標頭可設`)
+        if ((how !== 'set' && how !== 'rm') || !what || args.length > 5) return done(`用法: ${CRED_HEADER_USAGE}`)
+        if (how === 'set') {
+          const d = parseDefaultHeader(what)
+          if ('error' in d) return done(`${d.error}\n用法: ${CRED_HEADER_USAGE}`)
+          const why = refuseDefaultHeader(cred, d.name, d.value)
+          if (why) return done(why)
+          deps.creds.update(name!, c => { const h = { ...c.defaultHeaders }; setHeader(h, d.name, d.value); c.defaultHeaders = h })
+        } else {
+          const key = Object.keys(cred.defaultHeaders ?? {}).find(k => k.toLowerCase() === what.toLowerCase())
+          if (!key) return done(`${name} 沒有預設標頭 ${what}`)
+          deps.creds.update(name!, c => { const h = { ...c.defaultHeaders }; delete h[key]; if (Object.keys(h).length) c.defaultHeaders = h; else delete c.defaultHeaders })
+        }
+        return done(`${name} 的預設標頭: ${defaultHeadersText(cfg.credentials[name!]!.defaultHeaders).replace(/^, 預設標頭 /, '') || '(無)'}`)
+      }
+      return done('用法: /router cred list | add | rotate | header | allow | disallow | roles | rm | reload')
     }
 
     case 'secret': {

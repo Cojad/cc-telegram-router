@@ -48,11 +48,11 @@ const run = (text: string) => runCommand({ bot: 'cc', text, senderId: OWNER, sen
 
 test('/router help: the cred line shows the --http form and points to the topics; /router help <主題> gives full usage with examples', async () => {
   const all = (await run('/router help'))!.reply
-  expect(all).toContain('add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [路徑...]')
+  expect(all).toContain('add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...] | rotate <名稱> <新的 key> [--default-header <名稱>:<值>]...')
   expect(all).toContain('/router help <主題>: 完整用法與範例, 主題: cred, secret, perm, bot')
   const cred = (await run('/router help cred'))!.reply
   expect(cred).toBe(HELP_TOPICS.cred!)
-  for (const s of ['只能在你 (owner 或 admin) 自己和 bot 的私訊', '不會進 worker, 那則訊息會立刻刪除', 'Anthropic: /router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', 'anthropic-version: 2023-06-01', 'OpenAI: /router cred add openai sk-...', '/router cred add eagle 123456789:AA...', '沒寫路徑就是那個網址底下全部路徑', '不能帶 key 所在的標頭, Authorization, Proxy-Authorization, Cookie', 'cred-import']) expect(cred).toContain(s)
+  for (const s of ['只能在你 (owner 或 admin) 自己和 bot 的私訊', '不會進 worker; 含 key 的那則訊息 60 秒後刪除', '「取消刪除」按鈕 (只有你能按', '在群組打會被拒絕並立刻刪除', '/router cred rotate <名稱> <新的 key 或 token>', '/router cred header anthropic set anthropic-version:2023-06-01', '「覆蓋 / 取消」按鈕', 'Anthropic: /router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', 'anthropic-version: 2023-06-01', 'OpenAI: /router cred add openai sk-...', '/router cred add eagle 123456789:AA...', '沒寫路徑就是那個網址底下全部路徑', '不能帶 key 所在的標頭, Authorization, Proxy-Authorization, Cookie', 'cred-import']) expect(cred).toContain(s)
   const secret = (await run('/router help SECRET'))!.reply
   for (const s of ['/secret (對話密鑰)', '/router cred (全域憑證)', '任何角色都能登記', '句子中間提到指令名稱不算']) expect(secret).toContain(s)
   expect((await run('/router help perm'))!.reply).toContain('/router perm user <uid|@username>')
@@ -63,11 +63,12 @@ test('/router help: the cred line shows the --http form and points to the topics
   expect((await runSecretCommand({ bot: 'cc', text: '/secret help', senderId: OWNER, senderName: 'x', chatId: OWNER, chatType: 'private' }, sd))!.reply).toContain('/router help secret')
 })
 
-test('/router cred add without --http: a value that is not a bot token is not sent to getMe; the reply says what it looks like and how to type it; the message is deleted', async () => {
+test('/router cred add without --http: a value that is not a bot token is not sent to getMe; the reply says what it looks like and how to type it; the message is deleted 60 seconds later', async () => {
   const ant = (await run(`/router cred add anthropic ${ANT}`))!
-  expect(ant.deleteMessage).toBe(true)
+  // in your own DM: deleted 60 seconds after the answer (router/main.ts answerCommand)
+  expect(ant).toMatchObject({ deleteMessage: true, deleteLater: true })
   expect(ant.reply).toBe([
-    '這看起來不是 Telegram bot token (像是 Anthropic API key), 沒有登記, 也沒有拿去 Telegram 驗證. 這則訊息已刪除.',
+    '這看起來不是 Telegram bot token (像是 Anthropic API key), 沒有登記, 也沒有拿去 Telegram 驗證.',
     'API key 要加 --http <網址>, 例如:',
     '/router cred add anthropic <key> --http https://api.anthropic.com --header x-api-key',
     '(沒寫路徑就是那個網址底下全部路徑)',
@@ -76,7 +77,7 @@ test('/router cred add without --http: a value that is not a bot token is not se
   expect((await run(`/router cred add openai ${OAI}`))!.reply).toContain('(像是 OpenAI API key)')
   expect((await run('/router cred add x some-random-key-value'))!.reply).toStartWith('這看起來不是 Telegram bot token, 沒有登記')
   expect((await run('/router cred add x 123:short'))!.reply).toStartWith('這看起來不是 Telegram bot token')
-  expect((await run(`/router cred add x ${BOT} --header x-api-key`))!).toMatchObject({ reply: '--header 只能跟 --http 一起用 (API key); bot token 後面只接方法\n這則訊息已刪除', deleteMessage: true })
+  expect((await run(`/router cred add x ${BOT} --header x-api-key`))!).toMatchObject({ reply: '--header 只能跟 --http 一起用 (API key); bot token 後面只接方法', deleteMessage: true, deleteLater: true })
   expect(getMe).toEqual([])
   expect(cfg.credentials).toEqual({})
   // a bot token still goes to getMe
@@ -87,8 +88,8 @@ test('/router cred add without --http: a value that is not a bot token is not se
 })
 
 test('the key\'s place, same syntax in /router cred add, cred-import and /secret set: --header (bare key), --scheme <前綴|none>, --query; no paths is every path', async () => {
-  expect(parseHttpScope(['--http', 'https://api.anthropic.com/', '--header', 'x-api-key'])).toEqual({ baseUrl: 'https://api.anthropic.com', placement: { header: 'x-api-key', scheme: '' }, paths: [] })
-  expect(parseHttpScope(['/v1/*', '--scheme', 'none', '--http', 'https://a.example'])).toEqual({ baseUrl: 'https://a.example', placement: { scheme: '' }, paths: ['/v1/*'] })
+  expect(parseHttpScope(['--http', 'https://api.anthropic.com/', '--header', 'x-api-key'])).toEqual({ baseUrl: 'https://api.anthropic.com', placement: { header: 'x-api-key', scheme: '' }, paths: [], defaultHeaders: {} })
+  expect(parseHttpScope(['/v1/*', '--scheme', 'none', '--http', 'https://a.example'])).toEqual({ baseUrl: 'https://a.example', placement: { scheme: '' }, paths: ['/v1/*'], defaultHeaders: {} })
   expect(parseHttpScope(['--http', 'https://a.example', '--header', 'authorization', '--scheme', 'Token'])).toMatchObject({ placement: { header: 'Authorization', scheme: 'Token' } })
   expect(parseHttpScope(['--http', 'https://a.example', '--query', 'key'])).toMatchObject({ placement: { query: 'key' } })
   expect(parseHttpScope(['--http', 'https://a.example', '--query', 'key', '--header', 'x-k'])).toEqual({ error: '--query 不能跟 --header 或 --scheme 一起用: key 放在 query 參數就不放標頭' })
@@ -192,13 +193,15 @@ test('httpApiCall puts the key only where the credential says (a local server se
   } finally { api.stop(true) }
 })
 
-test('/telegram:doc and /telegram:bot-skill teach registering keys: where to type, the message is deleted, the key never reaches the worker, --http with the key\'s place, Anthropic example; http_api documents headers', async () => {
+test('/telegram:doc and /telegram:bot-skill teach registering keys: where to type, the message is deleted 60 seconds later, rotate, default headers, json_file, the key never reaches the worker, --http with the key\'s place, Anthropic example; http_api documents headers', async () => {
   const doc = await Bun.file(join(import.meta.dir, '..', '..', 'plugin', 'skills', 'doc', 'SKILL.md')).text()
-  for (const s of ['## 登記 API key 與 bot token', '只能在他自己和 bot 的私訊', '要用 key 的那個對話', '**不會送進 worker**', '**立刻刪除**', '**你永遠拿不到值**', '一定要加 `--http <網址>`', '沒寫路徑就是那個網址底下全部路徑', '/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', 'anthropic-version', '/router cred add eagle 123456789:AA...', '/router help cred', '`/router help <主題>`', '(無, 全部擋下)', '句子中間提到指令']) expect(doc).toContain(s)
+  for (const s of ['## 登記 API key 與 bot token', '只能在他自己和 bot 的私訊', '要用 key 的那個對話', '**不會送進 worker**', '**60 秒後刪除**', '只有發訊者本人能按', '/router cred rotate <名稱> <新的 key 或 token>', '/router cred header anthropic set anthropic-version:2023-06-01', '「覆蓋 / 取消」按鈕', '**你永遠拿不到值**', '一定要加 `--http <網址>`', '沒寫路徑就是那個網址底下全部路徑', '/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', 'anthropic-version', '/router cred add eagle 123456789:AA...', '/router help cred', '`/router help <主題>`', '(無, 全部擋下)', '句子中間提到指令']) expect(doc).toContain(s)
   const skill = await Bun.file(join(import.meta.dir, '..', '..', 'plugin', 'skills', 'bot-skill', 'SKILL.md')).text()
-  for (const s of ['--query <參數>', '/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', '`headers` 只放 API 需要的其他標頭']) expect(skill).toContain(s)
+  for (const s of ['--query <參數>', '/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key', '`headers` 只放 API 需要的其他標頭', '--default-header <名稱>:<值>', '`json_file: "相對路徑"`', '/router cred rotate <名稱> <新 key>']) expect(skill).toContain(s)
   const { TOOL_DEFINITIONS } = await import('../../shared/tools')
   const http = (TOOL_DEFINITIONS as any[]).find(t => t.name === 'http_api')
   expect(http.inputSchema.properties.headers.type).toBe('object')
+  expect(http.inputSchema.properties.json_file.type).toBe('string')
+  expect(http.description).toContain('json_file (a file in your folder')
   expect(http.description).toContain('never send the header the key goes in, Authorization, Proxy-Authorization, Cookie')
 })

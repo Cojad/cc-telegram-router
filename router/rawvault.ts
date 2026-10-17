@@ -28,6 +28,8 @@ import { secretPlace, type ApprovalDeps, type Button } from './approvals'
 import { gmt8, maskTokens, inParens } from './context'
 
 export const DELETE_AFTER_MS = 5 * 60_000
+/** A registration command's own message (/secret set, /router cred add|rotate, /router bot add|rotate): deleted this long after the answer. */
+export const COMMAND_DELETE_AFTER_MS = 60_000
 export const DEFAULT_TTL_MIN = 10
 export const MAX_TTL_MIN = 60
 export const SECRET_TOPIC = '🔑 密鑰偵測'
@@ -117,6 +119,7 @@ export interface VaultDeps {
   chatLabel(bot: string, chatId: string): string
   now?(): number
   deleteAfterMs?: number
+  commandDeleteAfterMs?: number
   log?(msg: string): void
 }
 
@@ -140,6 +143,7 @@ export function createVault(deps: VaultDeps) {
   const { db } = deps
   const now = () => deps.now?.() ?? Date.now()
   const delay = deps.deleteAfterMs ?? DELETE_AFTER_MS
+  const commandDelay = deps.commandDeleteAfterMs ?? COMMAND_DELETE_AFTER_MS
   const known = (): Known[] => { try { return deps.known() } catch (e) { deps.log?.(`rawvault: known values: ${e}`); return [] } }
 
   /** Post to 🔑 密鑰偵測 and keep it in router.db. */
@@ -196,7 +200,7 @@ export function createVault(deps: VaultDeps) {
       const where = info.fileName !== undefined ? `這則訊息的附件${info.fileName ? ` ${info.fileName} ` : ''}` : '這則訊息'
       let outcome: string
       let delId: number | null = null
-      if (info.command) outcome = '登記或 router 指令: router 處理, 訊息立刻刪除'
+      if (info.command) outcome = '登記或 router 指令: router 處理 (登記指令的訊息 60 秒後刪除, 發送者可取消; 被拒的立刻刪除)'
       else if (rec.findings.some(f => String(f.path[0]).includes('channel_post'))) outcome = '頻道貼文, 只記錄'
       else if (!own.length) outcome = rec.findings.every(isQuoted) ? '只在引用的訊息裡, 不提醒' : rec.findings.some(f => f.path[0] === 'callback_query') ? '按鈕資料, 只記錄' : '不是對話訊息, 只記錄'
       else if (info.fileName !== undefined && info.messageId == null) outcome = '找不到附件的原訊息, 只記錄'
@@ -312,6 +316,19 @@ export function createVault(deps: VaultDeps) {
       return old.length
     },
 
+    /** A registration command's own message: deleted after commandDeleteAfterMs
+     *  unless its sender cancels (a notice with 取消刪除, replying to it). In
+     *  secret_deletions like a detection, so a restart does not lose it. */
+    async scheduleCommand(bot: string, m: { chatId: string; messageId: number; senderId: string; eventId: number | null }): Promise<{ id: number; due: Date; noticed: boolean }> {
+      const due = new Date(now() + commandDelay)
+      const id = db.scheduleDeletion({ event_id: m.eventId ?? 0, bot, chat_id: m.chatId, message_id: m.messageId, sender: m.senderId, notice_id: null, due_at: due.toISOString(), kind: 'command' })
+      const api = deps.api(bot)
+      const secs = Math.round(commandDelay / 1000)
+      const nid = api ? await api.send(m.chatId, `⏳ 這則訊息含有 key, ${secs} 秒後 (${hhmm(due)}) 刪除. 要保留請按「取消刪除」(只有發訊者本人能按).`, { replyTo: m.messageId, buttons: [{ text: '取消刪除', data: `sdel:${id}:cancel` }] }).catch(() => null) : null
+      db.updateDeletion(id, { notice_id: nid })
+      return { id, due, noticed: nid != null }
+    },
+
     /** Delete what is due (every few seconds, and right after a restart). */
     async tick(): Promise<number> {
       let n = 0
@@ -321,6 +338,12 @@ export function createVault(deps: VaultDeps) {
         const ok = await api.remove(d.chat_id, d.message_id).catch(() => false)
         if (!db.settleDeletion(d.id, ok ? 'deleted' : 'failed', null)) continue
         n++
+        if (d.kind === 'command') {
+          const result = ok ? '🗑 已刪除含 key 的登記訊息' : '⚠️ 刪除含 key 的登記訊息失敗 (訊息可能已被刪除或超過 48 小時), 請自己刪'
+          if (d.notice_id != null) await api.edit(d.chat_id, d.notice_id, result).catch(() => {})
+          db.addSecretLog(d.bot, 'delete', `登記指令訊息 ${d.chat_id}/${d.message_id}: ${result}`, d.event_id || null)
+          continue
+        }
         const result = ok ? '🗑 已刪除含密鑰的訊息' : '⚠️ 刪除失敗 (訊息可能已被刪除或超過 48 小時), 請發送者自己刪'
         if (d.notice_id != null) await api.edit(d.chat_id, d.notice_id, `${result} (event #${d.event_id}). 建議到發出它的地方換一把新的.`).catch(() => {})
         if (d.log_chat && d.log_msg != null) await deps.approvals.edit(d.bot, d.log_chat, d.log_msg, `${d.log_text}\n結果: ${result}`).catch(() => {})
@@ -329,11 +352,20 @@ export function createVault(deps: VaultDeps) {
       return n
     },
 
-    /** 取消刪除 (sdel:<id>:cancel): the sender, an owner or an admin. */
+    /** 取消刪除 (sdel:<id>:cancel): the sender, an owner or an admin; a
+     *  registration command's message only its sender. */
     async cancel(data: string, uid: string): Promise<string> {
       const m = /^sdel:(\d+):cancel$/.exec(data)
       const d = m ? db.getDeletion(Number(m[1])) : null
       if (!d) return '找不到這筆刪除排程'
+      if (d.kind === 'command') {
+        if (uid !== d.sender) return '只有發訊者本人能取消刪除'
+        if (!db.settleDeletion(d.id, 'cancelled', uid)) return d.status === 'deleted' ? '訊息已經刪除了' : '已經處理過了'
+        const api = deps.api(d.bot)
+        if (api && d.notice_id != null) await api.edit(d.chat_id, d.notice_id, '⚠️ 這則訊息含有 key. 已取消刪除, 訊息保留; 不需要時請自己刪掉.').catch(() => {})
+        db.addSecretLog(d.bot, 'cancel', `登記指令訊息 ${d.chat_id}/${d.message_id}: ${deps.personLabel(uid)} (${uid}) 取消刪除`, d.event_id || null)
+        return '已取消刪除'
+      }
       if (uid !== d.sender && !deps.owners.includes(uid) && !isAdmin(deps.roleOf(uid))) return '只有發送者, owner, admin 能取消刪除'
       if (!db.settleDeletion(d.id, 'cancelled', uid)) return d.status === 'deleted' ? '訊息已經刪除了' : '已經處理過了'
       const who = deps.personLabel(uid)

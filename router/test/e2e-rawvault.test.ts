@@ -152,17 +152,21 @@ test('a token pasted in a DM: events masked and the original sealed; the worker 
   w.close()
 })
 
-test('an edited message with a key is masked and reminded too; /secret set is still deleted at once and its value sealed, not just <已遮蔽>', async () => {
+test('an edited message with a key is masked and reminded too; /secret set in a DM is deleted 60 seconds later (a notice with 取消刪除) and its value sealed, not just <已遮蔽>', async () => {
   updates.push({ update_id: mid++, edited_message: { message_id: 50, date: now, edit_date: now, chat: { id: 666, type: 'private' }, from: USER, text: `改成 ${EDITED}` } })
   const ev = await until(() => q(`SELECT id, update_json FROM events WHERE masked = 1 AND update_json LIKE '%edited_message%'`)[0])
   expect(JSON.parse(ev.update_json).edited_message.text).toBe(`改成 <已遮蔽 #${ev.id}.1>`)
   await until(() => sentTo(666, '⚠️ 這則訊息含有密鑰 (OpenAI API key').length === 1)
   const msg = dm(USER, '/secret set mine sk-short-value --http https://api.example.com')
-  await until(() => calls.some(c => c.method === 'deleteMessage' && Number(c.body.chat_id) === 666 && c.body.message_id === msg))
+  const notice = await until(() => calls.find(c => c.method === 'sendMessage' && Number(c.body.chat_id) === 666 && c.body.reply_parameters?.message_id === msg && String(c.body.text).startsWith('⏳ 這則訊息含有 key, 60 秒後')))
+  const del = q(`SELECT id, kind, status, sender FROM secret_deletions WHERE message_id = ${msg}`)[0]
+  expect(del).toMatchObject({ kind: 'command', status: 'pending', sender: '666' })
+  expect(notice.body.reply_markup.inline_keyboard[0][0]).toEqual({ text: '取消刪除', callback_data: `sdel:${del.id}:cancel` })
+  expect(calls.some(c => c.method === 'deleteMessage' && c.body.message_id === msg)).toBe(false)
   const sec = await until(() => q(`SELECT id, update_json FROM events WHERE masked = 1 AND update_json LIKE '%/secret set mine%'`)[0])
   expect(JSON.parse(sec.update_json).message.text).toBe(`/secret set mine <已遮蔽 #${sec.id}.1> --http https://api.example.com`)
   const log = await until(() => sentTo(APPROVALS, `🔑 偵測到密鑰 event #${sec.id}`)[0])
-  expect(log.body.text).toContain('處理: 登記或 router 指令: router 處理, 訊息立刻刪除')
+  expect(log.body.text).toContain('處理: 登記或 router 指令: router 處理 (登記指令的訊息 60 秒後刪除, 發送者可取消; 被拒的立刻刪除)')
 })
 
 test('event_raw: a user conversation is refused; the owner\'s worker gets the handle version and the fixed agent\'s answer; secret_from_handle, then bot_api with the real token; cli event raw writes a 600 file', async () => {

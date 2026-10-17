@@ -100,14 +100,14 @@ ListAgents 1 次: power 1; 被擋 1
 
 ## /router help 主題
 
-`/router help` 列出所有指令 (cred 那行寫出 bot token 與 `--http` API key 兩種登記方式); `/router help <主題>` 給一個主題的完整用法與範例:
+`/router help` 列出所有指令 (cred 那行寫出 bot token 與 `--http` API key 兩種登記方式, 以及 rotate 與 header); `/router help <主題>` 給一個主題的完整用法與範例:
 
 | 主題 | 內容 |
 |---|---|
-| `cred` | 全域憑證: 在哪裡打 (owner 或 admin 自己的私訊, 訊息立刻刪除, key 不進 worker), http 憑證的 `--http`, `--header`, `--scheme`, `--query` 與路徑 (沒寫就是全部), worker 自帶標頭的規則, Anthropic, OpenAI, Google 與 Telegram bot token 範例, 管理指令, 終端機 `cred-import` |
-| `secret` | `/secret` (對話密鑰) 與 `/router cred` (全域憑證) 的差別與各自適用情境, 在哪裡打, 指令與範例, 密鑰偵測只認訊息開頭的登記指令 |
+| `cred` | 全域憑證: 在哪裡打 (owner 或 admin 自己的私訊, 含 key 的訊息 60 秒後刪除, 只有自己能按「取消刪除」, 群組裡被拒並立刻刪除, key 不進 worker), http 憑證的 `--http`, `--header`, `--scheme`, `--query`, `--default-header` 與路徑 (沒寫就是全部), worker 自帶標頭的規則, Anthropic, OpenAI, Google 與 Telegram bot token 範例, 換 key 的 `rotate`, 預設標頭的 `header set|rm`, 同名 add 的覆蓋 / 取消, 管理指令, 終端機 `cred-import` |
+| `secret` | `/secret` (對話密鑰) 與 `/router cred` (全域憑證) 的差別與各自適用情境, 在哪裡打 (私訊 60 秒後刪除可取消, 群組立刻刪), 指令與範例 (含 `--default-header`), 密鑰偵測只認訊息開頭的登記指令 |
 | `perm` | `/router perm` 對話覆寫與 `/router perm user` 使用者覆寫的子操作與範例 |
-| `bot` | `/router bot` 的子操作, 與 `/router cred add` 的分別 |
+| `bot` | `/router bot` 的子操作 (含 token 的訊息 60 秒後刪除, 可取消), 與 `/router cred add` 的分別 |
 
 不認得的主題回覆主題清單加上指令總覽. `/secret help` 也指向 `/router help secret`. 細節見 [憑證與技能](credentials-and-skills.md#http-憑證的-key-放哪裡) 與 [密鑰](secrets.md).
 
