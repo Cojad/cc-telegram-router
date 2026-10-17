@@ -40,11 +40,13 @@ const api = Bun.serve({
       apiSeen.push({ path: url.pathname, body, auth: req.headers.get('authorization') })
       await sleep(1500)
       const m = String(body.model)
+      // answer each yes/no question the request asked: the first with p, the rest 0 (so p_block = p)
+      const nouls = (p: number) => Object.fromEntries(Object.keys(body.questions).filter(k => k !== 'risk').map((k, i) => [k, { type: 'noul', noul: i === 0 ? p : 0 }]))
       return Response.json(m.startsWith('openai/')
-        ? { model: 'openai/gpt-6-luna-decisions-20261006', provider: 'OpenAI', answers: { block: { type: 'noul', noul: 0.05 }, risk: { type: 'score', score: 0.2, confidence: 0.9, legend: {}, probabilities: {} } }, usage: { input_tokens: 800, output_tokens: 0, cost: 0.0000286 } }
-        : m === 'cloudflare/clef' ? { model: 'cloudflare/clef', provider: 'PrimeIntellect', answers: { block: { type: 'noul', noul: 0.15 }, risk: { type: 'score', score: 0.6, legend: {}, probabilities: {}, confidence: 0.7 } }, usage: { input_tokens: 810, output_tokens: 20, cost: 0.00000995 } }
-        : m === 'cloudflare/clef-flash' ? { model: 'cloudflare/clef-flash', provider: 'DeepInfra', answers: { block: { type: 'noul', noul: 0.25 }, risk: { type: 'score', score: 0.9, legend: {}, probabilities: {}, confidence: 0.5 } }, usage: { input_tokens: 810, output_tokens: 20, cost: 0.0000045 } }
-        : { model: 'typesafe/jev-1.13-20260917', provider: 'TypeSafe', answers: { block: { type: 'noul', noul: 0.85 }, risk: { type: 'score', score: 2.1, legend: {}, probabilities: {}, confidence: 0.6 } }, usage: { input_tokens: 820, output_tokens: 20, cost: 0.0000146 } })
+        ? { model: 'openai/gpt-6-luna-decisions-20261006', provider: 'OpenAI', answers: { ...nouls(0.05), risk: { type: 'score', score: 0.2, confidence: 0.9, legend: {}, probabilities: {} } }, usage: { input_tokens: 800, output_tokens: 0, cost: 0.0000286 } }
+        : m === 'cloudflare/clef' ? { model: 'cloudflare/clef', provider: 'PrimeIntellect', answers: { ...nouls(0.15), risk: { type: 'score', score: 0.6, legend: {}, probabilities: {}, confidence: 0.7 } }, usage: { input_tokens: 810, output_tokens: 20, cost: 0.00000995 } }
+        : m === 'cloudflare/clef-flash' ? { model: 'cloudflare/clef-flash', provider: 'DeepInfra', answers: { ...nouls(0.25), risk: { type: 'score', score: 0.9, legend: {}, probabilities: {}, confidence: 0.5 } }, usage: { input_tokens: 810, output_tokens: 20, cost: 0.0000045 } }
+        : { model: 'typesafe/jev-1.13-20260917', provider: 'TypeSafe', answers: { ...nouls(0.85), risk: { type: 'score', score: 2.1, legend: {}, probabilities: {}, confidence: 0.6 } }, usage: { input_tokens: 820, output_tokens: 20, cost: 0.0000146 } })
     }
     const parts = url.pathname.split('/')
     const method = parts.pop()!
@@ -60,7 +62,7 @@ const api = Bun.serve({
 
 const fakeClaude = join(dir, 'fake-claude')
 writeFileSync(fakeClaude, `#!/bin/bash
-if [ "$1" = "-p" ]; then cat >> ${dir}/claude-stdin; echo >> ${dir}/claude-stdin; sleep 1; echo '{"type":"result","result":"{\\"p_block\\":0.1,\\"risk\\":0.5,\\"reason\\":\\"一般讀檔\\"}","total_cost_usd":0.002,"usage":{"input_tokens":3,"cache_read_input_tokens":2900,"output_tokens":40}}'; exit 0; fi
+if [ "$1" = "-p" ]; then cat >> ${dir}/claude-stdin; echo >> ${dir}/claude-stdin; sleep 1; echo '{"type":"result","result":"{\\"beyond_request\\":0.1,\\"leak\\":0,\\"irreversible\\":0,\\"unsuitable\\":0,\\"risk\\":0.5,\\"reason\\":\\"一般讀檔\\"}","total_cost_usd":0.002,"usage":{"input_tokens":3,"cache_read_input_tokens":2900,"output_tokens":40}}'; exit 0; fi
 case "$*" in *agents*) echo '[]' ;; *--bg*) echo "backgrounded · abcd1234 · tg-x (idle)" ;; esac
 `)
 chmodSync(fakeClaude, 0o755)
@@ -153,7 +155,8 @@ test('a user call the rules allow: the hook answers at once; every provider (Dec
     expect(o).not.toContain(String(OWNER.id))
     expect(o).not.toContain(dir)
     expect(o).toContain('<conversation-folder>/notes')
-    expect(o).toContain('幫我找筆記, 找到跟 <chat-id> 說')
+    // another chat's id is named, this one would be <this-chat>
+    expect(o).toContain('幫我找筆記, 找到跟 <other-chat-1> 說')
   }
 }, 30000)
 
@@ -167,9 +170,13 @@ test('Telegram tools are judged router-side: a user conversation\'s reply (kind 
   expect(performance.now() - t0).toBeLessThan(1400)
   expect((await o.call('reply', { chat_id: String(OWNER.id), text: 'owner 的回覆' })).isError).toBeFalsy()
   const call = await until(() => q("SELECT * FROM classify_calls WHERE kind = 'telegram'")[before])
-  expect(call).toMatchObject({ conv: `dm-${USER.id}`, role: 'user', tool: 'mcp__plugin_telegram_telegram__reply', summary: 'telegram:reply: {"chat_id":"<chat-id>","text":"找到了: notes/a.md"}' })
-  expect(JSON.parse(call.sent).setting).toContain('content to be sent to Telegram')
+  expect(call).toMatchObject({ conv: `dm-${USER.id}`, role: 'user', tool: 'mcp__plugin_telegram_telegram__reply', summary: 'telegram:reply: {"chat_id":"<this-chat>","text":"找到了: notes/a.md"}' })
+  expect(JSON.parse(call.sent)).toMatchObject({ target: 'this chat', setting: expect.stringContaining('send the content below to Telegram') })
+  expect(call.qv).toBe(2)
   await until(() => q(`SELECT count(*) n FROM classify_results WHERE call_id = ${call.id}`)[0].n === 5, 15000)
+  // Telegram questions: leak and unsuitable, combined into p_block
+  const parts = JSON.parse(q(`SELECT parts FROM classify_results WHERE call_id = ${call.id} AND provider = 'typesafe'`)[0].parts)
+  expect(Object.keys(parts)).toEqual(['beyond_request', 'leak', 'unsuitable'])
   await sleep(300)
   expect(q("SELECT count(*) n FROM classify_calls WHERE kind = 'telegram'")[0].n).toBe(before + 1)
 }, 30000)

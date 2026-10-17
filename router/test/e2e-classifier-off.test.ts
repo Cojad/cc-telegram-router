@@ -40,7 +40,7 @@ function fakeTelegram() {
 
 const fakeClaude = join(dir, 'fake-claude')
 writeFileSync(fakeClaude, `#!/bin/bash
-if [ "$1" = "-p" ]; then cat > /dev/null; echo '{"type":"result","result":"{\\"p_block\\":0.1,\\"risk\\":0.5,\\"reason\\":\\"r\\"}","total_cost_usd":0.002,"usage":{"input_tokens":3,"output_tokens":40}}'; exit 0; fi
+if [ "$1" = "-p" ]; then cat > /dev/null; echo '{"type":"result","result":"{\\"beyond_request\\":0.1,\\"leak\\":0,\\"irreversible\\":0,\\"risk\\":0.5,\\"reason\\":\\"r\\"}","total_cost_usd":0.002,"usage":{"input_tokens":3,"output_tokens":40}}'; exit 0; fi
 case "$*" in *agents*) echo '[]' ;; *--bg*) echo "backgrounded · abcd1234 · tg-x (idle)" ;; esac
 `)
 chmodSync(fakeClaude, 0o755)

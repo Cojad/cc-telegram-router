@@ -91,7 +91,7 @@ export interface CommandDeps {
   /** Plan 10e: the plaintext of a masked event into a 600 file (terminal only); returns what to print. */
   events?: { rawToFile(id: number): Promise<string> }
   /** Tool call classifier, stage 1 (router/classifier.ts): the comparison report and one record. */
-  classifier?: { report(days: number): string; show(id: number): string }
+  classifier?: { report(days: number, qv?: number): string; show(id: number): string }
   /** A bot's messages in a chat (each bot keeps its own: router/telegram/store.ts). */
   recentMessages(bot: string, chatId: string, n: number): MessageRecord[]
   writeConfig(mutate: (raw: Record<string, unknown>) => void): void
@@ -196,7 +196,7 @@ const HELP = [
   '/router secret handles [chat_id] (原文請求發出的密鑰代號, 不寫就列出全部) | revoke <代號>',
   '/router event raw <event id> (只在終端機: 遮蔽過的原始 update 明文寫進權限 600 的檔案, 只印路徑)',
   '/router botapi <憑證或 bot 名稱> <方法> <JSON 參數> [--file 欄位=/路徑] (只限 owner)',
-  '/router classifier [天數] (工具呼叫分類器的比較報表, 預設 7 天) | classifier show <編號> (只限 owner)',
+  '/router classifier [天數] [v1|v2] (工具呼叫分類器的比較報表, 預設 7 天; v1/v2 只看某一版題目) | classifier show <編號> (只限 owner)',
   '/router config (列出全部) | get <key> | set <key> <值>',
   '/router log (所有對話) | log <chat_id> [筆數]',
   '/restart',
@@ -695,9 +695,13 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         if (!/^\d+$/.test(args[2] ?? '')) return done('用法: /router classifier show <編號>')
         return done(deps.classifier.show(Number(args[2])), { private: true })
       }
-      const days = args[1] === undefined ? 7 : /^\d+$/.test(args[1]) && Number(args[1]) >= 1 && Number(args[1]) <= 90 ? Number(args[1]) : null
-      if (days === null) return done('用法: /router classifier [天數 1~90] | classifier show <編號>')
-      return done(deps.classifier.report(days), { private: true })
+      // [天數] [v1|v2]: the question version, to compare before and after a change of questions
+      const rest = args.slice(1)
+      const vArg = rest.find(a => /^v\d+$/i.test(a))
+      const dArg = rest.find(a => a !== vArg)
+      const days = dArg === undefined ? 7 : /^\d+$/.test(dArg) && Number(dArg) >= 1 && Number(dArg) <= 90 ? Number(dArg) : null
+      if (days === null || rest.length > 2) return done('用法: /router classifier [天數 1~90] [v1|v2] | classifier show <編號>')
+      return done(deps.classifier.report(days, vArg ? Number(vArg.slice(1)) : undefined), { private: true })
     }
 
     case 'botapi': {

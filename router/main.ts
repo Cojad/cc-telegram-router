@@ -635,7 +635,7 @@ const classifier = createClassifier({
   },
   // the same held values 10e matches exactly, plus every chat id the router knows
   maskEnv: c => ({
-    folder: c.folder, routerHome: cfg.home,
+    folder: c.folder, routerHome: cfg.home, ownChatId: c.chat_id,
     known: [
       ...cfg.bots.map(b => ({ value: b.token, label: `bot ${b.name}` })),
       ...Object.entries(cfg.credentials).map(([n, x]) => ({ value: x.token, label: `credential ${n}` })),
@@ -933,7 +933,7 @@ const commandDeps: CommandDeps = {
     group: setupGroup,
   },
   events: { rawToFile: id => vault.rawToFile(id) },
-  classifier: { report: days => classifierReport(classifyStore, days, new Date(), classifierCfg().enabled), show: id => classifierShow(classifyStore, id) },
+  classifier: { report: (days, qv) => classifierReport(classifyStore, days, new Date(), classifierCfg().enabled, qv), show: id => classifierShow(classifyStore, id) },
   overridesRemoved: (c, uid) => authz.syncRemoved(c, uid),
   effectiveSettings: c => applyOverrides(renderSettings(TEMPLATES, c.role, settingsVars(c)), db.listOverrides(c.key)),
   async sendTo(botName, chatId, text) {
