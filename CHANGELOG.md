@@ -9,6 +9,7 @@
 ### Added
 
 - worker 收得到 Telegram 的表情回應 (message reaction): router 累積後整理成 `<reactions>` 區塊 (每則訊息一行, 表情×人數與顯示名稱, 換表情或收回只算最終狀態, 最多 50 則), 附在該對話的下一則訊息前, 或最後一個表情之後 1 分鐘沒有動靜時單獨送出 (不帶發送者, 不提權, 不顯示 🤔). 每個對話用 `/router chat react <all|botself_only|disable|default>` 設定, 全域預設 config `receiveReact` (預設 botself_only, 只收對 bot 自己訊息的表情, 依 `router.db` 新的 `bot_messages` 判斷). getUpdates 的 `allowed_updates` 改為明確列出原本的類型加 `message_reaction`; 群組裡 bot 要是管理員才收得到, `/router chat` 會註明. 見 [docs/operations.md](docs/operations.md#表情回應-reaction).
+- router 停止或重啟 (SIGTERM, SIGINT, `/router restart`) 時先把每個對話還沒送的表情回應單獨送進 worker, 等確認最多 5 秒再結束, 重啟不再遺失; 沒連上的 worker 不叫醒, 留在佇列等下次啟動. 見 [docs/operations.md](docs/operations.md#表情回應-reaction).
 - `cc /usage` 加上 Weekly (all models) 的燃燒速率: 完美速率, 當前速率與 ratio, 剩下的額度與倒數, 到重置剛好用完的每日上限, 可超速多少或要減速, 措辭照群組範例的輕快語氣 (算法見 [docs/operations.md](docs/operations.md#cc--報表腳本)).
 - 工具呼叫紀錄: 每個經過 PreToolUse 的工具呼叫 (所有角色, 含 owner 對話) 與 router 端執行的 Telegram 工具記在 `router.db` 的 `tool_history` (不存參數, 只有工具, 決定與原因, SendMessage 的收件對象), 保留 30 天; 報表 `/router tools [天數]` 與 `cli tools [天數]` (owner, admin). 見 [docs/permissions.md](docs/permissions.md#工具呼叫紀錄).
 

@@ -36,7 +36,7 @@ import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
 import { scheduleRefresh } from './skillrefresh'
 import { createPoller, type PollEvent } from './poller'
-import { ALLOWED_UPDATES, createReactionBuffer, reactor, reactionLabel, wanted, type ReactMode } from './reactions'
+import { ALLOWED_UPDATES, createReactionBuffer, flushOnStop, reactor, reactionLabel, wanted, type ReactMode } from './reactions'
 import { sendWithRetry, htmlOrPlain } from './sendretry'
 import { pollNoticeText, describePoll, noticeVia } from './pollnotice'
 import { hashSkill, loadManifest, argRoleRefusal } from './privskill'
@@ -871,17 +871,27 @@ function noteSent(bot: string, method: string, payload: unknown, res: unknown): 
   try { db.noteBotMessages(bot, method, payload, res) } catch (e) { log(`bot_messages ${bot} ${method}: ${e}`) }
 }
 
+/** Set once shutdown() starts. */
+let stopping = false
+
+/** A conversation's reactions as a router delivery of their own: pushed to a
+ *  connected worker, otherwise queued and the worker woken (not while
+ *  stopping: the backlog sweep after the next start wakes it). */
+function handOverReactions(key: string, block: string): { qid: number; live: boolean } | null {
+  const c = db.getConversation(key)
+  if (!c) return null
+  log(`reactions ${key}: handed over alone`)
+  const qid = db.enqueue(c.key, { content: block, meta: { chat_id: c.chat_id, user: 'router', kind: 'reactions', ts: iso8() } })
+  const live = ipc.isConnected(c.key)
+  if (live) ipc.pushQueue(c.key)
+  else if (!stopping) void supervisor.ensureAwake(c)
+  return { qid, live }
+}
+
 /** Message reactions kept per conversation until its next message, or a minute without more (router/reactions.ts). */
 const reactions = createReactionBuffer({
   flushMs: cfg.reactFlushMs,
-  onFlush(key, block) {
-    const c = db.getConversation(key)
-    if (!c) return
-    log(`reactions ${key}: handed over alone`)
-    db.enqueue(c.key, { content: block, meta: { chat_id: c.chat_id, user: 'router', kind: 'reactions', ts: iso8() } })
-    if (ipc.isConnected(c.key)) ipc.pushQueue(c.key)
-    else void supervisor.ensureAwake(c)
-  },
+  onFlush(key, block) { handOverReactions(key, block) },
 })
 
 /** A message_reaction update: kept for the conversation's worker when its receiveReact mode wants it. */
@@ -1450,12 +1460,13 @@ if (cfg.skillRefreshAt) {
   log(`skill refresh: daily at ${cfg.skillRefreshAt} GMT+8, next ${gmt8(new Date(sched.next()))}`)
 }
 
-let stopping = false
 async function shutdown(sig: string, respawn = false) {
   if (stopping) return
   stopping = true
   log(`shutdown (${sig})`)
   await Promise.allSettled([...bots.values()].map(h => h.stop()))
+  // no more updates: reactions still kept go to their workers while the socket is up
+  await flushOnStop(reactions.drain(), { handOver: handOverReactions, acked: (key, qid) => !db.undelivered(key).some(r => r.qid === qid), log }).catch(e => log(`reactions at stop: ${e}`))
   ipc.stop()
   elevation.stop()
   reactions.stop()

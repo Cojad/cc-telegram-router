@@ -2,8 +2,9 @@
 // docs/architecture.md 「表情回應」, docs/testing.md 表情回應驗收對照):
 // receiveReact modes, botself_only by the bot's own sent messages, final
 // state per person, the <reactions> block and its 50-message cap, the
-// one-minute debounce, allowed_updates, and /router chat react. The whole
-// path through the real router is router/test/e2e-reactions.test.ts.
+// one-minute debounce, the flush when the router stops, allowed_updates, and
+// /router chat react. The whole path through the real router is
+// router/test/e2e-reactions.test.ts.
 // All ids and names are example values.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
@@ -15,7 +16,7 @@ import { loadConfig, type Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
 import { ensureConversation } from '../conversations'
 import { runCommand, type CommandDeps, type CommandInput } from '../commands'
-import { ALLOWED_UPDATES, FLUSH_MS, MAX_MESSAGES, createReactionBuffer, parseReactMode, reactor, reactionLabel, cleanName, wanted } from '../reactions'
+import { ALLOWED_UPDATES, FLUSH_MS, MAX_MESSAGES, STOP_FLUSH_MS, createReactionBuffer, flushOnStop, parseReactMode, reactor, reactionLabel, cleanName, wanted } from '../reactions'
 
 const OWNER = '137438526', USER = '700100200', OTHER = '700100201', GROUP = '-1009990000001'
 
@@ -149,6 +150,63 @@ test(`at most ${MAX_MESSAGES} messages: the most recently reacted kept, the rest
   expect(ids[0]).toBe(1001)
   expect(ids.slice(1)).toEqual(Array.from({ length: 49 }, (_, i) => 1007 + i))
   expect(out.at(-2)).toBe(`(另有 5 則訊息的表情回應省略, 只列最近的 ${MAX_MESSAGES} 則)`)
+})
+
+test('when the router stops: every conversation\'s block handed over at once, the buffer emptied, no timer left to fire', async () => {
+  const t = fakeTimers()
+  const flushed: string[] = []
+  const b = createReactionBuffer({ onFlush: (_k, s) => flushed.push(s), setTimer: t.setTimer, clearTimer: t.clearTimer })
+  b.add('c', { messageId: 1001, actorId: USER, actorName: 'Example User', reactions: ['👍'] })
+  b.add('d', { messageId: 2001, actorId: OTHER, actorName: 'Another User', reactions: ['🎉'] })
+  b.add('e', { messageId: 3001, actorId: USER, actorName: 'Example User', reactions: ['❤'] })
+  b.add('e', { messageId: 3001, actorId: USER, actorName: 'Example User', reactions: [] }) // withdrawn: nothing to say
+  const blocks = b.drain()
+  expect(blocks).toEqual([{ key: 'c', block: block('1001 👍 (Example User)') }, { key: 'd', block: block('2001 🎉 (Another User)') }])
+  expect([b.pending('c'), b.pending('d'), b.pending('e'), t.live()]).toEqual([false, false, false, 0])
+  t.run()
+  expect(flushed).toEqual([])
+  expect(b.drain()).toEqual([])
+  // each handed over: connected workers ack, one not connected stays queued, a gone conversation is logged
+  const logs: string[] = []
+  const handed: string[] = []
+  const acks = new Set<number>()
+  const qids: Record<string, { qid: number; live: boolean } | null> = { c: { qid: 11, live: true }, d: { qid: 12, live: false }, x: null }
+  setTimeout(() => acks.add(11), 30)
+  const r = await flushOnStop([...blocks, { key: 'x', block: block('9 👍 (Example User)') }], {
+    handOver: (k, s) => { handed.push(`${k}:${s}`); return qids[k]! },
+    acked: (_k, q) => acks.has(q),
+    log: l => logs.push(l),
+    stepMs: 10,
+  })
+  expect(handed).toEqual([`c:${blocks[0]!.block}`, `d:${blocks[1]!.block}`, `x:${block('9 👍 (Example User)')}`])
+  expect(r).toEqual({ acked: ['c'], unacked: [], queued: ['d'] })
+  expect(logs).toEqual(['reactions d: worker not connected, queued at stop (qid 12)', 'reactions x: conversation gone, dropped at stop', 'reactions c: handed over at stop'])
+})
+
+test(`when the router stops: a worker that never acks, or a hand-over that throws, holds it up at most the time limit (${STOP_FLUSH_MS}ms by default)`, async () => {
+  const logs: string[] = []
+  const started = Date.now()
+  const r = await flushOnStop([{ key: 'c', block: 'b1' }, { key: 'd', block: 'b2' }, { key: 'e', block: 'b3' }], {
+    handOver: k => { if (k === 'e') throw new Error('database is locked'); return { qid: k === 'c' ? 21 : 22, live: true } },
+    acked: (_k, q) => { if (q === 22) throw new Error('closed'); return false },
+    log: l => logs.push(l),
+    timeoutMs: 200,
+    stepMs: 10,
+  })
+  const took = Date.now() - started
+  expect(took).toBeGreaterThanOrEqual(190)
+  expect(took).toBeLessThan(1000)
+  expect(r).toEqual({ acked: [], unacked: ['c', 'd'], queued: [] })
+  expect(logs).toEqual([
+    'reactions e: hand over at stop failed: Error: database is locked',
+    'reactions c: not acked within 200ms at stop, stays queued (qid 21)',
+    'reactions d: not acked within 200ms at stop, stays queued (qid 22)',
+  ])
+  // nothing to hand over: no wait at all
+  const t0 = Date.now()
+  expect(await flushOnStop([], { handOver: () => null, acked: () => false, log: () => {} })).toEqual({ acked: [], unacked: [], queued: [] })
+  expect(Date.now() - t0).toBeLessThan(50)
+  expect(STOP_FLUSH_MS).toBe(5000)
 })
 
 let dir: string, db: RouterDb

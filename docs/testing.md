@@ -47,8 +47,8 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/context-chart.test.ts` | [cc / 報表腳本](operations.md#cc--報表腳本)的 `tg-context-chart.py`: 有 matplotlib 時寫 PNG, 沒有時 (PYTHONPATH 放一個 import 失敗的 matplotlib) exit 3, 文字圖 (各行接續到 100%, 有用量的類別至少八分之一格) 與安裝建議, 不寫 PNG; phase2 另測 relay 收到 exit 3 時送表格加文字圖 |
 | `router/test/usage-report.test.ts` | [cc / 報表腳本](operations.md#cc--報表腳本): `/usage` 報表的列, 倒數只顯示最大的兩個單位, 燃燒速率 (柯姊的範例, 週期剛開始, 超速中, 接近重置, 用完, 跨年, 沒有 Weekly 或重置時間), 腳本可執行, 兩支 `.sh` 以假 tmux 送指令與離開畫面, `/status` 只印白名單欄位 |
 | `router/test/channel.test.ts` | [廣播頻道](architecture.md#廣播頻道): 加入頻道的通知內容, /telegram:doc 的頻道一節 |
-| `router/test/reactions.test.ts` | [表情回應](operations.md#表情回應-reaction): `allowed_updates` 含 `message_reaction` 且保留空清單的所有類型, config `receiveReact` (預設, 三個值, 寫錯), 三個值的篩選, 名稱的清理與匿名管理員, 換表情與收回只算最終狀態, 摘要格式, 下一則訊息時取走, 1 分鐘 debounce (可注入的計時器與縮短的真計時器), 50 則上限, `bot_messages` (各種回應, 每隻 bot 分開), `/router chat react` 與 `/router chat` 的顯示 (管理員註記) |
-| `router/test/e2e-reactions.test.ts` | 真的 router + 真的 hook + 真的 plugin client + 假 Bot API: getUpdates 的 `allowed_updates`, botself_only 只收對 bot 訊息的表情並附在下一則訊息前, 單獨送出 (debounce 重新計時, router 名義, 不帶發送者, 不顯示 🤔, 不借前一則訊息發送者的角色提權), `/router chat react all` 與 `disable`, 不是管理員的群組在 `/router chat` 註明, 私訊同樣運作; 對照組: 一般訊息的那一輪照常顯示 🤔 與在對話裡詢問提權 |
+| `router/test/reactions.test.ts` | [表情回應](operations.md#表情回應-reaction): `allowed_updates` 含 `message_reaction` 且保留空清單的所有類型, config `receiveReact` (預設, 三個值, 寫錯), 三個值的篩選, 名稱的清理與匿名管理員, 換表情與收回只算最終狀態, 摘要格式, 下一則訊息時取走, 1 分鐘 debounce (可注入的計時器與縮短的真計時器), 停止時全部取出並送出 (ack, 沒連上的排隊, 對話不見, 逾時與例外不卡住), 50 則上限, `bot_messages` (各種回應, 每隻 bot 分開), `/router chat react` 與 `/router chat` 的顯示 (管理員註記) |
+| `router/test/e2e-reactions.test.ts` | 真的 router + 真的 hook + 真的 plugin client + 假 Bot API: getUpdates 的 `allowed_updates`, botself_only 只收對 bot 訊息的表情並附在下一則訊息前, 單獨送出 (debounce 重新計時, router 名義, 不帶發送者, 不顯示 🤔, 不借前一則訊息發送者的角色提權), `/router chat react all` 與 `disable`, 不是管理員的群組在 `/router chat` 註明, 私訊同樣運作, SIGTERM 時連線中的 worker 在 router 結束前收到還沒送的表情, 沒連上的私訊留在佇列不叫醒; 對照組: 一般訊息的那一輪照常顯示 🤔 與在對話裡詢問提權 |
 | `router/test/e2e-channel.test.ts` | 真的 router + 假 Bot API 送 channel_post: 頻道貼文 (含編輯, 指令) 只進 events, 就算列在 access.json 也不建立對話不送 worker, bot 不在頻道發言; 加入頻道時通知 owner |
 
 各功能的驗收項目與對應的測試如下. 文件與測試要互相呼應: 改了文件的描述, 檢查對應的測試是否還成立; 改了測試, 回頭檢查文件, 兩者同一個 commit 送出.
@@ -222,6 +222,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | 群組裡 bot 不是管理員時 `/router chat` 註明收不到 reaction | reactions「/router chat react sets…」; e2e-reactions「/router chat says which group…」 |
 | 表情只是資訊: 摘要的名稱照外部資料清理, 區塊註明不是指令; 單獨送出的那一輪不帶發送者, 不觸發提權, 不顯示進度 | reactions「who reacted and with what…」; e2e-reactions「a while after the last reaction…」「control: …」 |
 | 私訊與群組都適用 | e2e-reactions「/router chat says which group…」 |
+| router 停止 (SIGTERM, SIGINT) 時把所有對話還沒送的表情立刻單獨送出再結束, 送出後清空; 等 worker 確認最多 5 秒, 送不出去或卡住不擋停止並記 log; 沒連上的 worker 不叫醒, 留在佇列 | reactions「when the router stops: every conversation's block…」「when the router stops: a worker that never acks…」; e2e-reactions「SIGTERM: …」 |
 
 ## Phase 4 驗收對照
 

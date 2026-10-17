@@ -30,7 +30,7 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 7. 「cc /指令」由 router 開一次性的 tmux (`claude attach`) 代打: router 指令直接執行; `/status` `/usage` `/context` `/cost` 有專用報表; 其他指令只取它的輸出交給分身整理; `cc //指令` 直接截當下畫面. 離開前一律關掉留下的選單.
 8. power 對話的套件安裝 (pip, npm, bun...) 由 router 查 registry 資料後交給模型判斷風險, low 直接放行, 其餘送 owner 審核 (細節見 [權限, 提權與審核](permissions.md#套件安裝審核)).
 9. 叫醒 worker 時 router 計算 plugin (`server.js`, `skills/`) 與它看得到的三個技能範圍的雜湊, 記在對話的 `.chat/tools.sha`. 接續舊 session (resume) 而雜湊變了 (部署 plugin, 安裝技能), 下一則訊息的 `<router_log>` 附一次提醒, 請它重新讀取技能 SOP 與工具說明 (`router/freshness.ts`). 新 session 不用提醒.
-10. 表情回應 (message reaction) 不直接送 worker: router 依對話的設定 (`all`, `botself_only`, `disable`) 篩選後累積, 附在下一則訊息前面, 或最後一個表情之後一分鐘沒有動靜時單獨送出 (細節見 [部署與維運](operations.md#表情回應-reaction)).
+10. 表情回應 (message reaction) 不直接送 worker: router 依對話的設定 (`all`, `botself_only`, `disable`) 篩選後累積, 附在下一則訊息前面, 或最後一個表情之後一分鐘沒有動靜時單獨送出; router 停止時先把還沒送的全部單獨送出再結束 (細節見 [部署與維運](operations.md#表情回應-reaction)).
 11. `/router` 指令裡的 `chat_id` 指這隻 bot 的對話, `--bot <名稱>` 指別隻; 對話 key (`router-dm-123`) 到處都能用. 終端機 CLI 會找所有 bot, 多隻都有時列出候選並要求 `--bot`, 不會默默挑一隻.
 
 ## 目錄

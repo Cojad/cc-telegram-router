@@ -7,7 +7,10 @@
 // in front of the conversation's next message, or on its own once a minute
 // has passed since the last reaction with nothing else coming in. Each
 // person counts with their final reactions only (a change replaces, a
-// withdrawal removes); a message left with none is not listed.
+// withdrawal removes); a message left with none is not listed. When the
+// router stops (SIGTERM, SIGINT, /restart), every conversation's reactions
+// are handed over alone before it exits, waiting at most STOP_FLUSH_MS for
+// connected workers to take them.
 
 import { API_CONSTANTS } from 'grammy'
 import type { MessageReactionUpdated, ReactionType } from 'grammy/types'
@@ -20,6 +23,8 @@ export type ReactMode = typeof REACT_MODES[number]
 export const DEFAULT_REACT_MODE: ReactMode = 'botself_only'
 /** After the last reaction, how long the router waits for more (or a message) before handing them over alone. */
 export const FLUSH_MS = 60_000
+/** At stop, how long the router waits for connected workers to ack the reactions handed over. */
+export const STOP_FLUSH_MS = 5_000
 /** Messages listed in one block at most: the ones reacted to most recently. */
 export const MAX_MESSAGES = 50
 
@@ -121,6 +126,10 @@ export function createReactionBuffer(deps: ReactionBufferDeps) {
     },
     /** The block for the conversation's next message (null: none); the buffer is emptied. */
     take,
+    /** Every conversation's block now (stopping), the buffer emptied; no timer fires afterwards. */
+    drain(): Array<{ key: string; block: string }> {
+      return [...convs.keys()].flatMap(key => { const block = take(key); return block ? [{ key, block }] : [] })
+    },
     pending: (key: string) => convs.has(key),
     stop(): void { for (const c of convs.values()) clearTimer(c.timer); convs.clear() },
   }
@@ -130,4 +139,40 @@ export function createReactionBuffer(deps: ReactionBufferDeps) {
 export function wanted(mode: ReactMode, isBotMessage: () => boolean): boolean {
   if (mode === 'disable') return false
   return mode === 'all' || isBotMessage()
+}
+
+export interface StopFlushDeps {
+  /** Queue the block for the conversation as handed over alone: its qid, live when a connected worker was sent it; null when the conversation is gone. */
+  handOver(key: string, block: string): { qid: number; live: boolean } | null
+  /** Whether the worker acked that delivery. */
+  acked(key: string, qid: number): boolean
+  log(line: string): void
+  timeoutMs?: number
+  stepMs?: number
+}
+
+/** At stop: hand every block over, then wait (at most timeoutMs) for connected
+ *  workers to ack; one that does not never keeps the router from stopping. A
+ *  queued block stays in router.db and goes out once its worker connects. */
+export async function flushOnStop(blocks: Array<{ key: string; block: string }>, deps: StopFlushDeps): Promise<{ acked: string[]; unacked: string[]; queued: string[] }> {
+  const timeoutMs = deps.timeoutMs ?? STOP_FLUSH_MS
+  const stepMs = deps.stepMs ?? 50
+  const live = new Map<string, number>()
+  const queued: string[] = []
+  for (const { key, block } of blocks) {
+    let h: ReturnType<StopFlushDeps['handOver']> = null
+    try { h = deps.handOver(key, block) } catch (e) { deps.log(`reactions ${key}: hand over at stop failed: ${e}`); continue }
+    if (!h) deps.log(`reactions ${key}: conversation gone, dropped at stop`)
+    else if (h.live) live.set(key, h.qid)
+    else { queued.push(key); deps.log(`reactions ${key}: worker not connected, queued at stop (qid ${h.qid})`) }
+  }
+  const isAcked = (key: string, qid: number) => { try { return deps.acked(key, qid) } catch { return false } }
+  const deadline = Date.now() + timeoutMs
+  while ([...live].some(([k, q]) => !isAcked(k, q)) && Date.now() < deadline) await new Promise(r => setTimeout(r, stepMs))
+  const acked: string[] = [], unacked: string[] = []
+  for (const [key, qid] of live) {
+    if (isAcked(key, qid)) { acked.push(key); deps.log(`reactions ${key}: handed over at stop`) }
+    else { unacked.push(key); deps.log(`reactions ${key}: not acked within ${timeoutMs}ms at stop, stays queued (qid ${qid})`) }
+  }
+  return { acked, unacked, queued }
 }

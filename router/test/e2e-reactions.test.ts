@@ -6,11 +6,13 @@
 // message, or go alone a while after the last one (reactFlushMs, 60 seconds
 // outside tests) as a router delivery that names no sender, so it neither
 // elevates nor shows 🤔 in the chat; /router chat react all | disable; a group
-// where the bot is not an admin is marked in /router chat; DMs work the same.
+// where the bot is not an admin is marked in /router chat; DMs work the same;
+// on SIGTERM the router hands every conversation's reactions over before it
+// exits (a connected worker gets them, one not connected keeps them queued).
 // All ids and names are example values.
 
 import { test, expect, afterAll } from 'bun:test'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Database } from 'bun:sqlite'
@@ -63,7 +65,9 @@ const sentId = (chat: number, text: (t: string) => boolean) => calls.find(c => c
 
 // --- fake claude CLI --------------------------------------------------------
 const fakeClaude = join(dir, 'fake-claude')
+const claudeCalls = join(dir, 'claude-calls')
 writeFileSync(fakeClaude, `#!/bin/bash
+echo "$*" >> '${claudeCalls}'
 case "$*" in
   *agents*) echo '[]' ;;
   *--bg*) echo "backgrounded · abcd1234 · tg-x (idle)" ;;
@@ -229,4 +233,30 @@ test('control: after the owner\'s own message the same refused call is offered f
   expect(r).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('router 已在對話裡詢問是否提權') })
   await until(() => calls.some(c => c.method === 'sendMessage' && Number(c.body.chat_id) === GROUP.id && String(c.body.text).startsWith('🔐 提權請求')))
   await hook('stop', {})
+}, 30000)
+
+test('SIGTERM: reactions still kept go to the connected worker before the router exits; a DM with no worker keeps them queued, not woken', async () => {
+  const bot = sentId(GROUP.id, t => t === 'hi there')!
+  const dmList = sentId(OWNER.id, t => t.includes(`${GKEY} (Example Group)\n  chat_id`))!
+  react(GROUP, USER, bot, ['❤'], ['🙏'])
+  react({ id: OWNER.id, type: 'private' }, OWNER, dmList, ['👌'], ['👍'])
+  // taken by getUpdates and kept, well before the FLUSH_MS that would send them alone
+  await until(() => updates.length === 0)
+  await sleep(400)
+  const before = delivered.filter(x => x.meta.kind === 'reactions').length
+  const wakes = readFileSync(claudeCalls, 'utf8').split('\n').length
+  router.kill('SIGTERM')
+  expect(await router.exited).toBe(0)
+  const got = delivered.filter(x => x.meta.kind === 'reactions')
+  expect(got).toHaveLength(before + 1)
+  expect(got.at(-1)!.content).toBe(block(`${bot} 🙏 (Example User)`))
+  expect(got.at(-1)!.meta).toMatchObject({ chat_id: String(GROUP.id), user: 'router', kind: 'reactions' })
+  expect(stderr).toContain('shutdown (SIGTERM)')
+  expect(stderr).toContain(`reactions ${GKEY}: handed over at stop`)
+  expect(stderr).toMatch(new RegExp(`reactions dm-${OWNER.id}: worker not connected, queued at stop \\(qid \\d+\\)`))
+  // the DM's block waits in router.db for its worker (the backlog sweep after the next start wakes it); nothing was woken at stop
+  const row = q(`SELECT params, status FROM queue WHERE conv = 'dm-${OWNER.id}' AND params LIKE '%<reactions>%' ORDER BY qid DESC`)[0]
+  expect(row.status).toBe('pending')
+  expect(JSON.parse(row.params).content).toBe(block(`${dmList} 👍 (Example Owner)`))
+  expect(readFileSync(claudeCalls, 'utf8').split('\n').slice(wakes - 1).join('\n')).not.toContain('--bg')
 }, 30000)
