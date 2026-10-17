@@ -527,9 +527,12 @@ const ipc = createIpc({
     // the message that starts the turn goes with the classifier's judgements (masked, first 500 characters)
     if (params.meta.user !== 'router') classifier.noteMessage(key, String(params.content ?? ''))
     if (c.type === 'dm' && cfg.owners.includes(c.chat_id) && params.meta.user_id === c.chat_id && needsPersona(db.getBotSetup(c.bot))) parts.push(bootstrapNote(c.bot))
+    // delivery: names this delivery in the prompt's <channel> tag, so the router can tell who a turn is from (router/elevation.ts promptSenders)
+    let delivery: Record<string, string> = {}
+    try { delivery = { delivery: db.deliveryTag(qid) } } catch (e) { log(`delivery tag ${key}: ${e}`) }
     return {
       content: parts.length ? `${parts.join('\n')}\n${params.content}` : params.content,
-      meta: { ...params.meta, ...who, ctx_v: String(v) },
+      meta: { ...params.meta, ...who, ctx_v: String(v), ...delivery },
     }
   },
 })
@@ -678,7 +681,13 @@ const elevation = createElevation({
 })
 
 {
-  const purge = () => { const n = elevation.purgeOwnAgents(new Date(Date.now() - KEEP_DAYS * 86_400_000).toISOString()); if (n) log(`own_agents: removed ${n} old rows`) }
+  const purge = () => {
+    const before = new Date(Date.now() - KEEP_DAYS * 86_400_000).toISOString()
+    const n = elevation.purgeOwnAgents(before)
+    if (n) log(`own_agents: removed ${n} old rows`)
+    const e = elevation.purgeBinds(before)
+    if (e) log(`elev_binds: removed ${e} rows past their time`)
+  }
   purge()
   setInterval(purge, 86_400_000).unref()
 }

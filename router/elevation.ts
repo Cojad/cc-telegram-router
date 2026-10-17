@@ -22,12 +22,24 @@
 //      in the chat; messages delivered meanwhile wait for their own turn.
 //      After the router starts, a worker that was already running may be in
 //      the middle of a turn whose messages this router never saw: its turns
-//      have no sender until its next Stop (unknownTurns).
+//      have no sender until its next Stop (unknownTurns), or until a prompt
+//      whose <channel> tags all check out (promptSenders: each names, by the
+//      random delivery tag the router put in its meta, a message this router
+//      delivered to the conversation within the hour that no earlier prompt
+//      named) says who the turn is from.
 //   3. The prompt offers 允許一次 / 永久允許 / 拒絕. Whoever presses must have
 //      a role above the conversation's that allows the blocked call (their
 //      own /router perm user overrides counted, for the subagent too); the
 //      elevation then runs with *their* role, bound to the next subagent the
-//      worker starts (one subagent, 10 minutes to start it). 永久允許 also
+//      worker starts (one subagent, 10 minutes to start it). The approval
+//      waiting for it and the subagent it went to are kept in router.db
+//      elev_binds, each bound to the worker process (workerKey) like
+//      own_agents below: a router restart keeps them, counting once that
+//      worker's plugin says hello again; a hello from another process drops
+//      them; one made with no plugin connected goes to the next hello, or is
+//      dropped by a restart. SubagentStop, a revoke and the 10 minutes remove
+//      them as before; past their time and conversations gone at start and
+//      once a day. 永久允許 also
 //      adds the kind of action to the conversation's /router perm overrides
 //      (permcheck.permanentRule, spelled out in the prompt) so it is not
 //      asked again. The main session never leaves its role.
@@ -142,7 +154,11 @@ type Turn = {
   unknown: boolean
 }
 
-type Grant = { id: number; role: string; by: string; until: number }
+/** worker: the worker process it is bound to (workerKey); a grant made while no plugin was connected has none until one says hello. */
+type Grant = { id: number; role: string; by: string; until: number; worker: string | null }
+type Bound = { conv: string; role: string; id: number; by: string; worker: string | null }
+/** A prompt tag is believed only for a delivery this recent (shared/prompttags.ts). */
+const TAG_MAX_AGE_MS = 3_600_000
 
 /** Same JSON for the same arguments, whatever the key order. */
 export function stableArgs(v: unknown): string {
@@ -168,7 +184,19 @@ export function createElevation(deps: ElevationDeps) {
   /** approved, waiting for the worker's next subagent */
   const granted = new Map<string, Grant>()
   /** agent_id -> conversation, the role it runs with and who approved it (their own overrides count too) */
-  const bound = new Map<string, { conv: string; role: string; id: number; by: string }>()
+  const bound = new Map<string, Bound>()
+  // Both kept in router.db elev_binds: a router restart keeps them, each
+  // counting only once the worker process it is bound to says hello again.
+  const keepGrant = (conv: string, g: Grant | null) => {
+    try { g ? db.setElevBind({ kind: 'grant', conv, agent: '', worker: g.worker, elev: g.id, role: g.role, by: g.by, until: g.until }) : db.dropElevBind('grant', conv, '') } catch (e) { deps.log?.(`elev_binds: ${e}`) }
+  }
+  const keepBound = (agent: string, b: Bound | null, conv = b?.conv) => {
+    try { b ? db.setElevBind({ kind: 'bound', conv: b.conv, agent, worker: b.worker, elev: b.id, role: b.role, by: b.by, until: null }) : db.dropElevBind('bound', conv!, agent) } catch (e) { deps.log?.(`elev_binds: ${e}`) }
+  }
+  const setGrant = (conv: string, g: Grant) => { granted.set(conv, g); keepGrant(conv, g) }
+  const delGrant = (conv: string) => { if (granted.delete(conv)) keepGrant(conv, null) }
+  const setBound = (agent: string, b: Bound) => { bound.set(agent, b); keepBound(agent, b) }
+  const delBound = (agent: string) => { const b = bound.get(agent); if (!b) return false; bound.delete(agent); keepBound(agent, null, b.conv); return true }
   const timers = new Map<number, ReturnType<typeof setTimeout>>()
   /** Telegram tools run router-side (bot_api...): an elevated subagent's call,
    *  seen in its PreToolUse, leaves a one-use ticket the router's tool
@@ -177,6 +205,21 @@ export function createElevation(deps: ElevationDeps) {
   const ticketKey = (conv: string, tool: string, args: unknown) => `${conv}\u0000${tool}\u0000${stableArgs(args ?? {})}`
   /** conv -> the worker process its plugin said hello from since this router started (workerKey) */
   const workers = new Map<string, string>()
+  // Kept from before a restart: they wait for their worker's hello (workerConnected).
+  // A grant with no worker, or past its time, cannot be told apart: it goes.
+  try {
+    let n = 0
+    for (const r of db.elevBinds()) {
+      if (!r.worker || !db.getConversation(r.conv) || (r.kind === 'grant' && !(Number(r.until) > Date.now()))) { db.dropElevBind(r.kind, r.conv, r.agent); continue }
+      if (r.kind === 'grant') granted.set(r.conv, { id: r.elev, role: r.role, by: r.by, until: Number(r.until), worker: r.worker })
+      else bound.set(r.agent, { conv: r.conv, role: r.role, id: r.elev, by: r.by, worker: r.worker })
+      n++
+    }
+    if (n) deps.log?.(`elevation: ${n} approved elevation(s) kept from before the restart, waiting for their worker's plugin`)
+  } catch (e) { deps.log?.(`elev_binds: ${e}`) }
+  /** An approval bound to worker process w counts: w is the one conv's plugin said hello from since this router
+   *  started, or none was connected when it was made (the next hello takes it; a restart drops it). */
+  const isLive = (conv: string, w: string | null) => w == null || workers.get(conv) === w
   /** conv -> SendMessage calls waiting for the worker's plugin to say hello again */
   const helloWaits = new Map<string, Set<() => void>>()
   const wakeHello = (conv: string) => { for (const f of helloWaits.get(conv) ?? []) f() }
@@ -340,7 +383,7 @@ export function createElevation(deps: ElevationDeps) {
     if (!conv) return
     await record(conv, status, `${status === 'approved' ? `✅ 提權成功${permanent ? ' (永久允許)' : ''}` : status === 'denied' ? '❌ 提權被拒' : '⌛ 提權逾時'} #${id} ${conv.key}${status === 'approved' ? `: 由 ${who(uid)} 核准, 以 ${role} 角色執行` : ''}${permanent ? `\n永久允許: ${permanent.desc} (權限覆寫 ${permanent.overrides.map(o => `${o.kind} ${o.value}`).join(', ')})` : ''}\n原始請求: ${linkOf(id)}`, id)
     if (status === 'approved') {
-      granted.set(conv.key, { id, role: role!, by: uid!, until: Date.now() + ttl })
+      setGrant(conv.key, { id, role: role!, by: uid!, until: Date.now() + ttl, worker: workers.get(conv.key) ?? null })
       deps.notify(conv, `<router_status>\n提權 #${id} 已核准 ${inParens(who(uid))}: 以 ${role} 角色執行.${permanent ? `\n另外永久允許: 之後可以${permanent.desc}, worker 下次重啟後生效.` : ''}\n用 Agent 工具開「一個」general-purpose subagent 去完成被擋下的工作, prompt 寫清楚要做什麼; subagent 的 Bash 需要跳出 sandbox 時帶 dangerouslyDisableSandbox: true. 只有接下來開的第一個 subagent 有這個權限, ${Math.round(ttl / 60000)} 分鐘內要開始, 它結束就失效. 主 session 自己不要做越權的事.\n</router_status>`, { kind: 'elev', ref: id })
     } else if (!quiet) {
       deps.notify(conv, `<router_status>\n提權 #${id} ${status === 'denied' ? `被拒絕 ${inParens(who(uid))}` : '逾時沒有回應, 視為拒絕'}. 不要用越權的方法繼續; 告訴對方這個請求無法完成.\n</router_status>`, { kind: 'elev', ref: id })
@@ -382,6 +425,33 @@ export function createElevation(deps: ElevationDeps) {
     return { decision: 'deny', reason: `${guide} 請改用不越權的方法完成. 如果在不越權的情況下無法合理完成, 告訴對方這個請求無法繼續, 並問對方是否要向 bot owner 申請權限; 對方同意後呼叫 request_elevation 說明原因.` }
   }
 
+  /** Who a turn is from, by its prompt's <channel> tags (hooks/hook.ts, shared/prompttags.ts): Claude Code's
+   *  own text, but a message's text may hold a copy of a tag, so a tag counts only when its delivery tag names
+   *  a message the router delivered to this conversation in the last hour, with the same chat, message and
+   *  sender, and no earlier prompt named it (queue prompted_at); every tag with a sender has to: one that does
+   *  not, and nothing is used. Tags with no sender (router notices, reactions) add nobody. */
+  function promptSenders(conv: Conversation, ev: Record<string, any>): { senders: string[] } | { why: string } {
+    if (ev.tags_more) return { why: 'too many tags' }
+    if (!Array.isArray(ev.tags) || !ev.tags.length) return { why: 'no tags' }
+    const senders: string[] = [], used: string[] = []
+    for (const t of ev.tags as Array<Record<string, unknown>>) {
+      if (!t || typeof t !== 'object' || t.bad) return { why: 'a malformed tag' }
+      if (t.user_id == null) continue
+      const tag = String(t.delivery ?? '')
+      if (!tag) return { why: 'a tag with a sender but no delivery tag' }
+      const row = db.deliveryByTag(conv.key, tag)
+      if (used.includes(tag) || row?.prompted_at) return { why: 'a delivery tag an earlier prompt named' }
+      if (!row?.delivered_at || Date.now() - Date.parse(row.delivered_at) > TAG_MAX_AGE_MS) return { why: 'a delivery tag the router did not deliver here lately' }
+      let meta: Record<string, unknown>
+      try { meta = (JSON.parse(row.params).meta ?? {}) as Record<string, unknown> } catch { return { why: 'a delivery that cannot be read' } }
+      if (meta.user === 'router' || String(meta.user_id ?? '') !== String(t.user_id) || String(meta.chat_id ?? '') !== conv.chat_id
+        || String(t.chat_id ?? '') !== conv.chat_id || String(meta.message_id ?? '') !== String(t.message_id ?? '')) return { why: 'a tag that does not match its delivery' }
+      used.push(tag)
+      senders.push(String(meta.user_id))
+    }
+    return { senders }
+  }
+
   /** A high-risk call every person in the turn may make: let through, logged (no button, nobody presses anything). */
   function autoAllow(conv: Conversation, call: Call, agent: string | undefined, role: string): HookDecision {
     const by = whoTurn(conv)
@@ -414,6 +484,18 @@ export function createElevation(deps: ElevationDeps) {
           t.running = true
           t.during = new Set()
           t.nobody = !ev.telegram || !!ev.reactions
+          // not known since the router started: the prompt's own tags say who this turn is from, when every one checks out
+          if (t.unknown && ev.telegram) {
+            const p = promptSenders(conv, ev)
+            if ('senders' in p) {
+              for (const u of p.senders) t.senders.add(u)
+              t.unknown = false
+              deps.log?.(`turn of ${conv.key}: its senders from the prompt's tags (${p.senders.length} message(s) with a sender)`)
+            } else deps.log?.(`turn of ${conv.key}: prompt tags not used (${p.why}), no sender until its Stop`)
+          }
+          // every prompt: the deliveries it named cannot be named again
+          const named = Array.isArray(ev.tags) ? ev.tags.map((x: any) => String(x?.delivery ?? '')).filter(Boolean).slice(0, 100) : []
+          if (named.length) try { db.markPrompted(conv.key, named) } catch (e) { deps.log?.(`queue prompted_at: ${e}`) }
           return {}
         }
         // the turn is over: only messages that came in while it ran can still be read in the next one
@@ -434,21 +516,30 @@ export function createElevation(deps: ElevationDeps) {
             const [s] = q.splice(i >= 0 ? i : 0, 1)
             if (s?.name) addOwn(conv.key, s.name)
           }
-          const g = granted.get(conv.key)
-          if (g && agent && g.until > Date.now()) {
-            bound.set(agent, { conv: conv.key, role: g.role, id: g.id, by: g.by })
+          let g = granted.get(conv.key)
+          // the worker's plugin not back yet (a router restart): wait for it, up to the hook's deadline
+          if (g && agent && g.worker != null && !workers.has(conv.key) && deadline != null) { await awaitWorker(conv.key, waitUntil(deadline, Date.now())); g = granted.get(conv.key) }
+          if (g && agent && g.until > Date.now() && isLive(conv.key, g.worker)) {
+            setBound(agent, { conv: conv.key, role: g.role, id: g.id, by: g.by, worker: workers.get(conv.key) ?? null })
             deps.log?.(`elevation #${g.id} ${conv.key}: bound to subagent ${agent} as ${g.role}`)
-          }
-          granted.delete(conv.key)
+          } else if (g && agent) deps.log?.(`elevation #${g.id} ${conv.key}: not bound to subagent ${agent}: ${g.until <= Date.now() ? 'past its time' : 'its worker\'s plugin is not back'}`)
+          delGrant(conv.key)
           return {}
         }
         case 'subagent-stop':
-          if (agent && bound.delete(agent)) deps.log?.(`elevation ${conv.key}: subagent ${agent} done`)
+          if (agent && delBound(agent)) deps.log?.(`elevation ${conv.key}: subagent ${agent} done`)
           return {}
         case 'pre': {
           const call: Call = { tool_name: String(ev.tool_name ?? ''), tool_input: ev.tool_input ?? {} }
-          const b = agent ? bound.get(agent) : undefined
-          if (b && b.conv === conv.key) {
+          let b = agent ? bound.get(agent) : undefined
+          // kept from before a restart: counts once its worker's plugin says hello again (the same process)
+          if (b && b.conv === conv.key && b.worker != null && !workers.has(conv.key) && deadline != null) {
+            const t0 = Date.now()
+            const back = await awaitWorker(conv.key, waitUntil(deadline, t0))
+            b = bound.get(agent!)
+            deps.log?.(`elevation #${b?.id ?? '?'} ${conv.key}: subagent ${agent} waited ${((Date.now() - t0) / 1000).toFixed(1)}s for the worker's plugin, ${!back ? 'it did not say hello in time: not elevated' : b ? 'the same worker is back: elevated' : 'another worker process said hello: dropped'}`)
+          }
+          if (b && b.conv === conv.key && isLive(conv.key, b.worker)) {
             const c = allowedFor(conv, b.by, call, agent, b.role)
             if (!c.ok) return blocked(conv, call, `即使提權為 ${b.role} 也不允許: ${c.why}`, agent)
             noteSpawn(conv.key, call)
@@ -535,6 +626,7 @@ export function createElevation(deps: ElevationDeps) {
     drop(id: number): void {
       for (const [k, g] of granted) if (g.id === id) granted.delete(k)
       for (const [a, b] of bound) if (b.id === id) bound.delete(a)
+      try { db.dropElevBindsOf(id) } catch (e) { deps.log?.(`elev_binds: ${e}`) }
       for (const [k, t] of tickets) if (t.id === id) tickets.delete(k)
     },
 
@@ -572,7 +664,7 @@ export function createElevation(deps: ElevationDeps) {
     /** The role an elevated subagent runs with (tool_history 有效角色); null when not elevated. */
     boundRole: (convKey: string, agent: string | undefined): string | null => {
       const b = agent ? bound.get(agent) : undefined
-      return b && b.conv === convKey ? b.role : null
+      return b && b.conv === convKey && isLive(convKey, b.worker) ? b.role : null
     },
     /** The conversation's own subagents as known now (tests, /router status). */
     ownAgents: (convKey: string): string[] => {
@@ -589,6 +681,17 @@ export function createElevation(deps: ElevationDeps) {
         if (routerStart != null && start > routerStart) turns.set(convKey, freshTurn(false))
       }
       workers.set(convKey, worker)
+      // approved elevations of another worker process went with it; a grant made with no plugin connected is this one's
+      const g = granted.get(convKey)
+      if (g && g.worker !== worker) {
+        if (g.worker == null) setGrant(convKey, { ...g, worker })
+        else { delGrant(convKey); deps.log?.(`elevation #${g.id} ${convKey}: another worker process said hello, the approval waiting for its subagent is dropped`) }
+      }
+      for (const [a, b] of bound) {
+        if (b.conv !== convKey || b.worker === worker) continue
+        if (b.worker == null) setBound(a, { ...b, worker })
+        else { delBound(a); deps.log?.(`elevation #${b.id} ${convKey}: another worker process said hello, subagent ${a} is no longer elevated`) }
+      }
       try {
         const n = db.dropOwnAgents(convKey, worker)
         if (n) deps.log?.(`own_agents ${convKey}: dropped ${n} of an earlier worker`)
@@ -600,6 +703,17 @@ export function createElevation(deps: ElevationDeps) {
     /** own_agents rows added before an ISO time, and of conversations gone; how many. */
     purgeOwnAgents(before: string): number {
       try { return db.purgeOwnAgents(before) } catch (e) { deps.log?.(`own_agents purge: ${e}`); return 0 }
+    },
+    /** Approvals past their time, bound subagents kept since before an ISO time, those of conversations gone; how many. */
+    purgeBinds(before: string): number {
+      const nowMs = Date.now()
+      for (const [k, g] of granted) if (g.until <= nowMs || !db.getConversation(k)) granted.delete(k)
+      for (const [a, b] of bound) if (!db.getConversation(b.conv)) bound.delete(a)
+      try {
+        const kept = new Set(db.elevBinds().filter(r => r.kind === 'bound' && r.at < before).map(r => r.agent))
+        for (const a of kept) bound.delete(a)
+        return db.purgeElevBinds(nowMs, before)
+      } catch (e) { deps.log?.(`elev_binds purge: ${e}`); return 0 }
     },
 
     state: () => ({ granted: [...granted.entries()].map(([conv, g]) => ({ conv, ...g })), bound: [...bound.entries()].map(([agent, b]) => ({ agent, ...b })) }),

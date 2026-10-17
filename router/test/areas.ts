@@ -12,8 +12,8 @@ export interface Area { name: string; title: string; tests: string[]; paths: str
 export const AREAS: Area[] = [
   {
     name: 'perm', title: '權限與提權',
-    tests: ['phase3.test.ts', 'risky.test.ts', 'autoelev.test.ts', 'dmrole.test.ts', 'toolhistory.test.ts', 'e2e-autoelev.test.ts', 'e2e-dmrole.test.ts', 'e2e-ownagents.test.ts', 'e2e-toolhistory.test.ts', 'role-live.test.ts', 'retry.test.ts', 'e2e-retry.test.ts'],
-    paths: ['router/permcheck.ts', 'router/elevation.ts', 'router/approvals.ts', 'router/authz.ts', 'router/grants.ts', 'router/guard.ts', 'router/settings.ts', 'router/toolhistory.ts', 'router/context.ts', 'router/conversations.ts', 'shared/tools.ts', 'templates/**'],
+    tests: ['phase3.test.ts', 'risky.test.ts', 'autoelev.test.ts', 'dmrole.test.ts', 'toolhistory.test.ts', 'e2e-autoelev.test.ts', 'e2e-dmrole.test.ts', 'e2e-ownagents.test.ts', 'e2e-toolhistory.test.ts', 'role-live.test.ts', 'retry.test.ts', 'e2e-retry.test.ts', 'elevpersist.test.ts', 'e2e-elevpersist.test.ts'],
+    paths: ['router/permcheck.ts', 'router/elevation.ts', 'shared/prompttags.ts', 'router/approvals.ts', 'router/authz.ts', 'router/grants.ts', 'router/guard.ts', 'router/settings.ts', 'router/toolhistory.ts', 'router/context.ts', 'router/conversations.ts', 'shared/tools.ts', 'templates/**'],
   },
   {
     name: 'pkg', title: '套件安裝審核',

@@ -434,13 +434,14 @@ test('cc-hook progress reports events to the router socket for its conversation;
   const hook = (event: string, input: object) => Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', event], {
     stdin: new Blob([JSON.stringify({ cwd: join(c.folder, 'memory'), ...input })]), env: { ...process.env, XDG_RUNTIME_DIR: cfg.stateDir, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket, CLAUDE_PROJECT_DIR: c.folder },
   }).exited
-  await hook('prompt', { prompt: '<channel source="plugin:telegram:telegram" chat_id="-100555">hi</channel>' })
+  await hook('prompt', { prompt: '<channel source="plugin:telegram:telegram" chat_id="-100555" message_id="7" user="Example User" user_id="700100200" ts="2026-10-17T20:39:00.000+08:00" delivery="0a1b2c3d4e5f">hi</channel>' })
   await hook('pre', { tool_name: 'Bash', tool_input: { command: 'ls', description: 'List' } })
   await hook('pre', { tool_name: 'mcp__plugin_telegram_telegram__reply', tool_input: {} })
   await hook('stop', {})
   for (let i = 0; i < 40 && got.length < 3; i++) await sleepMs(25)
   expect(got).toEqual([
-    { key: 'group-100555', ev: { event: 'prompt', telegram: true } },
+    // who each message is from (shared/prompttags.ts): only these attributes, never the name or the text
+    { key: 'group-100555', ev: { event: 'prompt', telegram: true, tags: [{ chat_id: '-100555', message_id: '7', user_id: '700100200', delivery: '0a1b2c3d4e5f' }] } },
     // the fields the permission check needs travel with it (router/permcheck.ts)
     { key: 'group-100555', ev: { event: 'pre', summary: 'Bash: List', tool_name: 'Bash', tool_input: { command: 'ls', description: 'List' } } },
     { key: 'group-100555', ev: { event: 'stop' } },

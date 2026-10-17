@@ -10,7 +10,9 @@
 //   (router/elevation.ts) and reviews package installs (router/pkgreview.ts):
 //   for PreToolUse its allow/deny is printed back. PreToolUse and
 //   SubagentStart retry a router they cannot reach (shared/retry.ts), once
-//   only when it has been unreachable for over 3 minutes.
+//   only when it has been unreachable for over 3 minutes. The prompt event
+//   carries the sender fields of the prompt's <channel> tags
+//   (shared/prompttags.ts), never the text.
 
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -20,6 +22,7 @@ import { encode, type PluginToRouter } from '../shared/protocol'
 import { reportEvent, fileBreaker, reachFile, realClock, UNREACHABLE, RETRY_WINDOW_MS } from '../shared/retry'
 import { findRouter } from '../shared/locate'
 import { INSTALL_HINT } from '../router/packages'
+import { promptTags } from '../shared/prompttags'
 
 // The router's socket from its locator file (shared/locate.ts); none = unreachable.
 const FOUND = findRouter()
@@ -30,8 +33,13 @@ function progressEvent(event: string, input: Record<string, any>): Record<string
   switch (event) {
     case 'prompt': {
       const tags = String(input.prompt ?? '').match(/<channel source="[^"]*telegram[^>]*>/g) ?? []
+      // who the turn's messages came from (shared/prompttags.ts): only the attributes that say so, never the text
+      const parsed = promptTags(String(input.prompt ?? ''))
       // a turn started by message reactions alone (router/reactions.ts): the router shows no progress for it
-      return { event, telegram: tags.length > 0, ...(tags.length && tags.every(t => / kind="reactions"/.test(t)) ? { reactions: true } : {}) }
+      return {
+        event, telegram: tags.length > 0, ...(tags.length && tags.every(t => / kind="reactions"/.test(t)) ? { reactions: true } : {}),
+        ...(parsed.tags.length ? { tags: parsed.tags } : {}), ...(parsed.more ? { tags_more: true } : {}),
+      }
     }
     case 'pre':
     case 'post': {

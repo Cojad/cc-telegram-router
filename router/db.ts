@@ -3,6 +3,7 @@
 // writer; plugins and hooks never open this file.
 
 import { Database } from 'bun:sqlite'
+import { randomBytes } from 'crypto'
 
 export type ConvType = 'dm' | 'group' | 'channel'
 
@@ -128,6 +129,9 @@ export type ToolUse = {
 export type ToolStat = { tool: string; conv_role: string; elevated: number; decision: string; n: number }
 
 export type QueueRow = { qid: number; conv: string; params: string; status: 'pending' | 'delivered' | 'acked' }
+/** An elevation kept across router restarts (router/elevation.ts): kind grant, approved and waiting for the
+ *  worker's next subagent (agent ''), until epoch ms; kind bound, the subagent it went to. worker: workerKey, null not known yet. */
+export type ElevBind = { kind: 'grant' | 'bound'; conv: string; agent: string; worker: string | null; elev: number; role: string; by: string; until: number | null; at: string }
 export type LogRow = { id: number; conv: string; ts: string; text: string; qid: number | null }
 
 export interface RouterDb {
@@ -191,6 +195,12 @@ export interface RouterDb {
   ack(qid: number): void
   /** pending + delivered-but-unacked, oldest first. */
   undelivered(conv: string): QueueRow[]
+  /** The delivery's random tag (meta delivery, router/elevation.ts prompt tags): made the first time, the same on a redelivery. */
+  deliveryTag(qid: number): string
+  /** The queue row of conv delivered with this tag; null when there is none. */
+  deliveryByTag(conv: string, tag: string): { qid: number; params: string; delivered_at: string | null; prompted_at: string | null } | null
+  /** A prompt named these deliveries (the first time counts). */
+  markPrompted(conv: string, tags: string[]): void
   /** Conversations with anything not yet acked. */
   convsWithBacklog(): string[]
   /** Upsert from an update: name, @username, last seen, where. */
@@ -307,6 +317,14 @@ export interface RouterDb {
   dropOwnAgents(conv: string, keep: string | null): number
   /** Rows added before an ISO time, and rows of conversations that no longer exist, removed; how many. */
   purgeOwnAgents(before: string): number
+  /** elev_binds (router/elevation.ts): approved elevations kept across router restarts. */
+  setElevBind(b: Omit<ElevBind, 'at'>): void
+  dropElevBind(kind: ElevBind['kind'], conv: string, agent: string): void
+  /** Every row of an elevation (revoked); how many went. */
+  dropElevBindsOf(elev: number): number
+  elevBinds(): ElevBind[]
+  /** Grants past their time (epoch ms), bound rows added before an ISO time, rows of conversations gone; how many. */
+  purgeElevBinds(nowMs: number, before: string): number
   close(): void
 }
 
@@ -412,6 +430,10 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
     );
     CREATE INDEX IF NOT EXISTS tool_history_ts ON tool_history (ts);
     CREATE TABLE IF NOT EXISTS own_agents (conv TEXT NOT NULL, worker TEXT NOT NULL, name TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (conv, worker, name));
+    CREATE TABLE IF NOT EXISTS elev_binds (
+      kind TEXT NOT NULL, conv TEXT NOT NULL, agent TEXT NOT NULL, worker TEXT, elev INTEGER NOT NULL,
+      role TEXT NOT NULL, by TEXT NOT NULL, until INTEGER, at TEXT NOT NULL, PRIMARY KEY (kind, conv, agent)
+    );
     CREATE TABLE IF NOT EXISTS bot_messages (bot TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, ts TEXT NOT NULL, PRIMARY KEY (bot, chat_id, message_id));
   `)
   // Columns added after Phase 1.
@@ -427,6 +449,12 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   // custom-source packages an approval lets through once (pkgreview.ts): no override, used up by one install
   const pkgReqCols = new Set((db.query('PRAGMA table_info(pkg_requests)').all() as Array<{ name: string }>).map(c => c.name))
   if (!pkgReqCols.has('once_items')) { db.exec('ALTER TABLE pkg_requests ADD COLUMN once_items TEXT'); db.exec('ALTER TABLE pkg_requests ADD COLUMN once_used_at TEXT') }
+  // a delivery's random tag (meta delivery): a prompt's <channel> tag names the delivery it came from (router/elevation.ts)
+  const queueCols = new Set((db.query('PRAGMA table_info(queue)').all() as Array<{ name: string }>).map(c => c.name))
+  if (!queueCols.has('tag')) db.exec('ALTER TABLE queue ADD COLUMN tag TEXT')
+  // when a prompt's tag named the delivery: a copy of the tag in a later prompt is not believed
+  if (!queueCols.has('prompted_at')) db.exec('ALTER TABLE queue ADD COLUMN prompted_at TEXT')
+  db.exec('CREATE INDEX IF NOT EXISTS queue_tag ON queue (tag)')
   const cacheCols = new Set((db.query('PRAGMA table_info(attachment_cache)').all() as Array<{ name: string }>).map(c => c.name))
   if (!cacheCols.has('last_used')) db.exec('ALTER TABLE attachment_cache ADD COLUMN last_used TEXT')
   const evCols = new Set((db.query('PRAGMA table_info(events)').all() as Array<{ name: string }>).map(c => c.name))
@@ -455,6 +483,10 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   const qDel = db.prepare("UPDATE queue SET status = 'delivered', delivered_at = ? WHERE qid = ? AND status = 'pending'")
   const qAck = db.prepare("UPDATE queue SET status = 'acked', acked_at = ? WHERE qid = ?")
   const qUnd = db.prepare("SELECT qid, conv, params, status FROM queue WHERE conv = ? AND status != 'acked' ORDER BY qid")
+  const qTagGet = db.prepare('SELECT tag FROM queue WHERE qid = ?')
+  const qTagSet = db.prepare('UPDATE queue SET tag = ? WHERE qid = ? AND tag IS NULL')
+  const qByTag = db.prepare('SELECT qid, params, delivered_at, prompted_at FROM queue WHERE conv = ? AND tag = ?')
+  const qPrompted = db.prepare('UPDATE queue SET prompted_at = ? WHERE conv = ? AND tag = ? AND prompted_at IS NULL')
   const qBack = db.prepare("SELECT DISTINCT conv FROM queue WHERE status != 'acked'")
   const qUserGet = db.prepare('SELECT role FROM users WHERE uid = ?')
   const qUserSet = db.prepare('INSERT INTO users (uid, role, updated_at) VALUES (?, ?, ?) ON CONFLICT(uid) DO UPDATE SET role = excluded.role, updated_at = excluded.updated_at')
@@ -476,6 +508,11 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   const qOwnAny = db.prepare('SELECT 1 FROM own_agents WHERE conv = ? AND name = ? LIMIT 1')
   const qOwnList = db.prepare('SELECT name FROM own_agents WHERE conv = ? AND worker = ? ORDER BY rowid')
   const qOwnDrop = db.prepare('DELETE FROM own_agents WHERE conv = ? AND worker IS NOT ?')
+  const qBindSet = db.prepare('INSERT OR REPLACE INTO elev_binds (kind, conv, agent, worker, elev, role, by, until, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+  const qBindDrop = db.prepare('DELETE FROM elev_binds WHERE kind = ? AND conv = ? AND agent = ?')
+  const qBindDropOf = db.prepare('DELETE FROM elev_binds WHERE elev = ?')
+  const qBindAll = db.prepare('SELECT * FROM elev_binds ORDER BY at')
+  const qBindPurge = db.prepare("DELETE FROM elev_binds WHERE (kind = 'grant' AND (until IS NULL OR until <= ?)) OR (kind = 'bound' AND at < ?) OR conv NOT IN (SELECT key FROM conversations)")
   const qOwnPurge = db.prepare('DELETE FROM own_agents WHERE at < ? OR conv NOT IN (SELECT key FROM conversations)')
   const qPeopleUp = db.prepare(`INSERT INTO people (uid, name, username, first_seen, last_seen, last_chat_id) VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(uid) DO UPDATE SET name = excluded.name, username = excluded.username, last_seen = excluded.last_seen, last_chat_id = coalesce(excluded.last_chat_id, last_chat_id)`)
@@ -591,6 +628,14 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
     markDelivered: qid => { qDel.run(now(), qid) },
     ack: qid => { qAck.run(now(), qid) },
     undelivered: conv => qUnd.all(conv) as QueueRow[],
+    deliveryTag: qid => {
+      const had = (qTagGet.get(qid) as { tag: string | null } | null)?.tag
+      if (had) return had
+      qTagSet.run(randomBytes(9).toString('hex'), qid)
+      return (qTagGet.get(qid) as { tag: string }).tag
+    },
+    deliveryByTag: (conv, tag) => (qByTag.get(conv, tag) as { qid: number; params: string; delivered_at: string | null; prompted_at: string | null } | null) ?? null,
+    markPrompted: (conv, tags) => { const at = now(); for (const t of tags) qPrompted.run(at, conv, t) },
     convsWithBacklog: () => (qBack.all() as Array<{ conv: string }>).map(r => r.conv),
     seePerson(p, at) {
       const t = at ?? now()
@@ -738,6 +783,11 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
     ownAgents: (conv, worker) => (qOwnList.all(conv, worker) as Array<{ name: string }>).map(r => r.name),
     dropOwnAgents: (conv, keep) => qOwnDrop.run(conv, keep).changes,
     purgeOwnAgents: before => qOwnPurge.run(before).changes,
+    setElevBind: b => { qBindSet.run(b.kind, b.conv, b.agent, b.worker, b.elev, b.role, b.by, b.until, now()) },
+    dropElevBind: (kind, conv, agent) => { qBindDrop.run(kind, conv, agent) },
+    dropElevBindsOf: elev => qBindDropOf.run(elev).changes,
+    elevBinds: () => qBindAll.all() as ElevBind[],
+    purgeElevBinds: (nowMs, before) => qBindPurge.run(nowMs, before).changes,
     close: () => db.close(),
   }
 }
