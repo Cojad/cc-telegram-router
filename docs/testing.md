@@ -77,13 +77,13 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 
 ### 對照檔涵蓋檢查
 
-`router/test/areas.test.ts` (在 std 裡): `router/test` 的每一支測試檔至少屬於一區, 對照檔與 std 列的測試檔都存在, 區名不重複, 每個路徑 glob 都對得到 repo 裡的檔; 本節「各區」表的區名與測試檔, 「std 套組」表的測試檔, 與對照檔一致. 新增測試檔時要同時加進 `areas.ts` 的某一區, 改了分區或 std 要一起改本節, 否則這個檢查失敗.
+`router/test/areas.test.ts` (在 std 裡): `router/test` 的每一支測試檔至少屬於一區, 對照檔與 std 列的測試檔都存在, 區名不重複, 每個路徑 glob 都對得到 repo 裡的檔; 本節「各區」表的區名與測試檔, 「std 套組」表的測試檔, 與對照檔一致; [測試檔對照](#測試檔對照)有每支測試檔的一列. 新增測試檔時要同時加進 `areas.ts` 的某一區與測試檔對照表, 改了分區或 std 要一起改本節, 否則這個檢查失敗.
 
 ## 測試檔對照
 
 | 檔案 | 對應 |
 |---|---|
-| `router/test/areas.test.ts` | [測試分區](#測試分區)的對照檔 `router/test/areas.ts`: 每支測試檔至少屬於一區, 列出的測試檔都存在, 區名不重複, 路徑 glob 都對得到檔, 「各區」與「std 套組」兩張表與對照檔一致 |
+| `router/test/areas.test.ts` | [測試分區](#測試分區)的對照檔 `router/test/areas.ts`: 每支測試檔至少屬於一區, 列出的測試檔都存在, 區名不重複, 路徑 glob 都對得到檔, 「各區」與「std 套組」兩張表與對照檔一致; 本表有每支測試檔的一列 |
 | `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor (含 resume 後的說明更新提醒 freshness), plugin MCP, router 離線告知 |
 | `router/test/phase2.test.ts` | 規劃 03 的 /router 指令表與拒絕訊息 (含 chat_id 跨 bot 指定, --bot, 對話 key), 06 chat_context, router_log, hook, 「cc /」代打, 即時進度訊息, bot list 與 status 對資訊還沒取得的 bot 顯示讀取中, GMT+8 時間格式 (`iso8`, log 行) |
 | `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, 群組回到提問者的私訊 (on_behalf_of), /router 指令不轉給 worker, CLI, bot add 後立刻 bot list 就有新 bot 的資訊, log 行與 worker 收到的訊息時間是 GMT+8 |

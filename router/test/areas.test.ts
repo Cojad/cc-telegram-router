@@ -1,6 +1,7 @@
 // The test areas in areas.ts (docs/testing.md 「測試分區」): every test file
-// belongs to an area, nothing listed there is missing, and the section
-// lists the same areas and std. Part of std.
+// belongs to an area, nothing listed there is missing, the section lists
+// the same areas and std, and 「測試檔對照」 has a row for every test file.
+// Part of std.
 
 import { test, expect } from 'bun:test'
 import { readdirSync, readFileSync } from 'fs'
@@ -39,4 +40,12 @@ test('docs/testing.md 「各區」 and 「std 套組」 list the same areas, tes
   }
   const std = section('std 套組').split('\n').filter(l => l.startsWith('| `')).map(r => r.split('`')[1])
   expect(std).toEqual(STD.map(e => e.file))
+})
+
+test('docs/testing.md 「測試檔對照」 has a row for every test file under router/test', () => {
+  const doc = readFileSync(join(ROOT, 'docs', 'testing.md'), 'utf8')
+  const start = doc.indexOf('\n## 測試檔對照\n')
+  const table = doc.slice(start, doc.indexOf('\n## ', start + 1))
+  const listed = new Set(table.split('\n').filter(l => l.startsWith('| `')).flatMap(l => [...l.split(' | ')[0]!.matchAll(/`router\/test\/([^`]+\.test\.ts)`/g)].map(m => m[1]!)))
+  expect(testFiles.filter(f => !listed.has(f))).toEqual([])
 })
