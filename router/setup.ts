@@ -75,6 +75,17 @@ export function checkGroup(chat: { type: string; is_forum?: boolean }, member: {
   return { ok: true }
 }
 
+/** What /router bot add says about first-run setup. A bot added back under
+ *  a name whose setup is done keeps its persona and approvals place: say so,
+ *  instead of promising an interview that will not happen. */
+export function addedSetupText(username: string, s: BotSetup | null): string {
+  if (needsPersona(s)) return `私訊 @${username} 任何一句話, 它會帶你完成初次設定 (名字, 個性, 風格, 用途, 審核群組)`
+  const place = s!.approvals_chat ? `審核與通知沿用既有的審核群組 (${s!.approvals_chat})`
+    : s!.group_skipped ? '審核與通知照舊送 owner 私訊 (已略過群組設定)'
+    : '審核群組還沒設定: 在開了話題的群組裡傳 /router setup group, 或 /router setup skip 改由 owner 私訊接收'
+  return `沿用既有人設, 不用重新做初次設定; ${place}. 要重新做人設訪談可用 /router setup persona`
+}
+
 export function describeSetup(s: BotSetup | null, ownerDm: string | undefined): string {
   const place = s?.approvals_chat
     ? `群組 ${s.approvals_chat} (重要通知話題 ${s.notices_topic ?? '?'}, 權限審核話題 ${s.approvals_topic ?? '?'}, 提權紀錄話題 ${s.elevlog_topic ?? '?'}, 執行授權話題 ${s.authuse_topic ?? '?'}, 密鑰偵測話題 ${s.secret_topic ?? '?'})`

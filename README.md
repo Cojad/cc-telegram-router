@@ -117,6 +117,7 @@ Claude Code 從工作目錄往上讀 CLAUDE.md, 三層自然疊加. bot 資料�
 - config 沒有 owners 時, router log 會印出一次性認領碼; 私訊 bot `/start <碼>` 的人成為 owner.
 - owner 第一次私訊一隻還沒設定的 bot, worker 會先訪談名字, 個性, 說話風格, 用途, 用 `save_bot_profile` 寫進 `bot<id>/CLAUDE.md`.
 - 接著引導設定審核群組: 開了話題的 supergroup, bot 是管理員且能管理話題, 在群組裡下 `/router setup group`. router 建立「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」「🧾 執行授權」「🔑 密鑰偵測」五個話題 (已設定的群組再下一次會補上缺的話題). 可以略過, 之後通知與申請都私訊 owner (提權紀錄只留在 router.db).
+- 設定跟著 bot 名稱存在 `bot_setup`. 用同一個名稱再 `/router bot add` 回來的 bot, 若已完成人設, 回覆會說明沿用既有人設與審核群組 (或照舊私訊 owner, 或提醒審核群組還沒設定), 不會再說要做初次設定; 要重做人設用 `/router setup persona`.
 
 ## 部署
 
@@ -207,7 +208,7 @@ bun test router/test
 | 跨對話傳訊: owner 審核, 目標對話與 owner 同時詢問; 目標就是審核處時只有一份, 由 owner 或 admin 決定, 文字照實說明 | phase3「grants: owner mode…」「grants: target mode…」「grants: a target request whose target is the approvals group…」 |
 | 群組回到提問者的私訊 (reply on_behalf_of): 不用申請, 不限時間, 標明來源, 其他人一律擋 | e2e「a group worker answers the asker in their DM…」 |
 | power 安裝套件: 低風險放行, 其餘送審, 核准後可裝; 選項的值不算套件, 改變來源的選項送審 | phase3-pkg 全部 |
-| 新 bot 初次設定與審核群組 | e2e-setup 全部 |
+| 新 bot 初次設定與審核群組; 加回已設定好的 bot 時沿用既有設定 | e2e-setup 全部; phase2「bot add: a new bot gets the first-run line…」 |
 | /router perm 與覆寫 | phase3「/router perm: show…」「admin cannot touch…」「overrides lay paths…」 |
 | 三選一按鈕與永久允許的範圍 | phase3 grants 兩條, 「永久允許 runs it this time…」; phase3-pkg「永久允許 lets the conversation…」 |
 | 撤銷與執行授權 (含提權紀錄的成功訊息標已撤銷), 無參數指令的永久允許 | phase3「authz: …」三條,「elevation: a command without arguments (hostname)…」; phase3-pkg「installing an approved package is a use…」 |

@@ -82,6 +82,19 @@ test('admin may run commands but may not make anyone owner nor touch an owner', 
   expect((await run('/router config set model claude-opus-5-5', ADMIN))!.reply).not.toStartWith('⛔')
 })
 
+test('bot add: a new bot gets the first-run line; one added back under a name whose setup is done says it keeps its persona and approvals place', async () => {
+  const add = async () => (await run('/router bot add x 123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', OWNER))!.reply
+  expect(await add()).toBe('已新增 bot x: @new_bot\n私訊 @new_bot 任何一句話, 它會帶你完成初次設定 (名字, 個性, 風格, 用途, 審核群組)')
+  db.updateBotSetup('x', { persona_done: 1, approvals_chat: '-100900', approvals_topic: 7 })
+  expect(await add()).toBe('已新增 bot x: @new_bot\n沿用既有人設, 不用重新做初次設定; 審核與通知沿用既有的審核群組 (-100900). 要重新做人設訪談可用 /router setup persona')
+  db.updateBotSetup('x', { approvals_chat: null, approvals_topic: null, group_skipped: 1 })
+  expect(await add()).toBe('已新增 bot x: @new_bot\n沿用既有人設, 不用重新做初次設定; 審核與通知照舊送 owner 私訊 (已略過群組設定). 要重新做人設訪談可用 /router setup persona')
+  db.updateBotSetup('x', { group_skipped: 0 })
+  expect(await add()).toBe('已新增 bot x: @new_bot\n沿用既有人設, 不用重新做初次設定; 審核群組還沒設定: 在開了話題的群組裡傳 /router setup group, 或 /router setup skip 改由 owner 私訊接收. 要重新做人設訪談可用 /router setup persona')
+  db.updateBotSetup('x', { persona_done: 0 }) // /router setup persona: the interview again
+  expect(await add()).toStartWith('已新增 bot x: @new_bot\n私訊 @new_bot 任何一句話, 它會帶你完成初次設定')
+})
+
 test('bot list for admin; token commands only in the owner DM, and a token message is always deleted', async () => {
   expect((await run('/router bot list', ADMIN))!.reply).toBe('cc: @cc_bot (id 42, 柯柯)')
   // a bot whose getMe is not in yet (its poller just starting): 讀取中, not @? (id 0)

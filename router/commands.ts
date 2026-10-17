@@ -10,6 +10,7 @@ import type { MessageRecord } from './telegram/store'
 import { gmt8, maskTokens } from './context'
 import { describeCreds } from './credentials'
 import { SECRET_RE, runSecretCommand, describeSecrets, describeHandles } from './secrets'
+import { addedSetupText } from './setup'
 
 export const ROLES = ['owner', 'admin', 'power', 'user', 'guest'] as const
 
@@ -318,7 +319,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         if (!token) return done(`用法: /router bot ${op} <名稱> <token>`)
         const username = op === 'add' ? await deps.bots.add(name, token) : await deps.bots.rotate(name, token)
         const notice = op === 'add' ? deps.botNotice?.(name) : undefined
-        return done(`${op === 'add' ? `已新增 bot ${name}: @${username}\n私訊 @${username} 任何一句話, 它會帶你完成初次設定 (名字, 個性, 風格, 用途, 審核群組)` : `已更換 bot ${name}: @${username}`}${notice ? `\n\n${notice}` : ''}`, { deleteMessage: true })
+        return done(`${op === 'add' ? `已新增 bot ${name}: @${username}\n${addedSetupText(username, db.getBotSetup(name))}` : `已更換 bot ${name}: @${username}`}${notice ? `\n\n${notice}` : ''}`, { deleteMessage: true })
       } catch (e) {
         return done(`bot ${op} 失敗: ${e instanceof Error ? e.message : e}`, { deleteMessage: hasToken })
       }
