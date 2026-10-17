@@ -12,7 +12,7 @@ export const RANK: Record<string, number> = { guest: 0, user: 1, power: 2, admin
 export const rank = (role: string | null | undefined) => RANK[role ?? ''] ?? 1
 
 export type Call = { tool_name: string; tool_input: Record<string, any> }
-export type Check = { ok: true } | { ok: false; why: string; redirect?: true }
+export type Check = { ok: true } | { ok: false; why: string; redirect?: true; writeOption?: true }
 
 type Rule = { tool: string; spec?: string }
 function parseRule(r: string): Rule {
@@ -52,9 +52,54 @@ function callPath(call: Call, folder: string): string {
   return resolve(abs)
 }
 
-/** Split a shell line into simple commands (good enough for allow-list matching). */
+/** Split a shell line into simple commands at &&, ||, |, ; and newlines
+ *  (good enough for allow-list matching). Quoted text and escaped characters
+ *  are not split: grep -E 'a|b' is one command (as writesFile reads them). */
 export function subcommands(cmd: string): string[] {
-  return cmd.split(/&&|\|\||[;|\n]/).map(s => s.trim()).filter(Boolean)
+  const out: string[] = []
+  let cur = '', q: string | null = null
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i]!
+    if (q) {
+      cur += c
+      if (c === '\\' && q === '"' && i + 1 < cmd.length) cur += cmd[++i]
+      else if (c === q) q = null
+      continue
+    }
+    if (c === '\\' && i + 1 < cmd.length) { cur += c + cmd[++i]; continue }
+    if (c === "'" || c === '"') { q = c; cur += c; continue }
+    const two = cmd.slice(i, i + 2)
+    if (two === '&&' || two === '||') { out.push(cur); cur = ''; i++; continue }
+    if (c === '|' || c === ';' || c === '\n') { out.push(cur); cur = ''; continue }
+    cur += c
+  }
+  out.push(cur)
+  return out.map(s => s.trim()).filter(Boolean)
+}
+
+/** Shell words of a simple command, quotes removed (for reading options). */
+function shellWords(cmd: string): string[] {
+  return (cmd.match(/(?:[^\s"'\\]+|"(?:\\.|[^"\\])*"|'[^']*'|\\.)+/g) ?? []).map(w => w.replace(/^'|'$/g, '').replace(/^"|"$/g, ''))
+}
+
+/** A read-only command that writes a file through an option: sort -o/--output, uniq with an output file. */
+export function writesByOption(cmd: string): boolean {
+  const w = shellWords(cmd)
+  const tool = w[0]?.split('/').pop()
+  if (tool === 'sort') return w.slice(1).some(a => /^--output(=|$)/.test(a) || /^-[a-zA-Z]*o/.test(a) && !a.startsWith('--'))
+  // uniq [options] [input [output]]: a second operand is written
+  if (tool === 'uniq') {
+    const operands: string[] = []
+    for (let i = 1; i < w.length; i++) {
+      const a = w[i]!
+      if (a === '--') { operands.push(...w.slice(i + 1)); break }
+      if (/^-[fsw]$/.test(a)) { i++; continue } // -f N, -s N, -w N take a value
+      if (a.startsWith('-') && a !== '-') continue
+      operands.push(a)
+    }
+    return operands.length >= 2
+  }
+  return false
 }
 
 const NULL_DEVS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr'])
@@ -114,6 +159,9 @@ export function checkCall(settings: any, call: Call, folder: string, role = 'thi
     // only read-only commands are allowed: one that writes a file through a redirection is not read-only
     const writes = subs.find(writesFile)
     if (writes) return { ok: false, why: `${role} 的 Bash 只能跑唯讀指令, 這個用重導向寫入檔案: ${writes.slice(0, 80)}`, redirect: true }
+    // sort -o, uniq in out: a read-only command made to write a file
+    const byOption = subs.find(writesByOption)
+    if (byOption) return { ok: false, why: `${role} 的 Bash 只能跑唯讀指令, 這個用選項寫入檔案: ${byOption.slice(0, 80)}`, writeOption: true }
     const bad = subs.find(s => !allow.some(r => r.tool === 'Bash' && r.spec && bashMatches(r.spec, s)))
     return bad ? { ok: false, why: `${role} 的 Bash 只能跑唯讀指令, 這個不在允許範圍: ${bad.slice(0, 80)}` } : { ok: true }
   }
@@ -165,6 +213,7 @@ export function permanentRule(settings: any, call: Call, folder: string, lay: (s
     if (i.dangerouslyDisableSandbox) return { none: '跳出 sandbox 沒辦法寫成固定規則, 只能一次一次允許' }
     const c = checkCall(settings, call, folder)
     if (!c.ok && c.redirect) return { none: '用重導向 (>, >>) 寫入檔案沒辦法寫成固定規則, 只能一次一次允許; 要長期開放請 owner 調整對話角色' }
+    if (!c.ok && c.writeOption) return { none: '用選項寫入檔案 (例如 sort -o) 沒辦法寫成固定規則, 只能一次一次允許; 要長期開放請 owner 調整對話角色' }
     const cmds = [...new Set(subcommands(String(i.command ?? ''))
       .filter(s => !checkCall(settings, { tool_name: 'Bash', tool_input: { command: s } }, folder).ok)
       .map(s => s.split(/\s+/).find(w => !/^\w+=/.test(w) && w !== 'sudo') ?? ''))].filter(Boolean)

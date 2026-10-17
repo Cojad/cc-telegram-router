@@ -8,7 +8,7 @@ import { join } from 'path'
 import type { Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
 import { ensureConversation, findByFolder } from '../conversations'
-import { checkCall, writesFile } from '../permcheck'
+import { checkCall, writesFile, subcommands, writesByOption, permanentRule } from '../permcheck'
 import { renderSettings, applyOverrides } from '../settings'
 import { runCommand, type CommandDeps } from '../commands'
 import { makeAssertAllowedChat } from '../guard'
@@ -277,6 +277,33 @@ test('permcheck: each role template allows what it lists and blocks the rest, wi
   const more = applyOverrides(renderSettings(TEMPLATES, 'user', vars(f)), [{ conv: 'g', kind: 'path-read', value: '/x/data' }, { conv: 'g', kind: 'mcp', value: 'claude-in-chrome' }])
   expect(checkCall(more, file('Read', '/x/data/a.csv'), f).ok).toBe(true)
   expect(checkCall(more, { tool_name: 'mcp__claude-in-chrome__navigate', tool_input: {} }, f).ok).toBe(true)
+})
+
+test('subcommands: split at &&, ||, |, ; and newlines, never inside quotes or at an escaped character; the user role runs grep -E \'a|b\' and cut, sort, uniq, but not sort -o or uniq in out', () => {
+  expect(subcommands("grep -n -E 'venv|postprocess|\\.venv' notes.txt")).toEqual(["grep -n -E 'venv|postprocess|\\.venv' notes.txt"])
+  expect(subcommands('grep -E "a|b;c && d" f | cut -d= -f1')).toEqual(['grep -E "a|b;c && d" f', 'cut -d= -f1'])
+  expect(subcommands('grep a\\|b f; ls')).toEqual(['grep a\\|b f', 'ls'])
+  expect(subcommands(`echo "it's | fine" && ls || pwd\nwc -l f`)).toEqual([`echo "it's | fine"`, 'ls', 'pwd', 'wc -l f'])
+  const f = join(dir, 'g')
+  const user = applyOverrides(renderSettings(TEMPLATES, 'user', vars(f)), [])
+  const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } })
+  // the command from 10/17 09:31: one grep, not a command named postprocess
+  expect(checkCall(user, bash("grep -n -E 'venv|postprocess|\\.venv' notes.txt"), f, 'user').ok).toBe(true)
+  expect(checkCall(user, bash('grep -E "x > y|z" notes.txt'), f).ok).toBe(true) // quoted > is not a redirection either
+  expect(checkCall(user, bash("echo 'a && rm -rf x'"), f).ok).toBe(true)
+  expect(checkCall(user, bash('ls && rm -rf x'), f, 'user')).toEqual({ ok: false, why: 'user 的 Bash 只能跑唯讀指令, 這個不在允許範圍: rm -rf x' })
+  // cut, sort, uniq (柯姊 2026-10-17), with and without arguments
+  for (const c of ['grep KEY .env | cut -d= -f1', 'cut -f1 a.tsv', 'sort a.txt | uniq -c', 'sort', 'uniq', 'cut', 'sort -u -k2 a.txt', 'uniq -f 1 a.txt', 'cat a | uniq - '])
+    expect([c, checkCall(user, bash(c), f).ok]).toEqual([c, true])
+  // ... but writing a file through them is not read-only
+  for (const c of ['sort -o out.txt a.txt', 'sort a.txt -o out.txt', 'sort --output=out.txt a.txt', 'sort -uo out.txt a.txt', 'uniq a.txt out.txt', 'uniq -c a.txt out.txt'])
+    expect([c, checkCall(user, bash(c), f).ok]).toEqual([c, false])
+  expect(checkCall(user, bash('sort -uo out.txt a.txt'), f, 'user')).toEqual({ ok: false, why: 'user 的 Bash 只能跑唯讀指令, 這個用選項寫入檔案: sort -uo out.txt a.txt', writeOption: true })
+  // no permanent rule can cover it: the elevation prompt says so
+  const lay = (st: any, o: Array<{ kind: string; value: string }>) => applyOverrides(st, o.map(x => ({ conv: 'g', ...x })) as any)
+  expect(permanentRule(user, bash('sort -uo out.txt a.txt'), f, lay)).toEqual({ none: '用選項寫入檔案 (例如 sort -o) 沒辦法寫成固定規則, 只能一次一次允許; 要長期開放請 owner 調整對話角色' })
+  expect(writesByOption('uniq -w 3 a.txt')).toBe(false)
+  expect(writesByOption('sort -k1,1 -t, a.csv')).toBe(false)
 })
 
 test('writesFile: output redirections to a file count; quotes, escapes, /dev/null and fd copies do not; a command substitution in double quotes is looked into', () => {

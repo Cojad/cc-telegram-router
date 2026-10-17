@@ -23,7 +23,7 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 3. 訊息進該對話的佇列. worker 不在線就喚醒: 第一次用 `claude --bg` 帶一句 init prompt 開新 session, 之後用 `--resume`.
 4. worker 的 plugin 讀 `CLAUDE_PROJECT_DIR` 知道自己是哪個對話, 連 `router.sock` 報到, 收到佇列裡的訊息後轉成 channel 通知並回 ack.
 5. 模型呼叫 reply 等工具時, plugin 把呼叫轉給 router; router 檢查目標與附件路徑後代為呼叫 Bot API, 每個呼叫寫進 `outbound`. 群組的 worker 可以不經申請回到提問者的私訊: reply 帶 `on_behalf_of` (提問的那則群組訊息), router 確認發送者就是目標才放行, 不限時間, 私訊開頭標明來自哪個群組與哪則訊息.
-6. 每個工具呼叫在 PreToolUse 由 hook 問 router, router 依對話角色的 settings 檢查 (`permcheck.ts`). 越權就擋下並告訴模型改用不越權的方法 (只有唯讀指令白名單的角色, 用 `>` `>>` 等重導向寫檔也算越權, 跟 Claude Code 一致); 發話者角色高於對話時, 直接在對話裡貼出「提權執行 / 拒絕」詢問 (120 秒未回應視為拒絕). 發話者綁在那一輪: 在 worker 終端機打的一輪 (prompt hook 沒有 Telegram 訊息) 沒有發話者, 只看對話角色, 不在對話裡詢問, 到下一則 Telegram 訊息開始的那一輪為止. 按下的人角色夠高才算數, 之後的第一個 subagent 以他的角色執行.
+6. 每個工具呼叫在 PreToolUse 由 hook 問 router, router 依對話角色的 settings 檢查 (`permcheck.ts`). 越權就擋下並告訴模型改用不越權的方法 (只有唯讀指令白名單的角色, 用 `>` `>>` 等重導向寫檔, 或 `sort -o`, `uniq 輸入 輸出` 這類用選項寫檔也算越權, 跟 Claude Code 一致; 比對白名單時指令依 `&&` `||` `|` `;` 與換行切段, 引號裡與跳脫的字元不算, 所以 `grep -E 'a|b'` 是一個指令); 發話者角色高於對話時, 直接在對話裡貼出「提權執行 / 拒絕」詢問 (120 秒未回應視為拒絕). 發話者綁在那一輪: 在 worker 終端機打的一輪 (prompt hook 沒有 Telegram 訊息) 沒有發話者, 只看對話角色, 不在對話裡詢問, 到下一則 Telegram 訊息開始的那一輪為止. 按下的人角色夠高才算數, 之後的第一個 subagent 以他的角色執行.
 7. 「cc /指令」由 router 開一次性的 tmux (`claude attach`) 代打: router 指令直接執行; `/status` `/usage` `/context` `/cost` 有專用報表; 其他指令只取它的輸出交給分身整理; `cc //指令` 直接截當下畫面. 離開前一律關掉留下的選單.
 8. power 對話的套件安裝 (pip, npm, bun...) 由 router 查 registry 資料後交給模型判斷風險, low 直接放行, 其餘送 owner 審核. 指令解析認得各工具帶值的選項 (例如 `--only-binary :all:`, `--target pydeps`, `--omit dev`), 值不算套件; 帶了改變來源的選項 (`-i`/`--index-url`, `--extra-index-url`, `-f`/`--find-links`, `--trusted-host`, `--registry`...) 時, 那筆安裝的每個套件都列成自訂來源項目「<套件> (來源 <url>)」, 不查 PyPI/npm 的資料, 一律送人審. 從 URL, 本機路徑安裝與 `-e` 安裝也一樣. 這些項目核准 (允許一次或永久允許都一樣) 只放行下一次完全相同的安裝, 不寫任何權限覆寫, 之後再裝仍要審核 (審核訊息會說明原因; owner 用 `/router perm` 手動加的 `other:` 覆寫仍有效); `uvx --from`, `--with`, `pipx run --spec`, `npx -p` 的值是套件, 這時後面的第一個字是指令.
 9. 叫醒 worker 時 router 計算 plugin (`server.js`, `skills/`) 與它看得到的三個技能範圍的雜湊, 記在對話的 `.chat/tools.sha`. 接續舊 session (resume) 而雜湊變了 (部署 plugin, 安裝技能), 下一則訊息的 `<router_log>` 附一次提醒, 請它重新讀取技能 SOP 與工具說明 (`router/freshness.ts`). 新 session 不用提醒.
@@ -206,6 +206,7 @@ bun test router/test
 | 每個角色: 能做的做得到, 不能做的被擋且原因正確 | phase3「five role templates…」「permcheck: each role template…」; 真的 claude 執行: role-live (LIVE=1) |
 | 越權被擋時告訴模型改用不越權的方法, 做不到就問要不要向 owner 申請 | phase3「elevation: a plain user turn is refused with advice…」 |
 | 唯讀白名單的角色用重導向寫檔視為寫入: 擋下, 記錄, 發話者較高時提權 (只能允許一次) | phase3「permcheck: each role template…」「writesFile: …」「elevation: a user conversation writing a file through a redirection…」 |
+| 白名單比對的切段尊重引號與跳脫 (`grep -E 'a|b'` 放行); user 可用 cut, sort, uniq, 但 `sort -o`, `uniq 輸入 輸出` 視為寫入 | phase3「subcommands: split at &&, ||, |, ; and newlines…」 |
 | 終端機打的一輪沒有發話者: 只看對話角色, 不在對話裡詢問; 它提出的申請不綁上一則 Telegram 訊息 | phase3「elevation: a turn typed in the worker's terminal has no sender…」「request origin: …」 |
 | 發話者角色較高時在對話裡詢問, 120 秒預設拒絕 | phase3「…in-chat 提權執行/拒絕 prompt…」「nobody answers within the time limit…」 |
 | 按下的人角色要夠高, 以他的角色執行; 只有下一個 subagent, 主 session 與其他 subagent 照舊被擋 | phase3「…only a role high enough may approve…」, phase3「cc-hook asks the router…」 |
