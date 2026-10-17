@@ -102,6 +102,10 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`, 歸給哪隻 bot), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
 | `router/test/poller.test.ts` | [輪詢與重試](operations.md#輪詢與重試)的輪詢: 重試間隔, 2 分鐘才通知與恢復通知, 409, 401, 429, 啟動時的 getMe, status 與通知文字 (e2e 另測 token 失效時經其他 bot 通知與 /router status); 指令回覆重試 (e2e 另測 502 後重送) |
 | `router/test/store.test.ts`, `router/test/inbound.test.ts` | [訊息紀錄](architecture.md#訊息紀錄): 每隻 bot 各自一份 (私訊撞號, 同群組同一則), 舊紀錄分配 bot 一次 (對話, events, outbound, 時間, legacy), legacy 列用時間重新判斷一次, 重複丟掉時寫 log, 引用不跨 bot |
+| `router/test/policy.test.ts` | [運作方式](architecture.md#運作方式)的 gate: mention 判斷 (中文觸發詞不用 `\b` 的回歸測試, ASCII 的 `\b` 邊界, rich_message 裡的觸發詞, 回覆 bot 算 mention), 私訊的允許清單與配對碼 (同一個配對碼最多回兩次), 群組的設定, 成員清單與 requireMention |
+| `router/test/outbound.test.ts` | [訊息紀錄](architecture.md#訊息紀錄)的送出端: reply 與 send_sticker 以 Telegram 回傳的 id 記錄 (含 reply_to), edit_message 取代原本那筆, `lookup_message` 查單筆, 查無資料, 列最近訊息 (新的在前), 時間是 GMT+8; 不在允許清單的 chat 與 send_sticker 參數錯誤時拒絕 |
+| `router/test/format.test.ts` | 長訊息切段 (`chunk`: 不超過上限, 優先在段落, 空白切開, 硬切不拆開 emoji 的 surrogate pair) 與訊息紀錄的單筆格式 (GMT+8, 固定兩行, 附件 file_id 不截斷, 沒送進 Claude 的標記, reply_to, rich_message 標記, 沒有訊息時的文字) |
+| `router/test/rich.test.ts` | Bot API Rich Message 區塊轉成文字: 段落與行內標記轉 Markdown, 編號清單, 核取方塊, 表格 (跳脫 `|`), 程式碼語言, 引言出處, details, 只有圖片或媒體時留下佔位文字 (保留說明文字), 不認得的區塊照樣顯示 |
 | `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行 (router 家目錄與 stateDir 都是臨時位置), 驗證 Claude Code 實際放行與擋下的事; 最後三條帶 user 對話的 hook, 驗證高風險工具真的觸發 PreToolUse 並被 router 擋下, owner 的一輪 ListAgents 自動提權放行, 傳給自己命名的 subagent 則放行; power 的 sandbox 看不到放在 home 與 stateDir 以外的 router socket |
 | `router/test/portability.test.ts` | [安裝位置](operations.md#安裝位置): config `sandboxDenyRead` 與隱藏清單, 角色範本的 denyRead, 特權技能 bwrap (含真的 bwrap 在 /var/tmp 的安裝, 與連不上放在別處的 socket), 位置檔與 `register`, plugin 與 hook 經位置檔連上 router, `deploy/install.sh` 不預設位置 |
 | `router/test/toolhistory.test.ts` | [工具呼叫紀錄](permissions.md#工具呼叫紀錄): 一筆的內容 (不存參數, 遮蔽與截斷), 寫入失敗只記 log, 30 天清除, 報表, `/router tools` 的權限與參數 |
