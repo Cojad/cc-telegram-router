@@ -8,7 +8,7 @@
 // handles|revoke, /router event raw; text attachments scanned when a worker
 // downloads them, and on arrival (kept for download_attachment, 30 days after
 // the last use); the fixed
-// agent's language rule. Keep in sync with README 「原始事件與密鑰保護」
+// agent's language rule. Keep in sync with docs/secrets.md 「原始事件與密鑰保護」
 // and /telegram:doc; end to end in e2e-rawvault.test.ts.
 // Every token here is fake and built at runtime (no token-shaped literal in the repo).
 
@@ -393,13 +393,14 @@ test('the fixed agent is claude -p with the fixed system prompt, no tools, no se
   await expect(ask(RAW_SYSTEM, 'x')).rejects.toThrow()
 })
 
-test('docs: README 「原始事件與密鑰保護」, /telegram:doc, /telegram:bot-skill and the tool definitions describe what this does', async () => {
+test('docs: docs/secrets.md 「原始事件與密鑰保護」, /telegram:doc, /telegram:bot-skill and the tool definitions describe what this does', async () => {
   const root = join(import.meta.dir, '..', '..')
-  const readme = readFileSync(join(root, 'README.md'), 'utf8')
-  const sec = readme.slice(readme.indexOf('### 原始事件與密鑰保護'), readme.indexOf('### bot 設定提醒'))
+  const secrets = readFileSync(join(root, 'docs', 'secrets.md'), 'utf8')
+  expect(secrets).toContain('## 原始事件與密鑰保護')
+  const sec = secrets.slice(secrets.indexOf('## 原始事件與密鑰保護'))
   for (const s of ['`<已遮蔽 #<event id>.<序號>>`', 'event_raw', 'AES-256-GCM', '綁定 event id', '「🔑 密鑰偵測」', '5 分鐘後刪除', '取消刪除', '發送者, owner, admin', 'claude -p', 'haiku', '出口檢查', '預設 10 分鐘, 最多 60 分鐘, 或永久', 'secret_from_handle', '/secret handles', 'cli event raw', '權限 600', '5 筆舊紀錄', '文字類附件', '收到訊息時就檢查', '`attachment_cache`', '保留 30 天 (以最後使用時間算', '`download_attachment`', '1 MB', '圖片, 二進位檔']) expect(sec).toContain(s)
-  expect(readme).toContain('### 10e 原始事件與密鑰保護驗收對照')
-  expect(readme).toContain('「🔑 密鑰偵測」五個話題')
+  expect(readFileSync(join(root, 'docs', 'testing.md'), 'utf8')).toContain('## 10e 原始事件與密鑰保護驗收對照')
+  expect(readFileSync(join(root, 'docs', 'operations.md'), 'utf8')).toContain('「🔑 密鑰偵測」五個話題')
   const doc = readFileSync(join(root, 'plugin', 'skills', 'doc', 'SKILL.md'), 'utf8')
   for (const s of ['## 密鑰與原文 (event_raw)', '文字類附件', '<已遮蔽 #<event id>.<序號>: 種類, 末 4 碼 xxxx>', '取消刪除', 'event_raw', 'secret_from_handle', '/secret handles', 'cli event raw', '五個話題']) expect(doc).toContain(s)
   expect(readFileSync(join(root, 'plugin', 'skills', 'bot-skill', 'SKILL.md'), 'utf8')).toContain('`secret_from_handle`')

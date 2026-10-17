@@ -1,7 +1,7 @@
 // Tool call classifier end to end (選配 1 工具呼叫自動分類器, stage 1 record
 // only; router/classifier.ts): the real router, its hook path, a fake Bot
 // API, fake Decisions and Jev servers and a fake claude. Keep in sync with
-// README 「工具呼叫分類器」; unit level in classifier.test.ts.
+// docs/classifier.md; unit level in classifier.test.ts.
 //   a user conversation's call the rules allow: the hook answers at once (the
 //   judges are slow), then all three are recorded; what reached the APIs has
 //   no held value, no conversation folder and no chat id; a call the rules

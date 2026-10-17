@@ -7,7 +7,7 @@
 // for lower ones (elevation: phase3.test.ts), and the daily refresh
 // (router/skillrefresh.ts): its time in GMT+8, config skillRefreshAt, the
 // catch-up at start (only skills not refreshed in 24 hours), the run itself,
-// skipping a changed skill, telling the owner of a failure only. Keep in sync with plan 10d, README 「特權技能」
+// skipping a changed skill, telling the owner of a failure only. Keep in sync with plan 10d, docs/credentials-and-skills.md 「特權技能」
 // and /telegram:bot-skill.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'

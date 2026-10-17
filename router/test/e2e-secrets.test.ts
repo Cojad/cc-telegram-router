@@ -1,5 +1,5 @@
 // Conversation secrets end to end (plan 10b 對話專屬密鑰): the real router
-// against a fake Bot API and a fake HTTP API. Keep in sync with README
+// against a fake Bot API and a fake HTTP API. Keep in sync with docs/secrets.md
 // 「對話專屬密鑰」 and /telegram:bot-skill; unit level in secrets.test.ts.
 //   config.json secretKey generated; DM /secret set deleted, stored sealed,
 //   masked in the events table and the worker log; a user conversation calls

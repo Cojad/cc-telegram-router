@@ -1,6 +1,6 @@
 // Tool call classifier, stage 1, record only (選配 1 工具呼叫自動分類器;
-// router/classifier.ts). Keep in sync with README 「工具呼叫分類器」 and its
-// 驗收對照; end to end (the real router, its hook path) in e2e-classifier.test.ts.
+// router/classifier.ts). Keep in sync with docs/classifier.md and its
+// 驗收對照 in docs/testing.md; end to end (the real router, its hook path) in e2e-classifier.test.ts.
 // Fake API servers and a fake claude: no real service is called.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'

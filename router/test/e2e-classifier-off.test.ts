@@ -1,5 +1,5 @@
-// Tool call classifier as an optional feature of a public repo (README
-// 「工具呼叫分類器」 開關與設定; router/classifier.ts): the real router against
+// Tool call classifier as an optional feature of a public repo (docs/classifier.md
+// 開關與設定; router/classifier.ts): the real router against
 // a fake Bot API. A classifier block that is not usable never stops the
 // router: it starts, says why in its log and the classifier stays off. On but
 // with no credentials: each API provider is logged as skipped once at start,

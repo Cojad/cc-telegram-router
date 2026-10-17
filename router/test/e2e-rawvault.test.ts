@@ -10,7 +10,7 @@
 // token; a user conversation is refused; cli event raw writes a 600 file;
 // a .env file with a key: checked as it comes in, the worker's download has a marker;
 // event_raw in a terminal turn goes by the conversation's role.
-// Keep in sync with README 「原始事件與密鑰保護」; module level in rawvault.test.ts.
+// Keep in sync with docs/secrets.md 「原始事件與密鑰保護」; module level in rawvault.test.ts.
 // Every token here is fake and built at runtime.
 
 import { test, expect, afterAll } from 'bun:test'

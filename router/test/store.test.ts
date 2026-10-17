@@ -7,7 +7,7 @@
 // 2026-10-17): two bots' messages with the same chat and message id are
 // two rows, each bot sees only its own, and old rows are placed once
 // (conversation, events, outbound, else legacy to the original bot).
-// Keep in sync with README 「運作方式」 and the store.ts header.
+// Keep in sync with docs/architecture.md 「訊息紀錄」 and the store.ts header.
 
 import { afterEach, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'

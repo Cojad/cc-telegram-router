@@ -3,7 +3,7 @@
 // --header. Also: masking every token-carrying command in the events table
 // (and the one-time migration), dot segments in global http credential
 // paths, bot settings notices (group privacy, bot-to-bot). Keep in sync with
-// README 「對話專屬密鑰」「bot 設定提醒」 and /telegram:bot-skill; end to end in
+// docs/secrets.md 「對話專屬密鑰」, docs/operations.md 「bot 設定提醒」 and /telegram:bot-skill; end to end in
 // e2e-secrets.test.ts.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'

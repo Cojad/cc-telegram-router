@@ -1,6 +1,6 @@
 // First run of a bot, end to end (plan 03 初次設定, 審核頻道): the real router
 // against a fake Bot API, starting with no owner. Keep in sync with those
-// sections and README 「新 bot 初次設定」.
+// sections and docs/operations.md 「新 bot 初次設定與審核群組」.
 //   claim code -> owner; persona interview (<bootstrap>, save_bot_profile)
 //   -> <home>/bot<id>/CLAUDE.md, read by every conversation of the bot;
 //   approvals group checks and topics; skip button.

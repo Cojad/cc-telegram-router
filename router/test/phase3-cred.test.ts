@@ -1,5 +1,5 @@
 // Phase 3: credentials for cross-bot skills and skill scopes (plan 03 憑證,
-// 技能範圍; /telegram:bot-skill). Keep in sync with those and README.
+// 技能範圍; /telegram:bot-skill). Keep in sync with those and docs/credentials-and-skills.md.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, symlinkSync, readFileSync } from 'fs'

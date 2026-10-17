@@ -1,5 +1,5 @@
 // Phase 4 (plan 10 Phase 4 搬遷與收尾): importing the v1 message log.
-// Keep in sync with README Phase 4 驗收對照.
+// Keep in sync with docs/testing.md Phase 4 驗收對照.
 
 import { test, expect } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'

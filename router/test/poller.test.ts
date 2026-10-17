@@ -6,7 +6,7 @@
 // rules; /router status lines and notice texts (router/pollnotice.ts).
 // Command replies (router/sendretry.ts): network errors, 5xx and 429 are
 // tried again at most 3 times within a minute, other 4xx not.
-// Keep in sync with README 「運作方式」 (輪詢).
+// Keep in sync with docs/operations.md 「輪詢與重試」.
 
 import { test, expect } from 'bun:test'
 import { createPoller, classify, type PollEvent } from '../poller'

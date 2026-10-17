@@ -6,7 +6,7 @@
 // computes the right value in isolation.
 // Log lines a test causes on purpose (simulated store failures, a dropped
 // duplicate) are checked and printed as 「✅ 預期中 ...」 (expectedLog), see
-// README 「測試」.
+// docs/testing.md 「執行」.
 
 import { expect, test } from 'bun:test'
 import type { Context } from 'grammy'

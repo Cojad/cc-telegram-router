@@ -1,4 +1,4 @@
-// Broadcast channels are not supported (README 運作方式 11, 頻道驗收對照):
+// Broadcast channels are not supported (docs/architecture.md 「廣播頻道」, docs/testing.md 頻道驗收對照):
 // the notice the owner gets when the bot is added to a channel (setup.ts
 // channelJoinNotice), and the /telegram:doc channel section
 // (plugin/skills/doc/SKILL.md 「頻道」). End to end: e2e-channel.test.ts.

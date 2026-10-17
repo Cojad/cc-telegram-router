@@ -1,5 +1,5 @@
 // Phase 3: power package installs (plan 07 「power 安裝套件」, 03 審核頻道).
-// Keep in sync with those sections and README 「套件安裝審核」.
+// Keep in sync with those sections and docs/permissions.md 「套件安裝審核」.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'

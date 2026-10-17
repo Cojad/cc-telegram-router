@@ -1,4 +1,4 @@
-// Broadcast channels are not supported (README 運作方式 11, 頻道驗收對照):
+// Broadcast channels are not supported (docs/architecture.md 「廣播頻道」, docs/testing.md 頻道驗收對照):
 // the real router process against a fake Bot API sending channel_post
 // updates. Channel posts (edited ones and commands too) only go to events,
 // even for a channel listed in access.json groups: no conversation, no

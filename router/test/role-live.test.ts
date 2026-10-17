@@ -4,7 +4,7 @@
 // are left out: this is the role templates alone (the router's own check is
 // phase3 permcheck). Opt-in, it costs real model calls:
 //   LIVE=1 bun test router/test/role-live.test.ts
-// Keep in sync with templates/roles/*.json and README Phase 3 驗收對照.
+// Keep in sync with templates/roles/*.json and docs/testing.md Phase 3 驗收對照.
 
 import { test, expect, beforeAll, afterAll } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs'
