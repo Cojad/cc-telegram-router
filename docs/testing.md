@@ -52,7 +52,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 
 | 區名 | 內容 | 測試檔 | 改到這些路徑時跑這一區 |
 |---|---|---|---|
-| `perm` | 權限與提權 | phase3, risky, autoelev, dmrole, toolhistory, e2e-autoelev, e2e-dmrole, e2e-ownagents, e2e-toolhistory, role-live | `router/` 的 permcheck, elevation, approvals, authz, grants, guard, settings, toolhistory, context, conversations; `shared/tools.ts`; `templates/**` |
+| `perm` | 權限與提權 | phase3, risky, autoelev, dmrole, toolhistory, e2e-autoelev, e2e-dmrole, e2e-ownagents, e2e-toolhistory, role-live, retry, e2e-retry | `router/` 的 permcheck, elevation, approvals, authz, grants, guard, settings, toolhistory, context, conversations; `shared/tools.ts`; `templates/**` |
 | `pkg` | 套件安裝審核 | phase3-pkg | `router/` 的 packages, pkgreview, approvals, authz |
 | `skills` | 憑證與特權技能 | phase3-cred, phase3-privskill | `router/` 的 credentials, skills, privskill, skillrefresh, skillrun; `plugin/skills/bot-skill/**` |
 | `sandbox` | 沙箱與安裝位置 | portability | `shared/locate.ts`, `deploy/**`, `router/` 的 settings, privskill, cli; `plugin/server.ts`, `templates/roles/**` |
@@ -115,7 +115,9 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/autoelev.test.ts` | [自動提權](permissions.md#自動提權), [這一輪的發話者](permissions.md#權限檢查與提權), [使用者覆寫](permissions.md#使用者覆寫): 純 admin 一輪六個工具與跨 session 傳訊自動放行並記錄 (elev_log, 提權紀錄話題), 混合一輪不放行但高風險工具在場有人夠格就跳按鈕 (沒人夠格只剩主動申請), 按的人的使用者覆寫也算, power 一輪預設不放行但角色範本或使用者覆寫允許就放行, deny 覆寫, `riskyRefusal` 讀 settings, Stop 重置與進行中送入的訊息算兩輪, reaction 與終端機沒有發話者, router 啟動後等 Stop (`unknownTurns`) 與新程序立即判斷, 按鈕提權用同一套發話者, `/router perm user` 指令與權限檢查, 私訊標記待輪替 |
 | `router/test/e2e-autoelev.test.ts` | 真的 router + 真的 hook + 真的 plugin client + 假 Bot API: router 啟動時已在跑的 worker 等 Stop, owner 的一輪在 user 群組自動提權 (hook allow, elev_log, tool_history 有效角色), user 與 owner 的訊息併成一輪不自動放行, ListAgents 在對話裡跳按鈕而路徑類不跳, `cli perm user` 後私訊 settings 帶覆寫 (群組不帶) 且他在群組的一輪以 user 放行 |
 | `router/test/e2e-toolhistory.test.ts` | 真的 router + 真的 hook + 假 Bot API: 每個 PreToolUse 一筆紀錄 (含 owner 對話), user 的高風險工具被擋而 owner 不擋, 自己命名的 subagent, router 端 Telegram 工具的紀錄, `cli tools` |
-| `router/test/e2e-ownagents.test.ts` | 真的 router (重啟兩次, 同一個 router.db) + 真的 hook + 真的 plugin client: 自己的 subagent 在 router 重啟後, 同一個 worker 的 plugin 重連就仍算數; plugin 沒連上時不算; 另一個 worker 程序打招呼時舊項目刪除; 讀不到程序啟動時間的 plugin 不算; 已不存在的對話的項目啟動時清掉 |
+| `router/test/e2e-ownagents.test.ts` | 真的 router (重啟兩次, 同一個 router.db) + 真的 hook + 真的 plugin client: 自己的 subagent 在 router 重啟後, 同一個 worker 的 plugin 重連就仍算數; plugin 沒連上時不算 (hook 的重試期限縮成 3 秒); 另一個 worker 程序打招呼時舊項目刪除; 讀不到程序啟動時間的 plugin 不算; 已不存在的對話的項目啟動時清掉 |
+| `router/test/retry.test.ts` | [router 連不到時](permissions.md#router-連不到時) (`shared/retry.ts`, 假時鐘與假的送出): 時間表與檢查點, 期限截斷, 慢的一次不推遲後面的檢查點, 只有 PreToolUse 與 SubagentStart 重試, 連上但還沒回答不重試, 每次帶期限與第幾次, 單次等待跟著期限 (套件審核 55 秒), 整段不超過 55 秒且在 hook 的 60 秒逾時內, router 等待最多 45 秒 |
+| `router/test/e2e-retry.test.ts` | 真的 router (停下再啟動, 同一個 router.db) + 真的 hook + 真的 plugin client: hook 執行時 router 停著, 1 秒後啟動, hook 在之後的一次拿到 router 的判斷而不是落回放行, router log 記第幾次; 一直停著時重試完落回 (放行, 跳出 sandbox 拒絕), 其他事件不等; SendMessage 給自己的 subagent 時 plugin 斷線, 約 1 秒後同一個程序重連就放行, 一直不連回到期限才擋, 兩種都有 log |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |
 | `router/test/requirements.test.ts` | README 的 Requirements 與 package 檔: 根目錄 package.json 沒有 v1 的 `bin` 與 `start`, plugin 版本與 repo 和 CHANGELOG 一致, 報表腳本一律用 python3 (shebang 與呼叫), curl, jq 與 matplotlib 列在強烈建議, 分類器的 API key 在依功能需要, repo 自己的程式與腳本不用 curl 與 jq |
 | `router/test/context-chart.test.ts` | [cc / 報表腳本](operations.md#cc--報表腳本)的 `tg-context-chart.py`: 有 matplotlib 時寫 PNG, 沒有時 (PYTHONPATH 放一個 import 失敗的 matplotlib) exit 3, 文字圖 (各行接續到 100%, 有用量的類別至少八分之一格) 與安裝建議, 不寫 PNG; phase2 另測 relay 收到 exit 3 時送表格加文字圖 |
@@ -298,6 +300,18 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | config owners 增減: 那些人的私訊跟著改 | dmrole「config owners changed…」 |
 | 讀對話角色的檢查 (高風險工具, tool_history 的對話角色) 在私訊讀到使用者角色 | dmrole「role checks that read the conversation role…」 |
 | 遷移: 私訊存的角色對齊使用者角色一次, 讀取一律不用舊值, ctx_v 加一; 啟動時對齊, log, 標記待輪替, settings 與 chat context 用使用者角色 | dmrole「migration: …」; e2e-dmrole「at start a DM's stored role is aligned…」 |
+
+## router 重啟空窗驗收對照
+
+| 驗收項目 | 測試 |
+|---|---|
+| 時間表: 立刻一次, 之後間隔 3, 5, 7, 15, 15 秒, 總共 6 次 (第 0, 3, 8, 15, 30, 45 秒), 整段最多 45 秒, 寫成一個常數兩端共用 (`shared/retry.ts`); 期限截斷後面的檢查點 | retry「the schedule: …」「untilReached: an unreachable router…」「untilReached: stops at the first try…」「reportEvent: a shorter window…」 |
+| 只有 PreToolUse 與 SubagentStart 在連不到時重試, 其他進度事件只送一次; 連上了但 router 還在處理不重試 | retry「reportEvent: PreToolUse and SubagentStart retry…」「reportEvent: the router reached on a later try…」; e2e-retry「the router stays stopped: …」 |
+| 6 次都連不到才落回: 放行, 但 `dangerouslyDisableSandbox` 拒絕 | e2e-retry「the router stays stopped: …」 |
+| hook 執行時 router 停著, 2 秒內起來: hook 拿到 router 的判斷, 不是落回放行 | e2e-retry「the router stopped when the hook runs…」 |
+| 期限 (第一次嘗試 + 45 秒) 隨請求送給 router; 單次等待跟著期限 (期限後再 5 秒), 套件審核維持 55 秒, 整段不超過 55 秒, 在 PreToolUse 與 SubagentStart 的 60 秒逾時內 | retry「reportEvent: PreToolUse and SubagentStart retry…」「answerWait: …」「waitUntil: …」 |
+| SendMessage 的收件對象在自己的 subagent 名單裡而 worker 的 plugin 還沒連上時先等; plugin 一打招呼 (同一個程序) 就立刻放行; 另一個程序打招呼就擋; 到期限沒連上才擋; 不在名單裡, `"main"`, 沒帶期限的舊 hook 與對話角色本來就允許時不等 | risky「own subagents while the worker's plugin is not back: …」; e2e-retry「SendMessage to the conversation's own subagent while its plugin is disconnected: …」 |
+| 有重試或等待時 router log 記一行 (等了多久, 結果), 正常呼叫不記 | risky「own subagents while the worker's plugin is not back: …」; e2e-retry「the router stopped when the hook runs…」「SendMessage to the conversation's own subagent…」 |
 
 ## 表情回應驗收對照
 

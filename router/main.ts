@@ -463,14 +463,14 @@ const ipc = createIpc({
       assertSendable: makeAssertSendable(live, cfg.stateDir),
     }))
   }),
-  async onHook(peer, ev) {
+  async onHook(peer, ev, deadline) {
     const c = peer.conv ? db.getConversation(peer.conv.key) : null
     if (!c) {
       // the router home's own terminal session (owner), when it has the hook
       if (ev.event === 'pre' && peer.mode === 'terminal') toolHistory.record(hookUse({ key: 'terminal', role: 'owner' }, ev as Record<string, any>, {}, null))
       return {}
     }
-    const d = await hookDecision(peer, c, ev)
+    const d = await hookDecision(peer, c, ev, deadline)
     // a subagent's Telegram tool (quiet) is recorded when the router runs it, unless refused here
     const { effRole, ...out } = d
     if (ev.event === 'pre' && (!ev.quiet || d.decision === 'deny')) toolHistory.record(hookUse(c, ev as Record<string, any>, d, effRole ?? elevation.boundRole(c.key, ev.agent_id ? String(ev.agent_id) : undefined)))
@@ -706,12 +706,12 @@ for (const line of classifier.check()) log(line)
 }
 
 /** The router's answer to a worker hook event (permissions, elevation, package review). */
-async function hookDecision(peer: Peer, c: Conversation, ev: Record<string, any>): Promise<HookDecision> {
+async function hookDecision(peer: Peer, c: Conversation, ev: Record<string, any>, deadline?: number): Promise<HookDecision> {
   // progress events ride along (pre/post/stop/...); subagent events and quiet ones are elevation only
   if (!String(ev.event).startsWith('subagent-') && !ev.quiet) ipcOnProgress(peer, ev)
   // a turn typed in the worker's terminal has no Telegram message for the classifier
   if (ev.event === 'prompt' && ev.telegram === false) classifier.noteMessage(c.key, null)
-  const d = await elevation.onHook(c, ev as Record<string, any>)
+  const d = await elevation.onHook(c, ev as Record<string, any>, deadline)
   if (d.decision) return d
   // power may install packages once they pass review (router/pkgreview.ts)
   if (ev.event === 'pre' && ev.tool_name === 'Bash' && c.role === 'power' && typeof ev.tool_input?.command === 'string') {

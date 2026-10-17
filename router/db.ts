@@ -297,6 +297,8 @@ export interface RouterDb {
    *  each bound to the worker process it started under. Keeps the newest max per worker. */
   addOwnAgent(conv: string, worker: string, name: string, max: number): void
   isOwnAgent(conv: string, worker: string, name: string): boolean
+  /** A row for name under any worker (a plugin not back yet may be the same process). */
+  hasOwnAgent(conv: string, name: string): boolean
   /** Oldest first. */
   ownAgents(conv: string, worker: string): string[]
   /** The conversation's rows of every worker but keep (null: all); returns how many went. */
@@ -469,6 +471,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   const qOwnAdd = db.prepare('INSERT OR REPLACE INTO own_agents (conv, worker, name, at) VALUES (?, ?, ?, ?)')
   const qOwnTrim = db.prepare('DELETE FROM own_agents WHERE conv = ?1 AND worker = ?2 AND rowid NOT IN (SELECT rowid FROM own_agents WHERE conv = ?1 AND worker = ?2 ORDER BY rowid DESC LIMIT ?3)')
   const qOwnHas = db.prepare('SELECT 1 FROM own_agents WHERE conv = ? AND worker = ? AND name = ?')
+  const qOwnAny = db.prepare('SELECT 1 FROM own_agents WHERE conv = ? AND name = ? LIMIT 1')
   const qOwnList = db.prepare('SELECT name FROM own_agents WHERE conv = ? AND worker = ? ORDER BY rowid')
   const qOwnDrop = db.prepare('DELETE FROM own_agents WHERE conv = ? AND worker IS NOT ?')
   const qOwnPurge = db.prepare('DELETE FROM own_agents WHERE at < ? OR conv NOT IN (SELECT key FROM conversations)')
@@ -729,6 +732,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
     // INSERT OR REPLACE gives a re-added name a new rowid: the newest are kept
     addOwnAgent: (conv, worker, name, max) => { qOwnAdd.run(conv, worker, name, now()); qOwnTrim.run(conv, worker, max) },
     isOwnAgent: (conv, worker, name) => !!qOwnHas.get(conv, worker, name),
+    hasOwnAgent: (conv, name) => !!qOwnAny.get(conv, name),
     ownAgents: (conv, worker) => (qOwnList.all(conv, worker) as Array<{ name: string }>).map(r => r.name),
     dropOwnAgents: (conv, keep) => qOwnDrop.run(conv, keep).changes,
     purgeOwnAgents: before => qOwnPurge.run(before).changes,

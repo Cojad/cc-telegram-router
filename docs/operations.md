@@ -70,6 +70,14 @@ router 可以裝在任何位置, 程式不假設固定路徑:
 - Bot-to-Bot Communication Mode (@BotFather 的設定): Bot API 的 getMe 沒有對應欄位, 查不到開了沒, 只附固定說明: 開與關的差別, 設定方式 (@BotFather `/setbot2bot` 或 BotFather Mini App), 以及風險 (router 不分辨發話者是人還是 bot, 其他 bot 的訊息與 /secret 這類指令會照常處理; 可能互相回覆停不下來).
 - 兩段文字由柯姊定稿, 依她 review 草稿的標記加粗 (兩段的標題, 「開啟 (預設):」「關閉:」等清單開頭, 「關閉方式:」「設定方式:」「開啟的風險:」, 「兩件很重要的事:」與兩點的重點句; emoji, 目前設定那行與最後的建議段落不加粗), 以 parse_mode HTML 送出. 同一則訊息裡的其他文字, 以及帶入的群組名稱, bot 名稱一律做 HTML 跳脫, 名稱裡有 < > & 也送得出去; 萬一 Telegram 仍拒收 HTML (can't parse entities), 同一則改用純文字 (去掉標籤) 重送一次並記 log; 在終端機 CLI 下的指令印成純文字.
 
+## router 重啟
+
+router 重啟 (`systemctl restart`, `/router restart`, 部署) 時 worker 不跟著重啟, 但有一段空窗. 2026-10-17 實測 (3 個 worker 在線): 收到 SIGTERM 後約 0.69 秒 worker 斷線, 0.85 秒新 router 起來, 1.19 秒所有 worker 的 plugin 都重新連上.
+
+- **router 程序連不上** (約 0 到 0.85 秒): worker 的 PreToolUse 與 SubagentStart hook 照時間表重試 (第 0, 3, 8, 15, 30, 45 秒), 一般重啟在第 3 秒那次就拿到 router 的正常判斷, 那個工具呼叫因此慢約 3 秒. 其他進度事件只送一次, 空窗裡的那幾則進度會漏掉. 45 秒內都連不上 (router 起不來) 才落回「放行, 但不准跳出 sandbox」, 而且每個工具呼叫都要等滿 45 秒.
+- **plugin 還沒重新連上** (約 0.85 到 1.19 秒): SendMessage 給這個對話自己的 subagent 會等 plugin 打招呼, 連上就立刻判斷放行, 不會被當成跨 session 擋下.
+- 細節與 log 格式見 [權限, 提權與審核](permissions.md#router-連不到時). SubagentStart 的 hook 逾時是 60 秒 (原本 5 秒) 才容得下重試, 改的是 worker 的 settings, 已在跑的 worker 要輪替 (`/router session rotate`) 後才生效; hook 執行檔 (`<stateDir>/hooks/cc-hook`) 重新編譯後下一次呼叫就生效.
+
 ## 輪詢與重試
 
 - 輪詢由 router 自己做 (`poller.ts`, 不用 grammY 的 bot.start), 啟動 (getMe) 與之後收訊都套用同一套規則: 網路錯誤與 Telegram 5xx 以 5 秒, 10 秒, 30 秒, 1 分, 2 分, 5 分逐步拉長, 之後每 5 分鐘一直重試 (429 照 retry_after); 斷線超過 2 分鐘才通知 owner 一次, 恢復時再通知一次. 409 衝突 (別的程式在用這個 token 收訊息) 每 60 秒重試並立刻通知. 401 (token 失效) 不再重試, 立刻通知 owner 用 `/router bot rotate`. 通知經其他還正常的 bot 送到它的重要通知話題或 owner 私訊; 409 與恢復通知也可以由那隻 bot 自己送 (409 只停收訊, 送訊息仍正常, 所以只有一隻 bot 時也收得到); 沒有 bot 送得出去, 或沒有 owner 與審核群組時只記 log. `/router status` 每隻 bot 後面標狀態: 收訊中, 重試中 (從幾點開始, 原因), token 失效.

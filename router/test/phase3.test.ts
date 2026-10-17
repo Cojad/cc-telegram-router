@@ -572,7 +572,8 @@ test('cc-hook asks the router and prints its PreToolUse decision; unreachable ro
   const hook = async (event: string, input: object, socket = cfg.socket) => {
     const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', event], {
       stdin: new Blob([JSON.stringify({ cwd: conv.folder, ...input })]), stdout: 'pipe',
-      env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: socket, CLAUDE_PROJECT_DIR: conv.folder },
+      // a 1 ms retry window: one try (the retries: retry.test.ts, e2e-retry.test.ts)
+      env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: socket, CLAUDE_PROJECT_DIR: conv.folder, CC_TELEGRAM_ROUTER_RETRY_WINDOW_MS: '1' },
     })
     const out = await new Response(p.stdout).text()
     return out ? JSON.parse(out).hookSpecificOutput : null

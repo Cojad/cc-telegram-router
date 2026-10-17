@@ -35,6 +35,7 @@ function harness(role = 'user', chat = '-100555') {
   conv = db.updateConversation(conv.key, { role })
   const sent: Array<{ chat: string; text: string; buttons: string[] }> = []
   const told: string[] = []
+  const logs: string[] = []
   let n = 100
   const approvals: ApprovalDeps = {
     db, owners: [OWNER], isAdmin: uid => uid === ADMIN,
@@ -45,9 +46,9 @@ function harness(role = 'user', chat = '-100555') {
     db, approvals, notify: (_c, t) => told.push(t), label: u => `u${u}`, applyPermissions: () => {},
     roleOf: uid => uid === OWNER ? 'owner' : db.getUserRole(uid) ?? 'user',
     settingsAs: (c, r) => applyOverrides(renderSettings(TEMPLATES, r, { folder: c.folder, hidden: ['/srv/cc'], autoCompactWindow: 750000, hooksDir: '/h' }), db.listOverrides(c.key)),
-    askTimeoutMs: 60_000,
+    askTimeoutMs: 60_000, log: m => logs.push(m),
   })
-  return { conv, e: make(), make, sent, told }
+  return { conv, e: make(), make, sent, told, logs }
 }
 const pre = (tool_name: string, tool_input: Record<string, unknown> = {}, agent_id?: string) => ({ event: 'pre', tool_name, tool_input, ...(agent_id ? { agent_id } : {}) })
 const send = (to: string, agent_id?: string) => pre('SendMessage', { to, message: 'hi' }, agent_id)
@@ -142,6 +143,61 @@ test('own subagents are kept in router.db: a router restart keeps them once the 
   again.workerConnected(conv.key, 'sess-1:4242')
   expect(await verdict(again, conv, send('helper'))).toBe('deny')
   again.stop()
+})
+
+test('own subagents while the worker\'s plugin is not back: SendMessage to a known name waits until the hook\'s deadline, judged the moment the plugin says hello; unknown names and older hooks do not wait', async () => {
+  const { conv, e, logs } = harness('user')
+  e.workerConnected(conv.key, 'sess-1:4242')
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'a1', agent_type: 'general-purpose' })
+  e.workerGone(conv.key)
+  const timed = async (ev: Record<string, unknown>, deadline?: number) => {
+    const t0 = Date.now()
+    const v = (await e.onHook(conv, ev, deadline)).decision === 'deny' ? 'deny' : 'pass'
+    return { v, ms: Date.now() - t0 }
+  }
+  // the same worker's plugin comes back 300 ms later: let through then, not at the deadline
+  setTimeout(() => e.workerConnected(conv.key, 'sess-1:4242'), 300)
+  let r = await timed(send('a1'), Date.now() + 5000)
+  expect(r.v).toBe('pass')
+  expect(r.ms).toBeGreaterThanOrEqual(250)
+  expect(r.ms).toBeLessThan(1500)
+  expect(logs.at(-1)).toMatch(/^own subagent a1 of .*: waited 0\.\ds for the worker's plugin, the same worker is back: counted$/)
+  // it never comes back: refused at the deadline, as cross-session
+  e.workerGone(conv.key)
+  r = await timed(send('a1'), Date.now() + 400)
+  expect(r.v).toBe('deny')
+  expect(r.ms).toBeGreaterThanOrEqual(350)
+  expect(logs.at(-1)).toContain('the plugin did not say hello in time: not counted')
+  // another worker process says hello meanwhile: its rows went, refused at once
+  setTimeout(() => e.workerConnected(conv.key, 'sess-1:5151'), 200)
+  r = await timed(send('a1'), Date.now() + 5000)
+  expect(r.v).toBe('deny')
+  expect(r.ms).toBeLessThan(1500)
+  expect(logs.at(-1)).toContain('another worker process said hello: not counted')
+  // a name with no row, an older hook with no deadline, "main" from a subagent: no wait, no log line
+  e.workerGone(conv.key)
+  const lines = logs.length
+  r = await timed(send('stranger'), Date.now() + 5000)
+  expect(r).toMatchObject({ v: 'deny' })
+  expect(r.ms).toBeLessThan(200)
+  r = await timed(send('a1'))
+  expect(r.v).toBe('deny')
+  expect(r.ms).toBeLessThan(200)
+  r = await timed(send('main', 'a9'), Date.now() + 5000)
+  expect(r.v).toBe('pass')
+  expect(r.ms).toBeLessThan(200)
+  expect(logs.length).toBe(lines)
+  e.stop()
+  // a conversation whose role may send anywhere (admin): no wait either
+  const adm = harness('admin', '-100777')
+  adm.e.workerConnected(adm.conv.key, 'sess-2:1')
+  await adm.e.onHook(adm.conv, { event: 'subagent-start', agent_id: 'b1', agent_type: 'general-purpose' })
+  adm.e.workerGone(adm.conv.key)
+  const t0 = Date.now()
+  expect((await adm.e.onHook(adm.conv, send('b1'), Date.now() + 5000)).decision).toBeUndefined()
+  expect(Date.now() - t0).toBeLessThan(200)
+  expect(adm.logs).toEqual([])
+  adm.e.stop()
 })
 
 test('own subagents: a SubagentStart with no worker plugin connected keeps nothing; an Agent call waiting from an earlier worker is not matched by the next worker\'s subagent', async () => {

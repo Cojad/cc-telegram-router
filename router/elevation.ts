@@ -61,7 +61,11 @@
 // worker whose plugin said hello since this router started counts, and a
 // hello from another worker process (rotate, restart, a new session) drops
 // the conversation's older rows, whose subagents are gone with that process.
-// No plugin connected, nothing counts. SubagentStop removes nothing: a
+// No plugin connected, nothing counts; but a SendMessage to a name the
+// conversation has a row for waits for the plugin to say hello again (a
+// router restart, a dropped connection) until the hook's deadline
+// (shared/retry.ts), and is judged the moment it does: the same process, its
+// rows count; another, they went. SubagentStop removes nothing: a
 // finished subagent is woken again by a SendMessage to it. Agent calls still
 // waiting for their SubagentStart stay in memory only. Rows older than
 // 30 days, and rows of conversations that no longer exist, go at start and
@@ -74,6 +78,7 @@ import { postApproval, settleApproval, logPlace, messageLink, buttons, parseChoi
 import { applyOverrides } from './settings'
 import { logKind, type Authz } from './authz'
 import { inParens } from './context'
+import { waitUntil } from '../shared/retry'
 
 /** effRole: the role the call ran with when not the conversation's (tool_history 有效角色); not sent to the hook. */
 export type HookDecision = { decision?: 'allow' | 'deny'; reason?: string; effRole?: string }
@@ -172,6 +177,37 @@ export function createElevation(deps: ElevationDeps) {
   const ticketKey = (conv: string, tool: string, args: unknown) => `${conv}\u0000${tool}\u0000${stableArgs(args ?? {})}`
   /** conv -> the worker process its plugin said hello from since this router started (workerKey) */
   const workers = new Map<string, string>()
+  /** conv -> SendMessage calls waiting for the worker's plugin to say hello again */
+  const helloWaits = new Map<string, Set<() => void>>()
+  const wakeHello = (conv: string) => { for (const f of helloWaits.get(conv) ?? []) f() }
+  /** Until conv's worker plugin is here or the time is up; whether it is here. */
+  async function awaitWorker(conv: string, until: number): Promise<boolean> {
+    while (!workers.has(conv)) {
+      const left = until - Date.now()
+      if (left <= 0) return false
+      await new Promise<void>(resolve => {
+        const set = helloWaits.get(conv) ?? new Set()
+        const done = () => { clearTimeout(t); set.delete(done); if (!set.size) helloWaits.delete(conv); resolve() }
+        const t = setTimeout(done, left)
+        set.add(done)
+        helloWaits.set(conv, set)
+      })
+    }
+    return true
+  }
+  /** SendMessage to a name conv has a row for while its worker's plugin is not
+   *  back yet (restart, dropped connection): wait for it, up to the hook's deadline.
+   *  Logged; whether it waited. */
+  async function awaitOwnTarget(conv: string, call: Call, agent: string | undefined, deadline: number | undefined): Promise<boolean> {
+    const to = sendTarget(call)
+    if (deadline == null || !to || to === 'main' || workers.has(conv)) return false
+    try { if (!db.hasOwnAgent(conv, to)) return false } catch { return false }
+    const t0 = Date.now()
+    const back = await awaitWorker(conv, waitUntil(deadline, t0))
+    const result = !back ? 'the plugin did not say hello in time: not counted' : isOwnTarget(conv, call, agent) ? 'the same worker is back: counted' : 'another worker process said hello: not counted'
+    deps.log?.(`own subagent ${to.slice(0, 60)} of ${conv}: waited ${((Date.now() - t0) / 1000).toFixed(1)}s for the worker's plugin, ${result}`)
+    return true
+  }
   /** conv -> Agent calls the router let through, waiting for their SubagentStart */
   const spawning = new Map<string, Array<{ name: string; type: string }>>()
   /** One of conv's own subagents (agent id or name), bound to its current worker: SendMessage to it is not cross-session. */
@@ -366,7 +402,8 @@ export function createElevation(deps: ElevationDeps) {
       return { sender_role: role, ...(rank(role) > rank(conv.role) ? { elevated: 'true' } : {}) }
     },
 
-    async onHook(conv: Conversation, ev: Record<string, any>): Promise<HookDecision> {
+    /** deadline (epoch ms): the hook's, from its first try; a wait here ends by then (shared/retry.ts). */
+    async onHook(conv: Conversation, ev: Record<string, any>, deadline?: number): Promise<HookDecision> {
       const agent: string | undefined = ev.agent_id || undefined
       switch (ev.event) {
         // a turn starts: from a Telegram message (its delivery named the sender) or typed in the terminal
@@ -424,7 +461,9 @@ export function createElevation(deps: ElevationDeps) {
             const to = String(call.tool_input.to ?? call.tool_input.recipient ?? '')
             if ([...bound.keys()].some(id => to.includes(id))) return { decision: 'deny', reason: '非提權的一輪不能指揮已提權的 subagent' }
           }
-          const c = allowedAs(conv, conv.role, call, agent)
+          let c = allowedAs(conv, conv.role, call, agent)
+          // refused as cross-session while the worker's plugin is not back: wait for it, then judge again
+          if (!c.ok && call.tool_name === 'SendMessage' && await awaitOwnTarget(conv.key, call, agent, deadline)) c = allowedAs(conv, conv.role, call, agent)
           if (!c.ok) {
             const role = autoRole(conv, call, agent)
             return role ? autoAllow(conv, call, agent, role) : blocked(conv, call, c.why, agent)
@@ -554,6 +593,7 @@ export function createElevation(deps: ElevationDeps) {
         const n = db.dropOwnAgents(convKey, worker)
         if (n) deps.log?.(`own_agents ${convKey}: dropped ${n} of an earlier worker`)
       } catch (e) { deps.log?.(`own_agents: ${e}`) }
+      wakeHello(convKey)
     },
     /** The worker's plugin went away: no own subagent counts until a plugin says hello again. */
     workerGone(convKey: string): void { workers.delete(convKey) },

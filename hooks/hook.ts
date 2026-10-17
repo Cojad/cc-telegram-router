@@ -8,13 +8,15 @@
 // progress <event>: report the event to the router, which owns the
 //   "🤔 思考中…" Telegram message (router/progress.ts), decides elevation
 //   (router/elevation.ts) and reviews package installs (router/pkgreview.ts):
-//   for PreToolUse its allow/deny is printed back.
+//   for PreToolUse its allow/deny is printed back. PreToolUse and
+//   SubagentStart retry a router they cannot reach (shared/retry.ts).
 
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { renderContext, type ChatContext } from '../router/context'
 import { toolSummary } from '../router/progress'
-import { encode } from '../shared/protocol'
+import { encode, type PluginToRouter } from '../shared/protocol'
+import { reportEvent, UNREACHABLE, RETRY_WINDOW_MS } from '../shared/retry'
 import { findRouter } from '../shared/locate'
 import { INSTALL_HINT } from '../router/packages'
 
@@ -64,18 +66,18 @@ function pick(o: Record<string, unknown>, keys: string[]): Record<string, unknow
   return Object.fromEntries(keys.filter(k => k in o).map(k => [k, o[k]]))
 }
 
-/** Ask the router; resolve its decision, or null when it cannot be reached in time. */
-async function ask(projectDir: string, ev: Record<string, unknown>, waitMs: number): Promise<Record<string, any> | null> {
-  const socket = SOCKET
-  if (!socket) return null
+/** One request to the router: its decision; null when it did not answer in
+ *  waitMs (connected: the router is still at it, not a reason to retry);
+ *  UNREACHABLE when nothing answered (no socket, refused, closed before the answer). */
+function ask(socket: string, msg: Extract<PluginToRouter, { t: 'hook' }>, waitMs: number): Promise<Record<string, any> | null | typeof UNREACHABLE> {
   return new Promise(resolve => {
     let buf = '', done = false
-    const finish = (v: Record<string, any> | null) => { if (!done) { done = true; clearTimeout(timer); resolve(v) } }
+    const finish = (v: Record<string, any> | null | typeof UNREACHABLE) => { if (!done) { done = true; clearTimeout(timer); resolve(v) } }
     const timer = setTimeout(() => finish(null), waitMs)
     Bun.connect({
       unix: socket,
       socket: {
-        open(s) { s.write(encode({ t: 'hook', id: 1, project_dir: projectDir, ev })) },
+        open(s) { s.write(encode(msg)) },
         data(s, chunk) {
           buf += chunk.toString()
           const line = buf.split('\n')[0]
@@ -86,12 +88,15 @@ async function ask(projectDir: string, ev: Record<string, unknown>, waitMs: numb
           } catch { finish({}) }
           s.end()
         },
-        close() { finish(null) },
-        error() { finish(null) },
+        close() { finish(UNREACHABLE) },
+        error() { finish(UNREACHABLE) },
       },
-    }).catch(() => finish(null))
+    }).catch(() => finish(UNREACHABLE))
   })
 }
+
+/** Tests only: a shorter retry window (never longer than RETRY_WINDOW_MS). */
+const WINDOW = Number(process.env.CC_TELEGRAM_ROUTER_RETRY_WINDOW_MS) || RETRY_WINDOW_MS
 
 async function main(): Promise<void> {
   const [job, event] = [process.argv[2], process.argv[3]]
@@ -108,11 +113,11 @@ async function main(): Promise<void> {
     const ev = progressEvent(event, input)
     if (!ev) return
     // A package review takes seconds; everything else answers at once.
-    const d = await ask(dir, ev, ev.install ? 55_000 : 5000)
+    const d = SOCKET ? await reportEvent(event, dir, ev, (msg, waitMs) => ask(SOCKET, msg, waitMs), WINDOW) : null
     if (event !== 'pre') return
     // The router checks permissions and elevation (router/elevation.ts).
-    // Unreachable router: nobody leaves the sandbox; the rest is up to the
-    // worker's own settings.
+    // Unreachable router (every try failed): nobody leaves the sandbox; the
+    // rest is up to the worker's own settings.
     const decision = d?.decision ?? (input.tool_input?.dangerouslyDisableSandbox ? 'deny' : undefined)
     if (decision) {
       process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision, permissionDecisionReason: d?.reason ?? 'router unreachable: no unsandboxed commands' } }))

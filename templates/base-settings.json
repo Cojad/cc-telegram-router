@@ -91,7 +91,7 @@
           {
             "type": "command",
             "command": "{{hooksDir}}/cc-hook progress subagent-start",
-            "timeout": 5
+            "timeout": 60
           }
         ]
       }

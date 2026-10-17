@@ -12,7 +12,7 @@ export interface Area { name: string; title: string; tests: string[]; paths: str
 export const AREAS: Area[] = [
   {
     name: 'perm', title: '權限與提權',
-    tests: ['phase3.test.ts', 'risky.test.ts', 'autoelev.test.ts', 'dmrole.test.ts', 'toolhistory.test.ts', 'e2e-autoelev.test.ts', 'e2e-dmrole.test.ts', 'e2e-ownagents.test.ts', 'e2e-toolhistory.test.ts', 'role-live.test.ts'],
+    tests: ['phase3.test.ts', 'risky.test.ts', 'autoelev.test.ts', 'dmrole.test.ts', 'toolhistory.test.ts', 'e2e-autoelev.test.ts', 'e2e-dmrole.test.ts', 'e2e-ownagents.test.ts', 'e2e-toolhistory.test.ts', 'role-live.test.ts', 'retry.test.ts', 'e2e-retry.test.ts'],
     paths: ['router/permcheck.ts', 'router/elevation.ts', 'router/approvals.ts', 'router/authz.ts', 'router/grants.ts', 'router/guard.ts', 'router/settings.ts', 'router/toolhistory.ts', 'router/context.ts', 'router/conversations.ts', 'shared/tools.ts', 'templates/**'],
   },
   {
@@ -65,7 +65,7 @@ export const AREAS: Area[] = [
 // Files every part of the router goes through (the router itself, its db,
 // config, socket protocol, command table, the hook, the plugin client) and
 // the build and test setup: a change here runs the whole suite.
-export const RUN_ALL = ['router/main.ts', 'router/db.ts', 'router/config.ts', 'router/ipc.ts', 'router/commands.ts', 'hooks/**', 'plugin/client.ts', 'shared/protocol.ts', 'router/test/fixtures/**', 'package.json', 'bun.lock', 'bunfig.toml', '.npmrc']
+export const RUN_ALL = ['router/main.ts', 'router/db.ts', 'router/config.ts', 'router/ipc.ts', 'router/commands.ts', 'hooks/**', 'plugin/client.ts', 'shared/protocol.ts', 'shared/retry.ts', 'router/test/fixtures/**', 'package.json', 'bun.lock', 'bunfig.toml', '.npmrc']
 
 // No test reads these: a change here runs std only.
 export const STD_ONLY = ['docs/**', 'LICENSE', '.gitignore', '.gitattributes']

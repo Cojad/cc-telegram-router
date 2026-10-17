@@ -29,7 +29,7 @@
 角色範本沒有規範的工具 (Claude Code 內建, 不屬於 Bash, 檔案讀寫, WebFetch/WebSearch, MCP) 原本一律放行; 其中會碰到這個對話以外的幾個改成 power 以下 (power, user, guest) 要提權 (`permcheck.ts` 的 `riskyRefusal`), admin 與 owner 不擋, 其他工具維持原狀:
 
 - `ListAgents` (列出整台機器的 session), `RemoteTrigger`, `CronCreate`, `CronDelete`, `ScheduleWakeup`, `PushNotification`: 一律擋下, 原因是「power 以下的角色不能使用 <工具>」.
-- `SendMessage`: 收件對象不是這個對話自己的 subagent 就擋下, 原因是「power 以下的角色不能傳訊給其他 session (收件對象 <對象> 不是這個對話自己的 subagent)」. 自己的 subagent 是: SubagentStart 回報的 agent id; 以及 router 放行的 Agent 呼叫帶的 `name`, 要等它的 SubagentStart 到了才算 (依 `subagent_type` 對應, 同時開好幾個時依序配對). Agent 呼叫被擋或 subagent 沒有啟動時, 那個名字不算: 沒有同名的 subagent 時, 裸名稱會送到同名的其他 session. 背景 subagent 回報給 `"main"` 只在 subagent 發出時放行, 主 session 送 `"main"` 當成跨 session. `name [ref]`, `uds:`, `bridge:` 這類位址, 空白與不認得的名稱都當成跨 session. 這份名單依對話分開, 存在 `router.db` 的 `own_agents`, router 重啟後仍有效. 每一筆綁定開它的那個 worker 程序 (session id, worker plugin 的 pid 與該程序的啟動時間, 三者都相同才算同一個程序, pid 被系統重用時啟動時間不同; 讀不到啟動時間, 例如沒有 `/proc` 的系統, 那個 worker 的名單一律不算): 只有 router 啟動後 plugin 已經打過招呼 (hello) 的那個 worker 的項目才算數, plugin 沒連上時一律不算; 同一個對話的 plugin 從另一個程序打招呼 (輪替, 重開, 換新 session, 即使 session id 沒變) 時, 舊程序的項目整批刪除, 因為那些 subagent 已經不在, 留著同名項目會讓裸名稱送到同名的其他 session. SubagentStart 到的時候 plugin 沒連上, 這個 subagent 不記 (保守). 還在等 SubagentStart 的 Agent 呼叫名稱只放在記憶體, 不入庫: router 重啟或 worker 換程序時丟棄, 那個名稱就不算. SubagentStop 不移除項目: 已結束的 subagent 可以用 SendMessage 叫回來繼續, 移除會把對自己 subagent 的訊息當成跨 session. 每個 worker 最多保留最新 500 筆; 30 天前加入的項目, 以及已不存在的對話的項目, 在 router 啟動時與之後每天清掉.
+- `SendMessage`: 收件對象不是這個對話自己的 subagent 就擋下, 原因是「power 以下的角色不能傳訊給其他 session (收件對象 <對象> 不是這個對話自己的 subagent)」. 自己的 subagent 是: SubagentStart 回報的 agent id; 以及 router 放行的 Agent 呼叫帶的 `name`, 要等它的 SubagentStart 到了才算 (依 `subagent_type` 對應, 同時開好幾個時依序配對). Agent 呼叫被擋或 subagent 沒有啟動時, 那個名字不算: 沒有同名的 subagent 時, 裸名稱會送到同名的其他 session. 背景 subagent 回報給 `"main"` 只在 subagent 發出時放行, 主 session 送 `"main"` 當成跨 session. `name [ref]`, `uds:`, `bridge:` 這類位址, 空白與不認得的名稱都當成跨 session. 這份名單依對話分開, 存在 `router.db` 的 `own_agents`, router 重啟後仍有效. 每一筆綁定開它的那個 worker 程序 (session id, worker plugin 的 pid 與該程序的啟動時間, 三者都相同才算同一個程序, pid 被系統重用時啟動時間不同; 讀不到啟動時間, 例如沒有 `/proc` 的系統, 那個 worker 的名單一律不算): 只有 router 啟動後 plugin 已經打過招呼 (hello) 的那個 worker 的項目才算數, plugin 沒連上時一律不算 (SendMessage 給名單裡的名稱時先等 plugin 回來, 見 [router 連不到時](#router-連不到時)); 同一個對話的 plugin 從另一個程序打招呼 (輪替, 重開, 換新 session, 即使 session id 沒變) 時, 舊程序的項目整批刪除, 因為那些 subagent 已經不在, 留著同名項目會讓裸名稱送到同名的其他 session. SubagentStart 到的時候 plugin 沒連上, 這個 subagent 不記 (保守). 還在等 SubagentStart 的 Agent 呼叫名稱只放在記憶體, 不入庫: router 重啟或 worker 換程序時丟棄, 那個名稱就不算. SubagentStop 不移除項目: 已結束的 subagent 可以用 SendMessage 叫回來繼續, 移除會把對自己 subagent 的訊息當成跨 session. 每個 worker 最多保留最新 500 筆; 30 天前加入的項目, 以及已不存在的對話的項目, 在 router 啟動時與之後每天清掉.
 
 settings 的規則可以改變這條線: allow 規則**只寫工具名稱** (例如 `ListAgents`, `SendMessage`; 角色範本, `/router perm <對話> tool allow`, 或[使用者覆寫](#使用者覆寫)) 讓 power 以下也能用, `SendMessage` 是任何收件對象; deny 規則只寫工具名稱時所有角色都擋 (原因「<角色> 禁止 <工具>」). 帶括號的規則 (例如 `ListAgents(*)`) 不算.
 
@@ -43,7 +43,17 @@ settings 的規則可以改變這條線: allow 規則**只寫工具名稱** (例
 
 實測 (Claude Code 2.1.302, role-live): 除了 `CronDelete` 都會觸發 PreToolUse 並被 router 擋下; **`CronDelete` 不觸發 PreToolUse**, 模型呼叫了就直接執行, router 看不到也擋不了, 也不會出現在工具呼叫紀錄. 它只能刪除同一個 session 自己用 `CronCreate` 建立的排程 (排程只存在該 session 的記憶體), 而 power 以下建立排程已經要提權, 所以影響限於刪掉提權後建立的排程. role-live 會檢查這件事, Claude Code 哪天開始送 hook 時測試會提醒.
 
-hook 連不到 router 時維持原狀 (只擋跳出 sandbox, 其他交給 worker 自己的設定), 所以 router 不在時這些工具不會被擋.
+hook 一直連不到 router 時維持原狀 (只擋跳出 sandbox, 其他交給 worker 自己的設定), 所以 router 不在時這些工具不會被擋; router 重啟的空窗由 hook 重試與 router 等 plugin 補上, 見 [router 連不到時](#router-連不到時).
+
+## router 連不到時
+
+router 重啟時有兩段空窗 (實測數字見 [部署與維運](operations.md#router-重啟)): router 程序本身連不上, 以及 router 起來了但 worker 的 plugin 還沒重新打招呼 (hello). 兩邊照同一份時間表 (`shared/retry.ts`) 處理, 共用同一個期限.
+
+- **時間表**: 第一次立刻試, 之後間隔 3, 5, 7, 15, 15 秒, 最多重試 5 次, 總共 6 次 (第 0, 3, 8, 15, 30, 45 秒), 整段最多 45 秒. 期限是 hook 第一次嘗試的時間加 45 秒, 每次請求都帶給 router.
+- **hook 重試** (`hooks/hook.ts`): 只有 PreToolUse 與 SubagentStart 兩種事件, 而且只在「連不到」時重試: socket 不存在, 連線被拒, 或連上後還沒拿到回答就斷線 (router 正在結束). 連上了而 router 還在處理不是重試的理由, 照下面的單次等待等它回答. 其他事件 (prompt, post, stop, compact, SubagentStop) 照舊只送一次. 6 次都連不到才落回上面的規則: 放行, 但 `dangerouslyDisableSandbox` 一律拒絕 (原因 `router unreachable: no unsandboxed commands`). 位置檔不存在 (沒有安裝 router) 時不重試, 直接落回.
+- **單次等待**: 連上之後等 router 回答到期限再加 5 秒, 套件安裝審核 ([套件安裝審核](#套件安裝審核)) 維持 55 秒; 兩者都不超過第一次嘗試後 55 秒. 最壞情況 (最後一次在第 45 秒才連上) 整個 hook 在 55 秒內結束, 在 `templates/base-settings.json` 給 PreToolUse 與 SubagentStart 的 60 秒逾時之內. 等不到回答時同樣落回上面的規則.
+- **router 等 plugin** (`router/elevation.ts`): SendMessage 的收件對象在這個對話的自己的 subagent 名單 (`own_agents`, 任何一個 worker 程序的項目) 裡, 但這個對話的 worker plugin 目前沒有連上時, 先等, 不擋. plugin 一打招呼就立刻判斷, 不等下一個檢查點: 同一個 worker 程序就算自己的 subagent, 放行; 另一個程序時舊項目已刪除, 照跨 session 處理. 到期限 (hook 帶來的期限, 最多從現在起 45 秒) 仍沒連上才當成不是自己的 subagent, 走原本的擋下, 按鈕與提權流程. 對話角色本來就允許這個 SendMessage (admin 以上, 或 settings 開放) 時不等; 收件對象不在名單裡, `"main"`, 以及 plugin 已經連上時照舊立刻判斷; 舊版 hook 沒帶期限時也不等.
+- **記錄**: 只有重試或等待時 router log 才記一行, 正常呼叫不記. hook 在第二次以後才連上時記 `hook <事件> <對話>: reached the router on try <次數>, <秒數>s after the first`; router 等 plugin 時記 `own subagent <收件對象> of <對話>: waited <秒數>s for the worker's plugin, <結果>`, 結果是 `the same worker is back: counted`, `another worker process said hello: not counted` 或 `the plugin did not say hello in time: not counted`. 6 次都連不到時 router 不在, 沒有 log.
 
 ## 使用者覆寫
 

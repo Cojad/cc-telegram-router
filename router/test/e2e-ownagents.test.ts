@@ -93,7 +93,8 @@ const ukey = `dm-${USER.id}`
 async function hook(event: string, input: object): Promise<any> {
   const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', event], {
     stdin: new Blob([JSON.stringify({ cwd: folder(ukey), ...input })]), stdout: 'pipe',
-    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: folder(ukey) },
+    // a 3 s retry window: a refusal while no plugin is connected waits that long, not 45 s (e2e-retry.test.ts)
+    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: folder(ukey), CC_TELEGRAM_ROUTER_RETRY_WINDOW_MS: '3000' },
   })
   const text = await new Response(p.stdout).text()
   await p.exited

@@ -22,8 +22,9 @@ export interface IpcDeps {
   onCall: (peer: Peer, tool: string, args: Record<string, unknown>) => Promise<ToolResult>
   /** Worker hook progress event, identified by project dir like a hello. */
   onProgress?: (peer: Peer, ev: Record<string, unknown>) => void
-  /** Worker hook event: progress plus elevation decisions; returns the decision. */
-  onHook?: (peer: Peer, ev: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>
+  /** Worker hook event: progress plus elevation decisions; returns the decision.
+   *  deadline: the hook waits no longer (shared/retry.ts); none from older hooks. */
+  onHook?: (peer: Peer, ev: Record<string, unknown>, deadline?: number) => Record<string, unknown> | Promise<Record<string, unknown>>
   /** A worker's plugin said hello (its session id when the plugin knows it, its pid). */
   onWorker?: (conv: Conversation, hello: { session_id?: string; pid: number }) => void
   /** That worker's plugin connection closed. */
@@ -101,7 +102,8 @@ export function createIpc(deps: IpcDeps) {
       }
       case 'hook': {
         const peer = identify(m.project_dir)
-        const decision = peer && deps.onHook ? await deps.onHook(peer, m.ev) : {}
+        if (m.retry) log(`hook ${String(m.ev?.event)} ${peer?.conv?.key ?? m.project_dir}: reached the router on try ${m.retry.tries}, ${(m.retry.waited_ms / 1000).toFixed(1)}s after the first`)
+        const decision = peer && deps.onHook ? await deps.onHook(peer, m.ev, typeof m.deadline === 'number' ? m.deadline : undefined) : {}
         send(s, { t: 'result', id: m.id, result: { content: [{ type: 'text', text: JSON.stringify(decision) }] } })
         return
       }
