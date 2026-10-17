@@ -21,7 +21,7 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 |---|---|
 | owner | 全部, 不受資料夾與 sandbox 限制 |
 | admin, power | 自己資料夾內讀寫, Bash 在 sandbox 裡執行 (python3, node, bun), 可連 PyPI 與 npm. power 安裝套件要經過審核 |
-| user | 自己資料夾內讀寫, Bash 只能跑唯讀指令 (ls, cat, head, tail, wc, grep, rg, find, stat, file, jq, cut, sort, uniq, date, echo, pwd; 用 `>` `>>` 重導向或 `sort -o`, `uniq 輸入 輸出` 寫檔不算唯讀, 寫檔請用 Write 工具) |
+| user | 自己資料夾內讀寫, Bash 只能跑唯讀指令 (ls, cat, head, tail, wc, grep, rg, find, stat, file, jq, cut, sort, uniq, tr, seq, which, hostname, cd, date, echo, pwd; 用 `>` `>>` 重導向或 `sort -o`, `uniq 輸入 輸出` 寫檔不算唯讀, 寫檔請用 Write 工具) |
 | guest | 只能對話, 讀收到的附件 |
 
 ## 權限不足與提權

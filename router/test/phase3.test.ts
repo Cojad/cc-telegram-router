@@ -56,7 +56,7 @@ test('five role templates: owner bypass; admin/power write and run code in a san
   expect(user.permissions.allow).not.toContain('Bash')
   expect(user.sandbox.autoAllowBashIfSandboxed).toBe(false)
   const guest = renderSettings(TEMPLATES, 'guest', vars(f)) as any
-  expect(guest.permissions.allow).toEqual(['mcp__plugin_telegram_telegram', `Read(/${f}/attachments/**)`])
+  expect(guest.permissions.allow).toEqual(['mcp__plugin_telegram_telegram', `Read(/${f}/attachments/**)`, 'Read(/{{transcripts}}/*/tool-results/**)']) // vars() here gives no transcripts
   // every non-owner template keeps the progress + elevation hooks
   for (const r of ['admin', 'power', 'user', 'guest']) {
     const h = (renderSettings(TEMPLATES, r, vars(f)) as any).hooks
@@ -324,6 +324,25 @@ test('subcommands: split at &&, ||, |, ; and newlines, never inside quotes or at
   expect(writesByOption('sort -k1,1 -t, a.csv')).toBe(false)
 })
 
+test('user allow-list A (柯姊 2026-10-17): which, tr, seq, hostname and cd run without elevation; every non-owner role reads its own tool-results under the transcripts folder, nothing else there', () => {
+  const f = join(dir, 'g')
+  const transcripts = '/home/u/.claude/projects/-x-cc-bot1-dm-1'
+  const v = { ...vars(f), transcripts }
+  const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } })
+  const user = applyOverrides(renderSettings(TEMPLATES, 'user', v), [])
+  for (const c of ['which ffmpeg ffprobe', "tr '\\n' ' ' < a.txt", 'grep -v x a | tr -d x', 'seq 1 3', 'hostname', 'cd media && ls | wc -l; date', 'cd'])
+    expect([c, checkCall(user, bash(c), f).ok]).toEqual([c, true])
+  expect(checkCall(user, bash('hostname newname'), f).ok).toBe(false) // setting it is not read-only
+  expect(checkCall(user, bash('cd media && rm a'), f).ok).toBe(false)
+  const read = (file_path: string) => ({ tool_name: 'Read', tool_input: { file_path } })
+  for (const role of ['user', 'power', 'admin', 'guest']) {
+    const st = applyOverrides(renderSettings(TEMPLATES, role, v), [])
+    expect([role, checkCall(st, read(`${transcripts}/0f3c-session/tool-results/artifact-1.txt`), f).ok]).toEqual([role, true])
+    expect([role, checkCall(st, read(`${transcripts}/0f3c-session.jsonl`), f).ok]).toEqual([role, false])
+    expect([role, checkCall(st, read('/home/u/.claude/projects/-x-cc-bot1-dm-2/s/tool-results/a.txt'), f).ok]).toEqual([role, false])
+  }
+})
+
 test('writesFile: output redirections to a file count; quotes, escapes, /dev/null and fd copies do not; a command substitution in double quotes is looked into', () => {
   for (const c of ['echo hi > a', 'echo hi>a', 'cat a >> b', 'echo x &> log', 'ls 1>out', 'echo x >&out.txt', 'cat <> f', 'echo x >', 'diff <(ls) >(cat)', 'echo "$(date > t)"', 'cat <<EOF > f'])
     expect([c, writesFile(c)]).toEqual([c, true])
@@ -494,17 +513,17 @@ test('elevation: 永久允許 runs it this time and adds that kind of action to 
   e.stop()
 })
 
-test('elevation: a command without arguments (hostname) can be allowed for good: the rule covers it alone and with arguments', async () => {
+test('elevation: a command without arguments (uptime) can be allowed for good: the rule covers it alone and with arguments', async () => {
   const { conv, e, sent } = elevHarness()
   e.onDeliver(conv, OWNER)
-  const host = { event: 'pre', tool_name: 'Bash', tool_input: { command: 'hostname' } }
+  const host = { event: 'pre', tool_name: 'Bash', tool_input: { command: 'uptime' } }
   await e.onHook(conv, host)
   expect(sent[0]!.buttons).toEqual(['elev:1:once', 'elev:1:always', 'elev:1:deny'])
-  expect(sent[0]!.text).toContain('♾️ 永久允許的範圍: group-100555 之後可以執行 hostname 開頭的 Bash 指令 (仍在 sandbox 裡), 不用再問 (權限覆寫 tool-allow Bash(hostname), tool-allow Bash(hostname *))')
+  expect(sent[0]!.text).toContain('♾️ 永久允許的範圍: group-100555 之後可以執行 uptime 開頭的 Bash 指令 (仍在 sandbox 裡), 不用再問 (權限覆寫 tool-allow Bash(uptime), tool-allow Bash(uptime *))')
   expect(sent[0]!.text).not.toContain('明確禁止')
   expect(await e.decide('elev:1:always', OWNER)).toBe('已永久允許並提權')
   expect(await e.onHook(conv, host)).toEqual({})
-  expect(await e.onHook(conv, { event: 'pre', tool_name: 'Bash', tool_input: { command: 'hostname -f' } })).toEqual({})
+  expect(await e.onHook(conv, { event: 'pre', tool_name: 'Bash', tool_input: { command: 'uptime -f' } })).toEqual({})
   e.stop()
 })
 

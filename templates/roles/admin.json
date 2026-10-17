@@ -3,7 +3,7 @@
     "defaultMode": "dontAsk",
     "allow": [
       "Read(/{{folder}}/**)", "Edit(/{{folder}}/**)", "Write(/{{folder}}/**)",
-      "Read(/{{home}}/.claude/skills/**)", "Read(/{{botDir}}/.claude/skills/**)",
+      "Read(/{{home}}/.claude/skills/**)", "Read(/{{botDir}}/.claude/skills/**)", "Read(/{{transcripts}}/*/tool-results/**)",
       "Bash", "WebSearch", "WebFetch",
       "mcp__plugin_telegram_telegram"
     ],
