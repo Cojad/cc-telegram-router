@@ -121,9 +121,9 @@
 | [docs/secrets.md](docs/secrets.md) | 對話專屬密鑰 (10b), 原始事件與密鑰保護 (10e) |
 | [docs/classifier.md](docs/classifier.md) | 工具呼叫分類器 (第一階段, 只記錄) |
 | [docs/operations.md](docs/operations.md) | 部署與 config.json, 安裝位置, 新 bot 初次設定與審核群組, bot 設定提醒, 輪詢與重試, 時間 |
-| [docs/testing.md](docs/testing.md) | 執行測試, 測試檔對照, 各階段驗收對照表 |
+| [docs/testing.md](docs/testing.md) | 執行測試, 測試分區 (std, 依改動跑), 測試檔對照, 各階段驗收對照表 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本變更紀錄 |
 | `/telegram:doc` (`plugin/skills/doc/SKILL.md`) | worker 端的使用說明 |
 | `/telegram:bot-skill` (`plugin/skills/bot-skill/SKILL.md`) | worker 建立技能與憑證的 SOP |
 
-測試: `bun test` (repo 根目錄, 只跑 `router/test`), 見 [docs/testing.md](docs/testing.md).
+測試: `bun test` (repo 根目錄, 只跑 `router/test`, 全套); 開發中用 `bun run test:changed` (std 加上改到的區), 見 [docs/testing.md](docs/testing.md#測試分區).

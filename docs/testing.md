@@ -8,14 +8,82 @@
 bun test router/test
 ```
 
+這是全套 (約 2.5 分鐘). 開發中與交付前改用 `bun run test:changed`, 只跑 std 與改到的區, 見[測試分區](#測試分區).
+
 輸出裡以「✅ 預期中 (測試刻意模擬, 屬正確行為)」開頭的行, 是測試刻意製造的錯誤 (例如模擬 db locked, disk full, 重複的訊息), 用來驗證 router 遇到這些狀況仍正常運作, 不是真的錯誤.
 
 repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 repo 根目錄直接跑 `bun test` 或 `bun run test` (package.json 的 `test` script 就是 `bun test router/test`) 也只會跑 `router/test` 底下的測試, 不會掃到上層或其他目錄. 不要在 repo 以外的上層目錄 (多個專案共用的工作區) 跑 `bun test`: bun 會把路徑含指定字串的檔案都當測試執行.
+
+## 測試分區
+
+全套約 2.5 分鐘, 平常不必每次都跑. 測試依功能分成幾個區, 另有一套只測重要項目的 std; 改到哪一區, 才加跑那一區的完整測試. 分區與 std 寫在 `router/test/areas.ts` (對照檔), 指令由 `router/test/tiers.ts` 執行: 它先切到 repo 根目錄並確認是這個 repo, 不是就退出, 所以不論從哪個目錄呼叫, 都只會跑這個 repo 的測試.
+
+| 指令 | 跑什麼 | 實測耗時 |
+|---|---|---|
+| `bun run test:std` | std 套組 | 約 19 秒 |
+| `bun run test:area <區名...>` | 指定區的完整測試, 可給多個區; 不給區名時列出所有區 | perm 約 25 秒, secrets 約 18 秒, pkg 約 4 秒 |
+| `bun run test:changed [base]` | std 加上這次改動影響的區 (見下方判斷方式) | 依改動而定 |
+| `bun run test` | 全套 (`bun test router/test`) | 約 2.5 分鐘 |
+
+何時用哪個: teammate 開發中與交付前跑 `test:changed`; 想針對某一區反覆修改時跑 `test:area`; 全套只在 team lead 合併部署前跑一次.
+
+### std 套組
+
+以安全相關為主, 加上一條從收訊到回覆的完整流程:
+
+| 測試 | 範圍 |
+|---|---|
+| `areas.test.ts` | 對照檔涵蓋檢查 (見下方) |
+| `requirements.test.ts` | README 的 Requirements 與 package 檔, repo 的程式不用 curl 與 jq (掃描所有 `router/*.ts`, 所以每次都跑) |
+| `phase3.test.ts` | 角色範本, 權限檢查, 提權, 跨對話傳訊申請 (grants), 授權 |
+| `risky.test.ts` | 高風險工具 |
+| `autoelev.test.ts` | 自動提權, 這一輪的發話者, 使用者覆寫 |
+| `dmrole.test.ts` | 私訊的使用者角色 |
+| `policy.test.ts` | 收訊的允許清單與 mention 判斷 |
+| `secrets.test.ts` | 對話專屬密鑰, 遮蔽 |
+| `rawvault.test.ts` | 原始事件與密鑰偵測, 遮蔽 |
+| `phase1.test.ts` 只跑 `user settings`, `owner settings`, `user worker may only target`, `files: user only` | 各角色產生的 settings 與沙箱, 送出與讀檔的範圍 |
+| `portability.test.ts` 只跑 `config sandboxDenyRead`, `hiddenPaths`, `fill splices`, `role templates follow`, `skill bwrap` | 沙箱隱藏清單, 角色範本的 denyRead, 特權技能的 bwrap 參數 |
+| `e2e.test.ts` 只跑 `every update is logged`, `a plugin for the conversation gets the queued message` | 冒煙測試: 真的 router + 假 Bot API, 收到 update, 建立對話與 worker, plugin 收到訊息, 回覆送出並記錄, user 對話送往別的 chat 被擋 |
+
+整檔跑的幾支用 `bun test --parallel` 同時執行 (每支測試用自己的暫存資料夾); 只跑部分測試的幾支各自用 `-t` 篩選再跑. 區的完整測試則與全套一樣逐檔執行, 因為部分 e2e 測試對時間敏感 (例如表情回應的 debounce).
+
+### 各區
+
+| 區名 | 內容 | 測試檔 | 改到這些路徑時跑這一區 |
+|---|---|---|---|
+| `perm` | 權限與提權 | phase3, risky, autoelev, dmrole, toolhistory, e2e-autoelev, e2e-dmrole, e2e-ownagents, e2e-toolhistory, role-live | `router/` 的 permcheck, elevation, approvals, authz, grants, guard, settings, toolhistory, context, conversations; `shared/tools.ts`; `templates/**` |
+| `pkg` | 套件安裝審核 | phase3-pkg | `router/` 的 packages, pkgreview, approvals, authz |
+| `skills` | 憑證與特權技能 | phase3-cred, phase3-privskill | `router/` 的 credentials, skills, privskill, skillrefresh, skillrun; `plugin/skills/bot-skill/**` |
+| `sandbox` | 沙箱與安裝位置 | portability | `shared/locate.ts`, `deploy/**`, `router/` 的 settings, privskill, cli; `plugin/server.ts`, `templates/roles/**` |
+| `secrets` | 密鑰保護 | secrets, e2e-secrets, rawvault, e2e-rawvault | `router/` 的 secrets, rawvault, detect, rotate, credentials, setup; `shared/tools.ts` |
+| `telegram` | Telegram 收發與訊息紀錄 | format, inbound, outbound, policy, rich, store, poller, phase4, channel, e2e-channel | `router/telegram/**`, `router/` 的 poller, pollnotice, sendretry, importv1, setup; `plugin/skills/doc/**`, `plugin/skills/format/**`, `templates/CLAUDE.md.example`, `shared/tools.ts` |
+| `reactions` | 表情回應 | reactions, e2e-reactions | `router/reactions.ts`, `router/telegram/transport.ts`, `router/telegram/inbound.ts` |
+| `classifier` | 工具呼叫分類器 | classifier, e2e-classifier, e2e-classifier-off | `router/classifier.ts` |
+| `core` | 對話生命週期與指令 | phase1, phase2, e2e, e2e-wake, e2e-setup | `router/` 的 supervisor, lock, conversations, context, progress, relay, freshness, rotate, setup, cli, guard, settings; `plugin/server.ts`, `plugin/skills/**`, `shared/time.ts`, `templates/**` |
+| `repo` | 報表腳本與 repo 檢查 | context-chart, usage-report, requirements, areas | `scripts/**`, `README.md`, `CHANGELOG.md`, `plugin/package.json`, `deploy/**`, `router/relay.ts`, `router/test/areas.ts`, `router/test/tiers.ts` |
+
+改到某區的測試檔, 也會跑那一區. 一個路徑可以屬於多個區.
+
+### test:changed 的判斷方式
+
+1. 改動: 從 base (預設 `main`) 與目前 HEAD 的分岔點算起, 已 commit, 還沒 commit 的改動, 以及還沒追蹤的新檔都算. 每個檔歸到哪裡都會印出來.
+2. 改到所有功能都會經過的共用核心或建置設定, 跑全套: `router/main.ts`, `router/db.ts`, `router/config.ts`, `router/ipc.ts`, `router/commands.ts`, `hooks/**`, `plugin/client.ts`, `shared/protocol.ts`, `router/test/fixtures/**`, `package.json`, `bun.lock`, `bunfig.toml`, `.npmrc`.
+3. 符合某區的路徑或測試檔: 加跑那一區.
+4. 沒有測試會讀的檔 (`docs/**`, `LICENSE`, `.gitignore`, `.gitattributes`): 只跑 std.
+5. 對照檔沒有涵蓋的路徑: 保守地跑全套, 並印出是哪個檔.
+
+最後印出決定 (跑全套與原因, 或 std 加上哪些區), 再執行. std 已整檔跑過的不重跑; 區裡含有 std 只跑部分的檔, 就改成整檔跑.
+
+### 對照檔涵蓋檢查
+
+`router/test/areas.test.ts` (在 std 裡): `router/test` 的每一支測試檔至少屬於一區, 對照檔與 std 列的測試檔都存在, 區名不重複, 每個路徑 glob 都對得到 repo 裡的檔; 本節「各區」表的區名與測試檔, 「std 套組」表的測試檔, 與對照檔一致. 新增測試檔時要同時加進 `areas.ts` 的某一區, 改了分區或 std 要一起改本節, 否則這個檢查失敗.
 
 ## 測試檔對照
 
 | 檔案 | 對應 |
 |---|---|
+| `router/test/areas.test.ts` | [測試分區](#測試分區)的對照檔 `router/test/areas.ts`: 每支測試檔至少屬於一區, 列出的測試檔都存在, 區名不重複, 路徑 glob 都對得到檔, 「各區」與「std 套組」兩張表與對照檔一致 |
 | `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor (含 resume 後的說明更新提醒 freshness), plugin MCP, router 離線告知 |
 | `router/test/phase2.test.ts` | 規劃 03 的 /router 指令表與拒絕訊息 (含 chat_id 跨 bot 指定, --bot, 對話 key), 06 chat_context, router_log, hook, 「cc /」代打, 即時進度訊息, bot list 與 status 對資訊還沒取得的 bot 顯示讀取中, GMT+8 時間格式 (`iso8`, log 行) |
 | `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, 群組回到提問者的私訊 (on_behalf_of), /router 指令不轉給 worker, CLI, bot add 後立刻 bot list 就有新 bot 的資訊, log 行與 worker 收到的訊息時間是 GMT+8 |

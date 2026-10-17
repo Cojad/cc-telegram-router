@@ -14,6 +14,7 @@
 - router 停止或重啟 (SIGTERM, SIGINT, `/router restart`) 時先把每個對話還沒送的表情回應單獨送進 worker, 等確認最多 5 秒再結束, 重啟不再遺失; 沒連上的 worker 不叫醒, 留在佇列等下次啟動. 見 [docs/operations.md](docs/operations.md#表情回應-reaction).
 - `cc /usage` 加上 Weekly (all models) 的燃燒速率: 完美速率, 當前速率與 ratio, 剩下的額度與倒數, 到重置剛好用完的每日上限, 可超速多少或要減速, 措辭照群組範例的輕快語氣 (算法見 [docs/operations.md](docs/operations.md#cc--報表腳本)).
 - 工具呼叫紀錄: 每個經過 PreToolUse 的工具呼叫 (所有角色, 含 owner 對話) 與 router 端執行的 Telegram 工具記在 `router.db` 的 `tool_history` (不存參數, 只有工具, 決定與原因, SendMessage 的收件對象), 保留 30 天; 報表 `/router tools [天數]` 與 `cli tools [天數]` (owner, admin). 見 [docs/permissions.md](docs/permissions.md#工具呼叫紀錄).
+- 測試分區: `router/test` 依功能分成 10 個區 (對照檔 `router/test/areas.ts` 寫明各區的測試檔與觸發的原始碼路徑), 另有安全相關為主加一條收訊到回覆冒煙測試的 std 套組 (約 19 秒). `bun run test:std`, `bun run test:area <區名...>`, `bun run test:changed [base]` (比對 git 改動, 跑 std 與受影響的區; 改到共用核心或對照檔沒涵蓋的路徑時跑全套並印出原因); `bun run test` 全套不變. `areas.test.ts` 檢查每支測試檔都屬於某一區. 見 [docs/testing.md](docs/testing.md#測試分區)
 
 ### Changed
 

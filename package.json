@@ -4,7 +4,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "test": "bun test router/test"
+    "test": "bun test router/test",
+    "test:std": "bun router/test/tiers.ts std",
+    "test:area": "bun router/test/tiers.ts area",
+    "test:changed": "bun router/test/tiers.ts changed"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
