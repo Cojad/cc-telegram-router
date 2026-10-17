@@ -6,8 +6,8 @@
 // sandbox, in a bwrap sandbox made for that action:
 //   - reads: the system, the skill folder, the action's credential folders
 //   - writes: the conversation folder (its .chat stays read-only), a private /tmp
-//   - hidden: the router's home (other conversations), its state dir, $HOME
-//     and config sandboxDenyRead
+//   - hidden: the router's home (other conversations), its state dir, $HOME,
+//     config sandboxDenyRead and the router's socket when it lies elsewhere
 // Credentials are handed to the script as folder paths in env vars; the
 // conversation never gets them. The skill's files are hashed at approval and
 // checked before every run. Arguments are matched against the action's
@@ -184,14 +184,19 @@ export type Sandbox = { argv: string[]; env: Record<string, string> }
 
 /** bwrap for one run: the system read-only, a private /tmp, $HOME and the
  *  hidden paths (router home, state dir, sandboxDenyRead) as empty folders,
- *  then the skill and credential folders read-only and the conversation
+ *  a hidden file (the router's socket elsewhere) as /dev/null, then the skill and credential folders read-only and the conversation
  *  folder writable. Every tmpfs comes before the binds that reopen what
  *  lies inside it. */
 export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: string; creds: Record<string, string>; home: string; hidden: string[]; extraRo?: string[]; env?: Record<string, string>; credsWritable?: boolean }): Sandbox {
   const b = ['bwrap', '--die-with-parent', '--unshare-pid', '--new-session', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
     '--tmpfs', '/tmp']
-  // already under /tmp: hidden by it; missing: bwrap could not mount it on the read-only root
-  for (const p of outermost(['/tmp', o.home, ...o.hidden])) if (p !== '/tmp' && existsSync(p)) b.push('--tmpfs', p)
+  // already under /tmp: hidden by it; missing: bwrap could not mount it on the read-only root;
+  // a file (the router's socket outside its folders) cannot take a tmpfs: /dev/null over it
+  for (const p of outermost(['/tmp', o.home, ...o.hidden])) {
+    if (p === '/tmp' || !existsSync(p)) continue
+    if (statSync(p).isDirectory()) b.push('--tmpfs', p)
+    else b.push('--ro-bind', '/dev/null', p)
+  }
   for (const p of o.extraRo ?? []) if (existsSync(p)) b.push('--ro-bind', p, p)
   b.push('--ro-bind', o.skillDir, o.skillDir)
   // only the router's own refresh writes credentials; actions a conversation calls read them

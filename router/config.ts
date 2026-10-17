@@ -4,6 +4,7 @@
 // by default; the router may be installed anywhere).
 
 import { readFileSync } from 'fs'
+import { homedir } from 'os'
 import { dirname, isAbsolute, join, resolve } from 'path'
 import { outermost } from './settings'
 import { parseClassifier, type ClassifierConfig } from './classifier'
@@ -93,10 +94,21 @@ export function parseDenyRead(v: unknown, warnings: string[]): string[] {
   return out
 }
 
+/** Folders a worker cannot do without: a socket configured as one of these is never hidden. */
+const SYSTEM_DIRS = new Set(['/', '/tmp', '/var/tmp', '/run', '/var/run', '/run/user', '/dev', '/dev/shm', '/proc', '/sys', '/usr', '/etc', '/var', '/home'])
+
 /** What every sandbox hides (besides the user's home): the router's home,
- *  its state dir when that lies elsewhere, and config sandboxDenyRead. */
-export function hiddenPaths(cfg: Pick<Config, 'home' | 'stateDir' | 'sandboxDenyRead'>): string[] {
-  return outermost([cfg.home, cfg.stateDir, ...(cfg.sandboxDenyRead ?? [])])
+ *  its state dir when that lies elsewhere, config sandboxDenyRead, and the
+ *  router's socket when it lies outside all of them: the socket file itself
+ *  (never its folder, say /tmp or /run), and not when it is in the user's
+ *  home (hidden by ~ already), is that home or a folder above it, or is a
+ *  system folder. */
+export function hiddenPaths(cfg: Pick<Config, 'home' | 'stateDir' | 'sandboxDenyRead'> & { socket?: string }, userHome = homedir()): string[] {
+  const sock = cfg.socket ? resolve(cfg.socket) : null
+  const home = resolve(userHome)
+  const under = (p: string, dir: string) => p === dir || p.startsWith(dir === '/' ? dir : dir + '/')
+  const showSock = !sock || SYSTEM_DIRS.has(sock) || under(sock, home) || under(home, sock)
+  return outermost([cfg.home, cfg.stateDir, ...(cfg.sandboxDenyRead ?? []), ...(showSock ? [] : [sock!])])
 }
 
 export function defaultConfigPath(argv: string[], execPath: string): string {

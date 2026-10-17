@@ -33,10 +33,19 @@
 // call the router let through, once its SubagentStart arrives (a name whose
 // subagent never started stays unknown: a bare name with no in-process
 // agent behind it would reach another session). "main" counts only from a
-// subagent (reporting back). Kept in memory: after a router restart a
-// subagent from before is unknown, and a message to it is treated as going
-// to another session (refused for power and below).
+// subagent (reporting back). Kept in router.db own_agents, so a router
+// restart keeps them, each bound to the worker process it started under
+// (workerKey: session id, the plugin's pid and its start time): only the
+// worker whose plugin said hello since this router started counts, and a
+// hello from another worker process (rotate, restart, a new session) drops
+// the conversation's older rows, whose subagents are gone with that process.
+// No plugin connected, nothing counts. SubagentStop removes nothing: a
+// finished subagent is woken again by a SendMessage to it. Agent calls still
+// waiting for their SubagentStart stay in memory only. Rows older than
+// 30 days, and rows of conversations that no longer exist, go at start and
+// once a day.
 
+import { readFileSync } from 'fs'
 import type { Conversation, RouterDb, ElevLogKind } from './db'
 import { checkCall, describeCall, rank, permanentRule, riskyRefusal, sendTarget, RISKY_TOOLS, type Call, type Rule } from './permcheck'
 import { postApproval, settleApproval, logPlace, messageLink, buttons, parseChoice, CHOICE_WORD, type ApprovalDeps, type About } from './approvals'
@@ -45,6 +54,17 @@ import { logKind, type Authz } from './authz'
 import { inParens } from './context'
 
 export type HookDecision = { decision?: 'allow' | 'deny'; reason?: string }
+
+/** Who a worker process is: its session, its plugin's pid and, where /proc
+ *  has it, when that process started (a pid used again later is another process). */
+export function workerKey(session: string | null | undefined, pid: number): string {
+  let start = ''
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    start = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19] ?? ''
+  } catch {}
+  return `${session || '?'}:${pid}${start ? `:${start}` : ''}`
+}
 
 /** A tool call in full for the 執行授權 log (only the fields the hook forwards). */
 export function callDetail(call: Call): string {
@@ -102,15 +122,15 @@ export function createElevation(deps: ElevationDeps) {
    *  execution picks up to use the elevated role. */
   const tickets = new Map<string, { role: string; id: number; until: number }>()
   const ticketKey = (conv: string, tool: string, args: unknown) => `${conv}\u0000${tool}\u0000${stableArgs(args ?? {})}`
-  /** conv -> its own subagents (agent ids, names): SendMessage to them is not cross-session */
-  const ownAgents = new Map<string, Set<string>>()
+  /** conv -> the worker process its plugin said hello from since this router started (workerKey) */
+  const workers = new Map<string, string>()
   /** conv -> Agent calls the router let through, waiting for their SubagentStart */
   const spawning = new Map<string, Array<{ name: string; type: string }>>()
+  /** One of conv's own subagents (agent id or name), bound to its current worker: SendMessage to it is not cross-session. */
   const addOwn = (conv: string, id: string) => {
-    const s = ownAgents.get(conv) ?? new Set<string>()
-    s.delete(id); s.add(id)
-    while (s.size > MAX_OWN) s.delete(s.values().next().value!)
-    ownAgents.set(conv, s)
+    const w = workers.get(conv)
+    if (!w) { deps.log?.(`own subagent ${id} of ${conv} not kept: no worker plugin connected`); return }
+    try { db.addOwnAgent(conv, w, id, MAX_OWN) } catch (e) { deps.log?.(`own_agents: ${e}`) }
   }
   /** An Agent call is let through: its name becomes the conversation's once the subagent starts. */
   const noteSpawn = (conv: string, call: Call) => {
@@ -124,7 +144,8 @@ export function createElevation(deps: ElevationDeps) {
     const to = sendTarget(call)
     if (!to) return false
     if (to === 'main') return !!agent
-    return ownAgents.get(conv)?.has(to) ?? false
+    const w = workers.get(conv)
+    try { return !!w && db.isOwnAgent(conv, w, to) } catch { return false }
   }
 
   const senderOf = (conv: Conversation) => terminalTurn.has(conv.key) ? null : lastSender.get(conv.key) ?? null
@@ -407,7 +428,26 @@ export function createElevation(deps: ElevationDeps) {
       return b && b.conv === convKey ? b.role : null
     },
     /** The conversation's own subagents as known now (tests, /router status). */
-    ownAgents: (convKey: string): string[] => [...ownAgents.get(convKey) ?? []],
+    ownAgents: (convKey: string): string[] => {
+      const w = workers.get(convKey)
+      return w ? db.ownAgents(convKey, w) : []
+    },
+    /** A worker's plugin said hello (worker: workerKey). Another worker process
+     *  than the rows were kept for: those rows go, their subagents are gone. */
+    workerConnected(convKey: string, worker: string): void {
+      if (workers.get(convKey) !== worker) spawning.delete(convKey)
+      workers.set(convKey, worker)
+      try {
+        const n = db.dropOwnAgents(convKey, worker)
+        if (n) deps.log?.(`own_agents ${convKey}: dropped ${n} of an earlier worker`)
+      } catch (e) { deps.log?.(`own_agents: ${e}`) }
+    },
+    /** The worker's plugin went away: no own subagent counts until a plugin says hello again. */
+    workerGone(convKey: string): void { workers.delete(convKey) },
+    /** own_agents rows added before an ISO time, and of conversations gone; how many. */
+    purgeOwnAgents(before: string): number {
+      try { return db.purgeOwnAgents(before) } catch (e) { deps.log?.(`own_agents purge: ${e}`); return 0 }
+    },
 
     state: () => ({ granted: [...granted.entries()].map(([conv, g]) => ({ conv, ...g })), bound: [...bound.entries()].map(([agent, b]) => ({ agent, ...b })) }),
     stop() { for (const t of timers.values()) clearTimeout(t) },

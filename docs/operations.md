@@ -40,7 +40,7 @@ router 可以裝在任何位置, 程式不假設固定路徑:
 - `home` 是 router 的家目錄, 每隻 bot 一個 `bot<id>/`, 每個對話一個資料夾都在這裡; 不寫時是 config.json 所在目錄的上一層. `stateDir` 放 router 執行檔, config.json, access.json, router.db, socket 與各對話的 settings; 不寫時是 config.json 所在目錄. 慣例是 `<home>/.router`, 也可以放在 home 以外.
 - 位置檔: worker 的 plugin 與 hook 從 `~/.config/cc-telegram-router/router.json` 讀 router 的 `home`, `stateDir` 與 `socket` (`shared/locate.ts`). 不用環境變數, 因為背景 session 繼承的是 claude daemon 的環境, 而 owner 自己在 `<home>` 開的終端機 session 也要找得到 router. 位置檔由 `cc-telegram-router register` 依 config.json 寫入, `deploy/install.sh router` 在 config.json 已存在時會執行它. router 啟動時檢查位置檔: 指向自己 (同一個 `stateDir`) 但 `home` 或 `socket` 改過就更新並記 log; 不存在或指向另一個 router 只記 log, 不會改寫 (測試與第二套安裝不會蓋掉正式的位置檔). 位置檔不存在時, plugin 回報「不是 Telegram worker」並說明原因, hook 視同 router 連不上 (不准跳出 sandbox). plugin 只在 session 啟動時讀一次, 所以要先寫好位置檔再叫醒 worker.
 - `deploy/install.sh router` 與 `unit` 要知道 `stateDir`: 第一次用 `CC_ROUTER_STATE=<home>/.router` 指定, 之後從位置檔讀; 兩者都沒有就停下並說明, 不會裝到預設位置.
-- sandbox 隱藏的路徑: owner 以外的角色範本 `denyRead` 是 `{{hidden}}` 加上 `~` (使用者家目錄). `{{hidden}}` 是 router 的家目錄, `stateDir` (在家目錄底下時已包含在內) 與 config `sandboxDenyRead` (額外要隱藏的絕對路徑, 預設空; 例如同一台機器上其他專案所在的目錄), 互相包含的只留最外層. 自己的對話資料夾與共用技能資料夾再由 `allowRead` 打開. 特權技能的 bwrap 沙箱隱藏同一份清單 (見 [憑證與技能](credentials-and-skills.md)). `sandboxDenyRead` 的項目不是絕對路徑或是 `/` 時略過並在 log 寫一行, 其他項目照常隱藏. 改了要重啟 router, 再 `/router session rotate all` 讓 worker 用新的 settings.
+- sandbox 隱藏的路徑: owner 以外的角色範本 `denyRead` 是 `{{hidden}}` 加上 `~` (使用者家目錄). `{{hidden}}` 是 router 的家目錄, `stateDir` (在家目錄底下時已包含在內) 與 config `sandboxDenyRead` (額外要隱藏的絕對路徑, 預設空; 例如同一台機器上其他專案所在的目錄), 互相包含的只留最外層. config `socket` 設在這些位置以外時, socket 檔本身也列入 (只藏那個檔, 不藏它所在的資料夾, 例如 `/tmp`, `/run`); socket 在使用者家目錄裡時 `~` 已經藏住, 不另外列; 設成系統資料夾 (`/`, `/tmp`, `/var/tmp`, `/run`, `/var/run` 等), 使用者家目錄或它的上層時不列, 以免 worker 壞掉. 自己的對話資料夾與共用技能資料夾再由 `allowRead` 打開. 特權技能的 bwrap 沙箱隱藏同一份清單 (見 [憑證與技能](credentials-and-skills.md)): 資料夾蓋上空的 tmpfs, 檔案 (socket) 蓋上 `/dev/null`, 不存在的略過; Claude Code 的 sandbox 對 `denyRead` 裡的檔案同樣蓋上 `/dev/null` (2.1.302), 連線會被拒絕. `sandboxDenyRead` 的項目不是絕對路徑或是 `/` 時略過並在 log 寫一行, 其他項目照常隱藏. 改了要重啟 router, 再 `/router session rotate all` 讓 worker 用新的 settings.
 
 ## 新 bot 初次設定與審核群組
 
@@ -64,7 +64,7 @@ router 可以裝在任何位置, 程式不假設固定路徑:
 
 ## 工具呼叫紀錄
 
-`router.db` 的 `tool_history` (記什麼見 [權限](permissions.md#工具呼叫紀錄)) 保留 30 天, router 啟動時與之後每天清掉更舊的. 報表只限 owner 與 admin: Telegram 用 `/router tools [天數]` (群組裡下會改私訊回覆), 終端機用 `cc-telegram-router cli tools [天數]`, 天數 1~30, 預設 7. 依工具計次, 用得最多的在前, 分列各對話角色的次數, 已提權的次數, 被 router 擋下的次數與 router 端 Telegram 工具的錯誤次數 (原因見提權紀錄). 範例 (測試資料):
+`router.db` 的 `tool_history` (記什麼見 [權限](permissions.md#工具呼叫紀錄)) 保留 30 天, router 啟動時與之後每天清掉更舊的. 同時清的還有 `own_agents` (每個對話自己的 subagent 名單, 見 [權限](permissions.md#高風險工具)): 30 天前加入的與已不存在的對話的項目. 報表只限 owner 與 admin: Telegram 用 `/router tools [天數]` (群組裡下會改私訊回覆), 終端機用 `cc-telegram-router cli tools [天數]`, 天數 1~30, 預設 7. 依工具計次, 用得最多的在前, 分列各對話角色的次數, 已提權的次數, 被 router 擋下的次數與 router 端 Telegram 工具的錯誤次數 (原因見提權紀錄). 範例 (測試資料):
 
 ```
 工具呼叫統計: 近 7 天 (2026-10-10 12:00 起, GMT+8)

@@ -5,7 +5,8 @@
 //   every PreToolUse the hook reports is one tool_history row (owner
 //   conversations too), with the router's decision; a user conversation's
 //   ListAgents and SendMessage to another session are blocked, an owner's are
-//   not; SendMessage to its own named subagent passes once SubagentStart came;
+//   not; SendMessage to its own named subagent passes once SubagentStart came
+//   under the connected worker;
 //   a Telegram reply the router runs is recorded router-side; no arguments
 //   are stored; `cli tools` prints the report.
 
@@ -57,6 +58,7 @@ let stderr = ''
 void (async () => { for await (const c of router.stderr) stderr += new TextDecoder().decode(c) })()
 
 afterAll(async () => {
+  u?.close()
   router.kill('SIGTERM')
   await router.exited
   api.stop(true)
@@ -78,6 +80,8 @@ let mid = 1
 const dm = (from: typeof OWNER, text: string) => { const id = mid++; updates.push({ update_id: id, message: { message_id: id, date: now, chat: { id: from.id, type: 'private' }, from, text } }); return id }
 const folder = (key: string) => join(dir, 'bot123', key)
 const ukey = `dm-${USER.id}`, okey = `dm-${OWNER.id}`
+/** The user conversation's worker plugin. */
+let u: ReturnType<typeof connectRouter>
 
 /** The worker's hook (hooks/hook.ts progress <event>): the PreToolUse decision it printed. */
 async function hook(key: string, event: string, input: object): Promise<any> {
@@ -98,7 +102,9 @@ test('every PreToolUse is a tool_history row with the router\'s decision; high-r
   expect(await pre(ukey, 'ListAgents', {})).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('power 以下的角色不能使用 ListAgents') })
   expect(await pre(okey, 'ListAgents', {})).toBeNull()
   expect(await pre(ukey, 'SendMessage', { to: 'worker [3fa9c1]', message: '機密內容 do-not-store' })).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('power 以下的角色不能傳訊給其他 session') })
-  // its own named subagent: once SubagentStart came
+  // its own named subagent: once SubagentStart came, under the worker whose plugin is connected
+  u = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: folder(ukey), pid: 21 }, onMessage(m) { if (m.t === 'deliver') u.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => u.state().kind === 'ready')
   expect(await pre(ukey, 'Agent', { name: 'helper', subagent_type: 'general-purpose', description: 'd', prompt: 'do-not-store prompt' })).toBeNull()
   await hook(ukey, 'subagent-start', { agent_id: 'a77', agent_type: 'general-purpose' })
   expect(await pre(ukey, 'SendMessage', { to: 'helper', message: 'hi' })).toBeNull()
@@ -120,8 +126,6 @@ test('every PreToolUse is a tool_history row with the router\'s decision; high-r
 }, 30000)
 
 test('a Telegram reply the router runs is recorded router-side (the hook leaves it to the router), once', async () => {
-  const u = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: folder(ukey), pid: 21 }, onMessage(m) { if (m.t === 'deliver') u.send({ t: 'ack', qid: m.qid }) } })
-  await sleep(200)
   expect(await pre(ukey, 'mcp__plugin_telegram_telegram__reply', { chat_id: String(USER.id), text: 'hi' })).toBeNull() // main session: not forwarded
   expect((await u.call('reply', { chat_id: String(USER.id), text: '好了' })).isError).toBeFalsy()
   const r = await until(() => q("SELECT conv, conv_role, tool, decision, subagent FROM tool_history WHERE tool LIKE 'mcp__plugin_telegram%'"))

@@ -4,7 +4,7 @@
 // The real claude CLI: role-live.test.ts (LIVE=1); through the real router: e2e-toolhistory.test.ts.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { Config } from '../config'
@@ -12,7 +12,7 @@ import { openRouterDb, type RouterDb, type Conversation } from '../db'
 import { ensureConversation } from '../conversations'
 import { riskyRefusal, RISKY_TOOLS } from '../permcheck'
 import { renderSettings, applyOverrides } from '../settings'
-import { createElevation } from '../elevation'
+import { createElevation, workerKey } from '../elevation'
 import { createIpc } from '../ipc'
 import type { ApprovalDeps } from '../approvals'
 
@@ -85,6 +85,7 @@ test('every high-risk tool in every conversation role: owner and admin pass, pow
 
 test('SendMessage: own subagents (agent id from SubagentStart; an Agent name once its subagent starts) pass; "main" only from a subagent; other sessions and unknown names are blocked', async () => {
   const { conv, e } = harness('user')
+  e.workerConnected(conv.key, 'sess-1:4242')
   // agent id reported by SubagentStart
   await e.onHook(conv, { event: 'subagent-start', agent_id: 'a1b2c3d4-0001', agent_type: 'general-purpose' })
   expect(await verdict(e, conv, send('a1b2c3d4-0001'))).toBe('pass')
@@ -106,11 +107,84 @@ test('SendMessage: own subagents (agent id from SubagentStart; an Agent name onc
   expect(e.ownAgents(conv.key).sort()).toEqual(['a1b2c3d4-0001', 'a1b2c3d4-0002', 'a1b2c3d4-0003', 'helper', 'writer'])
   // another conversation's subagents are not this one's
   const other = harness('user', '-100666')
+  other.e.workerConnected(other.conv.key, 'sess-1:4242')
   expect(await verdict(other.e, other.conv, send('helper'))).toBe('deny')
-  // after a router restart the subagents from before are unknown: treated as another session
-  const again = harness('user').make()
+  e.stop(); other.e.stop()
+})
+
+test('own subagents are kept in router.db: a router restart keeps them once the same worker\'s plugin says hello again; another worker process drops them', async () => {
+  const { conv, e, make } = harness('user')
+  e.workerConnected(conv.key, 'sess-1:4242')
+  await e.onHook(conv, pre('Agent', { name: 'helper', description: 'x', prompt: 'y' }))
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'a1', agent_type: 'general-purpose' })
+  expect(db.ownAgents(conv.key, 'sess-1:4242')).toEqual(['a1', 'helper'])
+  // SubagentStop removes nothing: a finished subagent is woken by a SendMessage to it
+  await e.onHook(conv, { event: 'subagent-stop', agent_id: 'a1' })
+  expect(await verdict(e, conv, send('helper'))).toBe('pass')
+  e.stop()
+  // router restart: nothing counts until the worker's plugin says hello again
+  const again = make()
   expect(await verdict(again, conv, send('helper'))).toBe('deny')
-  e.stop(); other.e.stop(); again.stop()
+  expect(again.ownAgents(conv.key)).toEqual([])
+  again.workerConnected(conv.key, 'sess-1:4242')
+  expect(await verdict(again, conv, send('helper'))).toBe('pass')
+  expect(await verdict(again, conv, send('a1'))).toBe('pass')
+  // the plugin went away: nothing counts; the same worker back: counts again
+  again.workerGone(conv.key)
+  expect(await verdict(again, conv, send('helper'))).toBe('deny')
+  again.workerConnected(conv.key, 'sess-1:4242')
+  expect(await verdict(again, conv, send('helper'))).toBe('pass')
+  // the same session in a new process (rotate, restart): the older rows go
+  again.workerConnected(conv.key, 'sess-1:5151')
+  expect(await verdict(again, conv, send('helper'))).toBe('deny')
+  expect(db.ownAgents(conv.key, 'sess-1:4242')).toEqual([])
+  // and coming back to the old worker key does not bring them back
+  again.workerConnected(conv.key, 'sess-1:4242')
+  expect(await verdict(again, conv, send('helper'))).toBe('deny')
+  again.stop()
+})
+
+test('own subagents: a SubagentStart with no worker plugin connected keeps nothing; an Agent call waiting from an earlier worker is not matched by the next worker\'s subagent', async () => {
+  const { conv, e } = harness('user')
+  await e.onHook(conv, pre('Agent', { name: 'early', description: 'x', prompt: 'y' }))
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'a0', agent_type: 'general-purpose' })
+  e.workerConnected(conv.key, 'sess-1:1')
+  expect(e.ownAgents(conv.key)).toEqual([])
+  expect(await verdict(e, conv, send('early'))).toBe('deny')
+  // an Agent call let through in one worker, the next worker's SubagentStart
+  await e.onHook(conv, pre('Agent', { name: 'stale', description: 'x', prompt: 'y' }))
+  e.workerConnected(conv.key, 'sess-2:2')
+  await e.onHook(conv, { event: 'subagent-start', agent_id: 'b1', agent_type: 'general-purpose' })
+  expect(e.ownAgents(conv.key)).toEqual(['b1'])
+  expect(await verdict(e, conv, send('stale'))).toBe('deny')
+  e.stop()
+})
+
+test('own_agents rows: newest 500 per worker kept, a name added again is the newest; purge drops old rows and rows of conversations gone', () => {
+  const conv = ensureConversation(cfg, db, 'cc', '-100777', 'supergroup', () => {})
+  for (let i = 0; i < 502; i++) db.addOwnAgent(conv.key, 'w', `a${i}`, 500)
+  const list = db.ownAgents(conv.key, 'w')
+  expect(list).toHaveLength(500)
+  expect(list[0]).toBe('a2')
+  db.addOwnAgent(conv.key, 'w', 'a2', 500)
+  expect(db.ownAgents(conv.key, 'w').at(-1)).toBe('a2')
+  expect(db.isOwnAgent(conv.key, 'w', 'a3')).toBe(true)
+  expect(db.isOwnAgent(conv.key, 'other', 'a3')).toBe(false)
+  db.addOwnAgent(conv.key, 'w2', 'x', 500)
+  expect(db.dropOwnAgents(conv.key, 'w2')).toBe(500)
+  expect(db.ownAgents(conv.key, 'w2')).toEqual(['x'])
+  db.addOwnAgent('no-such-conv', 'w', 'y', 500)
+  expect(db.purgeOwnAgents(new Date(Date.now() - 86_400_000).toISOString())).toBe(1) // the gone conversation's row
+  expect(db.purgeOwnAgents(new Date(Date.now() + 1000).toISOString())).toBe(1)
+  expect(db.dropOwnAgents(conv.key, null)).toBe(0)
+})
+
+test('workerKey: session, pid and, from /proc, the process start time (a pid used again is another worker)', () => {
+  const k = workerKey('sess-1', process.pid)
+  expect(k).toStartWith(`sess-1:${process.pid}`)
+  if (existsSync(`/proc/${process.pid}/stat`)) expect(k).toMatch(new RegExp(`^sess-1:${process.pid}:\\d+$`))
+  expect(workerKey('sess-1', process.pid)).toBe(k)
+  expect(workerKey(undefined, 999999999)).toBe('?:999999999')
 })
 
 test('elevation: an owner\'s turn in a user conversation is asked in the chat, once only (no 永久允許); approved, the subagent may list agents and message another session; the main session still may not', async () => {

@@ -24,6 +24,10 @@ export interface IpcDeps {
   onProgress?: (peer: Peer, ev: Record<string, unknown>) => void
   /** Worker hook event: progress plus elevation decisions; returns the decision. */
   onHook?: (peer: Peer, ev: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>
+  /** A worker's plugin said hello (its session id when the plugin knows it, its pid). */
+  onWorker?: (conv: Conversation, hello: { session_id?: string; pid: number }) => void
+  /** That worker's plugin connection closed. */
+  onWorkerGone?: (key: string) => void
   /** Terminal CLI: run a /router command as owner and return the reply. */
   onCli?: (text: string) => Promise<string>
   /** Last-moment additions to a delivery (chat_context, router_log). */
@@ -79,6 +83,7 @@ export function createIpc(deps: IpcDeps) {
     workers.set(key, s)
     send(s, { t: 'welcome', mode: 'worker', conv: key, chat_id: peer.conv.chat_id, role: peer.role })
     log(`worker ${key} connected (pid ${m.pid}, session ${m.session_id ?? '?'})`)
+    deps.onWorker?.(peer.conv, { session_id: m.session_id, pid: m.pid })
     pushQueue(key, true)
     for (const w of waiters.get(key) ?? []) w(true)
     waiters.delete(key)
@@ -90,7 +95,7 @@ export function createIpc(deps: IpcDeps) {
       case 'ack': db.ack(m.qid); return
       case 'bye': {
         const key = s.data.peer?.conv?.key
-        if (key && workers.get(key) === s) workers.delete(key)
+        if (key && workers.get(key) === s) { workers.delete(key); deps.onWorkerGone?.(key) }
         log(`worker ${key ?? '(terminal)'} said bye`)
         return
       }
@@ -142,6 +147,7 @@ export function createIpc(deps: IpcDeps) {
         if (key && workers.get(key) === s) {
           workers.delete(key)
           log(`worker ${key} disconnected`)
+          deps.onWorkerGone?.(key)
         }
       },
     },

@@ -47,8 +47,8 @@ import { createPkgGate, claudeReviewer } from './pkgreview'
 import { createClassifier, openClassifyStore, apiJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER, API_PROVIDERS } from './classifier'
 import { escHtml, htmlToText } from './setup'
 import { newClaimCode, isClaim, initBotSetups, adoptBotSetup, tokenBotId, resetNotice, needsPersona, bootstrapNote, GROUP_GUIDE, checkGroup, describeSetup, botSettingsNotice, privacyNotice, B2B_NOTICE, channelJoinNotice } from './setup'
-import { createElevation } from './elevation'
-import { createToolHistory, hookUse } from './toolhistory'
+import { createElevation, workerKey } from './elevation'
+import { createToolHistory, hookUse, KEEP_DAYS } from './toolhistory'
 import { dmLabel, personLabel } from './commands'
 import { parseRelay, mayRelay, relay, codeBlock, ROUTER_CMDS, type Exec, type RelayCmd } from './relay'
 import { homedir } from 'os'
@@ -469,6 +469,9 @@ const ipc = createIpc({
     return d
   },
   onProgress(peer, ev) { ipcOnProgress(peer, ev) },
+  // the conversation's own subagents count for the worker process that started them (router/elevation.ts)
+  onWorker: (c, h) => elevation.workerConnected(c.key, workerKey(h.session_id ?? db.getConversation(c.key)?.session_id, h.pid)),
+  onWorkerGone: key => elevation.workerGone(key),
   async onCli(text) {
     const owner = cfg.owners[0]
     if (!owner) return 'config 沒有 owners'
@@ -638,6 +641,12 @@ const elevation = createElevation({
     } catch { return null }
   },
 })
+
+{
+  const purge = () => { const n = elevation.purgeOwnAgents(new Date(Date.now() - KEEP_DAYS * 86_400_000).toISOString()); if (n) log(`own_agents: removed ${n} old rows`) }
+  purge()
+  setInterval(purge, 86_400_000).unref()
+}
 
 const pkgGate = createPkgGate({
   db, approvals: approvalDeps, notify: notifyConversation, label, log, authz,

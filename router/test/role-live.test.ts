@@ -13,6 +13,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { Database } from 'bun:sqlite'
 import { renderSettings, applyOverrides } from '../settings'
+import { hiddenPaths } from '../config'
 import { openRouterDb } from '../db'
 import { ensureConversation } from '../conversations'
 import { createElevation } from '../elevation'
@@ -40,14 +41,14 @@ afterAll(() => { for (const d of [root, state]) if (d) rmSync(d, { recursive: tr
 
 type Run = { text: string; denied: string[] }
 
-async function asRole(role: string, prompt: string): Promise<Run & { folder: string }> {
+async function asRole(role: string, prompt: string, hidden = [root, state]): Promise<Run & { folder: string }> {
   const folder = join(root, `${role}-${Math.random().toString(36).slice(2, 8)}`)
   for (const d of ['memory', 'attachments', '.chat']) mkdirSync(join(folder, d), { recursive: true })
   writeFileSync(join(folder, 'attachments', 'note.txt'), 'ATTACHMENT-OK')
   const skill = join(root, 'bot1', '.claude', 'skills', 'probe')
   mkdirSync(skill, { recursive: true })
   writeFileSync(join(skill, 'run.sh'), 'echo SKILL-OK\n')
-  const s = renderSettings(TEMPLATES, role, { folder, home: root, hidden: [root, state], botDir: join(root, 'bot1'), autoCompactWindow: 750000, hooksDir: '/nonexistent' }) as any
+  const s = renderSettings(TEMPLATES, role, { folder, home: root, hidden, botDir: join(root, 'bot1'), autoCompactWindow: 750000, hooksDir: '/nonexistent' }) as any
   delete s.hooks
   delete s.enabledPlugins
   const settings = join(root, `${role}-${Date.now()}.json`)
@@ -86,6 +87,24 @@ test.skipIf(!LIVE)('power: runs python in the sandbox and writes its folder; can
   expect(st.text).not.toContain('STATE-DB')
   expect(chat.denied).toContain('Write')
   expect(existsSync(join(chat.folder, '.chat', 'context.json'))).toBe(false)
+}, 300_000)
+
+test.skipIf(!LIVE)('power: a router socket outside home and the state dir (config socket elsewhere) is hidden by the sandbox: the file itself, its folder stays readable', async () => {
+  const run = mkdtempSync(join(tmpdir(), 'cctr-live-run-'))
+  const sock = join(run, 'router.sock')
+  writeFileSync(join(run, 'neighbour.txt'), 'NEIGHBOUR-OK')
+  const srv = Bun.listen({ unix: sock, socket: { open(s) { s.write('ROUTER-REACHED\n'); s.end() }, data() {} } })
+  try {
+    const hidden = hiddenPaths({ home: root, stateDir: state, sandboxDenyRead: [], socket: sock })
+    expect(hidden).toContain(sock)
+    const [kind, conn] = await Promise.all([
+      asRole('power', bash(`stat -c %F ${sock}; cat ${join(run, 'neighbour.txt')}`), hidden),
+      asRole('power', bash(`python3 -c "import socket; c=socket.socket(socket.AF_UNIX); c.connect('${sock}'); print(c.recv(32))"`), hidden),
+    ])
+    expect(kind.text).not.toContain('socket')
+    expect(kind.text).toContain('NEIGHBOUR-OK')
+    expect(conn.text).not.toContain('ROUTER-REACHED')
+  } finally { srv.stop(true); rmSync(run, { recursive: true, force: true }) }
 }, 300_000)
 
 test.skipIf(!LIVE)('power: scripts of a bot-wide skill are readable and runnable from the sandbox, but not writable', async () => {
@@ -160,6 +179,8 @@ async function withHooks(name: string, prompt: string, ownerTurn = false): Promi
   let mid = 0
   const e = createElevation({ db, approvals: { db, owners: ['1'], isAdmin: () => false, send: async (_b, _to, text) => { asked.push(text); return ++mid }, edit: async () => {} }, notify: () => {}, label: u => u, applyPermissions: () => {}, roleOf: u => u === '1' ? 'owner' : 'user', settingsAs })
   if (ownerTurn) e.onDeliver(conv, '1')
+  // no Telegram plugin here: stands in for its hello, so own subagents are kept (router/elevation.ts workerConnected)
+  e.workerConnected(conv.key, `live:${process.pid}`)
   const history = createToolHistory({ db, log: m => console.log(m) })
   const pre: string[] = [], events: any[] = []
   const ipc = createIpc({ cfg, db, onCall: async () => ({ content: [{ type: 'text', text: 'ok' }] }), identify: () => ({ mode: 'worker', conv, role: 'user' }),

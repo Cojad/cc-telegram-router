@@ -279,6 +279,16 @@ export interface RouterDb {
   toolStats(since: string): ToolStat[]
   /** Rows before an ISO time removed; returns how many. */
   purgeToolHistory(before: string): number
+  /** own_agents (router/elevation.ts): a conversation's own subagents (agent ids, names),
+   *  each bound to the worker process it started under. Keeps the newest max per worker. */
+  addOwnAgent(conv: string, worker: string, name: string, max: number): void
+  isOwnAgent(conv: string, worker: string, name: string): boolean
+  /** Oldest first. */
+  ownAgents(conv: string, worker: string): string[]
+  /** The conversation's rows of every worker but keep (null: all); returns how many went. */
+  dropOwnAgents(conv: string, keep: string | null): number
+  /** Rows added before an ISO time, and rows of conversations that no longer exist, removed; how many. */
+  purgeOwnAgents(before: string): number
   close(): void
 }
 
@@ -382,6 +392,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
       tool TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT, target TEXT, subagent INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS tool_history_ts ON tool_history (ts);
+    CREATE TABLE IF NOT EXISTS own_agents (conv TEXT NOT NULL, worker TEXT NOT NULL, name TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (conv, worker, name));
   `)
   // Columns added after Phase 1.
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
@@ -437,6 +448,12 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   const qToolAdd = db.prepare('INSERT INTO tool_history (ts, conv, conv_role, eff_role, tool, decision, reason, target, subagent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
   const qToolStats = db.prepare('SELECT tool, conv_role, eff_role IS NOT NULL AS elevated, decision, COUNT(*) AS n FROM tool_history WHERE ts >= ? GROUP BY tool, conv_role, elevated, decision')
   const qToolPurge = db.prepare('DELETE FROM tool_history WHERE ts < ?')
+  const qOwnAdd = db.prepare('INSERT OR REPLACE INTO own_agents (conv, worker, name, at) VALUES (?, ?, ?, ?)')
+  const qOwnTrim = db.prepare('DELETE FROM own_agents WHERE conv = ?1 AND worker = ?2 AND rowid NOT IN (SELECT rowid FROM own_agents WHERE conv = ?1 AND worker = ?2 ORDER BY rowid DESC LIMIT ?3)')
+  const qOwnHas = db.prepare('SELECT 1 FROM own_agents WHERE conv = ? AND worker = ? AND name = ?')
+  const qOwnList = db.prepare('SELECT name FROM own_agents WHERE conv = ? AND worker = ? ORDER BY rowid')
+  const qOwnDrop = db.prepare('DELETE FROM own_agents WHERE conv = ? AND worker IS NOT ?')
+  const qOwnPurge = db.prepare('DELETE FROM own_agents WHERE at < ? OR conv NOT IN (SELECT key FROM conversations)')
   const qPeopleUp = db.prepare(`INSERT INTO people (uid, name, username, first_seen, last_seen, last_chat_id) VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(uid) DO UPDATE SET name = excluded.name, username = excluded.username, last_seen = excluded.last_seen, last_chat_id = coalesce(excluded.last_chat_id, last_chat_id)`)
   const qPeopleGet = db.prepare('SELECT * FROM people WHERE uid = ?')
@@ -670,6 +687,12 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
     addToolUse: u => { qToolAdd.run(u.ts ?? now(), u.conv, u.conv_role, u.eff_role, u.tool, u.decision, u.reason, u.target, u.subagent ? 1 : 0) },
     toolStats: since => qToolStats.all(since) as ToolStat[],
     purgeToolHistory: before => qToolPurge.run(before).changes,
+    // INSERT OR REPLACE gives a re-added name a new rowid: the newest are kept
+    addOwnAgent: (conv, worker, name, max) => { qOwnAdd.run(conv, worker, name, now()); qOwnTrim.run(conv, worker, max) },
+    isOwnAgent: (conv, worker, name) => !!qOwnHas.get(conv, worker, name),
+    ownAgents: (conv, worker) => (qOwnList.all(conv, worker) as Array<{ name: string }>).map(r => r.name),
+    dropOwnAgents: (conv, keep) => qOwnDrop.run(conv, keep).changes,
+    purgeOwnAgents: before => qOwnPurge.run(before).changes,
     close: () => db.close(),
   }
 }

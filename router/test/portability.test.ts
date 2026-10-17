@@ -84,6 +84,28 @@ test('hiddenPaths: the router home, the state dir when it lies elsewhere, sandbo
   expect(outermost(['/a/b', '/a', '/ab', '/a/', '/c/d/e', '/c/d'])).toEqual(['/a', '/ab', '/c/d'])
 })
 
+test('hiddenPaths: a socket outside home, the state dir and sandboxDenyRead is hidden, the file itself; never a system folder, the user home or above it', () => {
+  const base = { home: '/srv/tg', stateDir: '/srv/tg/.router', sandboxDenyRead: [] }
+  // inside the state dir or home: already hidden with it
+  expect(hiddenPaths({ ...base, socket: '/srv/tg/.router/router.sock' }, '/home/u')).toEqual(['/srv/tg'])
+  // elsewhere: the socket file, not its folder
+  expect(hiddenPaths({ ...base, socket: '/run/cc-router/router.sock' }, '/home/u')).toEqual(['/srv/tg', '/run/cc-router/router.sock'])
+  expect(hiddenPaths({ ...base, socket: '/tmp/cc.sock' }, '/home/u')).toEqual(['/srv/tg', '/tmp/cc.sock'])
+  expect(hiddenPaths({ ...base, socket: '/var/run/../run/cc.sock' }, '/home/u')).toEqual(['/srv/tg', '/var/run/cc.sock'])
+  // inside sandboxDenyRead: collapses into it
+  expect(hiddenPaths({ ...base, sandboxDenyRead: ['/data'], socket: '/data/cc/router.sock' }, '/home/u')).toEqual(['/data', '/srv/tg'])
+  // in the user's home: ~ hides it already
+  expect(hiddenPaths({ ...base, socket: '/home/u/.cc/router.sock' }, '/home/u')).toEqual(['/srv/tg'])
+  // a socket configured as a system folder, the user's home or a folder above it: never hidden
+  for (const sock of ['/', '/tmp', '/tmp/', '/var/tmp', '/run', '/var/run', '/run/user', '/dev/shm', '/home', '/home/u', '/home/u/'])
+    expect([sock, hiddenPaths({ ...base, socket: sock }, '/home/u')]).toEqual([sock, ['/srv/tg']])
+  // no socket given (callers that only hide folders)
+  expect(hiddenPaths(base, '/home/u')).toEqual(['/srv/tg'])
+  // the role templates' denyRead gets the socket file
+  const vars = { folder: '/srv/tg/bot1/g', home: '/srv/tg', hidden: hiddenPaths({ ...base, socket: '/run/cc-router/router.sock' }, '/home/u'), botDir: '/srv/tg/bot1', autoCompactWindow: 750000, hooksDir: '/srv/tg/.router/hooks', transcripts: '/t' }
+  for (const role of SANDBOXED) expect((renderSettings(TEMPLATES, role, vars) as any).sandbox.filesystem.denyRead).toEqual(['/srv/tg', '/run/cc-router/router.sock', '~'])
+})
+
 // --- role templates ---------------------------------------------------------
 
 test('fill splices a list into an array; a sandbox with unfilled hidden paths is refused', () => {
@@ -122,6 +144,20 @@ test('skill bwrap: tmpfs over /tmp, $HOME and the hidden paths (existing, not ne
   expect(a).not.toContain('/x')
 })
 
+test('skill bwrap: a hidden file (the socket elsewhere) is covered with /dev/null, a hidden folder with tmpfs; a missing one is left out', () => {
+  const f = join(dir, 'var', 'r.sock')
+  writeFileSync(f, '')
+  const a = sandboxArgv({ argv: ['true'], skillDir: '/s', convFolder: '/c', creds: {}, home: userHome, hidden: ['/usr/share', '/etc/hostname', '/nonexistent-cctr.sock'], extraRo: [] }).argv
+  expect(a.flatMap((x, i) => x === '--tmpfs' ? [a[i + 1]] : [])).toEqual(['/tmp', '/usr/share'])
+  const i = a.indexOf('/etc/hostname')
+  expect(existsSync('/etc/hostname') ? a.slice(i - 2, i + 1) : ['--ro-bind', '/dev/null', '/etc/hostname']).toEqual(['--ro-bind', '/dev/null', '/etc/hostname'])
+  expect(a).not.toContain('/nonexistent-cctr.sock')
+  expect(a.indexOf('/s')).toBeGreaterThan(Math.max(a.lastIndexOf('--tmpfs'), i)) // the skill's own binds come after
+  // under /tmp: the private /tmp hides it already
+  const b = sandboxArgv({ argv: ['true'], skillDir: '/s', convFolder: '/c', creds: {}, home: userHome, hidden: [f], extraRo: [] }).argv
+  expect(b).not.toContain(f)
+})
+
 // A real bwrap run with an install outside /tmp and $HOME (/var/tmp), so the
 // hidden paths themselves have to do the hiding.
 const VARTMP = (() => { try { const d = mkdtempSync('/var/tmp/cctr-port-'); rmSync(d, { recursive: true }); return Bun.which('bwrap') ? '/var/tmp' : null } catch { return null } })()
@@ -143,6 +179,33 @@ test.skipIf(!VARTMP)('skill bwrap, real run: other conversations, the state dir 
     expect(await p.exited, err).toBe(0)
     expect(out.trim().split('\n')).toEqual(['MINE', 'HIDDEN', 'HIDDEN', 'HIDDEN'])
   } finally { rmSync(root, { recursive: true, force: true }) }
+}, 20000)
+
+test.skipIf(!VARTMP)('skill bwrap, real run: a router socket outside home and the state dir cannot be reached; its folder stays visible', async () => {
+  const root = mkdtempSync(join(VARTMP!, 'cctr-port-'))
+  const server = { stop() {} } as { stop(): void }
+  try {
+    const home = join(root, 'tg'), state = join(root, 'state'), run = join(root, 'run')
+    const own = join(home, 'bot1', 'dm-7'), skill = join(home, '.claude', 'skills', 's')
+    for (const d of [own, skill, state, run]) mkdirSync(d, { recursive: true })
+    const sock = join(run, 'router.sock')
+    writeFileSync(join(run, 'neighbour.txt'), 'NEIGHBOUR\n')
+    const srv = Bun.listen({ unix: sock, socket: { open(s) { s.write('ROUTER\n'); s.end() }, data() {} } })
+    server.stop = () => srv.stop(true)
+    // connect from inside: prints what the router said, or REFUSED
+    writeFileSync(join(skill, 'probe.py'), `import socket, sys\ntry:\n  c = socket.socket(socket.AF_UNIX); c.connect(sys.argv[1]); print(c.recv(16).decode().strip())\nexcept Exception:\n  print('REFUSED')\nprint(open(sys.argv[2]).read().strip())\n`)
+    // async: the router socket answers from this process
+    const probe = async (hidden: string[]) => {
+      const sb = sandboxArgv({ argv: ['python3', join(skill, 'probe.py'), sock, join(run, 'neighbour.txt')], skillDir: skill, convFolder: own, creds: {}, home: userHome, hidden, extraRo: [] })
+      const p = Bun.spawn(sb.argv, { env: sb.env, stdout: 'pipe', stderr: 'pipe' })
+      const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
+      expect(await p.exited, err).toBe(0)
+      return out.trim().split('\n')
+    }
+    // without the socket in the list the sandbox reaches the router (what this guards against)
+    expect(await probe(hiddenPaths({ home, stateDir: state, sandboxDenyRead: [] }, userHome))).toEqual(['ROUTER', 'NEIGHBOUR'])
+    expect(await probe(hiddenPaths({ home, stateDir: state, sandboxDenyRead: [], socket: sock }, userHome))).toEqual(['REFUSED', 'NEIGHBOUR'])
+  } finally { server.stop(); rmSync(root, { recursive: true, force: true }) }
 }, 20000)
 
 // --- locator: how the plugin and the hook find the router -------------------

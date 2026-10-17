@@ -34,13 +34,14 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`, 歸給哪隻 bot), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
 | `router/test/poller.test.ts` | [輪詢與重試](operations.md#輪詢與重試)的輪詢: 重試間隔, 2 分鐘才通知與恢復通知, 409, 401, 429, 啟動時的 getMe, status 與通知文字 (e2e 另測 token 失效時經其他 bot 通知與 /router status); 指令回覆重試 (e2e 另測 502 後重送) |
 | `router/test/store.test.ts`, `router/test/inbound.test.ts` | [訊息紀錄](architecture.md#訊息紀錄): 每隻 bot 各自一份 (私訊撞號, 同群組同一則), 舊紀錄分配 bot 一次 (對話, events, outbound, 時間, legacy), legacy 列用時間重新判斷一次, 重複丟掉時寫 log, 引用不跨 bot |
-| `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行 (router 家目錄與 stateDir 都是臨時位置), 驗證 Claude Code 實際放行與擋下的事; 最後兩條帶 user 對話的 hook, 驗證高風險工具真的觸發 PreToolUse 並被 router 擋下, 傳給自己命名的 subagent 則放行 |
-| `router/test/portability.test.ts` | [安裝位置](operations.md#安裝位置): config `sandboxDenyRead` 與隱藏清單, 角色範本的 denyRead, 特權技能 bwrap (含真的 bwrap 在 /var/tmp 的安裝), 位置檔與 `register`, plugin 與 hook 經位置檔連上 router, `deploy/install.sh` 不預設位置 |
+| `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行 (router 家目錄與 stateDir 都是臨時位置), 驗證 Claude Code 實際放行與擋下的事; 最後兩條帶 user 對話的 hook, 驗證高風險工具真的觸發 PreToolUse 並被 router 擋下, 傳給自己命名的 subagent 則放行; power 的 sandbox 看不到放在 home 與 stateDir 以外的 router socket |
+| `router/test/portability.test.ts` | [安裝位置](operations.md#安裝位置): config `sandboxDenyRead` 與隱藏清單, 角色範本的 denyRead, 特權技能 bwrap (含真的 bwrap 在 /var/tmp 的安裝, 與連不上放在別處的 socket), 位置檔與 `register`, plugin 與 hook 經位置檔連上 router, `deploy/install.sh` 不預設位置 |
 | `router/test/toolhistory.test.ts` | [工具呼叫紀錄](permissions.md#工具呼叫紀錄): 一筆的內容 (不存參數, 遮蔽與截斷), 寫入失敗只記 log, 30 天清除, 報表, `/router tools` 的權限與參數 |
 | `router/test/dmrole.test.ts` | [角色](permissions.md#角色)的私訊: 每次讀私訊都是使用者角色 (config owners 是 owner, 每隻 bot 的私訊都跟著), 改角色時私訊的 settings 重寫並標記待輪替, `/router perm <私訊> role` 等同 `/router role` 與對應不到時拒絕, 覆寫保留, `/router status` 與 `/router chat` 顯示, config owners 增減, 高風險工具與 tool_history 讀使用者角色, 遷移 (對齊一次, ctx_v 加一) |
 | `router/test/e2e-dmrole.test.ts` | 真的 router + 假 Bot API: 啟動時把有自己角色的私訊對齊使用者角色, log, settings 與 chat context 用使用者角色, 群組不變 |
-| `router/test/risky.test.ts` | [高風險工具](permissions.md#高風險工具): 每個工具在各角色的放行與擋下, SendMessage 對自己的 subagent 與跨 session 的判斷, 提權只能允許一次, 按下的人角色要夠, hook 轉送 Agent 的名稱 |
+| `router/test/risky.test.ts` | [高風險工具](permissions.md#高風險工具): 每個工具在各角色的放行與擋下, SendMessage 對自己的 subagent 與跨 session 的判斷, 自己的 subagent 名單存在 router.db 並綁定 worker 程序 (`own_agents`, `workerKey`), 提權只能允許一次, 按下的人角色要夠, hook 轉送 Agent 的名稱 |
 | `router/test/e2e-toolhistory.test.ts` | 真的 router + 真的 hook + 假 Bot API: 每個 PreToolUse 一筆紀錄 (含 owner 對話), user 的高風險工具被擋而 owner 不擋, 自己命名的 subagent, router 端 Telegram 工具的紀錄, `cli tools` |
+| `router/test/e2e-ownagents.test.ts` | 真的 router (重啟兩次, 同一個 router.db) + 真的 hook + 真的 plugin client: 自己的 subagent 在 router 重啟後, 同一個 worker 的 plugin 重連就仍算數; plugin 沒連上時不算; 另一個 worker 程序打招呼時舊項目刪除; 已不存在的對話的項目啟動時清掉 |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |
 | `router/test/requirements.test.ts` | README 的 Requirements 與 package 檔: 根目錄 package.json 沒有 v1 的 `bin` 與 `start`, plugin 版本與 repo 和 CHANGELOG 一致, 報表腳本一律用 python3 (shebang 與呼叫), curl, jq 與 matplotlib 列在強烈建議, 分類器的 API key 在依功能需要, repo 自己的程式與腳本不用 curl 與 jq |
 | `router/test/context-chart.test.ts` | [cc / 報表腳本](operations.md#cc--報表腳本)的 `tg-context-chart.py`: 有 matplotlib 時寫 PNG, 沒有時 (PYTHONPATH 放一個 import 失敗的 matplotlib) exit 3, 文字圖 (各行接續到 100%, 有用量的類別至少八分之一格) 與安裝建議, 不寫 PNG; phase2 另測 relay 收到 exit 3 時送表格加文字圖 |
@@ -167,7 +168,10 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | 角色範本不寫死路徑: sandbox 隱藏 router 家目錄, 不在家目錄底下的 stateDir, `sandboxDenyRead` 與 `~`, 自己的資料夾與共用技能再打開; 隱藏清單沒填入就拒絕產生 settings | portability「role templates follow the install…」「fill splices a list…」; phase1「user settings…」 |
 | `sandboxDenyRead`: 絕對路徑才收, 寫錯只略過並警告, router 照常啟動; 互相包含的路徑只留最外層 | portability「config sandboxDenyRead…」「hiddenPaths…」 |
 | `/router perm path read` 可以打開隱藏路徑裡的子目錄, 隱藏清單不變 | portability「role templates follow the install…」 |
-| 特權技能 bwrap: tmpfs 隱藏同一份清單 (存在, 不在 /tmp 底下, 不重疊), 都在 bind 之前; 真的執行時看不到其他對話, 家目錄以外的 stateDir 與 `sandboxDenyRead` | portability「skill bwrap…」兩條 |
+| 特權技能 bwrap: tmpfs 隱藏同一份清單 (存在, 不在 /tmp 底下, 不重疊), 都在 bind 之前; 真的執行時看不到其他對話, 家目錄以外的 stateDir 與 `sandboxDenyRead` | portability「skill bwrap: tmpfs over /tmp…」「skill bwrap, real run: other conversations…」 |
+| config `socket` 在 home, stateDir 與 `sandboxDenyRead` 以外時, 隱藏清單列入 socket 檔本身 (不是它的資料夾); 系統資料夾, 使用者家目錄與它的上層不列; 角色範本的 denyRead 帶到它 | portability「hiddenPaths: a socket outside…」 |
+| 特權技能 bwrap: 隱藏的檔案蓋 `/dev/null`, 資料夾蓋 tmpfs, 不存在的略過; 真的執行時連不上放在別處的 socket, 同資料夾其他檔照常可讀 (沒列入時連得上) | portability「skill bwrap: a hidden file…」「skill bwrap, real run: a router socket…」 |
+| 真的 claude: power 的 sandbox 看不到放在別處的 router socket (不是 socket 型別, 連不上), 同資料夾其他檔照常可讀 | role-live「power: a router socket outside…」(LIVE=1) |
 | plugin 與 hook 從位置檔找到 router (含 owner 的終端機 session); 沒有位置檔時 plugin 說明原因, hook 不准跳出 sandbox | portability「plugin finds the router…」「cc-hook finds the router…」「findRouter…」 |
 | `register` 依 config.json 寫位置檔; router 啟動只在位置檔指向自己時更新, 不會建立或改寫別人的 | portability「cc-telegram-router register…」「locator…」 |
 | `deploy/install.sh` 不預設安裝位置, 沒指定也沒有位置檔就停下說明 | portability「install.sh: no fixed default…」 |
@@ -184,7 +188,8 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | 保留 30 天 (啟動時與每天清) | toolhistory「purge: …」 |
 | 報表 `/router tools [天數]` 與 `cli tools [天數]`: 依工具計次, 依角色分欄, 提權, 被擋; 只限 owner 與 admin | toolhistory「toolReport: …」「/router tools [天數]: …」; e2e-toolhistory「cli tools [天數]…」 |
 | ListAgents, RemoteTrigger, CronCreate, CronDelete, ScheduleWakeup, PushNotification: power 以下擋下, admin 與 owner 放行, 原因清楚 | risky「riskyRefusal: …」「every high-risk tool in every conversation role…」; e2e-toolhistory「every PreToolUse…」 |
-| SendMessage: 自己的 subagent (agent id; Agent 的 name 要等 SubagentStart) 與 subagent 回報 main 放行, 其他 session, `name [ref]`, `uds:`, `bridge:`, 不認得的名稱與 router 重啟前的 subagent 擋下 | risky「SendMessage: own subagents…」「cc-hook forwards an Agent call's name…」; e2e-toolhistory「every PreToolUse…」 |
+| SendMessage: 自己的 subagent (agent id; Agent 的 name 要等 SubagentStart) 與 subagent 回報 main 放行, 其他 session, `name [ref]`, `uds:`, `bridge:`, 不認得的名稱擋下 | risky「SendMessage: own subagents…」「cc-hook forwards an Agent call's name…」; e2e-toolhistory「every PreToolUse…」 |
+| 自己的 subagent 名單存在 router.db (`own_agents`): router 重啟後同一個 worker 的 plugin 重連就仍算數; plugin 沒連上不算; 另一個 worker 程序 (同 session id 也算) 打招呼時舊項目刪除, 回到舊的 worker key 也不會復活; SubagentStop 不移除; plugin 沒連上時的 SubagentStart 不記; 等 SubagentStart 的名稱不跨 worker; 每個 worker 留最新 500 筆; 30 天前與已不存在的對話的項目清掉 | risky「own subagents are kept in router.db…」「own subagents: a SubagentStart with no worker…」「own_agents rows…」「workerKey…」; e2e-ownagents「own subagents survive a router restart…」 |
 | 擋下走先擋再問, 只能允許一次 (沒有永久允許), 按下的人要 admin 以上; 核准後 subagent 可用, 主 session 照舊被擋 | risky「elevation: an owner's turn…」「elevation: a power sender…」「a power conversation…」 |
 | 這些工具在真的 Claude Code 會觸發 PreToolUse 並被 router 擋下 (`CronDelete` 例外, 不觸發 hook, 照實記錄); owner 發起的一輪在對話裡詢問提權一次; 傳給自己命名的背景 subagent 放行, 其他名稱擋下 | role-live「user: the high-risk tools reach PreToolUse…」「user: SendMessage to its own named subagent…」(LIVE=1) |
 
