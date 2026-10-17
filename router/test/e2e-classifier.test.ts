@@ -113,7 +113,7 @@ async function hook(key: string, tool_name: string, tool_input: object): Promise
   const t0 = performance.now()
   const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', 'pre'], {
     stdin: new Blob([JSON.stringify({ cwd: folder(key), tool_name, tool_input })]), stdout: 'pipe',
-    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: folder(key) },
+    env: { ...process.env, XDG_RUNTIME_DIR: state, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: folder(key) },
   })
   const text = await new Response(p.stdout).text()
   await p.exited

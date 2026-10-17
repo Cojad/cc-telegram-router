@@ -97,7 +97,7 @@ const folder = join(dir, 'bot123', GKEY)
 async function hook(event: string, input: object): Promise<any> {
   const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', event], {
     stdin: new Blob([JSON.stringify({ cwd: folder, ...input })]), stdout: 'pipe',
-    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: folder },
+    env: { ...process.env, XDG_RUNTIME_DIR: state, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: folder },
   })
   const text = await new Response(p.stdout).text()
   await p.exited

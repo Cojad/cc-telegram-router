@@ -573,7 +573,7 @@ test('cc-hook asks the router and prints its PreToolUse decision; unreachable ro
     const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', event], {
       stdin: new Blob([JSON.stringify({ cwd: conv.folder, ...input })]), stdout: 'pipe',
       // a 1 ms retry window: one try (the retries: retry.test.ts, e2e-retry.test.ts)
-      env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: socket, CLAUDE_PROJECT_DIR: conv.folder, CC_TELEGRAM_ROUTER_RETRY_WINDOW_MS: '1' },
+      env: { ...process.env, XDG_RUNTIME_DIR: cfg.stateDir, CC_TELEGRAM_ROUTER_SOCKET: socket, CLAUDE_PROJECT_DIR: conv.folder, CC_TELEGRAM_ROUTER_RETRY_WINDOW_MS: '1' },
     })
     const out = await new Response(p.stdout).text()
     return out ? JSON.parse(out).hookSpecificOutput : null
@@ -764,7 +764,7 @@ test('cc-hook forwards a subagent\'s Telegram tool call (quiet, for elevation) b
   const ipc = createIpc({ cfg, db, onCall: async () => ({ content: [] }), identify: () => ({ mode: 'worker', conv, role: 'user' }), onHook: async (_p, ev) => { seen.push(ev); return {} } })
   const hook = (input: object) => Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', 'pre'], {
     stdin: new Blob([JSON.stringify({ cwd: conv.folder, tool_name: 'mcp__plugin_telegram_telegram__bot_api', tool_input: { credential: 'self', method: 'getChat' }, ...input })]),
-    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket, CLAUDE_PROJECT_DIR: conv.folder },
+    env: { ...process.env, XDG_RUNTIME_DIR: cfg.stateDir, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket, CLAUDE_PROJECT_DIR: conv.folder },
   }).exited
   await hook({})
   await hook({ agent_id: 'S' })

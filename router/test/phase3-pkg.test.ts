@@ -304,7 +304,7 @@ test('cc-hook marks install commands for review (only those) and prints the revi
   const hook = async (command: string) => {
     const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', 'pre'], {
       stdin: new Blob([JSON.stringify({ cwd: conv.folder, tool_name: 'Bash', tool_input: { command } })]), stdout: 'pipe',
-      env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket, CLAUDE_PROJECT_DIR: conv.folder },
+      env: { ...process.env, XDG_RUNTIME_DIR: cfg.stateDir, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket, CLAUDE_PROJECT_DIR: conv.folder },
     })
     const out = await new Response(p.stdout).text()
     return out ? JSON.parse(out).hookSpecificOutput : null

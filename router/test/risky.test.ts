@@ -307,7 +307,7 @@ test('cc-hook forwards an Agent call\'s name and subagent_type (not other tools\
   const ipc = createIpc({ cfg, db, onCall: async () => ({ content: [] }), identify: () => ({ mode: 'worker', conv, role: 'user' }), onHook: async (_p, ev) => { seen.push(ev); return {} } })
   const hook = (event: string, input: object) => Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', event], {
     stdin: new Blob([JSON.stringify({ cwd: conv.folder, ...input })]),
-    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket, CLAUDE_PROJECT_DIR: conv.folder },
+    env: { ...process.env, XDG_RUNTIME_DIR: cfg.stateDir, CC_TELEGRAM_ROUTER_SOCKET: cfg.socket, CLAUDE_PROJECT_DIR: conv.folder },
   }).exited
   await hook('pre', { tool_name: 'Agent', tool_input: { name: 'helper', subagent_type: 'Explore', description: 'd', prompt: 'secret prompt' } })
   await hook('pre', { tool_name: 'mcp__x__y', tool_input: { name: 'n', subagent_type: 't' } })

@@ -181,7 +181,7 @@ test('a decision on a request: the turn it starts shows progress as a reply to t
   // the worker's next turn (the router notice) starts: what its hook reports
   const hook = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', 'prompt'], {
     stdin: new Blob([JSON.stringify({ prompt: '<channel source="plugin:telegram:telegram" chat_id="666" user="router"><router_status>…</router_status></channel>' })]),
-    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: join(dir, 'bot123', 'dm-666') },
+    env: { ...process.env, XDG_RUNTIME_DIR: state, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: join(dir, 'bot123', 'dm-666') },
   })
   await hook.exited
   const own = await until(() => calls.find(c => c.method === 'sendMessage' && Number(c.body.chat_id) === 666 && c.body.text === '🤔 思考中…'))

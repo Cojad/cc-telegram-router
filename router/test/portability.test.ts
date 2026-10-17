@@ -45,9 +45,9 @@ beforeEach(() => {
 afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-/** process.env without the test-only socket override, HOME pointing at a temp user home. */
+/** process.env without the test-only socket override, HOME and XDG_RUNTIME_DIR (the hook's breaker state) pointing at a temp user home. */
 const envAt = (extra: Record<string, string>) => {
-  const e: Record<string, string> = { ...process.env as Record<string, string>, HOME: userHome, ...extra }
+  const e: Record<string, string> = { ...process.env as Record<string, string>, HOME: userHome, XDG_RUNTIME_DIR: userHome, ...extra }
   delete e.CC_TELEGRAM_ROUTER_SOCKET
   delete e.CC_TELEGRAM_ROUTER_HOME
   return e

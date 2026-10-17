@@ -212,3 +212,12 @@ test('reachFile: one file per router socket in $XDG_RUNTIME_DIR, else ~/.cache',
   expect(reachFile('/srv/a.sock', { HOME: '/home/u' })).toMatch(/^\/home\/u\/\.cache\/cc-telegram-router\/reach-[0-9a-f]{16}\.json$/)
   expect(reachFile('/srv/a.sock', { XDG_RUNTIME_DIR: 'relative', HOME: '/home/u' })).toStartWith('/home/u/.cache/')
 })
+
+test('every test that runs the hook keeps its breaker state in a test dir (XDG_RUNTIME_DIR), not the user\'s runtime dir', () => {
+  const runs = readdirSync(import.meta.dir).filter(f => f.endsWith('.ts')).filter(f => {
+    const src = readFileSync(join(import.meta.dir, f), 'utf8')
+    return /'hooks', 'hook\.ts'\)(, 'progress'|} "\$@")/.test(src)
+  })
+  expect(runs.length).toBeGreaterThan(10)
+  for (const f of runs) expect([f, readFileSync(join(import.meta.dir, f), 'utf8').includes('XDG_RUNTIME_DIR')]).toEqual([f, true])
+})

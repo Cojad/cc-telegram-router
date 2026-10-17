@@ -118,7 +118,7 @@ const block = (...lines: string[]) => ['<reactions>', HEAD, ...lines, '</reactio
 async function hook(event: string, input: object): Promise<any> {
   const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', event], {
     stdin: new Blob([JSON.stringify({ cwd: join(dir, 'bot123', GKEY), ...input })]), stdout: 'pipe',
-    env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: join(dir, 'bot123', GKEY) },
+    env: { ...process.env, XDG_RUNTIME_DIR: state, CC_TELEGRAM_ROUTER_SOCKET: join(state, 'router.sock'), CLAUDE_PROJECT_DIR: join(dir, 'bot123', GKEY) },
   })
   const text = await new Response(p.stdout).text()
   await p.exited

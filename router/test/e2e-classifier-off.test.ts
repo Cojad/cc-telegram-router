@@ -102,7 +102,7 @@ test('on with no credentials: each API provider is logged as skipped once at sta
   const hook = async (tool_name: string, tool_input: object) => {
     const p = Bun.spawn(['bun', join(import.meta.dir, '..', '..', 'hooks', 'hook.ts'), 'progress', 'pre'], {
       stdin: new Blob([JSON.stringify({ cwd: folder, tool_name, tool_input })]), stdout: 'pipe',
-      env: { ...process.env, CC_TELEGRAM_ROUTER_SOCKET: join(r.state, 'router.sock'), CLAUDE_PROJECT_DIR: folder },
+      env: { ...process.env, XDG_RUNTIME_DIR: r.state, CC_TELEGRAM_ROUTER_SOCKET: join(r.state, 'router.sock'), CLAUDE_PROJECT_DIR: folder },
     })
     const out = await new Response(p.stdout).text()
     await p.exited

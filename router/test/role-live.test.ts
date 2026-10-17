@@ -196,7 +196,8 @@ async function withHooks(name: string, prompt: string, ownerTurn = false): Promi
       return out
     } })
   mkdirSync(join(home, 'hooks'))
-  writeFileSync(join(home, 'hooks', 'cc-hook'), `#!/bin/sh\nexec bun ${join(import.meta.dir, '..', '..', 'hooks', 'hook.ts')} "$@"\n`)
+  // the hook's breaker state (shared/retry.ts) in the test dir, not the user's runtime dir
+  writeFileSync(join(home, 'hooks', 'cc-hook'), `#!/bin/sh\nXDG_RUNTIME_DIR='${home}' exec bun ${join(import.meta.dir, '..', '..', 'hooks', 'hook.ts')} "$@"\n`)
   chmodSync(join(home, 'hooks', 'cc-hook'), 0o755)
   const s = settingsAs(conv, 'user') as any
   delete s.enabledPlugins
