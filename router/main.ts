@@ -123,6 +123,8 @@ const PLUGIN_DIR = join(homedir(), '.claude', 'plugins', 'cache', 'claude-plugin
 const TEMPLATES = [join(import.meta.dir, '..', 'templates'), join(cfg.stateDir, 'templates')].find(d => existsSync(join(d, 'base-settings.json')))
 if (!TEMPLATES) throw new Error('templates/base-settings.json not found')
 const HOOKS_DIR = join(cfg.stateDir, 'hooks')
+// The cc /status, /usage, /context report scripts: scripts/ in dev, <stateDir>/scripts when deployed (deploy/install.sh router).
+const SCRIPTS_DIR = [join(import.meta.dir, '..', 'scripts'), join(cfg.stateDir, 'scripts')].find(d => existsSync(join(d, 'tg-usage-report.sh'))) ?? join(cfg.stateDir, 'scripts')
 
 const DB_FILE = join(cfg.stateDir, 'router.db')
 const db = openRouterDb(DB_FILE)
@@ -1017,7 +1019,7 @@ async function handleRelay(botName: string, chatId: string, chatType: string, se
     const job = await supervisor.liveJob(db.getConversation(conv.key)!)
     if (!job) { await reply('叫不醒這個對話的 worker'); return }
     if (!rel.raw && job.status === 'busy') { await reply(`這個對話的分身正在處理中, 等這一輪結束再試 (要看當下的畫面可以用 cc /${rel.cmd})`); return }
-    const out = await callConv.run(conv.key, () => relay({ exec, stateDir: cfg.stateDir, claudeBin: cfg.claudeBin, scriptsDir: join(homedir(), '.claude', 'bin'), now: () => gmt8(new Date()) }, job.id, rel))
+    const out = await callConv.run(conv.key, () => relay({ exec, stateDir: cfg.stateDir, claudeBin: cfg.claudeBin, scriptsDir: SCRIPTS_DIR, now: () => gmt8(new Date()) }, job.id, rel))
     db.addLog(conv.key, `${who} 代打 ${shown}`)
     if (out.kind === 'text') { await reply(codeBlock(out.text), true); return }
     if (out.kind === 'photo') {

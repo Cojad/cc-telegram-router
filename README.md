@@ -53,7 +53,7 @@
 | 項目 | 用途 |
 |---|---|
 | tmux | `cc /指令` 代打 (router 用自己的 tmux server 開 `claude attach`) |
-| python3 與 matplotlib, `~/.claude/bin` 的報表腳本 | `cc /status`, `cc /usage` 的報表 (`tg-status-report.sh`, `tg-usage-report.sh`) 與 `cc /context` 的圖 (`tg-context-chart.py`); 這三支腳本不在本 repo, 沒有時 `/context` 改送純文字 |
+| python3 (`/context` 的圖另需 matplotlib) | `cc /status`, `cc /usage` 的報表與 `cc /context` 的圖, 由本 repo `scripts/` 的報表腳本產生 (`deploy/install.sh router` 裝到 stateDir 的 `scripts/`, 見 [部署與維運](docs/operations.md#cc--報表腳本)); 圖畫不出來時 `/context` 改送純文字 |
 | python3, node, pip, npm 等 | power 與 admin 對話的 worker 自己要用的執行環境 |
 | 特權技能需要的工具 (例如 yt-dlp, deno) | 由技能自己決定; 沙箱看得到 `~/.local/bin`, `~/.local/lib`, `~/.deno/bin` |
 | OpenRouter 或其他分類器的 API key | 工具呼叫分類器 (預設關閉) |
@@ -65,7 +65,7 @@
 1. 安裝官方 telegram plugin, 再部署本專案:
 
    ```bash
-   deploy/install.sh router   # 編譯到 /x/cc/.router/cc-telegram-router, 複製 templates
+   deploy/install.sh router   # 編譯到 /x/cc/.router/cc-telegram-router, 複製 templates 與報表腳本
    deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容)
    deploy/install.sh unit     # 安裝 systemd user unit
    ```

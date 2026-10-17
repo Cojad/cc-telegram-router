@@ -4,6 +4,21 @@
 
 版本方案: 1.x 是官方 telegram plugin 的 fork 時期 (單一 session plugin); 2.0.0 起是 router 架構 (一個對話一個背景 session), 之後每個里程碑加一個 minor 版本. 版本依里程碑歸類, 標的時間是主要 commit 的時段, 同一時段裡的 commit 可能分屬不同版本. 尚未建立 git tag.
 
+## [Unreleased]
+
+### Added
+
+- `cc /usage` 加上 Weekly (all models) 的燃燒速率: 完美速率, 當前速率與 ratio, 剩下的額度與倒數, 到重置剛好用完的每日上限, 可超速多少或要減速 (算法見 [docs/operations.md](docs/operations.md#cc--報表腳本)).
+
+### Changed
+
+- `cc /status`, `cc /usage`, `cc /context` 的報表腳本收進 repo 的 `scripts/`, `deploy/install.sh router` 裝到 `<stateDir>/scripts`, router 改用這個位置 (原本是 `~/.claude/bin`). `/usage` 的解析與排版抽成 `scripts/usage_report.py`.
+- `cc /usage` 的倒數一律只顯示最大的兩個單位, 最小到分鐘 (`5d23h`, `8h5m`, `5m`), 原本週額度會顯示成 `143h15m`.
+
+### Fixed
+
+- `/usage` 的重置日期在 12 月看到 1 月時算成下一年.
+
 ## [2.9.0] - 2026-10-17
 
 2026-10-17 07:27 ~ 10:46 的一批改進.

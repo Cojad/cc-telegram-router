@@ -196,7 +196,7 @@ export interface RelayDeps {
   exec: Exec
   stateDir: string
   claudeBin: string
-  /** ~/.claude/bin, holding tg-status-report.sh, tg-usage-report.sh, tg-context-chart.py */
+  /** The repo's scripts/ (installed to <stateDir>/scripts): tg-status-report.sh, tg-usage-report.sh, tg-context-chart.py */
   scriptsDir: string
   /** Where the /context chart is written. */
   outDir?: string

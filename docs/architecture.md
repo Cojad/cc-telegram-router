@@ -15,6 +15,7 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 | `hooks/` | worker 的 hook (`cc-hook`): 進度事件, 權限檢查與提權, 壓縮後補回 chat_context |
 | `shared/` | router 與 plugin 共用的協定 (`protocol.ts`) 與工具定義 (`tools.ts`) |
 | `templates/` | 各對話 settings 的範本 (`base-settings.json`, `roles/<角色>.json`), 共用 CLAUDE.md 範例 (`CLAUDE.md.example`) |
+| `scripts/` | `cc /status`, `cc /usage`, `cc /context` 的報表腳本 (`deploy/install.sh router` 裝到 `<stateDir>/scripts`) |
 | `deploy/` | `install.sh` 與 systemd user unit |
 | `docs/` | 技術文件 (本檔與其他主題, 見 README 的文件索引) |
 | `docs/v1/` | v1 (單一 session plugin) 時期的文件, 僅供參考 |

@@ -5,7 +5,7 @@
 ## 部署
 
 ```bash
-deploy/install.sh router   # 編譯到 /x/cc/.router/cc-telegram-router, 複製 templates
+deploy/install.sh router   # 編譯到 /x/cc/.router/cc-telegram-router, 複製 templates 與報表腳本
 deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容)
 deploy/install.sh unit     # 安裝 systemd user unit
 systemctl --user enable --now cc-telegram-router
@@ -53,3 +53,50 @@ systemctl --user enable --now cc-telegram-router
 ## 時間
 
 時間一律 GMT+8, 不出現 UTC 或 Z: router 的 log 每行開頭是 `2026-10-17 08:06:04.919+08:00`, 交給 worker 的訊息時間 (`<channel ts=...>`) 是 `2026-10-17T08:06:04.919+08:00`, 指令輸出, 通知, router_log 與報表顯示的時間都換算成 GMT+8 (`shared/time.ts`, `router/context.ts` 的 `gmt8`). router.db 與訊息紀錄裡存的仍是 UTC 的 ISO 時間 (比較與查詢用), 顯示時才換算.
+
+## cc / 報表腳本
+
+`cc /status`, `cc /usage` 與 `cc /context` 的圖由 repo 的 `scripts/` 產生, 純腳本不經 LLM, router 把輸出原樣送出:
+
+| 檔案 | 用途 |
+|---|---|
+| `tg-status-report.sh <pane>` | 對 worker 的 tmux pane 送 `/status`, 擷取畫面, 只印白名單欄位 Version, Session kind, Model (Session ID, Email, Organization, Peer address, Login method 永遠不印) |
+| `tg-usage-report.sh <pane>` | 送 `/usage`, 擷取畫面, 交給同目錄的 `usage_report.py` 排版 |
+| `usage_report.py [--now <ISO 時間>]` | 從 stdin 讀 `/usage` 畫面, 印報表; `--now` 固定現在時間 (測試用) |
+| `tg-context-chart.py <out.png>` | 從 stdin 讀 JSON, 畫 `/context` 的 donut chart (需要 matplotlib) |
+
+兩支 `.sh` 讀完畫面後按 Esc 離開 `/status` 與 `/usage` 的畫面 (比對整個畫面, 第一次 Esc 沒有變化才再按一次).
+
+安裝: `deploy/install.sh router` 把 `scripts/` 整個複製到 `<stateDir>/scripts` (預設 `/x/cc/.router/scripts`). 編譯後的 router 用 `<stateDir>/scripts`, 從原始碼執行時用 repo 的 `scripts/`. 腳本在每次代打時才執行, 只改腳本時重跑 `deploy/install.sh router` 即可, 不用重啟 router.
+
+`cc /usage` 的輸出 (以測試資料為例):
+
+```
+📊 Token Usage (claude code cli @ 04:45)
+
+Session ▍░░░░░░░░░  4% used 🟢 ↻8h15m
+Weekly  ▋░░░░░░░░░  6% used 🟢 ↻5d23h
+Fable   ░░░░░░░░░░  0% used 🟢 ↻5d23h
+
+--- 燃燒速率 ---
+完美速率: 14.2%/天
+當前速率: 5.8%/天 (40% ratio)
+剩下 94.0% / 5d23h
+最高可用 15.7%/天燒完
+可以超速 110%喔! 🏎️
+```
+
+- 標題的時間是現在 (GMT+8). 每列是 10 格進度條 (以八分之一方塊湊出小數), 已用百分比, 顏色 (未滿 70% 🟢, 70% 到未滿 90% 🟡, 90% 以上 🔴), `↻` 後面是距離重置的倒數. `/usage` 畫面上的重置時間是 UTC, 報表只顯示倒數; 日期跨年 (12 月看到 1 月的日期) 算下一年.
+- 倒數 (列上的 `↻` 與燃燒速率的剩下) 一律只顯示最大的兩個單位, 最小到分鐘: `5d23h`, `8h5m`, 不到一小時只寫 `5m`.
+- 燃燒速率只算 Weekly (all models) 那一列, 週期 7 天:
+  - 完美速率 = 100% / 7 天.
+  - 已過時間 = 7 天 − 距離重置的時間. 不到 1 小時時當前速率顯示「資料不足 (這週剛開始)」.
+  - 當前速率 = 已用% / 已過天數; ratio = 當前速率 / 完美速率.
+  - 剩下 = 100% − 已用%, 後面是距離重置的倒數.
+  - 最高可用 = 剩下% / 剩餘天數, 也就是到重置時剛好用完的每日用量.
+  - 最高可用不低於完美速率時顯示「可以超速 N%喔! 🏎️」, N = 最高可用 / 完美速率. 低於時 (等同當前速率已超過完美速率) 改顯示「超速了, 要減速! 每天最多 X% 才撐得到重置 🐢」, X 就是最高可用.
+  - 已用 100% 時顯示「本週額度已用完, (倒數) 後重置 🛑」, 不顯示最高可用.
+  - 數字一律無條件捨去: 速率與剩下取一位小數 (100/7 顯示 14.2), ratio 與超速百分比取整數.
+  - 畫面上沒有 Weekly (all models) 那列, 或讀不到它的重置時間時, 不顯示燃燒速率.
+
+對應測試: `router/test/usage-report.test.ts`.

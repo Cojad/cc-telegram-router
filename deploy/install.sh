@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build and install cc-telegram-router (plan 03 「專案位置與部署」).
 #
-#   deploy/install.sh router   compile the router into /x/cc/.router/, copy templates
+#   deploy/install.sh router   compile the router into /x/cc/.router/, copy templates and the report scripts
 #   deploy/install.sh plugin   bundle plugin v2 into the official plugin cache path
 #   deploy/install.sh unit     install the systemd user unit (does not start it)
 #   deploy/install.sh all
@@ -25,10 +25,13 @@ install_router() {
   mv -f "$STATE/cc-telegram-router.new" "$STATE/cc-telegram-router"
   rm -rf "$STATE/templates"
   cp -r "$REPO/templates" "$STATE/templates"
+  rm -rf "$STATE/scripts"
+  cp -r "$REPO/scripts" "$STATE/scripts"
+  chmod +x "$STATE/scripts/"*.sh "$STATE/scripts/"*.py
   mkdir -p "$STATE/hooks"
   bun build --compile "$REPO/hooks/hook.ts" --outfile "$STATE/hooks/cc-hook.new"
   mv -f "$STATE/hooks/cc-hook.new" "$STATE/hooks/cc-hook"
-  echo "router -> $STATE/cc-telegram-router, hook -> $STATE/hooks/cc-hook"
+  echo "router -> $STATE/cc-telegram-router, hook -> $STATE/hooks/cc-hook, report scripts -> $STATE/scripts"
 }
 
 install_plugin() {
