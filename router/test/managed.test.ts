@@ -9,7 +9,8 @@
 // config managed.shareSessions (the registry bind on or off), and `managed
 // agents|attach` (the launcher's command, arguments as they are, a conversation
 // key or chat_id turned into its job id); the workers' auto memory stays in the
-// conversation folder (autoMemoryDirectory), which the migration need not move.
+// conversation folder (autoMemoryDirectory), which the migration need not move;
+// no worker loads the user layer's CLAUDE.md (the real claude's /context, docs/session-and-memory.md).
 // End to end through the real router: e2e-managed.test.ts.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
@@ -20,11 +21,11 @@ import { createHash } from 'crypto'
 import type { Conversation } from '../db'
 import { bwrapArgs, CHANNELS, claudeJsonOf, decideMode, describeMode, launcherRunner, makeLauncher, managedPaths, managedSettings, MARKETPLACE, pluginSettings, resolveChannel, shellLine } from '../claudecmd'
 import { checkNamespaces, createDaemonKeeper, describeMigration, initConfigDir, migrateCli, migrated, migrateTranscripts, prepareMounts, syncBack, writeManagedSettings, resolveAttachTarget, agentsCli, attachCli, MANAGED_USAGE } from '../managed'
-import { createSupervisor } from '../supervisor'
+import { createSupervisor, workerArgs } from '../supervisor'
 import { HOST_TOOLS, hostDir, hostTool, installTools, installed, binDir, type Tool } from '../toolbox'
 import { checkMarketplace, writeFingerprint, MARKETPLACE_FINGERPRINT_FILE } from '../pluginguard'
-import { writeSessionSettings } from '../settings'
-import { parseChannelMode, parseManaged } from '../config'
+import { renderSettings, writeSessionSettings } from '../settings'
+import { parseChannelMode, parseManaged, type Config } from '../config'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'cctr-managed-')) })
@@ -513,3 +514,57 @@ test('the workers\' auto memory lives in the conversation folder (base-settings 
   for (const t of ['"autoMemoryDirectory": "{{folder}}/memory"', '自動記憶不用遷移', '`router/test/managed.test.ts` 鎖住']) expect(sec).toContain(t)
   expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain('worker 的自動記憶在對話資料夾的 `memory/`, 不用搬')
 })
+
+// docs/session-and-memory.md 「自動繼承上層的 CLAUDE.md」 and 「各層一覽」 (2.32.5): a worker,
+// guest included, gets the folder chain's CLAUDE.md but not the user layer's, in either mode,
+// because of workerArgs' --setting-sources. The real claude reports what it loaded with /context,
+// a local command (no model call, no cost), with HOME and every config folder in this test's temp
+// folder. Skipped when no claude is installed (CLAUDE_BIN picks another one, like role-live).
+const CLAUDE_FOR_CONTEXT = process.env.CLAUDE_BIN ?? Bun.which('claude')
+test.skipIf(!CLAUDE_FOR_CONTEXT)('the user layer\'s CLAUDE.md is not loaded: a guest worker started with workerArgs\' --setting-sources gets <home>, the bot\'s and its conversation\'s CLAUDE.md, never the user layer\'s (~/.claude in legacy, <stateDir>/claude-config in managed); with user added it would be; the docs say so', async () => {
+  const fakeHome = join(dir, 'userhome')
+  const home = join(dir, 'cc')
+  const folder = join(home, 'bot1', 'dm-1')
+  const paths = managedPaths(join(home, '.router'), { CLAUDE_CONFIG_DIR: undefined }, fakeHome)
+  const layers = { user: join(paths.userConfigDir, 'CLAUDE.md'), managedUser: join(paths.configDir, 'CLAUDE.md'), global: join(home, 'CLAUDE.md'), bot: join(home, 'bot1', 'CLAUDE.md'), conversation: join(folder, 'CLAUDE.md') }
+  for (const [name, p] of Object.entries(layers)) { mkdirSync(join(p, '..'), { recursive: true }); writeFileSync(p, `layer ${name}\n`) }
+  const settings = join(dir, 'guest.json')
+  const s = renderSettings(join(import.meta.dir, '..', '..', 'templates'), 'guest', { folder, home, hidden: [paths.configDir], botDir: join(home, 'bot1'), autoCompactWindow: 750000, hooksDir: '/nonexistent' }) as any
+  delete s.hooks
+  delete s.enabledPlugins
+  writeFileSync(settings, JSON.stringify(s))
+  const c = { ...conv('dm-1', folder, null), bot: 'bot1', role: 'guest' } as Conversation
+  for (const mode of ['legacy', 'managed'] as const) {
+    const args = workerArgs({ model: 'claude-opus-5-5' } as Config, c, settings, CHANNELS[mode])
+    const at = args.indexOf('--setting-sources')
+    expect(args[at + 1]).toBe('project,local')
+    // the worker's flags as they are, but no channel: the plugin is not installed here
+    const ch = args.indexOf('--channels')
+    const worker = args.filter((_, i) => i !== ch && i !== ch + 1)
+    const env = makeLauncher({ mode, claudeBin: CLAUDE_FOR_CONTEXT!, paths, bwrap: '/unused', home: fakeHome }).env({ PATH: process.env.PATH, HOME: fakeHome })
+    const userLayer = mode === 'managed' ? layers.managedUser : layers.user
+    const loaded = async (flags: string[]) => {
+      const p = Bun.spawn([CLAUDE_FOR_CONTEXT!, '-p', '--output-format', 'json', ...flags, '/context'], { cwd: folder, env, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' })
+      const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
+      expect({ mode, code: await p.exited, err }).toEqual({ mode, code: 0, err: '' })
+      const r = JSON.parse(out)
+      expect(r.total_cost_usd ?? 0).toBe(0)
+      const result = String(r.result)
+      return result.slice(result.indexOf('### Memory Files'), result.indexOf('\n### ', result.indexOf('### Memory Files') + 5))
+    }
+    const files = await loaded(worker)
+    for (const p of [layers.global, layers.bot, layers.conversation]) expect(files).toContain(p)
+    for (const p of [layers.user, layers.managedUser]) expect(files).not.toContain(p)
+    // the probe can see a user layer: the same flags with user added load this mode's one
+    const withUser = worker.slice()
+    withUser[at + 1] = 'user,project,local'
+    expect(await loaded(withUser)).toContain(userLayer)
+  }
+  const root = join(import.meta.dir, '..', '..')
+  const doc = readFileSync(join(root, 'docs', 'session-and-memory.md'), 'utf8')
+  for (const t of ['分身一律帶 `--setting-sources project,local` 啟動 (沒有 `user`), 所以所有角色 (含 owner) 的分身都不載入它', '`<stateDir>/claude-config/CLAUDE.md`, 同樣不載入', '| 使用者層 | `~/.claude/CLAUDE.md` (managed 模式是 `<stateDir>/claude-config/CLAUDE.md`) | 否 (所有角色, 含 owner) |', '`router/test/managed.test.ts`「the user layer\'s CLAUDE.md is not loaded: …」']) expect(doc).toContain(t)
+  expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain('你使用者層的 `settings.json` 與 `~/.claude/CLAUDE.md` 本來就不載入')
+  const mc = readFileSync(join(root, 'docs', 'managed-channel.md'), 'utf8')
+  for (const t of ['不帶使用者層 `CLAUDE.md`', '使用者層 `CLAUDE.md` 本來就不載入; managed 模式的使用者層位置是 `<stateDir>/claude-config/CLAUDE.md`']) expect(mc).toContain(t)
+  expect(mc).not.toContain('仍讀 `~/.claude/CLAUDE.md`')
+}, 60_000)

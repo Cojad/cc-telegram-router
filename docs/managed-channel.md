@@ -18,7 +18,7 @@ router 的 worker 原本載入官方商店的 `telegram@claude-plugins-official`
 - **設定目錄:** `<stateDir>/claude-config` (權限 700). router 下的每個 `claude` 指令都帶 `CLAUDE_CONFIG_DIR` 與 `CLAUDE_SECURESTORAGE_CONFIG_DIR`, 而且都包在 bwrap 裡.
 - **daemon:** router 看管一個常駐在 bwrap 內的 `claude daemon run`. 叫醒前與定時檢查 daemon 與 worker 是否看得到 managed settings, 不符就修復並發重要通知.
 - **對話紀錄:** 切換時把各對話目前 session 的紀錄 (含 tool-results) 從 `~/.claude/projects` 複製到新設定目錄, worker 醒來就能接續. 舊的留在 `~/.claude` 當備份. 原本 daemon 底下 router 對話的 job 會 stop 加 rm.
-- **全機設定只帶全域 CLAUDE.md:** 不帶個人 skills, 其他 plugin, MCP server.
+- **全機設定都不帶:** 不帶使用者層 `CLAUDE.md`, 個人 skills, 其他 plugin, MCP server.
 - **共用 session 名冊 (2.32.1, 2.32.2 起可用 config `managed.shareSessions` 關閉):** bwrap 另外把使用者的 `sessions/` 名冊掛到專屬設定目錄的 `sessions/` 上, worker 與這台機器上使用者自己的 session 用 ListAgents 互相看得到, 也能用名稱互相傳訊 (見「共用 session 名冊」).
 - **plugin 來源:** 本機資料夾商店 `cc-telegram-router`, 指向 router 部署時安裝的 plugin, 不依賴 GitHub. plugin 名稱維持 `telegram`, 所以工具名稱 `mcp__plugin_telegram_telegram_*`, channel 標籤 `plugin:telegram:telegram`, 技能命名空間都不變.
 
@@ -116,7 +116,7 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
 - `settings.json`: 加 `skipDangerousModePermissionPrompt: true`, 其他鍵保留. 沒有這一項時 `--bg` 會被擋 (`--bg with bypassPermissions requires accepting the disclaimer first`, 已實測).
 - `.claude.json`: `projects[<home>].hasTrustDialogAccepted = true`, 其他內容保留. 背景 session 遇到未信任的資料夾會直接失敗 (`Workspace not trusted`, 已實測), 事先寫好信任後不會出現信任畫面 (已實測).
   - 這個檔會被 Claude Code 自己改寫. router 只在 daemon 啟動前寫入, 寫法是讀進來, 合併, 寫暫存檔再改名.
-- **全域 CLAUDE.md 不用 symlink:** 實測換了 `CLAUDE_CONFIG_DIR` 後, Claude Code 仍讀 `~/.claude/CLAUDE.md`. 它裡面的 `@memory/...` 匯入, 在新設定目錄裡沒有生效, 因為那屬於「外部匯入」, 要逐個專案核准. 現在正式環境各對話的 `hasClaudeMdExternalIncludesApproved` 也都是 false, 所以行為跟現在相同. router 不會自動核准外部匯入.
+- **使用者層 CLAUDE.md 不載入, 所以不用 symlink:** worker 兩種模式都帶 `--setting-sources project,local`, 使用者層 `CLAUDE.md` 本來就不載入; managed 模式的使用者層位置是 `<stateDir>/claude-config/CLAUDE.md`, 不是 `~/.claude/CLAUDE.md`. 要給所有 worker 的規則寫在 `<home>/CLAUDE.md`.
 - worker 兩種模式都帶 `--setting-sources project,local`, 使用者層的 `settings.json` 本來就不載入, 不是切換後才改變. 換設定目錄影響的是放在設定目錄裡的其他東西: 個人 skills (`~/.claude/skills`), plugin 的安裝紀錄與快取, `.claude.json` 裡的 MCP server; 新設定目錄裡沒有這些. 注意: claude.ai 帳號層級的東西不在設定目錄裡, 照樣會出現. 包括帳號同步的技能 (會下載到 `<設定目錄>/skills/synced`) 與 claude.ai 的 MCP 連接器. 這跟現在相同.
 
 ## 對話紀錄的遷移
@@ -209,7 +209,7 @@ cc-telegram-router [--config <路徑>] managed help
 
 ## 測試
 
-- `router/test/managed.test.ts` (21 項): 模組層級, 見下方清單.
+- `router/test/managed.test.ts` (22 項): 模組層級, 見下方清單.
 - `router/test/e2e-managed.test.ts` (6 項): 真的 router, 假 Bot API, e2e-wake 的假 claude, 以及用系統 bwrap 做出同樣 mount namespace 的 bwrap 替身.
 - `router/test/health.test.ts`: 啟動公告的 channel 一行, `/healthz` 的 `channel` 欄位, 文件範例的欄位.
 - 驗收對照表在 [testing](testing.md#managed-channel-驗收對照).
@@ -230,6 +230,7 @@ cc-telegram-router [--config <路徑>] managed help
   - settings 範本依模式產生.
   - pluginguard 的商店檢查.
   - toolbox 的 raw 安裝與 host 資料夾.
+  - 使用者層 `CLAUDE.md` 兩種模式都不載入 (真的 claude 跑 `/context`, 不呼叫模型; 沒裝 claude 時略過).
 - e2e (真的 router + 假 claude + bwrap 替身):
   - 替身記錄參數, 再用系統 bwrap 做出真的 mount namespace. 驗證每個 claude 呼叫都經過它, 帶了兩個設定目錄的環境變數, 沒有 `TELEGRAM_*`, 而且看得到 managed settings.
   - 自動遷移: 紀錄與 tool-results 複製過去, 原本的 job 用使用者自己的 claude 移除, worker 用原本的 session 接續並收到訊息.

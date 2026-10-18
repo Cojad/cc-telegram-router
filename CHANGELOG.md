@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.32.5] - 2026-10-18
+
+### Fixed
+
+- 文件: 分身不載入使用者層的 `CLAUDE.md`. 分身一律帶 `--setting-sources project,local` (沒有 `user`), 所有角色 (含 owner) 都一樣; managed 模式的使用者層位置是 `<stateDir>/claude-config/CLAUDE.md`, 不是 `~/.claude/CLAUDE.md`, 同樣不載入. 要給所有分身的規則寫在 `<home>/CLAUDE.md`. 更正 docs/session-and-memory.md 的「自動繼承上層的 CLAUDE.md」, 樹狀圖, 「各層一覽」的使用者層與「自動載入」的說明, README 的 managed 模式差異說明, 以及 docs/managed-channel.md 的「全機設定」與設定目錄初始化裡「不用 symlink」那一條 (原本都說會載入; 那一條後半段關於 `@memory` 外部匯入的說明前提不成立, 一併刪掉).
+- 測試: managed.test (22 項) 加一項, 用真的 claude 跑 `/context` (本機指令, 不呼叫模型), HOME 與設定目錄都在暫存資料夾: guest 分身帶 `workerArgs` 的旗標, 兩種模式都載入 `<home>`, bot 層與對話層的 `CLAUDE.md`, 不載入使用者層; 加上 `user` 時就會載入 (確認測得到). 沒裝 claude 時略過. 文件的「驗證」一節列上這項.
+
 ## [2.32.4] - 2026-10-18
 
 ### Added
