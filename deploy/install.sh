@@ -4,7 +4,9 @@
 #   deploy/install.sh router   compile the router into the state dir, copy templates and the report scripts,
 #                              and (once config.json exists) write the locator the plugin and hook use
 #                              (~/.config/cc-telegram-router/router.json, shared/locate.ts)
-#   deploy/install.sh plugin   bundle plugin v2 into the official plugin cache path
+#   deploy/install.sh plugin   bundle plugin v2 into the official plugin cache path and record its
+#                              fingerprint in the state dir (<stateDir>/plugin-fingerprint.json), which
+#                              the router checks the cache against (router/pluginguard.ts)
 #   deploy/install.sh unit     install the systemd user unit (does not start it)
 #   deploy/install.sh all
 #
@@ -74,6 +76,22 @@ install_plugin() {
   echo v2 > "$PLUGIN_CACHE/.deployed-version"
   rm -rf "$tmp"
   echo "plugin -> $PLUGIN_CACHE"
+  # What we put there, for the router's check of the cache (router/pluginguard.ts).
+  if plugin_state_dir; then
+    bun "$REPO/router/pluginguard.ts" fingerprint "$PLUGIN_CACHE" "$STATE"
+  else
+    echo "沒有安裝位置 (CC_ROUTER_STATE 或位置檔), 沒記下 plugin 指紋: 裝好 router 後再跑一次 $(basename "$0") plugin" >&2
+  fi
+}
+
+# Like state_dir, but only reports whether it is known (a plugin install may come before the router's).
+plugin_state_dir() {
+  if [ -n "${CC_ROUTER_STATE:-}" ]; then STATE="$(realpath -m "$CC_ROUTER_STATE")"; return 0; fi
+  if [ -f "$LOCATOR" ]; then
+    STATE="$(bun -e 'const j = await Bun.file(process.argv[1]).json(); process.stdout.write(String(j.stateDir ?? ""))' "$LOCATOR")"
+    [ -n "$STATE" ] && return 0
+  fi
+  return 1
 }
 
 install_unit() {

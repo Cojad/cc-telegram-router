@@ -12,11 +12,11 @@ claude plugin marketplace add anthropics/claude-plugins-official
 claude plugin install telegram@claude-plugins-official            # 預設裝在 user 範圍
 ```
 
-worker 的 settings 會自己啟用它 (`templates/base-settings.json` 的 `enabledPlugins`), `claude plugin list` 顯示 disabled 也沒關係. 接著:
+worker 的 settings 會自己啟用它 (`templates/base-settings.json` 的 `enabledPlugins`), `claude plugin list` 顯示 disabled 也沒關係; 同一份 settings 也關掉官方商店的自動更新, 見下方「官方 plugin 的自動更新與快取檢查」. 接著:
 
 ```bash
 CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cc-telegram-router, 複製 templates 與報表腳本
-deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容)
+deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容), 並在 stateDir 記下檔案指紋
 deploy/install.sh unit     # 安裝 systemd user unit
 sudo loginctl enable-linger <使用者>   # 見下方「登出後繼續執行 (linger)」
 cd <home> && claude        # 只有第一次: 接受資料夾信任後離開 (/exit), 見下方「資料夾信任」
@@ -78,12 +78,23 @@ router 以 `claude --bg` 在每個對話資料夾 (`<home>` 底下) 啟動 worke
 | `credentials` | 跨 bot 的 bot token 與 http API key, 名稱 -> `{ token, kind, methods, baseUrl, apiRoot, header, scheme, query, defaultHeaders, roles, label, addedBy }`; 由 `/router cred` 與 `cred-import` 管理, 不要手改 (例外: telegram-bot 類的 `apiRoot`, 這個憑證要走的 Bot API server, 沒寫用全域 `apiRoot`, 手改後 `/router cred reload`). 見[憑證](credentials-and-skills.md#憑證). |
 | `secretKey` | 加密對話密鑰與原始事件的 AES-256 key (base64); 沒有時 router 啟動時產生並寫回 config.json. 遺失就解不開已存的密鑰與原文, 要跟 router.db 一起備份. 見[密鑰](secrets.md). |
 | `skillRefreshAt` | 特權技能每日更新憑證的時間, GMT+8 `"HH:MM"`, `"off"` 關閉; 沒寫是 `"05:00"`, 寫錯只關閉每日更新. 見[特權技能](credentials-and-skills.md#特權技能). |
+| `pluginCheckAt` | 每天檢查官方 plugin 快取的時間, GMT+8 `"HH:MM"`, `"off"` 關閉; 沒寫是 `"09:07"`, 寫錯只關閉每日檢查 (worker 打招呼時的檢查照舊). 見[官方 plugin 的自動更新與快取檢查](#官方-plugin-的自動更新與快取檢查). |
 | `classifier` | 工具呼叫分類器 (選配, 預設關閉, 第一階段只記錄); 格式錯只關閉它. 見[工具呼叫分類器](classifier.md). |
 | `sandboxDenyRead` | 所有沙箱 (角色範本與特權動作) 額外隱藏的絕對路徑, 例如同一台機器上其他專案; 沒寫是沒有, 寫錯的項目略過. 見[安裝位置](#安裝位置). |
 | `receiveReact` | 對話沒有自己設定時收哪些表情回應: `all`, `botself_only`, `disable`; 沒寫是 `botself_only`. 見[表情回應 (reaction)](#表情回應-reaction). |
 | `reactFlushMs` | 表情回應等多少毫秒沒有新訊息就單獨交給 worker; 沒寫是 60000, 測試才縮短. 見[表情回應 (reaction)](#表情回應-reaction). |
 
-選配欄位 (`skillRefreshAt`, `classifier`, `sandboxDenyRead`, `receiveReact`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
+選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `receiveReact`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
+
+## 官方 plugin 的自動更新與快取檢查
+
+worker 載入的 plugin v2 是 `deploy/install.sh plugin` 蓋在官方 telegram plugin 的快取資料夾 (`~/.claude/plugins/cache/claude-plugins-official/telegram/0.0.7/`) 上的. Claude Code 對官方商店 `claude-plugins-official` 預設開啟自動更新: 互動 session (背景 worker 也算) 送出第一則訊息後, 隨機等最多十分鐘, 重新整理商店並把 plugin 更新到新的版本資料夾, 下一次啟動就載入官方版. 官方版不認識 router, worker 會收不到 Telegram 訊息. 所以:
+
+- **worker 的 settings 關掉官方商店的自動更新**: `templates/base-settings.json` 的 `extraKnownMarketplaces` 宣告 `claude-plugins-official` 的 `autoUpdate: false`. 依官方文件 ([plugins/loading 的 When auto-update runs](https://code.claude.com/docs/en/plugins/loading#when-auto-update-runs)), settings 檔裡 `extraKnownMarketplaces` 的 `autoUpdate` 優先於 `known_marketplaces.json` 與預設值. 來源必須照寫官方的 `github` `anthropics/claude-plugins-official`: `claude-plugins-official` 是保留名稱, 來源不是 `github.com/anthropics/` 時 Claude Code 會把整個商店判為不受信任的來源而停用 (連 telegram plugin 一起); 同名的項目由優先序最高的檔整筆取代, 所以角色範本不能再定義它. 建議全機的 `~/.claude/plugins/known_marketplaces.json` 也把它設成 `"autoUpdate": false` (或在 `/plugin` 的 Marketplaces 關掉 Enable auto-update), 讓終端機的 session 也不會更新它. 手動重裝 (`claude plugin install telegram@claude-plugins-official`) 或 `claude plugin update` 仍會換掉快取, 不受這個設定影響, 由下面的檢查抓出來.
+- **部署時記下指紋**: `deploy/install.sh plugin` 部署後在 stateDir 寫 `plugin-fingerprint.json`: 部署的版本資料夾與其中每個檔案的 sha256 (Claude Code 自己的 `.in_use`, `.orphaned_at` 不算). 還不知道 stateDir 時 (第一次安裝, router 還沒裝) 只部署不記, 印一行提示.
+- **router 檢查快取** (`router/pluginguard.ts`): 每個 worker 的 plugin 打招呼 (hello) 時, 以及每天 `pluginCheckAt` (預設 09:07, GMT+8), 比對: `~/.claude/plugins/installed_plugins.json` 裡 `telegram@claude-plugins-official` 的每一筆 `installPath` 是否還是部署的資料夾; 資料夾裡的檔案是否跟指紋相同 (內容改變, 多出, 少了); 資料夾是否被標了 `.orphaned_at` (Claude Code 換版後標記舊版, 14 天後刪除); 同一層有沒有出現其他版本資料夾. 有不符就通知 owner (每隻 bot 的重要通知位置, 同一個位置只送一次), 說明可能被官方更新或手動 update 蓋掉, 請重新 `deploy/install.sh plugin` 後 `/router session rotate all`. **router 不改任何檔.** 打招呼時只在問題跟上次通知的不同時才通知; 每日檢查只要還有問題就再通知一次. 恢復正常, 或還沒有指紋 (這版之後還沒跑過 `deploy/install.sh plugin`) 時只寫 log. Claude Code 的 plugins 根目錄照它的規則: 有 `CLAUDE_CODE_PLUGIN_CACHE_DIR` 用它, 否則 `~/.claude/plugins`.
+
+手動跟進官方新版: 官方更新了 telegram plugin (例如修了跟 Claude Code 新版的相容問題) 而我們要跟進時, 先看官方的改動 ([原始碼](https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/telegram)), 需要的部分併進 `plugin/`; 若官方版本號變了而要換快取資料夾, 改 `deploy/install.sh` 的 `PLUGIN_CACHE`, 在終端機 `claude plugin marketplace update claude-plugins-official` 與 `claude plugin update telegram@claude-plugins-official` 取得新版資料夾, 再跑 `deploy/install.sh plugin` 蓋上 v2 並重記指紋, 最後 `/router session rotate all`. 換版時 router 的檢查會先通知一次 (installPath 與版本資料夾變了), 部署完重記指紋就恢復.
 
 ## 自架 Bot API server
 
@@ -117,7 +128,7 @@ bot 可以改走自架的 [telegram-bot-api](https://github.com/tdlib/telegram-b
 
    ```bash
    deploy/install.sh router
-   deploy/install.sh plugin
+   deploy/install.sh plugin   # 也重記官方 plugin 快取的指紋 (見「官方 plugin 的自動更新與快取檢查」)
    deploy/install.sh unit     # 只有 deploy/cc-telegram-router.service 改過時需要 (CHANGELOG 會寫)
    ```
 

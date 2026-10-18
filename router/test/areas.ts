@@ -27,8 +27,8 @@ export const AREAS: Area[] = [
   },
   {
     name: 'sandbox', title: '沙箱與安裝位置',
-    tests: ['portability.test.ts', 'skilltry.test.ts', 'e2e-compiled.test.ts'],
-    paths: ['shared/locate.ts', 'deploy/**', 'router/settings.ts', 'router/privskill.ts', 'router/sandboxnet.ts', 'router/selfpath.ts', 'router/cli.ts', 'plugin/server.ts', 'templates/roles/**'],
+    tests: ['portability.test.ts', 'skilltry.test.ts', 'e2e-compiled.test.ts', 'pluginguard.test.ts'],
+    paths: ['shared/locate.ts', 'deploy/**', 'router/pluginguard.ts', 'templates/base-settings.json', 'router/settings.ts', 'router/privskill.ts', 'router/sandboxnet.ts', 'router/selfpath.ts', 'router/cli.ts', 'plugin/server.ts', 'templates/roles/**'],
   },
   {
     name: 'secrets', title: '密鑰保護',

@@ -50,7 +50,8 @@ import { hashSkill, loadManifest, argRoleRefusal } from './privskill'
 import { createProgress, type ProgressEvent, type Mirror } from './progress'
 import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
-import { postNotice, requestOriginNoter, type ApprovalDeps } from './approvals'
+import { postNotice, noticePlace, requestOriginNoter, type ApprovalDeps } from './approvals'
+import { createPluginGuard, scheduleDaily } from './pluginguard'
 import { createPkgGate, claudeReviewer } from './pkgreview'
 import { createClassifier, openClassifyStore, apiJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER, API_PROVIDERS } from './classifier'
 import { escHtml, htmlToText } from './setup'
@@ -314,6 +315,23 @@ function ipcOnProgress(peer: Peer, ev: Record<string, unknown>): void {
   void callConv.run(c.key, () => progress.handle(c.key, c.chat_id, ev as ProgressEvent, { replyTo, mirrors })).catch(e => log(`progress ${c.key}: ${e}`))
 }
 
+// The official plugin's cache against what deploy/install.sh plugin recorded
+// (router/pluginguard.ts): at every worker's hello and daily at pluginCheckAt.
+const pluginGuard = createPluginGuard({ stateDir: cfg.stateDir, notify: noticeEveryBot, log })
+
+/** One machine-wide notice to each bot's notices place (重要通知), once per place. */
+async function noticeEveryBot(text: string): Promise<void> {
+  const seen = new Set<string>()
+  for (const b of cfg.bots) {
+    const place = noticePlace(db, cfg.owners, b.name)
+    if (!place) continue
+    const k = `${place.chat_id}:${place.thread_id ?? ''}`
+    if (seen.has(k)) continue
+    seen.add(k)
+    await approvalDeps.send(b.name, place, text, [])
+  }
+}
+
 const ipc = createIpc({
   cfg, db, log,
   identify(projectDir): Peer | null {
@@ -531,6 +549,7 @@ const ipc = createIpc({
   // the conversation's own subagents count for the worker process that started them (router/elevation.ts)
   // a worker that cannot be told apart (no process start time) gets none
   onWorker: (c, h) => {
+    pluginGuard.check('hello')
     const w = workerKey(h.session_id ?? db.getConversation(c.key)?.session_id, h.pid)
     if (w) elevation.workerConnected(c.key, w)
     else { elevation.workerGone(c.key); log(`own_agents ${c.key}: no start time for pid ${h.pid}, own subagents do not count`) }
@@ -1588,6 +1607,10 @@ if (cfg.skillRefreshAt) {
   const sched = scheduleRefresh(refreshDeps, cfg.skillRefreshAt)
   refreshQueue = sched.enqueue
   log(`skill refresh: daily at ${cfg.skillRefreshAt} GMT+8, next ${gmt8(new Date(sched.next()))}`)
+}
+if (cfg.pluginCheckAt) {
+  const sched = scheduleDaily(cfg.pluginCheckAt, () => { pluginGuard.check('daily') })
+  log(`plugin guard: daily at ${cfg.pluginCheckAt} GMT+8, next ${gmt8(new Date(sched.next()))}`)
 }
 
 async function shutdown(sig: string, respawn = false) {

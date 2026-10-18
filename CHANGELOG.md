@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+## [2.19.0] - 2026-10-18
+
+### Added
+
+- 防止官方 telegram plugin 被自動更新蓋掉 (見 [docs/operations.md](docs/operations.md#官方-plugin-的自動更新與快取檢查)): worker 的 settings (`templates/base-settings.json`) 宣告 `extraKnownMarketplaces` 的 `claude-plugins-official` 為 `autoUpdate: false`, 來源照寫官方的 github `anthropics/claude-plugins-official` (保留名稱, 來源不對整個商店會被停用); 依官方文件, settings 檔的這個值優先於 `known_marketplaces.json` 與預設的自動更新. 新設定要等 worker 輪替後才生效.
+- 官方 plugin 快取的檢查 (`router/pluginguard.ts`): `deploy/install.sh plugin` 部署後在 stateDir 記下 `plugin-fingerprint.json` (部署的版本資料夾與每個檔案的 sha256, 不算 Claude Code 的 `.in_use`, `.orphaned_at`; 還不知道 stateDir 時只部署並提示). router 在每個 worker 的 plugin 打招呼時, 以及每天 `pluginCheckAt` (config 新欄位, GMT+8 `"HH:MM"`, 預設 `"09:07"`, `"off"` 關閉, 寫錯只關閉每日檢查) 比對 `installed_plugins.json` 的 `installPath`, 檔案指紋, `.orphaned_at` 標記與其他版本資料夾; 不符時通知 owner (每隻 bot 的重要通知位置, 同一位置只送一次; 打招呼時只在問題變了才通知, 每日有問題就通知), 不自動改檔. 還沒有指紋與恢復正常只寫 log. 升級後要跑一次 `deploy/install.sh plugin` 記下指紋.
+- 測試: 新增 `router/test/pluginguard.test.ts` (settings 內容, 指紋, 各種不符情況, 通知時機, 每日時間與 config, 真的 `deploy/install.sh plugin`).
+
 ## [2.18.0] - 2026-10-18
 
 ### Added

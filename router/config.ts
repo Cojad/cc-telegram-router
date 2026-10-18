@@ -75,6 +75,9 @@ export type Config = {
   /** Daily refresh of privileged skills' credentials (router/skillrefresh.ts):
    *  "HH:MM" GMT+8, default "05:00"; null when config says "off". */
   skillRefreshAt?: string | null
+  /** Daily check of the official plugin's cache against what deploy/install.sh
+   *  plugin recorded (router/pluginguard.ts): "HH:MM" GMT+8, default "09:07"; null when "off". */
+  pluginCheckAt?: string | null
   /** Tool call classifier, stage 1 (router/classifier.ts): record only; off when missing. */
   classifier?: ClassifierConfig
   /** Extra absolute paths hidden from every sandbox (role templates' denyRead,
@@ -97,11 +100,21 @@ export function refreshAtOrOff(v: unknown, warnings: string[]): string | null {
 
 /** config skillRefreshAt: "HH:MM" (GMT+8), "off" (or false) to disable, missing = 05:00. */
 export function parseRefreshAt(v: unknown): string | null {
-  if (v === undefined || v === null) return '05:00'
+  return parseDailyAt(v, 'skillRefreshAt', '05:00')
+}
+
+/** A daily time in config: "HH:MM" (GMT+8), "off" (or false) to disable, missing = dflt. */
+export function parseDailyAt(v: unknown, key: string, dflt: string): string | null {
+  if (v === undefined || v === null) return dflt
   if (v === false || v === 'off') return null
   const m = typeof v === 'string' ? /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(v.trim()) : null
-  if (!m) throw new Error(`skillRefreshAt 要是 "HH:MM" (GMT+8) 或 "off", 收到 ${JSON.stringify(v)}`)
+  if (!m) throw new Error(`${key} 要是 "HH:MM" (GMT+8) 或 "off", 收到 ${JSON.stringify(v)}`)
   return `${m[1]!.padStart(2, '0')}:${m[2]}`
+}
+
+/** config pluginCheckAt as loadConfig takes it: a wrong value turns the daily check off with a warning (the check at each hello stays). */
+export function pluginCheckAtOrOff(v: unknown, warnings: string[]): string | null {
+  try { return parseDailyAt(v, 'pluginCheckAt', '09:07') } catch (e) { warnings.push(`${e instanceof Error ? e.message : e}; 官方 plugin 快取的每日檢查已關閉`); return null }
 }
 
 /** config sandboxDenyRead: absolute paths, not "/". A wrong entry is left out
@@ -193,6 +206,7 @@ export function loadConfig(path: string): Config {
     credentials: raw.credentials ?? {},
     secretKey: raw.secretKey,
     skillRefreshAt: refreshAtOrOff(raw.skillRefreshAt, warnings),
+    pluginCheckAt: pluginCheckAtOrOff(raw.pluginCheckAt, warnings),
     classifier: parseClassifier(raw.classifier),
     sandboxDenyRead: parseDenyRead(raw.sandboxDenyRead, warnings),
     receiveReact: parseReactMode(raw.receiveReact, warnings),
