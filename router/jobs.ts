@@ -22,7 +22,7 @@ export function jobsDir(env: Record<string, string | undefined> = process.env, h
   return join(env.CLAUDE_CONFIG_DIR || join(home, '.claude'), 'jobs')
 }
 
-export interface JobState { id: string; name?: string; sessionId?: string; cwd?: string; state?: string; respawnFlags?: string[] }
+export interface JobState { id: string; name?: string; sessionId?: string; cwd?: string; state?: string; needs?: string; respawnFlags?: string[] }
 
 export function readJob(dir: string, id: string): JobState | null {
   if (!/^[\w-]+$/.test(id)) return null
@@ -34,6 +34,7 @@ export function readJob(dir: string, id: string): JobState | null {
       ...(typeof j.sessionId === 'string' ? { sessionId: j.sessionId } : {}),
       ...(typeof j.cwd === 'string' ? { cwd: j.cwd } : {}),
       ...(typeof j.state === 'string' ? { state: j.state } : {}),
+      ...(typeof j.needs === 'string' ? { needs: j.needs } : {}),
       ...(Array.isArray(j.respawnFlags) && j.respawnFlags.every((x: unknown) => typeof x === 'string') ? { respawnFlags: j.respawnFlags } : {}),
     }
   } catch { return null }
@@ -43,6 +44,36 @@ export function listJobs(dir: string): JobState[] {
   let names: string[] = []
   try { names = readdirSync(dir) } catch { return [] }
   return names.map(n => readJob(dir, n)).filter((j): j is JobState => !!j)
+}
+
+/** What a worker's `blocked` (claude agents --json) means (docs/operations.md
+ *  「cli doctor 與 worker 狀態」). Claude Code says blocked in three cases:
+ *  its window shows a prompt or dialog (status waiting, waitingFor says
+ *  which); an API, login or limit error stopped the turn (the job's
+ *  state.json needs, e.g. "rate limited — wait and retry"); or its own
+ *  end-of-turn reading took the reply's last words for a question or an
+ *  approval left to a person. The first two are trouble (warn: a worker has
+ *  nobody at its window, and an error stops every turn); the last only says
+ *  how the last turn ended and does not stop the next message. */
+export type BlockedWhy = { warn: true; text: string } | { warn: false }
+export const TURN_END_NOTE = '上一輪結尾在等人回應 (Claude Code 的判讀, 不影響收訊)'
+const API_NEEDS = ['login required', 'org disabled oauth', 'account on hold', 'cloud credentials unavailable', 'organization verification required', 'usage limit reached', 'rate limited', 'api overloaded', 'api unavailable', 'request too large', 'invalid api request', 'api error']
+
+export function blockedWhy(a: AgentEntry, jobs: JobState[]): BlockedWhy | null {
+  if (a.state !== 'blocked') return null
+  if (a.waitingFor) return { warn: true, text: `畫面停在 ${a.waitingFor}` }
+  const job = jobs.find(j => j.id === a.id) ?? (a.sessionId ? jobs.find(j => j.sessionId === a.sessionId) : undefined)
+  const needs = job?.needs?.trim()
+  if (needs && API_NEEDS.some(p => needs.toLowerCase().startsWith(p))) return { warn: true, text: needs }
+  return { warn: false }
+}
+
+/** /router status: the worker's state next to its conversation, or null when there is nothing to say (done, idle, working). */
+export function workerStateNote(a: AgentEntry | undefined, jobs: JobState[]): string | null {
+  if (!a?.state) return null
+  const why = blockedWhy(a, jobs)
+  if (why) return why.warn ? `⚠️ worker 卡住: ${why.text}` : TURN_END_NOTE
+  return ['done', 'idle', 'working'].includes(a.state) ? null : `worker ${a.state}`
 }
 
 /** Flags as flag -> value ("" for a switch). The daemon keeps them in its own

@@ -17,7 +17,7 @@ import { checkMarketplace, checkPluginCache, pluginsRoot } from './pluginguard'
 import { resolveChannel, describeMode, LEGACY_BY_CONFIG, type Channel } from './claudecmd'
 import { checkNamespaces, prepareMounts, type NsCheck } from './managed'
 import { readLocator, locatorPath } from '../shared/locate'
-import { daemonReport, jobsDir, listJobs, readProcs, reportNotices, strayJobs, type JobState, type Proc } from './jobs'
+import { blockedWhy, daemonReport, jobsDir, listJobs, readProcs, reportNotices, strayJobs, TURN_END_NOTE, type JobState, type Proc } from './jobs'
 import { dirname as dirOf } from 'path'
 import { realpathSync } from 'fs'
 
@@ -109,8 +109,12 @@ export function doctorReport(d: DoctorDeps): string {
     if (stray.length) out.push(warn(`daemon 裡有不是對話目前 session 的 job (router 啟動後 5 秒與每 10 分鐘自動清掉): ${stray.map(j => `${j.key} 的 ${j.id}${j.running ? ' (在跑)' : ''}`).join(', ')}`))
     else out.push(ok('daemon 的 job 都是對話目前的 session'))
     const keys = new Set((d.conversations ?? []).map(c => `tg-${c.key}`))
-    const blocked = d.agents.filter(a => a.name && keys.has(a.name) && a.state === 'blocked')
-    if (blocked.length) out.push(warn(`這些 worker 卡住 (blocked, 等人回應): ${blocked.map(a => a.name).join(', ')}`))
+    // blocked: trouble only for a prompt on the worker's window or an API error; else how the last turn ended (router/jobs.ts blockedWhy)
+    const blocked = d.agents.filter(a => a.name && keys.has(a.name)).map(a => ({ a, why: blockedWhy(a, d.jobs ?? []) }))
+    const stuck = blocked.flatMap(({ a, why }) => why?.warn ? [`${a.name} (${why.text})`] : [])
+    const turnEnd = blocked.flatMap(({ a, why }) => why && !why.warn ? [a.name] : [])
+    if (stuck.length) out.push(warn(`這些 worker 卡住 (blocked): ${stuck.join(', ')}`))
+    if (turnEnd.length) out.push(`ℹ️ ${TURN_END_NOTE}: ${turnEnd.join(', ')}`)
   }
   if (managed && ch!.check !== undefined) {
     const c = ch!.check

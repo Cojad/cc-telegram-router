@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.32.6] - 2026-10-18
+
+### Fixed
+
+- doctor 與 `/router status` 不再把每個 `blocked` 的 worker 都說成卡住. Claude Code 每輪結束時會判讀收尾文字, 最後在問人或等人核准 (例如「等 /router skill approve bookmarks」) 就標成 `blocked`, 但 worker 沒有卡住, 下一則訊息照常送進去. 現在只有兩種情況算卡住並寫出原因: worker 的畫面停著提示 (`claude agents --json` 的 `waitingFor`, 例如 `permission prompt`), 或 API, 登入, 額度錯誤 (job 的 `state.json` 的 `needs`, 例如 `rate limited — wait and retry`). 其他的只列一行不帶警告的「上一輪結尾在等人回應 (Claude Code 的判讀, 不影響收訊)」. 判斷放在 `router/jobs.ts` 的 `blockedWhy` 與 `workerStateNote`, 兩邊共用.
+- 測試: diagnose 加一項 (畫面提示, 限流, 登入, 收尾判讀, 沒有 job 的 blocked, 其他狀態; doctor 與 `/router status` 的字串; 只有收尾判讀時 doctor 沒有警告), 原本 doctor 與 `/router status` 的期待字串跟著改; readme 測試對照 operations.md 的新說明.
+
 ## [2.32.5] - 2026-10-18
 
 ### Fixed

@@ -11,7 +11,7 @@ import { sameFlags, flagDiff, recordedFlags } from './jobs'
 export type RunResult = { code: number; stdout: string; stderr: string }
 export type Runner = (args: string[], cwd: string) => Promise<RunResult>
 
-export type AgentEntry = { id: string; sessionId?: string; name?: string; pid?: number; state?: string; status?: string; cwd?: string }
+export type AgentEntry = { id: string; sessionId?: string; name?: string; pid?: number; state?: string; status?: string; waitingFor?: string; cwd?: string }
 
 export interface SupervisorDeps {
   cfg: Config

@@ -22,6 +22,7 @@ import { createSupervisor, type RunResult } from '../supervisor'
 import { writeFingerprint } from '../pluginguard'
 import { writeLocator, locatorPath } from '../../shared/locate'
 import { renderStatus } from '../commands'
+import { blockedWhy, listJobs, workerStateNote, TURN_END_NOTE } from '../jobs'
 import type { Conversation } from '../db'
 
 const dir = mkdtempSync(join(tmpdir(), 'cctr-diagnose-'))
@@ -279,7 +280,8 @@ test('doctor: each check passing, then each failing; stray jobs and the daemon j
     writeLocator({ home: '/elsewhere', stateDir: state, socket: '/elsewhere.sock' }, locatorPath(uh))
     writeFileSync(join(uh, '.claude.json'), JSON.stringify({ projects: {} }))
     const badOut = doctorReport({ cfg: { ...cfg, model: 'claude-sonnet-4-6' }, userHome: uh, which, conversations: convs, agents: [{ id: 'a1', name: 'tg-dm-1', sessionId: 'old', pid: 9, status: 'idle', cwd: convs[0]!.folder }, { id: 'a2', name: 'tg-dm-2', sessionId: 's2', pid: 8, status: 'idle', state: 'blocked', cwd: convs[1]!.folder }], jobs: [{ id: 'j9', name: 'tg-dm-2', sessionId: 'older', cwd: convs[1]!.folder }], procs: [{ pid: 42, ppid: 1, args: ['claude', 'daemon', 'run', '--spawned-by', JSON.stringify({ label: 'terminal', cwd: '/somewhere/else' })] }, { pid: 43, ppid: 7, args: ['claude', '--bg-pty-host', '/run/x/spare/a.pty.sock'] }], isConnected: () => false })
-    for (const t of ['⚠️ unit 的 PATH 找不到 bun', '⚠️ telegram plugin: ', '❌ 位置檔指向另一個 router', `❌ home ${home} 沒有被 Claude Code 信任`, `cd ${home} && claude`, '⚠️ 預設: autoCompactWindow 750000 大於模型 claude-sonnet-4-6', '⚠️ dm-2: autoCompactWindow 750000', 'daemon 裡有不是對話目前 session 的 job (router 啟動後 5 秒與每 10 分鐘自動清掉): dm-1 的 a1 (在跑), dm-2 的 j9', '⚠️ claude daemon (pid 42) 不是由 router 帶起的, 而是 /somewhere/else 的 terminal.', '⚠️ 有 1 個 Claude Code 的暖機 spare 程序沒有 daemon 在管 (pid 43)', '這些 worker 卡住 (blocked, 等人回應): tg-dm-2', '這些 worker 在跑但 plugin 沒有連上 router: dm-2']) expect(badOut).toContain(t)
+    for (const t of ['⚠️ unit 的 PATH 找不到 bun', '⚠️ telegram plugin: ', '❌ 位置檔指向另一個 router', `❌ home ${home} 沒有被 Claude Code 信任`, `cd ${home} && claude`, '⚠️ 預設: autoCompactWindow 750000 大於模型 claude-sonnet-4-6', '⚠️ dm-2: autoCompactWindow 750000', 'daemon 裡有不是對話目前 session 的 job (router 啟動後 5 秒與每 10 分鐘自動清掉): dm-1 的 a1 (在跑), dm-2 的 j9', '⚠️ claude daemon (pid 42) 不是由 router 帶起的, 而是 /somewhere/else 的 terminal.', '⚠️ 有 1 個 Claude Code 的暖機 spare 程序沒有 daemon 在管 (pid 43)', 'ℹ️ 上一輪結尾在等人回應 (Claude Code 的判讀, 不影響收訊): tg-dm-2', '這些 worker 在跑但 plugin 沒有連上 router: dm-2']) expect(badOut).toContain(t)
+    expect(badOut).not.toContain('卡住 (blocked)')
     for (const out of [good, badOut]) expect(out).not.toContain(TOKEN.split(':')[1]!)
     expect(doctorReport({ cfg, userHome: join(dir, 'nobody'), which: () => null, agents: null })).toContain('claude agents --json --all 失敗')
   } finally { if (prevEnv !== undefined) process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR = prevEnv }
@@ -287,7 +289,59 @@ test('doctor: each check passing, then each failing; stray jobs and the daemon j
 
 test('/router status shows each worker\'s trouble next to it', () => {
   const c = { key: 'dm-1', bot: 'cc', chat_id: '1', type: 'dm', role: 'owner', created_at: new Date().toISOString(), last_seen: new Date().toISOString() } as unknown as Conversation
-  const out = renderStatus(Date.now(), new Date(), [{ name: 'cc', username: 'cc_bot', first_name: 'cc' }], [c], { isConnected: () => false, label: () => 'Boss', backlog: () => 2, health: () => ['worker blocked', '⚠️ 13:05 資料夾沒有被信任 (Workspace not trusted)'] })
-  expect(out).toContain('Boss (待送 2, worker blocked, ⚠️ 13:05 資料夾沒有被信任 (Workspace not trusted))')
+  const out = renderStatus(Date.now(), new Date(), [{ name: 'cc', username: 'cc_bot', first_name: 'cc' }], [c], { isConnected: () => false, label: () => 'Boss', backlog: () => 2, health: () => ['⚠️ worker 卡住: rate limited — wait and retry', '⚠️ 13:05 資料夾沒有被信任 (Workspace not trusted)'] })
+  expect(out).toContain('Boss (待送 2, ⚠️ worker 卡住: rate limited — wait and retry, ⚠️ 13:05 資料夾沒有被信任 (Workspace not trusted))')
   expect(existsSync(dir)).toBe(true)
+})
+
+// docs/operations.md 「cli doctor 與 worker 狀態」: Claude Code's blocked is
+// trouble only for a prompt on the worker's window (waitingFor) or an API,
+// login or limit error (the job's state.json needs); its end-of-turn reading
+// of a reply that asks or waits for approval is a note, not a warning.
+test('blocked: a prompt on the window or an API error warns with what it needs; a turn that ended waiting on a person is only a note (doctor and /router status)', () => {
+  const jobsDir = join(dir, 'blocked-jobs')
+  const job = (id: string, state: object) => { mkdirSync(join(jobsDir, id), { recursive: true }); writeFileSync(join(jobsDir, id, 'state.json'), JSON.stringify(state)) }
+  job('j2', { name: 'tg-dm-2', sessionId: 's2', state: 'working', tempo: 'blocked', needs: 'rate limited \u2014 wait and retry' })
+  job('j3', { name: 'tg-dm-3', sessionId: 's3', state: 'working', tempo: 'blocked', needs: 'Reply /router skill approve bookmarks' })
+  job('j5', { name: 'tg-dm-5', sessionId: 's5', state: 'blocked', tempo: 'blocked', needs: 'login required \u2014 run /login' })
+  const jobs = listJobs(jobsDir)
+  expect(jobs.find(j => j.id === 'j2')?.needs).toBe('rate limited \u2014 wait and retry')
+  const agents = [
+    { id: 'j1', name: 'tg-dm-1', sessionId: 's1', pid: 1, status: 'waiting', waitingFor: 'permission prompt', state: 'blocked' },
+    { id: 'j2', name: 'tg-dm-2', sessionId: 's2', pid: 2, status: 'idle', state: 'blocked' },
+    { id: 'j3', name: 'tg-dm-3', sessionId: 's3', pid: 3, status: 'idle', state: 'blocked' },
+    { id: 'j4', name: 'tg-dm-4', sessionId: 's4', state: 'blocked' },
+    { id: 'x5', name: 'tg-dm-5', sessionId: 's5', state: 'blocked' },
+    { id: 'j6', name: 'tg-dm-6', sessionId: 's6', pid: 6, status: 'busy', state: 'working' },
+    { id: 'j7', name: 'tg-dm-7', sessionId: 's7', state: 'failed' },
+  ]
+  expect(agents.map(a => blockedWhy(a, jobs))).toEqual([
+    { warn: true, text: '畫面停在 permission prompt' },
+    { warn: true, text: 'rate limited \u2014 wait and retry' },
+    { warn: false },
+    { warn: false },
+    { warn: true, text: 'login required \u2014 run /login' },
+    null,
+    null,
+  ])
+  expect(TURN_END_NOTE).toBe('上一輪結尾在等人回應 (Claude Code 的判讀, 不影響收訊)')
+  expect([...agents.map(a => workerStateNote(a, jobs)), workerStateNote(undefined, jobs)]).toEqual([
+    '⚠️ worker 卡住: 畫面停在 permission prompt',
+    '⚠️ worker 卡住: rate limited \u2014 wait and retry',
+    TURN_END_NOTE,
+    TURN_END_NOTE,
+    '⚠️ worker 卡住: login required \u2014 run /login',
+    null,
+    'worker failed',
+    null,
+  ])
+  const home = join(dir, 'blocked-home')
+  const convs = [1, 2, 3, 4, 5, 6, 7].map(n => ({ key: `dm-${n}`, folder: join(home, `dm-${n}`), session_id: `s${n}` }) as Conversation)
+  const lines = doctorReport({ cfg: { home, stateDir: join(dir, 'blocked-state'), socket: join(dir, 'blocked.sock'), model: 'claude-opus-5-5', autoCompactWindow: 750_000, claudeBin: 'claude', bots: [] }, userHome: join(dir, 'nobody'), which: () => null, conversations: convs, agents, jobs }).split('\n')
+  expect(lines).toContain('⚠️ 這些 worker 卡住 (blocked): tg-dm-1 (畫面停在 permission prompt), tg-dm-2 (rate limited \u2014 wait and retry), tg-dm-5 (login required \u2014 run /login)')
+  expect(lines).toContain('ℹ️ 上一輪結尾在等人回應 (Claude Code 的判讀, 不影響收訊): tg-dm-3, tg-dm-4')
+  // only turn-end blocked: no warning line at all
+  const calm = doctorReport({ cfg: { home, stateDir: join(dir, 'blocked-state'), socket: join(dir, 'blocked.sock'), model: 'claude-opus-5-5', autoCompactWindow: 750_000, claudeBin: 'claude', bots: [] }, userHome: join(dir, 'nobody'), which: () => null, conversations: convs, agents: [agents[2]!], jobs })
+  expect(calm).not.toContain('卡住')
+  expect(calm).toContain('ℹ️ 上一輪結尾在等人回應 (Claude Code 的判讀, 不影響收訊): tg-dm-3')
 })

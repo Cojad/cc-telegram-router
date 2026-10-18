@@ -26,7 +26,7 @@ import { openRouterDb, type Conversation, type ConvSecret } from './db'
 import { ensureConversation, ensureBotDir, botDir, convFolder, migrateConversation, findByFolder, projectStore } from './conversations'
 import { writeSessionSettings, renderSettings, applyOverrides } from './settings'
 import { createSupervisor, bunRunner, isRunning } from './supervisor'
-import { readJob, listJobs, strayJobs, readProcs, daemonReport, reportNotices } from './jobs'
+import { readJob, listJobs, strayJobs, readProcs, daemonReport, reportNotices, workerStateNote } from './jobs'
 import { createIpc, type Peer } from './ipc'
 import { makeAssertAllowedChat, makeAssertSendable } from './guard'
 import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens, gmt8 } from './context'
@@ -1314,11 +1314,13 @@ const commandDeps: CommandDeps = {
     // /router status: the daemon's state of each worker and its last trouble (router/diagnose.ts)
     async health() {
       const agents = await supervisor.listAgents().catch(() => [])
+      const jobs = listJobs(JOBS_DIR)
       const out = new Map<string, string[]>()
       for (const c of db.listConversations()) {
         const a = agents.find(x => c.session_id && x.sessionId === c.session_id)
         const parts: string[] = []
-        if (a?.state && !['done', 'idle', 'working'].includes(a.state)) parts.push(`worker ${a.state}`)
+        const note = workerStateNote(a, jobs)
+        if (note) parts.push(note)
         if (a && a.pid != null && a.status != null && !ipc.isConnected(c.key)) parts.push('worker 在跑但 plugin 沒連上')
         const t = lastTrouble.get(c.key)
         if (t && Date.now() - t.at < 86_400_000) parts.push(`⚠️ ${gmt8(new Date(t.at)).slice(11, 16)} ${t.text}`)
