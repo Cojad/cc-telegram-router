@@ -177,16 +177,23 @@ export async function runIsolated(o: { argv: string[]; env: Record<string, strin
   const kill = setTimeout(() => p.kill(9), o.timeoutMs)
   const output = Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
   const fail = async (why: string): Promise<NetRun> => { p.kill(9); await p.exited; return { error: why } }
+  /** The sandbox ended before its network was set up (bwrap refused an option, a path it mounts is missing): its own words. */
+  const ended = async (): Promise<NetRun | null> => {
+    await Promise.race([p.exited, Bun.sleep(300)])
+    if (p.exitCode === null) return null
+    const [out, err] = await output
+    return { error: `沙箱在設定網路前就結束了 (exit ${p.exitCode}): ${`${out}${err}`.trim().slice(-500) || '(沒有輸出)'}` }
+  }
   try {
     let pid = 0
     for (let t = 0; t < 250 && !pid && p.exitCode === null; t++) { await Bun.sleep(20); pid = Number(/"child-pid":\s*(\d+)/.exec(readFileSync(info, 'utf8'))?.[1] ?? 0) }
     if (!pid) { const [out, err] = await output; return p.exitCode !== null ? { error: `沙箱沒有啟動: ${`${out}${err}`.trim().slice(-500)}` } : await fail('沙箱沒有回報 pid') }
-    try { netFd = openSync(`/proc/${pid}/ns/net`, 'r') } catch (e) { return await fail(`讀不到沙箱的網路空間: ${e}`) }
+    try { netFd = openSync(`/proc/${pid}/ns/net`, 'r') } catch (e) { return (await ended()) ?? await fail(`讀不到沙箱的網路空間: ${e}`) }
     userFd = ownerUserns(netFd)
     if (userFd < 0) return await fail('找不到擁有沙箱網路空間的 user namespace (ioctl NS_GET_USERNS)')
     const fdPath = (fd: number) => `/proc/${process.pid}/fd/${fd}`
     const nft = Bun.spawnSync([which('nsenter'), `--user=${fdPath(userFd)}`, `--net=${fdPath(netFd)}`, '--preserve-credentials', which('nft'), '-f', rules], { stderr: 'pipe' })
-    if (nft.exitCode !== 0) return await fail(`套不上網路規則 (nft): ${nft.stderr.toString().trim().slice(-300)}`)
+    if (nft.exitCode !== 0) return (await ended()) ?? await fail(`套不上網路規則 (nft): ${nft.stderr.toString().trim().slice(-300)}`)
     // the namespaces by path: given a pid, slirp4netns would follow /proc/<pid>/ns/user into the nested one
     slirp = Bun.spawn([which('slirp4netns'), '--configure', '--mtu=65520', '--disable-host-loopback', '--ready-fd=3', `--userns-path=${fdPath(userFd)}`, '--netns-type=path', fdPath(netFd), 'tap0'], { stdio: ['ignore', 'ignore', 'pipe', readyFd] })
     for (let t = 0; t < 250 && !readFileSync(ready, 'utf8') && slirp.exitCode === null; t++) await Bun.sleep(20)

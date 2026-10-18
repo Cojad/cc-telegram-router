@@ -49,9 +49,8 @@ export interface SkillTryDeps extends SkillRunDeps {
   cred(name: string): Credential | undefined
   /** The host's own addresses to refuse (router/sandboxnet.ts). */
   hostAddrs(): Promise<string[]>
-  /** The bun binary and the fake service script run inside the sandbox. */
-  bunExe: string
-  fakeScript: string
+  /** How the sandbox starts the fake service, and what it must see read-only for that (router/selfpath.ts fakeService). */
+  fake: { cmd: string[]; ro: string[] }
   /** Which network tools are missing (router/sandboxnet.ts netMissing; replaced in tests). */
   netMissing?(): string | null
 }
@@ -173,7 +172,7 @@ export async function trySkill(deps: SkillTryDeps, conv: Conversation, role: str
     botCred: n => fakeOf(n, 'telegram-bot', botEnv.get(n) ?? n),
     notifyOwner: (_c, text) => notices.push(text),
     exec: async (argv, env, timeoutMs) => {
-      const r = await runIsolated({ argv, env, timeoutMs, workDir: join(io, `net-${++attempt}`), hostAddrs, wrap: [deps.bunExe, deps.fakeScript, log, '--'], extraRo: [deps.bunExe, deps.fakeScript], extraRw: [io] })
+      const r = await runIsolated({ argv, env, timeoutMs, workDir: join(io, `net-${++attempt}`), hostAddrs, wrap: [...deps.fake.cmd, log, '--'], extraRo: deps.fake.ro, extraRw: [io] })
       return 'error' in r ? { code: -1, out: `試跑的網路隔離失敗, 沒有執行: ${r.error}` } : r
     },
   }
@@ -182,7 +181,7 @@ export async function trySkill(deps: SkillTryDeps, conv: Conversation, role: str
   const before = snap(mine)
   try {
     const r = await runPrepared(d, { ...conv, folder: out }, runAs, skill, actionName, dir, { actions }, action, call)
-    const status = r.ok ? 'ok' : /^exit -1\n試跑的網路隔離失敗/.test(r.text) ? 'refused' : 'failed'
+    const status = r.ok ? 'ok' : r.text.includes('\n試跑的網路隔離失敗, 沒有執行: ') ? 'refused' : 'failed'
     const secrets = [...fakes.values()].map(c => c.token)
     const lines = [
       `skill try: ${status}`,

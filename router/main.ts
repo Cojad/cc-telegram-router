@@ -37,6 +37,8 @@ import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skill
 import { checkSkill } from './skillcheck'
 import { trySkill, type SkillTryDeps } from './skilltry'
 import { interfaceAddrs, cloudPublicAddrs } from './sandboxnet'
+import { relaunchArgs, ownArgs, fakeService, FAKE_SUBCOMMAND } from './selfpath'
+import { runFakeService } from './skilltry-fake'
 import { scheduleRefresh, type RefreshDeps } from './skillrefresh'
 import { terminalRun, terminalRefresh } from './skillcli'
 import { createPoller, type PollEvent } from './poller'
@@ -69,6 +71,11 @@ import { iso8, logLine } from '../shared/time'
 // log lines carry GMT+8 time (shared/time.ts), never UTC
 const log = (msg: string) => process.stderr.write(logLine(msg))
 const startedAt = new Date()
+
+// `cc-telegram-router skilltry-fake <log> -- <command...>`: skill_try's fake service, inside its
+// sandbox (router/selfpath.ts, router/skilltry-fake.ts): before anything reads config.json, which
+// the sandbox hides.
+if (ownArgs()[0] === FAKE_SUBCOMMAND) await runFakeService(ownArgs().slice(1))
 
 const configPath = defaultConfigPath(process.argv, process.execPath)
 const cfg = loadConfig(configPath)
@@ -682,8 +689,8 @@ const tryDeps: SkillTryDeps = {
   ...skillDeps, stateDir: cfg.stateDir,
   cred: n => cfg.credentials[n],
   hostAddrs: async () => [...interfaceAddrs(), ...await cloudPublicAddrs()],
-  bunExe: process.execPath,
-  fakeScript: join(import.meta.dir, 'skilltry-fake.ts'),
+  // compiled: the router's own executable runs the fake service; from source: bun and the script (router/selfpath.ts)
+  fake: fakeService(),
 }
 /** The daily refresh (router/skillrefresh.ts) and the terminal's skill refresh. */
 const refreshDeps: RefreshDeps = {
@@ -1588,7 +1595,7 @@ async function shutdown(sig: string, respawn = false) {
   reactions.stop()
   try { db.close(); store.close() } catch {}
   release()
-  if (respawn) spawn(process.execPath, process.argv.slice(1), { detached: true, stdio: 'ignore' }).unref()
+  if (respawn) spawn(process.execPath, relaunchArgs(), { detached: true, stdio: 'ignore' }).unref()
   process.exit(0)
 }
 // One failed Bot API call or a bad message must never take the router (and

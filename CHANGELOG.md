@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.17.1] - 2026-10-18
+
+### Fixed
+
+- 編譯版 router (`deploy/install.sh router` 編出的執行檔) 的 `skill_try` 一律失敗 (「讀不到 /proc/<pid>/ns/net」): 編譯版裡 `import.meta.dir` 是執行檔內的虛擬路徑 `/$bunfs/root`, 假服務腳本 `skilltry-fake.ts` 不在磁碟上, `process.execPath` 也是 router 自己而不是 bun, bwrap 找不到要掛載的檔立刻結束. 改成編譯版用 router 執行檔的 `skilltry-fake` 子指令啟動假服務 (從原始碼跑照舊用 bun 加腳本, `router/selfpath.ts`); 沙箱在設定網路前就結束時回報 bwrap 自己的錯誤, 而且算 `refused`. 新測試 `router/test/e2e-compiled.test.ts` 用真的編譯版執行檔, 照 systemd unit 的方式 (unit 的 PATH, 工作目錄 stateDir) 跑一次完整的 skill_try. 一併檢查其他用到 `import.meta.dir` 與 `process.execPath` 的地方: config 路徑與 templates, 報表腳本的位置在編譯版都正確; `/restart` 不在 systemd 下重啟自己時, 編譯版每次會多帶一個 `/$bunfs/root/...` 參數 (無害但會累積), 改成不帶.
+
 ## [2.17.0] - 2026-10-18
 
 ### Added

@@ -66,7 +66,7 @@ beforeEach(() => {
     db, home: join(dir, 'home'), credsRoot: join(dir, 'state', 'creds'), userHome: join(dir, 'fakehome'), hidden: [join(dir, 'home'), join(dir, 'state')], extraRo: [],
     storeRoot: join(dir, 'state', 'skill-store'), botDir: () => join(dir, 'home', 'bot1'), exec, notifyOwner: () => {},
     stateDir: join(dir, 'state'), cred: n => CREDS[n], hostAddrs: async () => interfaceAddrs(),
-    bunExe: process.execPath, fakeScript: join(ROOT, 'router', 'skilltry-fake.ts'),
+    fake: { cmd: [process.execPath, join(ROOT, 'router', 'skilltry-fake.ts')], ro: [process.execPath, join(ROOT, 'router', 'skilltry-fake.ts')] },
   }
   mkdirSync(deps.userHome)
 })
@@ -272,4 +272,22 @@ test('skill_try is a tool; the guide and docs say what it does', async () => {
   const docs = readFileSync(join(ROOT, 'docs', 'credentials-and-skills.md'), 'utf8')
   for (const s of ['### 試跑技能草稿', '### 試跑的網路', 'user 對話一律拒絕', 'NS_GET_USERNS', '`/run` 蓋上空的 tmpfs', 'AF_UNIX socket 的 `socket(2)` 失敗', '`io_uring_setup`', '**已知限制**: 已核准的特權動作']) expect(docs).toContain(s)
   expect(GUIDE).toContain('**也不能建立 unix socket**')
+})
+
+test('a sandbox that ends before its network is set up (a path it mounts is missing, as the compiled router\'s fake script was) says why, in bwrap\'s words', async () => {
+  const folder = join(dir, 'probe'), skill = join(dir, 'skill')
+  mkdirSync(folder, { recursive: true }); mkdirSync(skill, { recursive: true })
+  const sb = sandboxArgv({ argv: ['true'], skillDir: skill, convFolder: folder, creds: {}, home: deps.userHome, hidden: deps.hidden })
+  const r = await runIsolated({ argv: sb.argv, env: sb.env, timeoutMs: 30_000, workDir: join(dir, 'state', 'net'), hostAddrs: [], extraRo: ['/$bunfs/root/skilltry-fake.ts'] })
+  expect('error' in r && r.error).toMatch(/^沙箱在設定網路前就結束了 \(exit 1\): bwrap: Can't find source path \/\$bunfs\/root\/skilltry-fake\.ts/)
+})
+
+test('skill_try: when the sandbox cannot start (here: the fake service\'s script is missing) the try is refused with bwrap\'s reason, and nothing ran', async () => {
+  const c = conv('dm-7', 'power')
+  example(c)
+  const r = await trySkill({ ...deps, fake: { cmd: [process.execPath, '/$bunfs/root/skilltry-fake.ts'], ro: ['/$bunfs/root/skilltry-fake.ts'] } }, c, 'power', { path: 'signup', action: 'join', args: { name: '小明' } })
+  expect(r.ok).toBe(false)
+  expect(r.text.split('\n')[0]).toBe('skill try: refused')
+  expect(r.text).toContain("試跑的網路隔離失敗, 沒有執行: 沙箱在設定網路前就結束了 (exit 1): bwrap: Can't find source path /$bunfs/root/skilltry-fake.ts")
+  expect(r.text).toContain('試跑資料庫的變動: 無')
 })
