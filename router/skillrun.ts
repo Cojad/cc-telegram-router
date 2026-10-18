@@ -86,7 +86,10 @@ export async function runAction(deps: Omit<SkillRunDeps, 'notifyOwner'>, dir: st
   return deps.exec(sb.argv, sb.env, (a.timeout ?? 600) * 1000)
 }
 
-export async function runSkill(deps: SkillRunDeps, conv: Conversation, role: string, skill: string, actionName: string, args: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
+/** runAs: the skill_runs conversation to record under instead of conv.key
+ *  (the owner's terminal, router/skillcli.ts); such a run is not counted
+ *  toward, nor held to, the conversation's hourly limit. */
+export async function runSkill(deps: SkillRunDeps, conv: Conversation, role: string, skill: string, actionName: string, args: Record<string, unknown>, o: { runAs?: string } = {}): Promise<{ ok: boolean; text: string }> {
   const { db } = deps
   const dir = skillDirs(deps, conv.bot, skill)[0]
   if (!dir) return { ok: false, text: `找不到有特權動作的技能 ${skill} (只有這隻 bot 或全部 bot 範圍, 而且帶 privileged.json 的技能可以用)` }
@@ -103,7 +106,7 @@ export async function runSkill(deps: SkillRunDeps, conv: Conversation, role: str
   if (!(action.roles ?? ['owner', 'admin', 'power', 'user']).includes(role)) return { ok: false, text: `技能 ${skill} 的 ${actionName} 不開放給 ${role} 角色的對話` }
   const argWhy = argRoleRefusal(action, args, role)
   if (argWhy) return { ok: false, text: `${argWhy}. 需要的話告訴對方, 並用 request_elevation 申請提權` }
-  const used = db.skillRunsSince(conv.key, new Date(Date.now() - 3_600_000).toISOString())
+  const used = o.runAs ? 0 : db.skillRunsSince(conv.key, new Date(Date.now() - 3_600_000).toISOString())
   if (used >= RUNS_PER_HOUR) { db.addSkillRun(conv.key, skill, actionName, 'refused'); return { ok: false, text: `這個對話一小時內已經用了 ${used} 次特權技能, 上限 ${RUNS_PER_HOUR} 次, 請稍後再試` } }
 
   for (const h of [...httpCreds(deps, action), ...(action.refresh && manifest.actions[action.refresh] ? httpCreds(deps, manifest.actions[action.refresh]!) : [])]) {
@@ -113,14 +116,15 @@ export async function runSkill(deps: SkillRunDeps, conv: Conversation, role: str
   if (botWhy) return { ok: false, text: `技能 ${skill} ${botWhy}, 請 owner 檢查` }
   if (action.store && Object.keys(action.store).length && !deps.storeRoot) return { ok: false, text: `技能 ${skill} 要用資料庫, 但 router 沒有設定資料庫位置` }
   const stores = deps.storeRoot ? storesOf(action, deps.storeRoot, basename(deps.botDir(conv.bot))) : []
-  if (!stores.length) return run(deps, conv, skill, actionName, dir, manifest, action, args, [])
+  const runAs = o.runAs ?? conv.key
+  if (!stores.length) return run(deps, conv, runAs, skill, actionName, dir, manifest, action, args, [])
   return withStoreLocks(stores.map(s => s.dir), async () => {
     const work = workDir(deps.storeRoot!)
-    try { return await run(deps, conv, skill, actionName, dir, manifest, action, args, stores, work) } finally { dropWork(work, deps.log) }
+    try { return await run(deps, conv, runAs, skill, actionName, dir, manifest, action, args, stores, work) } finally { dropWork(work, deps.log) }
   })
 }
 
-async function run(deps: SkillRunDeps, conv: Conversation, skill: string, actionName: string, dir: string, manifest: Manifest, action: Action, args: Record<string, unknown>, stores: StoreUse[], work = ''): Promise<{ ok: boolean; text: string }> {
+async function run(deps: SkillRunDeps, conv: Conversation, runAs: string, skill: string, actionName: string, dir: string, manifest: Manifest, action: Action, args: Record<string, unknown>, stores: StoreUse[], work = ''): Promise<{ ok: boolean; text: string }> {
   const { db } = deps
   // the main action gets a fresh copy of its databases on every attempt; the refresh none
   const once = (a: Action, a_args: Record<string, unknown>) => runAction(deps, dir, a, a_args, conv.folder, a === action && stores.length ? stage(stores, work) : {})
@@ -162,7 +166,7 @@ async function run(deps: SkillRunDeps, conv: Conversation, skill: string, action
       }
     }
   }
-  db.addSkillRun(conv.key, skill, actionName, ok ? 'ok' : 'failed')
+  db.addSkillRun(runAs, skill, actionName, ok ? 'ok' : 'failed')
   const tail = red.text.split('\n').slice(-60).join('\n').slice(-6000)
   return { ok, text: [`exit ${r.code}`, ...notes, tail].join('\n') }
 }

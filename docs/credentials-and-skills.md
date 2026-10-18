@@ -76,6 +76,22 @@
 
 - 動作寫 `"bots": {"STICKER_BOT": "baldeagle"}` (環境變數名稱 -> 憑證名稱), 腳本拿到 `$STICKER_BOT_API` = `<apiRoot>/bot<token>` (config `apiRoot`, 預設 `https://api.telegram.org`), 例如 `curl "$STICKER_BOT_API/getMe"`. 只接受 telegram-bot 類憑證 (沒寫 kind 的就是), http 類或不存在時拒絕執行並說明. 跟 `http` 一樣, 憑證本身的 roles 與 methods 不套用在特權動作上 (由技能的核准與動作的 roles 把關); token 不進對話, 出現在回傳文字就遮蔽, 出現在對話資料夾寫出的檔案就刪除, 都會通知 owner; 寫進資料庫的內容含 token 時整次作廢.
 
+### 終端機執行特權動作
+
+驗收用: owner 在終端機以「某個對話, 某個角色」的身分跑一次特權動作, 或立刻跑一次某技能的憑證更新. 只有 owner 的終端機能用 (`cc-telegram-router cli`, 經 router socket), 在 Telegram 下 `/router skill run` 或 `refresh` 一律拒絕.
+
+```bash
+cc-telegram-router cli skill run <對話 key 或 chat_id> <技能> <動作> --out <資料夾> [--role <角色>] [--trial | --trial-store <資料夾>] [--api <http://127.0.0.1:埠>] ['<JSON 參數>']
+cc-telegram-router cli skill refresh <技能>
+```
+
+- `skill run` 跟對話的 `run_skill` 走同一條路 (`runSkill`): 從那個對話的 bot 找技能 (這隻 bot 或全部 bot 範圍), 核准雜湊, 動作與參數的角色檢查, 參數格式, 沙箱, `creds`, `http`, `bots`, `store`, 輸出掃描與遮蔽都一樣. 角色預設是對話自己的角色, `--role` 改成扮演的角色 (例如對 owner 群組測 user 能不能跑, remove 會不會被擋). 參數限較高角色時一樣拒絕 (終端機不送提權申請).
+- 輸出寫到 `--out` (必填, 絕對路徑, 不存在就建立), 腳本的工作目錄就是它; 不可以是 router 的家目錄本身, 也不可以在 stateDir, 正式資料庫, 任何 bot 資料夾或對話資料夾裡, 所以真的對話資料夾不會被寫到. 回傳文字第一行是 `skill run: ok`, `failed` (動作有執行但沒有成功, 或資料庫寫回被拒) 或 `refused` (沒有執行), 接著是身分與試跑說明, 然後是 run_skill 會回給對話的同一段文字 (`exit <碼>` 開頭).
+- 試跑: `--trial` 把這隻 bot 的資料庫 (`<stateDir>/skill-store/<bot 資料夾名稱>/`) 複製一份到 `<stateDir>/skill-store-trial/run-*/`, 動作在複本上跑 (寫回的檢查照舊), 跑完刪掉, 正式資料庫完全不動. `--trial-store <資料夾>` 把複本留在指定的資料夾 (第一次用時從正式資料庫複製), 讓接連幾次執行共用同一份 (例如先 publish 再 remove), 用完由呼叫的人刪除; 位置限制同 `--out`. 試跑的回傳文字最後列出這次複本的變動 (新增, 修改含 `.jsonl` 行數, 刪除). `--api` 只能跟試跑一起用, 只接受本機網址 (`http://127.0.0.1`, `localhost`, `[::1]`): `bots` 憑證的 `$<ENV>_API` 改成 `<--api>/bot<token>`, 讓 publish, remove 這類動作用正式的技能檔案對本機假 Bot API 驗證, 不碰真的貼圖包.
+- 紀錄與限額: 每次執行記進 `skill_runs`, 對話欄位是 `terminal:<對話 key>`, 跟對話自己的紀錄分得開; 終端機的執行**不算進**對話每小時 10 次的限額, 本身也不受限 (一次完整驗收就超過 10 次, 而終端機只有 owner). 原本要通知 owner 的事 (輸出含有憑證內容, 檔案在核准後被改過, 資料庫寫回被拒) 改附在回傳文字裡 (`[owner 通知]` 開頭), 不送 Telegram.
+- `skill refresh <技能>`: 跟每日更新同一條路 (`refreshAll`, 同樣的沙箱, 掛載, env, 雜湊檢查, 在 `<stateDir>/skill-refresh/<技能>/` 執行), 只跑這個技能被 `refresh` 指到的 internal 動作, 其他已核准技能不跑 (以技能名稱比對: 同名技能在不同 bot 或全部 bot 範圍都核准時, 每一份都跑), 排進每日更新的同一個佇列 (不會跟每日更新重疊). `skill_runs` 記成 `terminal:refresh`, 不算每日更新 (啟動時的補跑仍看 `router:refresh`). 回傳每個動作的結果與最後幾行輸出 (遮蔽憑證), 失敗時的 owner 通知同樣附在回傳文字裡.
+- 終端機等 router 回答最多 1 小時 (其他 cli 子指令 2 分鐘), 因為一次執行可能是動作的逾時兩次加一次憑證更新.
+
 ## worker 端 SOP
 
 - worker 端的 SOP 在 `/telegram:bot-skill`.
@@ -83,5 +99,6 @@
 ## 驗證
 
 - `router/test/cred-flows.test.ts` (9 項, 模組層級) 與 `router/test/e2e-creds.test.ts` (7 項, 真的 router 對假的 Bot API 與本機假 HTTP 伺服器): 登記訊息的延遲刪除與取消 (私訊 60 秒, 發訊者, owner, admin 能取消, 其他人沒有權限; 群組 10 秒且不附按鈕; 被拒的立刻刪; 重啟後到期照刪), rotate 保留設定, 同名 add 的覆蓋 / 取消與逾時丟棄, 預設標頭 (補上, 被 worker 覆蓋, 不能是被擋的標頭, `/router cred header` 與 `/secret header` 的列出, 更新, rm), json_file (owner 與 admin 可讀資料夾外, user 與 power 限資料夾內, stateDir 一律拒絕, 大小上限, 非法 JSON, 與 json 互斥, 實際送出內容).
+- `router/test/skillcli.test.ts` (9 項, 真的 bwrap 與本機假 Bot API): [終端機執行特權動作](#終端機執行特權動作)的參數解析 (JSON 參數含空白, `--out` 必填, `--api` 只限試跑與本機網址), `--out` 與 `--trial-store` 的位置限制, 以對話身分執行 (輸出只在 `--out`, `skill_runs` 記 `terminal:<key>`, 不算也不受對話每小時限額, `--role` 與參數角色檢查照 run_skill 拒絕, failed 與 refused 分開), `--trial` (正式資料庫不變, 複本刪除, 列出變動, 假 Bot API 收到呼叫, token 遮蔽), `--trial-store` (publish 後 remove 共用複本), 核准後被改過時通知附在回傳文字, `skill refresh` (排進佇列, 記 `terminal:refresh` 不算每日更新, 失敗遮蔽; 兩個已核准且有 refresh 的技能只 refresh 其中一個時, 另一個在 `skill_runs` 沒有紀錄, 憑證資料夾不動), `/router skill run|refresh` 只限 owner 終端機.
 - `router/test/cred-http.test.ts`, `router/test/phase3-cred.test.ts`: key 放哪裡, worker 自帶標頭, /router help cred.
 - `router/test/skillstore.test.ts` (19 項, 真的 bwrap): [資料庫 store](#資料庫-store) 兩種模式的寫回與每一種整次作廢 (刪檔, 刪資料夾, 改檔, 改 `.jsonl` 舊行, 非法 JSON 行, 空行, 沒以換行結尾, 單檔與單次上限, symlink, fifo, 腳本鎖住讀不到的資料夾), 動作失敗不寫回, full 只准 owner 與 admin 的動作, 其他宣告錯誤, 跨對話排隊, 對對話與其他動作隱藏; [bot 憑證 bots](#bot-憑證-bots) 的 `$<ENV>_API`, 只接受 telegram-bot, token 從輸出, 檔案, 資料庫擋下; 同一個動作同時用 store, bots, http.

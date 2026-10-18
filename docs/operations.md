@@ -128,6 +128,18 @@ owner 與 admin 可以下; admin 不能異動 owner (查看可以). `send` 與 `
 
 生效範圍 (細節見 [docs/permissions.md](permissions.md#使用者覆寫)): 他發起的一輪在任何對話做[自動提權](permissions.md#自動提權)的重算時疊上去 (這一輪所有發話者都要有權限); 他自己的私訊 settings 也套用. 群組裡只影響 router 在 hook 的判斷, 路徑與網域覆寫不會改變群組 worker 的 sandbox.
 
+## 終端機 CLI
+
+`cc-telegram-router [--config <config.json>] cli <子指令...>` 把 `/router <子指令...>` 經 router socket 交給正在執行的 router, 以 owner 身分執行並印出回覆 (socket 只有 worker 沙箱外的 owner 終端機連得到). 子指令跟 Telegram 的 `/router` 一樣 (例如 `cli status`, `cli tools 7`, `cli botapi ...`), `cli restart` 等同 `/restart`; 另有只在終端機能用的: `cli event raw <id>` (見[密鑰保護](secrets.md)), `cli skill run` 與 `cli skill refresh` (以某個對話與角色的身分跑一次特權動作, 試跑用拋棄式資料庫與本機假 Bot API, 立刻跑一次技能的憑證更新; 給驗收用, 見[技能與憑證](credentials-and-skills.md#終端機執行特權動作)). 例:
+
+```bash
+cc-telegram-router cli skill run router-group-100 tg-sticker list --role user --out /tmp/acc/list
+cc-telegram-router cli skill run router-group-100 tg-sticker publish --trial-store /tmp/acc/store --api http://127.0.0.1:8081 --out /tmp/acc/pub '{"webp":"stickers/a.webp","emoji":"🐳","name":"揮手","usage":"打招呼","description":"藍鯨揮手"}'
+cc-telegram-router cli skill refresh web-instagram
+```
+
+一般子指令等 router 回答最多 2 分鐘, `skill run` 與 `skill refresh` 最多 1 小時.
+
 ## 時間
 
 時間一律 GMT+8, 不出現 UTC 或 Z: router 的 log 每行開頭是 `2026-10-17 08:06:04.919+08:00`, 交給 worker 的訊息時間 (`<channel ts=...>`) 是 `2026-10-17T08:06:04.919+08:00`, 指令輸出, 通知, router_log 與報表顯示的時間都換算成 GMT+8 (`shared/time.ts`, `router/context.ts` 的 `gmt8`). router.db 與訊息紀錄裡存的仍是 UTC 的 ISO 時間 (比較與查詢用), 顯示時才換算.

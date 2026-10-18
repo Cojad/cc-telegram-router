@@ -7,9 +7,11 @@ import { encode, splitLines, type RouterToPlugin } from '../shared/protocol'
 
 export async function runCli(socketPath: string, words: string[]): Promise<number> {
   const text = words[0] === 'restart' ? '/restart' : `/router ${words.join(' ')}`.trim()
+  // a privileged skill action may take up to its timeout twice plus a refresh (router/skillcli.ts)
+  const waitMs = words[0] === 'skill' && (words[1] === 'run' || words[1] === 'refresh') ? 3_600_000 : 120_000
   return new Promise(resolve => {
     let buf = ''
-    const timer = setTimeout(() => { process.stderr.write('router did not answer\n'); resolve(1) }, 120_000)
+    const timer = setTimeout(() => { process.stderr.write('router did not answer\n'); resolve(1) }, waitMs)
     Bun.connect({
       unix: socketPath,
       socket: {

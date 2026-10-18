@@ -256,7 +256,7 @@ test('daily refresh: every approved skill\'s refresh action runs once in the san
   expect(readFileSync(join(dir, 'state', 'creds', 'yt-cookies', 'yt.txt'), 'utf8')).not.toContain('FRESHvalue')
   db.approveSkill(skill, 'clip', hashSkill(skill), 'owner')
   for (let i = 0; i < 10; i++) db.addSkillRun(conv.key, 'clip', 'extract', 'ok') // the conversation used up its hour
-  expect(await refreshAll(refreshDeps())).toEqual([{ skill: 'clip', action: 'refresh', status: 'ok' }])
+  expect(await refreshAll(refreshDeps())).toMatchObject([{ skill: 'clip', action: 'refresh', status: 'ok' }])
   expect(readFileSync(join(dir, 'state', 'creds', 'yt-cookies', 'yt.txt'), 'utf8')).toContain('FRESHvalue')
   expect(told).toEqual([]) // success does not bother the owner
   expect(db.skillRunsSince(REFRESH_CONV, '2000-01-01')).toBe(1)
@@ -272,7 +272,10 @@ test('daily refresh: a skill changed since approval is skipped and the owner tol
   expect(told).toEqual(['⚠️ 技能 clip 的檔案在核准後被改過, 每日憑證更新已略過. 檢查後用 /router skill approve clip 重新核准.'])
   db.approveSkill(skill, 'clip', hashSkill(skill), 'owner')
   told.length = 0
-  expect(await refreshAll(refreshDeps())).toEqual([{ skill: 'clip', action: 'refresh', status: 'failed' }])
+  const failed = await refreshAll(refreshDeps())
+  expect(failed).toMatchObject([{ skill: 'clip', action: 'refresh', status: 'failed' }])
+  expect(failed[0]!.tail).toContain('<已遮蔽>') // what the terminal's skill refresh shows (router/skillcli.ts)
+  expect(failed[0]!.tail).not.toContain(COOKIE)
   expect(told).toHaveLength(1)
   expect(told[0]).toStartWith('⚠️ 技能 clip 的每日憑證更新 (refresh) 失敗, exit 1:')
   expect(told[0]).toContain('連不上 eagle Chrome CDP')

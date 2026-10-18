@@ -9,7 +9,8 @@
 // limit). At router start, a skill whose last successful daily refresh is
 // over 24 hours old (or that never had one) is refreshed once a minute
 // later (柯姊 2026-10-16); after that, every day at skillRefreshAt. Runs
-// never overlap.
+// never overlap. The owner's terminal (cli skill refresh, router/skillcli.ts)
+// runs one skill's refresh in the same queue, recorded as terminal:refresh.
 
 import { mkdirSync } from 'fs'
 import { join } from 'path'
@@ -36,10 +37,12 @@ export interface RefreshDeps extends Omit<SkillRunDeps, 'notifyOwner'> {
   notify(bot: string, text: string): void
 }
 
-export type RefreshResult = { skill: string; action: string; status: 'ok' | 'failed' | 'skipped' }
+/** tail: the run's last lines, credentials masked (for the terminal's skill refresh). */
+export type RefreshResult = { skill: string; action: string; status: 'ok' | 'failed' | 'skipped'; tail?: string }
 
-/** Every approved skill's refresh actions (only those skills `only` accepts), once each. */
-export async function refreshAll(deps: RefreshDeps, only?: (skill: string) => boolean): Promise<RefreshResult[]> {
+/** Every approved skill's refresh actions (only those skills `only` accepts),
+ *  once each, recorded in skill_runs as conv (the owner's terminal: terminal:refresh). */
+export async function refreshAll(deps: RefreshDeps, only?: (skill: string) => boolean, conv = REFRESH_CONV): Promise<RefreshResult[]> {
   const out: RefreshResult[] = []
   for (const { dir, skill, hash } of deps.db.listSkillApprovals()) {
     if (only && !only(skill)) continue
@@ -51,7 +54,7 @@ export async function refreshAll(deps: RefreshDeps, only?: (skill: string) => bo
     const bot = deps.botOf(dir)
     if (hashSkill(dir) !== hash) {
       deps.notify(bot, `⚠️ 技能 ${skill} 的檔案在核准後被改過, 每日憑證更新已略過. 檢查後用 /router skill approve ${skill} 重新核准.`)
-      for (const n of names) { deps.db.addSkillRun(REFRESH_CONV, skill, n, 'skipped'); out.push({ skill, action: n, status: 'skipped' }) }
+      for (const n of names) { deps.db.addSkillRun(conv, skill, n, 'skipped'); out.push({ skill, action: n, status: 'skipped' }) }
       continue
     }
     const folder = join(deps.stateDir, 'skill-refresh', skill)
@@ -60,13 +63,14 @@ export async function refreshAll(deps: RefreshDeps, only?: (skill: string) => bo
       const a = manifest.actions[n]!
       const r = await runAction(deps, dir, a, {}, folder).catch(e => ({ code: -1, out: String(e) }))
       const status = r.code === 0 ? 'ok' : 'failed'
-      deps.db.addSkillRun(REFRESH_CONV, skill, n, status)
-      out.push({ skill, action: n, status })
+      deps.db.addSkillRun(conv, skill, n, status)
+      // what comes back never carries a credential
+      const secrets = [...secretsIn(Object.values(credEnv(deps, a))), ...Object.values(a.http ?? {}).map(c => deps.httpCred?.(c)?.token ?? '').filter(t => t.length >= 16)]
+      const tail = redact(r.out.split('\n').slice(-3).join('\n'), secrets).text
+      out.push({ skill, action: n, status, tail })
       if (r.code === 0) { deps.log?.(`skill ${skill}: daily refresh ${n} ok`); continue }
       deps.log?.(`skill ${skill}: daily refresh ${n} failed (exit ${r.code})`)
-      // the failure text never carries a credential
-      const secrets = [...secretsIn(Object.values(credEnv(deps, a))), ...Object.values(a.http ?? {}).map(c => deps.httpCred?.(c)?.token ?? '').filter(t => t.length >= 16)]
-      deps.notify(bot, `⚠️ 技能 ${skill} 的每日憑證更新 (${n}) 失敗, exit ${r.code}:\n${redact(r.out.split('\n').slice(-3).join('\n'), secrets).text}`)
+      deps.notify(bot, `⚠️ 技能 ${skill} 的每日憑證更新 (${n}) 失敗, exit ${r.code}:\n${tail}`)
     }
   }
   return out
@@ -78,7 +82,8 @@ const DAY = 86_400_000
 /** At start (after catchUpDelayMs) refresh the skills whose last successful
  *  daily refresh is over 24 hours old or missing; then refreshAll at every
  *  `at` (GMT+8). Runs are queued one after another. */
-export function scheduleRefresh(deps: RefreshDeps, at: string, o: { now?: () => number; setTimer?: (fn: () => void, ms: number) => { unref?(): void }; catchUpDelayMs?: number } = {}): { next(): number; stop(): void; idle(): Promise<void> } {
+/** enqueue: fn in the same queue as the daily runs (the terminal's skill refresh). */
+export function scheduleRefresh(deps: RefreshDeps, at: string, o: { now?: () => number; setTimer?: (fn: () => void, ms: number) => { unref?(): void }; catchUpDelayMs?: number } = {}): { next(): number; stop(): void; idle(): Promise<void>; enqueue<T>(fn: () => Promise<T>): Promise<T> } {
   const now = o.now ?? Date.now
   const setTimer = o.setTimer ?? ((fn, ms) => setTimeout(fn, ms))
   let target = nextRefreshAt(now(), at)
@@ -109,5 +114,10 @@ export function scheduleRefresh(deps: RefreshDeps, at: string, o: { now?: () => 
   }
   setTimer(() => run('catch-up', stale), o.catchUpDelayMs ?? CATCH_UP_DELAY_MS).unref?.()
   arm()
-  return { next: () => target, stop: () => { stopped = true }, idle: () => chain }
+  const enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
+    const r = chain.then(fn)
+    chain = r.then(() => {}, () => {})
+    return r
+  }
+  return { next: () => target, stop: () => { stopped = true }, idle: () => chain, enqueue }
 }

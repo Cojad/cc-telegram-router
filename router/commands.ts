@@ -13,6 +13,7 @@ import { SECRET_RE, runSecretCommand, describeSecrets, describeHandles } from '.
 import { addedSetupText, escHtml } from './setup'
 import { toolReport, KEEP_DAYS } from './toolhistory'
 import { REACT_MODES, isReactMode } from './reactions'
+import { parseSkillRun, SKILL_RUN_USAGE, type SkillRunOpts } from './skillcli'
 
 export const ROLES = ['owner', 'admin', 'power', 'user', 'guest'] as const
 
@@ -90,6 +91,10 @@ export interface CommandDeps {
     list(bot: string): string
     approve(bot: string, name: string, by: string): string
     revoke(bot: string, name: string): string
+    /** Owner's terminal: one action as a conversation (router/skillcli.ts). */
+    run?(conv: Conversation, o: SkillRunOpts): Promise<string>
+    /** Owner's terminal: one skill's refresh actions now (router/skillcli.ts). */
+    refresh?(skill: string): Promise<string>
   }
   /** First-run setup of a bot (router/setup.ts). */
   setup: {
@@ -205,7 +210,7 @@ const HELP = [
   '/router perm [chat_id] show | role <角色> (私訊等同 /router role) | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
   '/router perm user <uid|@username> show | tool|path|net|mcp ... | reset (掛在使用者身上的覆寫: 他發起的一輪重算高風險工具, 他的私訊也套用)',
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
-  '/router skill list | approve <技能> | revoke <技能> (技能的特權動作: 核准後 user 與 power 對話也能執行, 憑證不外流)',
+  '/router skill list | approve <技能> | revoke <技能> (技能的特權動作: 核准後 user 與 power 對話也能執行, 憑證不外流) | run <對話> <技能> <動作> --out <資料夾> [--role <角色>] [--trial | --trial-store <資料夾>] [--api <本機網址>] [JSON 參數] | refresh <技能> (run 與 refresh 只在 owner 的終端機: 驗收用)',
   '/router cred list | add <名稱> <bot token> [方法...] | add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...] | rotate <名稱> <新的 key> [--default-header <名稱>:<值>]... (add 與 rotate 只在 owner 或 admin 自己的私訊) | header <名稱> [set <標頭>:<值> | rm <標頭>] (不帶參數就列出預設標頭) | allow|disallow <名稱> <方法或路徑...> | roles <名稱> <角色,...> | rm <名稱> | reload',
   '/router secret list [chat_id] (不寫就列出所有有密鑰的對話) | rm <chat_id> [名稱] (不寫名稱就全部移除): 各對話用 /secret 登記的密鑰',
   '/router secret handles [chat_id] (原文請求發出的密鑰代號, 不寫就列出全部) | revoke <代號>',
@@ -804,10 +809,25 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     case 'skill': {
       const op = args[1] ?? 'list', name = args[2]
       if (op === 'list') return done(deps.skills.list(input.bot))
-      if (!name) return done('用法: /router skill list | approve <技能> | revoke <技能>')
+      if (op === 'run' || op === 'refresh') {
+        // acceptance runs: owner only, only in the terminal (the reply may hold anything the action printed)
+        if (!input.terminal || role !== 'owner') return deny(`/router skill ${op} 只在 owner 的終端機執行 (cc-telegram-router cli skill ${op} ...)`)
+        if (op === 'refresh') {
+          if (!name || args.length !== 3) return done('用法: cc-telegram-router cli skill refresh <技能>')
+          return deps.skills.refresh ? done(await deps.skills.refresh(name)) : done('這個 router 沒有 skill refresh')
+        }
+        const o = parseSkillRun(cmdText.replace(/^\/router(?:@\w+)?\s+skill\s+run\s*/, ''))
+        if ('error' in o) return done(o.error)
+        if (o.role && !(ROLES as readonly string[]).includes(o.role)) return done(`沒有這個角色: ${o.role} (${ROLES.join(', ')})`)
+        const found = findChat(o.conv)
+        if (found.error) return done(found.error)
+        if (!found.conv) return done(`找不到對話 ${o.conv}\n${SKILL_RUN_USAGE}`)
+        return deps.skills.run ? done(await deps.skills.run(found.conv, o)) : done('這個 router 沒有 skill run')
+      }
+      if (!name) return done('用法: /router skill list | approve <技能> | revoke <技能> | run, refresh (只在終端機)')
       if (op === 'approve') return done(deps.skills.approve(input.bot, name, `${input.senderName} ${input.senderId}`))
       if (op === 'revoke') return done(deps.skills.revoke(input.bot, name))
-      return done('用法: /router skill list | approve <技能> | revoke <技能>')
+      return done('用法: /router skill list | approve <技能> | revoke <技能> | run, refresh (只在終端機)')
     }
 
     case 'cred': {

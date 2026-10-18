@@ -34,7 +34,8 @@ import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
 import { fingerprint, noteStart, STALE_NOTE } from './freshness'
 import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
-import { scheduleRefresh } from './skillrefresh'
+import { scheduleRefresh, type RefreshDeps } from './skillrefresh'
+import { terminalRun, terminalRefresh } from './skillcli'
 import { createPoller, type PollEvent } from './poller'
 import { ALLOWED_UPDATES, createReactionBuffer, flushOnStop, reactor, reactionLabel, wanted, type ReactMode } from './reactions'
 import { sendWithRetry, htmlOrPlain } from './sendretry'
@@ -661,6 +662,14 @@ const skillDeps: SkillRunDeps = {
   notifyOwner: (c, text) => void postNotice(approvalDeps, c.bot, text),
   log,
 }
+/** The daily refresh (router/skillrefresh.ts) and the terminal's skill refresh. */
+const refreshDeps: RefreshDeps = {
+  ...skillDeps, stateDir: cfg.stateDir,
+  botOf: dir => cfg.bots.find(b => dir.startsWith(botDir(cfg, b.name) + '/'))?.name ?? cfg.bots[0]!.name,
+  notify: (bot, text) => void postNotice(approvalDeps, bot, text).catch(e => log(`skill refresh notice: ${e}`)),
+}
+/** The daily refresh's queue, once it is scheduled: a terminal refresh waits its turn. */
+let refreshQueue: (<T>(fn: () => Promise<T>) => Promise<T>) | undefined
 
 const elevation = createElevation({
   db, approvals: approvalDeps, notify: notifyConversation, label, log, authz,
@@ -1107,6 +1116,11 @@ const commandDeps: CommandDeps = {
       const dir = skillDirs({ home: cfg.home, botDir: b => botDir(cfg, b) }, bot, name)[0]
       return dir && db.revokeSkill(dir) ? `已撤銷技能 ${name} 的特權動作` : `技能 ${name} 沒有核准紀錄`
     },
+    run: (conv, o) => terminalRun(skillDeps, conv, o, {
+      home: cfg.home, stateDir: cfg.stateDir, storeRoot: skillDeps.storeRoot!,
+      protectedDirs: [...cfg.bots.map(b => botDir(cfg, b.name)), ...db.listConversations().map(c => c.folder)],
+    }),
+    refresh: skill => terminalRefresh(refreshDeps, skill, refreshQueue),
   },
   setup: {
     describe: bot => describeSetup(db.getBotSetup(bot), cfg.owners[0]),
@@ -1534,11 +1548,8 @@ setInterval(() => void rotate(), 60_000).unref()
 setTimeout(sweepBacklog, 15_000).unref()
 // Privileged skills' credentials refreshed daily (router/skillrefresh.ts); at start, those not refreshed in 24 hours.
 if (cfg.skillRefreshAt) {
-  const sched = scheduleRefresh({
-    ...skillDeps, stateDir: cfg.stateDir,
-    botOf: dir => cfg.bots.find(b => dir.startsWith(botDir(cfg, b.name) + '/'))?.name ?? cfg.bots[0]!.name,
-    notify: (bot, text) => void postNotice(approvalDeps, bot, text).catch(e => log(`skill refresh notice: ${e}`)),
-  }, cfg.skillRefreshAt)
+  const sched = scheduleRefresh(refreshDeps, cfg.skillRefreshAt)
+  refreshQueue = sched.enqueue
   log(`skill refresh: daily at ${cfg.skillRefreshAt} GMT+8, next ${gmt8(new Date(sched.next()))}`)
 }
 

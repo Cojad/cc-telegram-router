@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-10-18
+
+### Added
+
+- 終端機執行特權動作 (驗收用, 只限 owner 終端機): `cc-telegram-router cli skill run <對話> <技能> <動作> --out <資料夾> [--role <角色>] [--trial | --trial-store <資料夾>] [--api <本機網址>] [JSON 參數]` 以某個對話與角色的身分, 走跟 `run_skill` 相同的 `runSkill` 跑一次特權動作, 輸出寫到 `--out` (不可以是對話或 bot 資料夾); `--trial` 用這隻 bot 資料庫的拋棄式複本, `--trial-store` 保留複本給接續的執行, `--api` (只限試跑) 把 bot 憑證的 Bot API 換成本機假 API. `cli skill refresh <技能>` 經每日更新的同一條路與佇列立刻跑一次憑證更新. `skill_runs` 記成 `terminal:<對話 key>` 與 `terminal:refresh`, 不算進對話每小時 10 次的限額. 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#終端機執行特權動作).
+
 ## [2.12.1] - 2026-10-17
 
 ### Changed
