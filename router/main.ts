@@ -583,10 +583,10 @@ const ipc = createIpc({
     else { elevation.workerGone(c.key); log(`own_agents ${c.key}: no start time for pid ${h.pid}, own subagents do not count`) }
   },
   onWorkerGone: key => elevation.workerGone(key),
-  async onCli(text) {
+  async onCli(text, body) {
     const owner = cfg.owners[0]
     if (!owner) return 'config 沒有 owners'
-    const out = await runCommand({ bot: cfg.bots[0]!.name, text, senderId: owner, senderName: 'terminal', chatId: owner, chatType: 'private', terminal: true }, commandDeps)
+    const out = await runCommand({ bot: cfg.bots[0]!.name, text, senderId: owner, senderName: 'terminal', chatId: owner, chatType: 'private', terminal: true, ...(body !== undefined ? { body } : {}) }, commandDeps)
     if (!out) return `不是 /router 指令: ${text}`
     for (const l of out.logs) db.addLog(l.conv, l.text)
     out.after?.()
@@ -746,7 +746,7 @@ const pendingMirrors = new Map<string, Mirror[]>()
 /** Put a router-originated message in front of a conversation's worker.
  *  about: it answers request kind#ref, so the turn it starts shows its
  *  progress as a reply to the message that led to the request. */
-function notifyConversation(c: Conversation, text: string, about?: { kind: string; ref: number }): void {
+function notifyConversation(c: Conversation, text: string, about?: { kind: string; ref: number }): { qid: number; awake: boolean } {
   const origin = about ? db.requestOrigin(about.kind, about.ref) : null
   if (origin != null && !progress.active(c.key)) replyNext.set(c.key, origin)
   // pressed in another chat (approvals group, target chat): mirror the progress there too
@@ -755,9 +755,11 @@ function notifyConversation(c: Conversation, text: string, about?: { kind: strin
     const m: Mirror = { ...pressed, label: `↪ ${c.type === 'dm' ? dmLabel(db, c.chat_id) : (c.title ?? c.key)} (${c.key}) 收到結果, 處理中:` }
     if (!progress.attach(c.key, m)) pendingMirrors.set(c.key, [...(pendingMirrors.get(c.key) ?? []), m])
   }
-  db.enqueue(c.key, { content: text, meta: { chat_id: c.chat_id, user: 'router', ts: iso8() } })
-  if (ipc.isConnected(c.key)) ipc.pushQueue(c.key)
+  const qid = db.enqueue(c.key, { content: text, meta: { chat_id: c.chat_id, user: 'router', ts: iso8() } })
+  const awake = ipc.isConnected(c.key)
+  if (awake) ipc.pushQueue(c.key)
   else void supervisor.ensureAwake(c)
+  return { qid, awake }
 }
 
 const approvalDeps: ApprovalDeps = {
@@ -1213,6 +1215,9 @@ const commandDeps: CommandDeps = {
     restart: (c, opts) => supervisor.restart(c, opts),
     stop: c => supervisor.stop(c),
     rotateNow: () => void rotate(),
+    // cli session send (router/sessionsend.ts): queued like the router's own notices, woken when asleep
+    send: (c, text) => notifyConversation(c, text),
+    delivered: qid => db.queueStatus(qid) === 'acked',
     // /router status: the daemon's state of each worker and its last trouble (router/diagnose.ts)
     async health() {
       const agents = await supervisor.listAgents().catch(() => [])

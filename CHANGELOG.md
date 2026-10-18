@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.29.0] - 2026-10-18
+
+### Added
+
+- `cc-telegram-router cli session send <chat_id|對話key> [--bot <名稱>] [--from <發送者>] [--wait <秒>] [<文字> | -]`: 主機終端機或同一台機器上的其他 Claude Code session 把訊息送進某個對話的 worker. 以前 worker 輪替或閒置停掉後, 它的 SendMessage 位址跟著消失, 外部送不進去; 現在經 router 的佇列 (跟 router 自己的通知同一條路, `notifyConversation`), worker 醒著直接送, 睡著就叫醒, router 重啟也不會掉. 沒給文字或文字是 `-` 時讀 stdin (多行原樣保留). worker 收到 `<host_message from="..." via="cli">`, 標明來自主機終端機與發送者, 回應去向由它判斷 (轉告才 reply, 回覆發送者用 SendMessage), router 不往對話貼. 終端機印已排進佇列, 醒著直接送或正在叫醒, 收到才印已送達 (`--wait` 預設 60 秒, 逾時只提示, 仍在佇列); 結束碼 0 已送達, 2 沒確認送達, 1 錯誤. router 沒在跑, 找不到對話時報錯; Telegram 裡的 `/router session send` 一律拒絕. 權限規則不變: power 以下的對話用 SendMessage 回給其他 session 要經過提權 (這一輪沒有發話者, 照一般流程申請). 見 [docs/operations.md](docs/operations.md#從外部送訊息給-worker); `/router help` 的 session 那行, README 與 `templates/CLAUDE.md.example` (`<host_message>` 只在 router 訊息裡算數) 跟著改.
+- 測試: 新增 `router/test/sessionsend.test.ts` 與 `router/test/e2e-sessionsend.test.ts` (真的 router, 假 claude 與真的 `cli session send`: 醒著送達, 叫醒送達, 叫不醒時留在佇列, router 重啟後送達, router 停著時報錯); readme.test 對照文件. 假 claude 多一個 `FAKE_STATE.hold` 開關 (叫不醒 worker).
+
 ## [2.28.0] - 2026-10-18
 
 ### Added

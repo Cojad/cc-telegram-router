@@ -211,6 +211,8 @@ export interface RouterDb {
   enqueue(conv: string, params: unknown): number
   markDelivered(qid: number): void
   ack(qid: number): void
+  /** A queue row's status; null when there is none. */
+  queueStatus(qid: number): QueueRow['status'] | null
   /** pending + delivered-but-unacked, oldest first. */
   undelivered(conv: string): QueueRow[]
   /** The delivery's random tag (meta delivery, router/elevation.ts prompt tags): made the first time, the same on a redelivery. */
@@ -517,6 +519,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   const qEnq = db.prepare('INSERT INTO queue (conv, created_at, params) VALUES (?, ?, ?)')
   const qDel = db.prepare("UPDATE queue SET status = 'delivered', delivered_at = ? WHERE qid = ? AND status = 'pending'")
   const qAck = db.prepare("UPDATE queue SET status = 'acked', acked_at = ? WHERE qid = ?")
+  const qStatus = db.prepare('SELECT status FROM queue WHERE qid = ?')
   const qUnd = db.prepare("SELECT qid, conv, params, status FROM queue WHERE conv = ? AND status != 'acked' ORDER BY qid")
   const qTagGet = db.prepare('SELECT tag FROM queue WHERE qid = ?')
   const qTagSet = db.prepare('UPDATE queue SET tag = ? WHERE qid = ? AND tag IS NULL')
@@ -663,6 +666,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
     enqueue: (conv, params) => Number(qEnq.run(conv, now(), json(params)).lastInsertRowid),
     markDelivered: qid => { qDel.run(now(), qid) },
     ack: qid => { qAck.run(now(), qid) },
+    queueStatus: qid => (qStatus.get(qid) as { status: QueueRow['status'] } | null)?.status ?? null,
     undelivered: conv => qUnd.all(conv) as QueueRow[],
     deliveryTag: qid => {
       const had = (qTagGet.get(qid) as { tag: string | null } | null)?.tag

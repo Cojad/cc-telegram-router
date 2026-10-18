@@ -26,8 +26,9 @@ export type PluginToRouter =
   | { t: 'hook'; id: number; project_dir: string; ev: Record<string, unknown>; deadline?: number; retry?: { tries: number; waited_ms: number } }
   /** Worker hook: a live-progress event (router/progress.ts). No answer (older hooks). */
   | { t: 'progress'; project_dir: string; ev: Record<string, unknown> }
-  /** Terminal CLI (owner): run a /router command. Answered with result. */
-  | { t: 'cli'; id: number; text: string }
+  /** Terminal CLI (owner): run a /router command. Answered with result.
+   *  body: text kept as it is (session send: newlines and spaces), beside the command line. */
+  | { t: 'cli'; id: number; text: string; body?: string }
 
 export type Mode = 'worker' | 'terminal'
 

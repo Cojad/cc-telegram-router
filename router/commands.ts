@@ -16,6 +16,7 @@ import { addedSetupText, escHtml } from './setup'
 import { toolReport, KEEP_DAYS } from './toolhistory'
 import { REACT_MODES, isReactMode } from './reactions'
 import { parseSkillRun, SKILL_RUN_USAGE, type SkillRunOpts } from './skillcli'
+import { parseSendArgs, hostMessage, waitDelivered, SEND_USAGE, MAX_TEXT, QUEUED, DELIVERED } from './sessionsend'
 
 export const ROLES = ['owner', 'admin', 'power', 'user', 'guest'] as const
 
@@ -28,6 +29,8 @@ export type CommandInput = {
   botUsername?: string
   /** From the terminal CLI: a chat id may be any bot's conversation. */
   terminal?: boolean
+  /** From the terminal CLI: text kept as it is, beside the command line (session send). */
+  body?: string
 }
 /** deleteMessage: the command message carried a token; the caller deletes it
  *  and appends whether that worked to the reply. */
@@ -63,6 +66,10 @@ export interface CommandDeps {
     stop(c: Conversation): Promise<void>
     /** Run a rotation pass now (stop marked workers that are idle). */
     rotateNow(): void
+    /** cli session send: queue text for the worker (pushed when awake, woken when not). */
+    send?(c: Conversation, text: string): { qid: number; awake: boolean }
+    /** The worker received (acked) this queue row. */
+    delivered?(qid: number): boolean
     /** /router status: per conversation, what is wrong with its worker (router/diagnose.ts); none when fine. */
     health?(): Promise<Map<string, string[]>>
     /** /router doctor (router/doctor.ts). */
@@ -221,7 +228,7 @@ const HELP = [
   '/router role <uid|@username> <角色|none> (回覆某人的訊息時可省略對象) | role list',
   '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off> | react <all|botself_only|disable|default>',
   '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] | group rm <chat_id> | policy <pairing|allowlist|disabled>',
-  '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒)',
+  '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒) | send <chat_id|對話key> [--from <發送者>] [--wait <秒>] [<文字> | -] (只在主機終端機: cc-telegram-router cli session send, 把訊息送進 worker, 睡著就叫醒; 沒給文字時讀 stdin)',
   '/router perm [chat_id] show | role <角色> (私訊等同 /router role) | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
   '/router perm user <uid|@username> show | tool|path|net|mcp ... | reset (掛在使用者身上的覆寫: 他發起的一輪重算高風險工具, 他的私訊也套用)',
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
@@ -763,6 +770,28 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
 
     case 'session': {
       const op = args[1]
+      if (op === 'send') {
+        // from outside the router into a worker (router/sessionsend.ts): the host's terminal only
+        if (!input.terminal) return deny(`/router session send 只在主機終端機執行 (cc-telegram-router cli session send ...), Telegram 裡不提供`)
+        const a = parseSendArgs(args.slice(2))
+        if ('error' in a) return done(a.error)
+        const body = input.body
+        if (body === undefined || !body.trim()) return done(`沒有要送的文字\n${SEND_USAGE}`)
+        if (body.length > MAX_TEXT) return done(`文字太長 (${body.length} 字, 上限 ${MAX_TEXT})`)
+        if (!deps.sessions.send || !deps.sessions.delivered) return done('這個 router 不能從終端機送訊息給 worker')
+        if (!isChatRef(a.ref)) return done(`找不到這個對話: ${a.ref} (用 /router chat 列出的 chat_id 或對話 key)`)
+        const { conv, error } = findChat(a.ref)
+        if (!conv) return done(error ?? `找不到這個對話: ${a.ref}`)
+        const { qid, awake } = deps.sessions.send(conv, hostMessage(a.from, body))
+        const lines = [`${QUEUED} (#${qid}) 給 ${conv.key}, 發送者 ${a.from}: ${awake ? 'worker 醒著, 直接送出' : 'worker 沒有連上, 正在叫醒'}`]
+        if (!a.waitS) lines.push('沒有等待送達確認 (--wait 0); 訊息在佇列裡, worker 連上時會收到')
+        else {
+          const w = await waitDelivered(() => deps.sessions.delivered!(qid), a.waitS * 1000)
+          lines.push(w.delivered ? `${DELIVERED}: worker 收到了 (${(w.ms / 1000).toFixed(1)} 秒)`
+            : `${a.waitS} 秒內沒有確認送達; 訊息仍在佇列, worker 連上時會收到 (router 每分鐘再叫醒一次, /router status 看 worker 狀態)`)
+        }
+        return done(lines.join('\n'))
+      }
       if (op === 'rotate') {
         const all = args[2] === 'all'
         const t = all ? null : target(2)
@@ -775,7 +804,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         const note = skipped.length ? `\n略過 ${skipped.map(c => c.key).join(', ')}: admin 不能異動 owner 的角色與權限` : ''
         return done(`已標記 ${marked.length} 個 worker 等待輪替: ${marked.map(c => c.key).join(', ') || '(無)'}\n閒置的會在一分鐘內停掉, 忙碌的等它閒置; 下一則訊息會用新的程式與設定叫醒${note}`, { after: () => deps.sessions.rotateNow() })
       }
-      if (op !== 'restart' && op !== 'stop') return done('用法: /router session restart|stop [chat_id] | rotate [chat_id|all]')
+      if (op !== 'restart' && op !== 'stop') return done('用法: /router session restart|stop [chat_id] | rotate [chat_id|all] | send <chat_id> ... (只在終端機)')
       const { conv, error } = target(2)
       if (!conv) return done(error ?? '找不到這個對話')
       if (role === 'admin' && conv.role === 'owner' && op === 'stop') return deny('admin 不能異動 owner 的角色與權限')

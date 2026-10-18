@@ -52,8 +52,8 @@ export const AREAS: Area[] = [
   },
   {
     name: 'core', title: '對話生命週期與指令',
-    tests: ['phase1.test.ts', 'phase2.test.ts', 'e2e.test.ts', 'e2e-wake.test.ts', 'e2e-setup.test.ts', 'jobs.test.ts', 'e2e-jobs.test.ts'],
-    paths: ['router/supervisor.ts', 'router/jobs.ts', 'router/lock.ts', 'router/conversations.ts', 'router/context.ts', 'router/progress.ts', 'router/relay.ts', 'router/freshness.ts', 'router/rotate.ts', 'router/setup.ts', 'router/cli.ts', 'router/guard.ts', 'router/settings.ts', 'plugin/server.ts', 'plugin/skills/**', 'shared/time.ts', 'templates/**'],
+    tests: ['phase1.test.ts', 'phase2.test.ts', 'e2e.test.ts', 'e2e-wake.test.ts', 'e2e-setup.test.ts', 'jobs.test.ts', 'e2e-jobs.test.ts', 'sessionsend.test.ts', 'e2e-sessionsend.test.ts'],
+    paths: ['router/supervisor.ts', 'router/jobs.ts', 'router/sessionsend.ts', 'router/lock.ts', 'router/conversations.ts', 'router/context.ts', 'router/progress.ts', 'router/relay.ts', 'router/freshness.ts', 'router/rotate.ts', 'router/setup.ts', 'router/cli.ts', 'router/guard.ts', 'router/settings.ts', 'plugin/server.ts', 'plugin/skills/**', 'shared/time.ts', 'templates/**'],
   },
   {
     name: 'repo', title: '報表腳本與 repo 檢查',

@@ -12,7 +12,8 @@
 // e2e-wizard.test.ts) and the DM and group access rules (policy.test.ts,
 // owners-access.test.ts) as the code has them; the install order (bun,
 // clone, bun install, the official plugin, install.sh), install.sh's checks
-// and the unit's PATH (preflight.test.ts), and 疑難排解 for plugin did not connect.
+// and the unit's PATH (preflight.test.ts), and 疑難排解 for plugin did not connect;
+// operations.md 「從外部送訊息給 worker」 and its README line (sessionsend.test.ts).
 // Keep in sync with those sections.
 
 import { test, expect } from 'bun:test'
@@ -172,4 +173,17 @@ test('cli doctor and worker status (operations.md, README 疑難排解): what do
   for (const t of ['now - (apiNoted.get(k) ?? 0) > 30 * 60_000', "now - (apiNoted.get(`${c.key}|chat`) ?? 0) > 5 * 60_000"]) expect(main).toContain(t)
   expect(read('deploy/cc-telegram-router.service')).toContain('KillMode=process')
   expect(read('templates/base-settings.json')).toContain('cc-hook progress stop-failure')
+})
+
+test('operations.md 「從外部送訊息給 worker」 and README: the command, stdin, --from, the queue and wake, a restart, the output, exit codes, terminal only; the numbers are the code\'s (sessionsend.test.ts, e2e-sessionsend.test.ts)', async () => {
+  const ops = section(OPS, '## 從外部送訊息給 worker')
+  const { DEFAULT_WAIT_S, MAX_WAIT_S, MAX_TEXT, DEFAULT_FROM, QUEUED, DELIVERED } = await import('../sessionsend')
+  for (const t of ['cli session send <chat_id|對話key> [--bot <名稱>] [--from <發送者>] [--wait <秒>] [<文字> | -]', '從 stdin 讀', '不會停下來等輸入', `超過 ${MAX_TEXT} 字`, `「${DEFAULT_FROM}」`, '1~64 字', '`router.db` 的佇列', '就叫醒', 'router 啟動 15 秒後與之後每分鐘', 'router 沒在跑', '`<host_message from="<發送者>" via="cli">`', '才用 reply 發到 Telegram', '用 SendMessage 傳給 `--from` 的名稱', 'power 以下的對話, 這個 SendMessage 要經過提權', '照一般的權限流程由 worker 向 owner 申請', QUEUED, DELIVERED, `預設 ${DEFAULT_WAIT_S}, 可設 0~${MAX_WAIT_S}`, '0 已送達', '2 已排進佇列但時間內沒確認送達', '1 錯誤', 'Telegram 裡的 `/router session send` 一律拒絕']) expect(ops).toContain(t)
+  expect(section(OPS, '## 終端機 CLI')).toContain('`session send` 是 `--wait` 再加 30 秒')
+  expect(README).toContain('(docs/operations.md#從外部送訊息給-worker)')
+  // the numbers are the code's
+  const main = read('router/main.ts')
+  expect(main).toContain('setTimeout(sweepBacklog, 15_000)')
+  expect(main).toContain('setInterval(sweepBacklog, 60_000)')
+  expect(read('router/cli.ts')).toContain('waitMs = (a.waitS + 30) * 1000')
 })

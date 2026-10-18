@@ -63,7 +63,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `telegram` | Telegram 收發與訊息紀錄 | format, inbound, outbound, reply-files, policy, rich, store, poller, phase4, channel, e2e-channel, local-bot-api, e2e-localapi, owners-access, pairing, e2e-pairing | `router/telegram/**`, `router/` 的 pairing, config, poller, pollnotice, sendretry, importv1, setup; `plugin/skills/doc/**`, `plugin/skills/format/**`, `templates/CLAUDE.md.example`, `shared/tools.ts` |
 | `reactions` | 表情回應 | reactions, e2e-reactions | `router/reactions.ts`, `router/telegram/transport.ts`, `router/telegram/inbound.ts` |
 | `classifier` | 工具呼叫分類器 | classifier, e2e-classifier, e2e-classifier-off | `router/classifier.ts` |
-| `core` | 對話生命週期與指令 | phase1, phase2, e2e, e2e-wake, e2e-setup, jobs, e2e-jobs | `router/` 的 supervisor, jobs, lock, conversations, context, progress, relay, freshness, rotate, setup, cli, guard, settings; `plugin/server.ts`, `plugin/skills/**`, `shared/time.ts`, `templates/**` |
+| `core` | 對話生命週期與指令 | phase1, phase2, e2e, e2e-wake, e2e-setup, jobs, e2e-jobs, sessionsend, e2e-sessionsend | `router/` 的 supervisor, jobs, sessionsend, lock, conversations, context, progress, relay, freshness, rotate, setup, cli, guard, settings; `plugin/server.ts`, `plugin/skills/**`, `shared/time.ts`, `templates/**` |
 | `repo` | 報表腳本與 repo 檢查 | context-chart, usage-report, requirements, areas, readme | `scripts/**`, `README.md`, `docs/operations.md`, `docs/secrets.md`, `CHANGELOG.md`, `plugin/package.json`, `deploy/**`, `router/relay.ts`, `router/test/areas.ts`, `router/test/tiers.ts` |
 
 改到某區的測試檔, 也會跑那一區. 一個路徑可以屬於多個區.
@@ -149,6 +149,8 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/e2e-retry.test.ts` | 真的 router (停下再啟動, 同一個 router.db) + 真的 hook + 真的 plugin client: hook 執行時 router 停著, 1 秒後啟動, hook 在之後的一次拿到 router 的判斷而不是落回放行, router log 記第幾次; 一直停著時重試完落回 (放行, 跳出 sandbox 拒絕), 其他事件不等; SendMessage 給自己的 subagent 時 plugin 斷線, 約 1 秒後同一個程序重連就放行, 一直不連回到期限才擋, 兩種都有 log; 斷路狀態檔標記超過 3 分鐘時只試一次立刻落回, router 回來後那一次拿到判斷並重置 |
 | `router/test/jobs.test.ts` | [背景 session 的 job 與 daemon](operations.md#背景-session-的-job-與-daemon) (假 claude 與假 jobs 資料夾): jobs 資料夾位置, 讀 state.json, 旗標不看順序比對與差異說明; 叫醒時舊模型的 job 先 rm 再帶新旗標 resume 並記下, 在跑的先 stop, 旗標相同照舊不帶旗標, state.json 讀不到時用 router 的紀錄, 都不知道照舊, rm 失敗沿用舊旗標; 多餘 job 只挑自己對話的非目前 session; `/router config set model` 標記用預設模型的對話; daemon 由誰帶起, spare 與孤兒 spare, 只看 router 所用的 claude 安裝 (假的 /proc); 上一版結構且有資料的 router.db (沒有 `worker_flags`) 開啟後加上欄位, 資料保留 |
 | `router/test/e2e-jobs.test.ts` | 同上, 真的 router + 假 claude (agents 從檔案讀, 每次呼叫都記下) + 假 jobs 資料夾 (`CLAUDE_CONFIG_DIR`), 用上一版的 router.db 啟動: 啟動時多餘的 job 在跑的先 stop 再 rm, 其他 job 不碰; 舊模型的 job 被叫醒時先 rm 再帶新旗標 resume, `worker_flags` 記下; 不碰真的 daemon |
+| `router/test/sessionsend.test.ts` | [從外部送訊息給 worker](operations.md#從外部送訊息給-worker): `cli session send` 的參數解析 (對話與選項在前, 其餘是文字, `--`, `-` 與沒給文字讀 stdin, `--wait`), `--from` 的格式, 送進 worker 的標頭 (來源, 發送者, 回應去向), 終端機端 (文字原樣放在指令列旁邊, stdin, stdin 是終端機時不等輸入, 空內容, router 沒在跑, 結束碼 0/1/2), 指令 (chat_id, 對話 key, `--bot`, 已送達與逾時仍在佇列, 找不到對話, 沒有文字, Telegram 裡拒絕且不入佇列), `/router help` 的 session 那行 |
+| `router/test/e2e-sessionsend.test.ts` | 同上, 真的 router + 假 claude CLI + 真的 `cli session send`: worker 醒著直接送達 (已送達, exit 0, router 不往對話貼), worker 不在時叫醒並送達 (stdin 的多行), worker 叫不醒時留在佇列 (exit 2), router 停著時報錯不入佇列 (exit 1), router 重啟後同一筆訊息送達 |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |
 | `router/test/requirements.test.ts` | README 的 Requirements 與 package 檔: 根目錄 package.json 沒有 v1 的 `bin` 與 `start`, Bun 1.4.2 以上 (README 寫明, 兩個 package 檔的 `engines.bun` 是 `>=1.4.2`), plugin 版本與 repo 和 CHANGELOG 一致, 報表腳本一律用 python3 (shebang 與呼叫), curl, jq 與 matplotlib 列在強烈建議, 分類器的 API key 在依功能需要, repo 自己的程式與腳本不用 curl 與 jq |
 | `router/test/readme.test.ts` | README 與 [部署與維運](operations.md) 跟上現況: operations.md「設定欄位」剛好列出 `loadConfig` 讀的每個欄位 (多一個少一個都不行) 與憑證的每個欄位, README 連到它; 安裝步驟有官方 plugin 的安裝指令 (在 `deploy/install.sh plugin` 之前) 與 linger 和確認方式 (在啟動之前); README「How to upgrade」與 operations.md「升級」的備份, 安裝, 停止與啟動, 輪替, 資料庫只新增; Feature highlights 涵蓋 2.11 之後的功能; [密鑰](secrets.md#加密金鑰-secretkey)說明 secretKey (加密什麼, 遺失就解不開, 跟 router.db 一起備份, 不可外流, 錯誤訊息跟程式一致); README, operations.md 與 secrets.md 的每個相對連結都連到存在的檔案與標題 |
@@ -414,3 +416,15 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | markdownv2 的 caption 帶 parse_mode; 被拒時錯誤回 worker, 沒有送出半則 | reply-files「one document with format markdownv2…」「Telegram refuses the caption's MarkdownV2…」 |
 | reply_to, replyToMode, 長訊息切段, 沒有附件的回覆, 訊息紀錄照舊 | reply-files「the caption threads under reply_to…」「no files: the text goes as before…」; outbound 全部; e2e「a plugin for the conversation gets the queued message…」 |
 | 工具說明與文件描述相同的規則 | reply-files「the reply tool description and docs/architecture.md…」 |
+
+## 從外部送訊息給 worker 驗收對照
+
+| 驗收項目 | 測試 |
+|---|---|
+| `cli session send <chat_id\|對話key> [--bot] [--from] [--wait] [<文字> \| -]`: 參數解析, 沒給文字或 `-` 讀 stdin (換行原樣), stdin 是終端機時不等輸入 | sessionsend「parseSendArgs: …」「runCli session send: the text goes beside…」「runCli session send: wrong arguments…」 |
+| 送進 worker 的內容標明來自主機終端機與發送者 (`--from`, 沒給是「終端機」), 回應去向由 worker 判斷 (轉告才 reply, 回覆發送者用 SendMessage), 不自動往對話貼 | sessionsend「hostMessage: …」「validFrom: …」; e2e-sessionsend「an awake worker gets it at once…」(對話沒有收到 router 貼的內容) |
+| 走 notifyConversation 那條路: 先進佇列, 醒著直接送, 睡著叫醒; 印出已排進佇列與醒著或叫醒中, 收到才印已送達, 逾時只提示且仍在佇列 | sessionsend「/router session send: queues the header…」「…not acked in time…」; e2e-sessionsend「an awake worker…」「a worker that is gone is woken…」 |
+| router 重啟後佇列裡的訊息仍送達; router 沒在跑時清楚報錯, 不寫資料庫 | e2e-sessionsend「queued while the worker cannot be woken…」; sessionsend「runCli session send: wrong arguments… no router running…」 |
+| 找不到對話報錯, 不入佇列; 只開放主機終端機, Telegram 的 `/router session send` 拒絕 | sessionsend「/router session send: a missing conversation, no text, and Telegram are refused…」 |
+| `cli help` 的 session 那行有 send | sessionsend「/router help lists session send…」 |
+

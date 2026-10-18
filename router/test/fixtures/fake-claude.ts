@@ -4,7 +4,7 @@
 // supervisor. A "worker" is fake-worker.ts, a real process that connects to
 // the router socket the way the plugin would. State lives in FAKE_STATE.
 
-import { readFileSync, writeFileSync, appendFileSync, readdirSync, rmSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, appendFileSync, readdirSync, rmSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 
 // One file per job under FAKE_STATE.jobs/: workers are spawned concurrently
@@ -29,6 +29,10 @@ if (args[0] === 'agents') {
   const j = jobs[args[1]!]
   if (j?.pid && alive(j.pid)) process.kill(j.pid, 'SIGTERM')
   if (j) { if (args[0] === 'rm') rmSync(join(JOBS, j.id)); else { j.pid = null; writeFileSync(join(JOBS, j.id), JSON.stringify(j)) } }
+} else if (args[0] === '--bg' && existsSync(STATE + '.hold')) {
+  // FAKE_STATE.hold: the worker cannot be started (e2e-sessionsend keeps a message queued across a router restart)
+  console.error('fake claude: held, no worker started')
+  process.exit(1)
 } else if (args[0] === '--bg') {
   const r = args.indexOf('--resume')
   const sessionId = r >= 0 ? args[r + 1]! : crypto.randomUUID()

@@ -319,7 +319,26 @@ cc-telegram-router cli skill run router-group-100 tg-sticker publish --trial-sto
 cc-telegram-router cli skill refresh web-instagram
 ```
 
-一般子指令等 router 回答最多 2 分鐘, `skill run` 與 `skill refresh` 最多 1 小時.
+一般子指令等 router 回答最多 2 分鐘, `skill run` 與 `skill refresh` 最多 1 小時, `session send` 是 `--wait` 再加 30 秒 (見下一節).
+
+## 從外部送訊息給 worker
+
+主機終端機, 或同一台機器上的其他 Claude Code session (例如 v1), 要把訊息送進某個對話的 worker 時用 `cli session send`. 它經過 router, 所以 worker 輪替或閒置停掉 (它的 SendMessage 位址跟著消失) 時一樣送得到: router 會叫醒它.
+
+```bash
+cc-telegram-router cli session send <chat_id|對話key> [--bot <名稱>] [--from <發送者>] [--wait <秒>] [<文字> | -]
+cc-telegram-router cli session send router-dm-123 --from v1 請整理今天的待辦
+printf '第一行\n第二行\n' | cc-telegram-router cli session send -100123 --from v1 -
+```
+
+- **對話**: chat_id 或對話 key (`/router chat` 列表的第一欄), 跟其他 session 指令一樣; 同一個 chat_id 在多隻 bot 都有對話時要加 `--bot`. 找不到就報錯, 什麼都不送.
+- **文字**: 寫在對話與選項後面, 之後的字全部算文字 (文字本身以 `--` 開頭時, 前面先放一個 `--`). 沒給文字或文字是 `-` 時從 stdin 讀, 換行與空白照原樣, 適合多行的長訊息; stdin 是終端機而又沒給文字時直接報錯, 不會停下來等輸入. 空的內容與超過 64000 字的拒絕.
+- **`--from`**: 發送者的名稱. worker 要回覆時用 SendMessage 傳給這個名稱, 所以寫自己的 session 名稱 (1~64 字, 不能有空白, 引號與 `< >`). 沒給時是「終端機」, 表示沒有對象可以回.
+- **怎麼送**: 經執行中 router 的 socket, 跟 router 自己的通知 (申請結果, 代打結果) 走同一條路: 先寫進 `router.db` 的佇列, worker 連著就立刻送; 沒連上 (睡著, 輪替或閒置停掉) 就叫醒, 它連上時送出. 訊息在佇列裡, router 重啟也不會掉: router 啟動 15 秒後與之後每分鐘, 會把有積壓的對話再叫醒一次. router 沒在跑時報錯 (`router 沒在跑 (連不到 <socket>), 訊息沒有送出`), 終端機不會自己寫資料庫.
+- **worker 看到什麼**: 一個 `<host_message from="<發送者>" via="cli">` 區塊. 開頭說明這則從主機終端機送來, 不是 Telegram 上的人說的, 發送者是誰, 回應去向由 worker 自己判斷: 內容要它轉告這個對話時, 才用 reply 發到 Telegram; 要回覆發送者時, 用 SendMessage 傳給 `--from` 的名稱; 不要自動把回應貼到對話裡. router 本身不往對話貼任何東西. 這一輪跟 router 的通知一樣沒有發話者 (只看對話角色), SendMessage 傳給其他 session 是[高風險工具](permissions.md#高風險工具): admin 與 owner 的對話直接可以回; power 以下的對話, 這個 SendMessage 要經過提權 (沒有發話者, 不會自動提權, 也不會在對話裡詢問), 照一般的權限流程由 worker 向 owner 申請 (request_elevation), 核准後再回.
+- **輸出**: 第一行是 `已排進佇列 (#<佇列編號>) 給 <對話>, 發送者 <名稱>: worker 醒著, 直接送出` 或 `...: worker 沒有連上, 正在叫醒`. 接著等 worker 收到 (worker 的 plugin 把訊息交給 Claude Code 後回報, 佇列標成 acked), 印 `已送達: worker 收到了 (<秒數> 秒)`. 最多等 `--wait` 秒 (預設 60, 可設 0~600, 0 是不等); 逾時只提示, 訊息仍在佇列, worker 連上時就會收到.
+- **結束碼**: 0 已送達 (或 `--wait 0` 不等), 2 已排進佇列但時間內沒確認送達, 1 錯誤 (參數不對, 沒有文字, 找不到對話, router 沒在跑).
+- **只在主機終端機**: Telegram 裡的 `/router session send` 一律拒絕.
 
 ## 時間
 

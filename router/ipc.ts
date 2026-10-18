@@ -30,7 +30,7 @@ export interface IpcDeps {
   /** That worker's plugin connection closed. */
   onWorkerGone?: (key: string) => void
   /** Terminal CLI: run a /router command as owner and return the reply. */
-  onCli?: (text: string) => Promise<string>
+  onCli?: (text: string, body?: string) => Promise<string>
   /** Last-moment additions to a delivery (chat_context, router_log). */
   decorate?: (key: string, qid: number, params: ChannelParams, conn: ClientState) => ChannelParams
   log?: (msg: string) => void
@@ -113,7 +113,7 @@ export function createIpc(deps: IpcDeps) {
         return
       }
       case 'cli': {
-        const text = deps.onCli ? await deps.onCli(m.text) : 'CLI not available'
+        const text = deps.onCli ? await deps.onCli(m.text, typeof m.body === 'string' ? m.body : undefined) : 'CLI not available'
         send(s, { t: 'result', id: m.id, result: { content: [{ type: 'text', text }] } })
         return
       }
