@@ -5,8 +5,9 @@
 // understands the rule shapes those use; tools it does not know are left to
 // Claude Code (never blocked here).
 
+import { realpathSync } from 'fs'
 import { homedir } from 'os'
-import { isAbsolute, resolve } from 'path'
+import { basename, dirname, isAbsolute, join, resolve } from 'path'
 
 export const RANK: Record<string, number> = { guest: 0, user: 1, power: 2, admin: 3, owner: 4 }
 export const rank = (role: string | null | undefined) => RANK[role ?? ''] ?? 1
@@ -38,8 +39,28 @@ function ruleSpecPath(spec: string, folder: string): string {
   return resolve(folder, spec.replace(/^\//, ''))
 }
 
-function pathMatches(spec: string, path: string, folder: string): boolean {
-  const pat = ruleSpecPath(spec, folder)
+/** The path with every symlink resolved: realpath of the longest part that exists, the rest
+ *  as written (a file not written yet). A symlink can then not carry a write out of a rule. */
+export function canonicalPath(p: string): string {
+  const tail: string[] = []
+  for (let cur = resolve(p); ; cur = dirname(cur)) {
+    try { return join(realpathSync(cur), ...tail.reverse()) } catch {}
+    if (cur === dirname(cur)) return resolve(p)
+    tail.push(basename(cur))
+  }
+}
+
+/** A rule's path pattern with symlinks resolved in its folders (up to the first glob, never its
+ *  last part), so it compares with canonicalPath: a home reached through a symlink still matches
+ *  its own rules, and a rule for a file that is itself a link does not open the link's target. */
+function canonicalPattern(pat: string): string {
+  const star = pat.indexOf('*')
+  const cut = pat.lastIndexOf('/', star < 0 ? pat.length : star)
+  return cut <= 0 ? pat : canonicalPath(pat.slice(0, cut)) + pat.slice(cut)
+}
+
+function pathMatches(spec: string, path: string, folder: string, canonical = false): boolean {
+  const pat = canonical ? canonicalPattern(ruleSpecPath(spec, folder)) : ruleSpecPath(spec, folder)
   const re = globRe(pat)
   // "dir/**" also covers dir itself
   return re.test(path) || (pat.endsWith('/**') && path === pat.slice(0, -3))
@@ -167,12 +188,14 @@ export function checkCall(settings: any, call: Call, folder: string, role = 'thi
   }
 
   if (READ_TOOLS.has(tool) || EDIT_TOOLS.has(tool)) {
-    const path = callPath(call, folder)
+    // `..` is resolved by callPath; a symlink by canonicalPath: the path as written and where it
+    // really leads must both stay clear of deny rules, and where it leads must be allowed
+    const path = callPath(call, folder), real = canonicalPath(path)
     const kinds = EDIT_TOOLS.has(tool) ? ['Edit', 'Write'] : ['Read']
-    const hit = (rs: Rule[]) => rs.some(r => kinds.includes(r.tool) && (!r.spec || pathMatches(r.spec, path, folder)))
-    if (hit(deny)) return { ok: false, why: `${role} 禁止${EDIT_TOOLS.has(tool) ? '寫入' : '讀取'} ${path}` }
-    if (hit(allow)) return { ok: true }
-    return { ok: false, why: `${role} 不能${EDIT_TOOLS.has(tool) ? '寫入' : '讀取'}允許範圍外的路徑: ${path}` }
+    const hit = (rs: Rule[], p: string, canonical: boolean) => rs.some(r => kinds.includes(r.tool) && (!r.spec || pathMatches(r.spec, p, folder, canonical)))
+    if (hit(deny, path, false) || hit(deny, real, true)) return { ok: false, why: `${role} 禁止${EDIT_TOOLS.has(tool) ? '寫入' : '讀取'} ${path}${real !== path ? ` (實際是 ${real})` : ''}` }
+    if (hit(allow, real, true)) return { ok: true }
+    return { ok: false, why: `${role} 不能${EDIT_TOOLS.has(tool) ? '寫入' : '讀取'}允許範圍外的路徑: ${path}${real !== path ? ` (實際是 ${real})` : ''}` }
   }
 
   if (NAMED_TOOLS.has(tool)) {

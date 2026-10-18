@@ -1,7 +1,7 @@
 {
   "permissions": {
     "defaultMode": "dontAsk",
-    "allow": ["mcp__plugin_telegram_telegram", "Read(/{{folder}}/attachments/**)", "Read(/{{botDir}}/memory/**)", "Read(/{{transcripts}}/*/tool-results/**)"],
+    "allow": ["mcp__plugin_telegram_telegram", "Read(/{{folder}}/attachments/**)", "Read(/{{folder}}/CLAUDE.md)", "Edit(/{{folder}}/CLAUDE.md)", "Write(/{{folder}}/CLAUDE.md)", "Read(/{{folder}}/memory/**)", "Edit(/{{folder}}/memory/**)", "Write(/{{folder}}/memory/**)", "Read(/{{botDir}}/memory/**)", "Read(/{{transcripts}}/*/tool-results/**)"],
     "deny": ["Bash"]
   },
   "sandbox": {

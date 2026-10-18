@@ -3,7 +3,8 @@
     "defaultMode": "dontAsk",
     "allow": [
       "Read(/{{folder}}/**)", "Edit(/{{folder}}/**)", "Write(/{{folder}}/**)",
-      "Read(/{{home}}/.claude/skills/**)", "Read(/{{botDir}}/.claude/skills/**)", "Read(/{{botDir}}/memory/**)", "Read(/{{transcripts}}/*/tool-results/**)",
+      "Read(/{{home}}/.claude/skills/**)", "Read(/{{botDir}}/.claude/skills/**)", "Read(/{{transcripts}}/*/tool-results/**)",
+      "Read(/{{botDir}}/CLAUDE.md)", "Edit(/{{botDir}}/CLAUDE.md)", "Write(/{{botDir}}/CLAUDE.md)", "Read(/{{botDir}}/memory/**)", "Edit(/{{botDir}}/memory/**)", "Write(/{{botDir}}/memory/**)",
       "Bash", "WebSearch", "WebFetch",
       "mcp__plugin_telegram_telegram"
     ],
@@ -14,7 +15,8 @@
     "autoAllowBashIfSandboxed": true,
     "filesystem": {
       "denyRead": ["{{hidden}}", "~"],
-      "allowRead": ["{{folder}}", "{{home}}/.claude/skills", "{{botDir}}/.claude/skills", "{{botDir}}/memory", "~/bin", "~/.bun"],
+      "allowRead": ["{{folder}}", "{{home}}/.claude/skills", "{{botDir}}/.claude/skills", "{{botDir}}/memory", "{{botDir}}/CLAUDE.md", "~/bin", "~/.bun"],
+      "allowWrite": ["{{botDir}}/memory", "{{botDir}}/CLAUDE.md"],
       "denyWrite": ["{{folder}}/.chat"]
     },
     "network": { "allowedDomains": ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"] }

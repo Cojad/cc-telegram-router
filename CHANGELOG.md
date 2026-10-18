@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [2.32.4] - 2026-10-18
+
+### Added
+
+- guest 能讀寫自己對話資料夾的 `CLAUDE.md` 與 `memory/**` (角色範本加這兩個路徑的 Read, Edit, Write); 資料夾的其他檔案照舊只能讀 `attachments/`, `.chat/` 不能改, 沒有 Bash (所以 sandbox 不用加可寫路徑). guest 的自動記憶因此寫得進去.
+- admin 能讀寫 bot 層的 `<home>/bot<id>/CLAUDE.md` 與 `memory/**` (Read, Edit, Write 規則, sandbox 的 `allowRead` 與 `allowWrite`, Bash 也寫得進去), 改動套用到這隻 bot 的所有對話; bot 的 `.claude/skills` 照舊唯讀, 其他對話照舊讀不到; power, user, guest 對 bot 層維持唯讀.
+- docs/session-and-memory.md (柯姊 review 定稿): 各層 CLAUDE.md 與記憶的繼承, 依角色的讀寫權限, session 存在哪裡與怎麼接續, managed 模式的自動遷移, 從 OpenClaw 轉過來時檔案放哪裡, 以及對應測試的「驗證」一節. README 的文件索引加這份, 講到角色讀寫範圍與記憶的地方改成一致並指向它; permissions.md 的「bot 共用記憶」, architecture.md, `templates/CLAUDE.md.example` 與 `/telegram:doc` 同步.
+
+### Changed
+
+- router 的權限檢查 (`permcheck.ts`) 讀寫路徑時先解開 symlink: 路徑本身與它實際指向的位置都不能碰到禁止規則, 實際位置要在允許範圍內 (`..` 本來就解開). 例如 `memory/` 裡指向 `.chat/` 或 bot 的 `.claude/skills` 的 symlink 寫不過去. 規則的資料夾部分也解開 symlink (home 經 symlink 也對得上), 但不解開規則最後指向的那個檔.
+- 測試: phase3 (41 項) 加 guest 與 admin 的讀寫範圍, symlink 與 `..`, 文件的讀寫權限表對照範本; role-live (`LIVE=1`) 改成 admin 寫得進 bot 層, 新增 guest 寫自己的 CLAUDE.md 與 memory, admin 寫 bot 的 CLAUDE.md (Write 與 Bash) 與被擋的 skills.
+
 ## [2.32.3] - 2026-10-18
 
 ### Changed

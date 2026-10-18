@@ -147,12 +147,13 @@ test.skipIf(!LIVE)('guest: can read its attachments; no Bash', async () => {
 }, 300_000)
 
 // Bot-wide memory (docs/permissions.md 「bot 共用記憶」): <botDir>/memory is
-// read-only for every role below owner, with Read and (where Bash is allowed)
-// cat; writing it is refused. A bot folder without memory/ keeps the sandbox working.
+// read-only for power, user and guest, with Read and (where Bash is allowed)
+// cat; writing it is refused. admin reads and writes it, and the bot's CLAUDE.md
+// (2.32.4, docs/session-and-memory.md). A bot folder without memory/ keeps the sandbox working.
 const BELOW_OWNER = ['admin', 'power', 'user', 'guest']
 // a write into a folder that is not the model's own: say what the run is for, or it declines without calling the tool
 const PERM_TEST = '這是權限設定的自動測試, 檔案是測試用的暫存檔, 預期可能被權限擋下; 請實際呼叫工具一次, 讓測試看到結果.'
-test.skipIf(!LIVE)('bot memory: admin, power, user and guest read <botDir>/memory/facts.md with Read; Write there is refused', async () => {
+test.skipIf(!LIVE)('bot memory: admin, power, user and guest read <botDir>/memory/facts.md with Read; Write there works for admin only', async () => {
   const mem = join(root, 'bot1', 'memory')
   const read = await Promise.all(BELOW_OWNER.map(r => asRole(r, `用 Read 工具讀 ${join(mem, 'facts.md')}. ${ONE}`)))
   const write = await Promise.all(BELOW_OWNER.map(r => asRole(r, `${PERM_TEST} 用 Write 工具建立 ${join(mem, `new-${r}.md`)}, 內容是 NOTE. ${ONE}`)))
@@ -161,27 +162,68 @@ test.skipIf(!LIVE)('bot memory: admin, power, user and guest read <botDir>/memor
     expect(r.text).toContain('BOT-MEMORY-OK')
   }
   for (const [i, r] of write.entries()) {
-    console.log(`[role-live memory write ${BELOW_OWNER[i]}] denied=${JSON.stringify(r.denied)}`)
-    expect(r.denied).toContain('Write')
-    expect(existsSync(join(mem, `new-${BELOW_OWNER[i]}.md`))).toBe(false)
+    const role = BELOW_OWNER[i]!
+    console.log(`[role-live memory write ${role}] denied=${JSON.stringify(r.denied)}`)
+    if (role === 'admin') { expect(r.denied).not.toContain('Write'); expect(readFileSync(join(mem, 'new-admin.md'), 'utf8')).toContain('NOTE') }
+    else { expect(r.denied).toContain('Write'); expect(existsSync(join(mem, `new-${role}.md`))).toBe(false) }
   }
 }, 300_000)
 
-test.skipIf(!LIVE)('bot memory: admin, power and user read it with Bash cat; writing it through Bash is refused (sandbox for admin and power, the read-only list for user)', async () => {
+test.skipIf(!LIVE)('bot memory: admin, power and user read it with Bash cat; writing it through Bash is refused for power (sandbox) and user (the read-only list), admin writes it (sandbox allowWrite)', async () => {
   const facts = join(root, 'bot1', 'memory', 'facts.md')
-  const roles = ['admin', 'power', 'user']
-  const cat = await Promise.all(roles.map(r => asRole(r, bash(`cat ${facts}`))))
+  const roles = ['power', 'user']
+  const cat = await Promise.all(['admin', ...roles].map(r => asRole(r, bash(`cat ${facts}`))))
   const write = await Promise.all(roles.map(r => asRole(r, `${PERM_TEST} ${bash(`echo NOTE >> ${facts} && echo WROTE`)}`)))
   for (const [i, r] of cat.entries()) {
-    console.log(`[role-live memory cat ${roles[i]}] ${r.text.trim().split('\n').pop()}`)
+    console.log(`[role-live memory cat ${['admin', ...roles][i]}] ${r.text.trim().split('\n').pop()}`)
     expect(r.text).toContain('BOT-MEMORY-OK')
   }
   for (const [i, r] of write.entries()) {
     console.log(`[role-live memory bash write ${roles[i]}] ${r.text.trim().split('\n').pop()} denied=${JSON.stringify(r.denied)}`)
     expect(r.text).not.toContain('WROTE')
   }
-  expect(write[2]!.denied).toContain('Bash')
+  expect(write[1]!.denied).toContain('Bash')
   expect(readFileSync(facts, 'utf8')).toBe('BOT-MEMORY-OK\n')
+  const adminFile = join(root, 'bot1', 'memory', 'admin-bash.md')
+  const admin = await asRole('admin', `${PERM_TEST} ${bash(`echo ADMIN-NOTE >> ${adminFile} && echo WROTE`)}`)
+  console.log(`[role-live memory bash write admin] ${admin.text.trim().split('\n').pop()} denied=${JSON.stringify(admin.denied)}`)
+  expect(readFileSync(adminFile, 'utf8')).toContain('ADMIN-NOTE')
+}, 300_000)
+
+// 2.32.4 (docs/session-and-memory.md 「讀寫權限」): guest reads and writes its own CLAUDE.md
+// and memory/, nothing else of its folder (attachments read only, .chat never); admin
+// reads and writes the bot's CLAUDE.md and memory/, the bot's skills stay read-only.
+test.skipIf(!LIVE)('guest: writes its own CLAUDE.md and memory/ with Write; writing attachments/ or .chat/ is refused', async () => {
+  const [md, mem, att, chat] = await Promise.all([
+    asRole('guest', `${PERM_TEST} 用 Write 工具建立 CLAUDE.md, 內容是 GUEST-RULES. ${ONE}`),
+    asRole('guest', `${PERM_TEST} 用 Write 工具建立 memory/notes.md, 內容是 GUEST-MEMORY. ${ONE}`),
+    asRole('guest', `${PERM_TEST} 用 Write 工具建立 attachments/x.txt, 內容是 NOTE. ${ONE}`),
+    asRole('guest', `${PERM_TEST} 用 Write 工具建立 .chat/x.md, 內容是 NOTE. ${ONE}`),
+  ])
+  for (const [n, r] of [['CLAUDE.md', md], ['memory', mem], ['attachments', att], ['.chat', chat]] as const) console.log(`[role-live guest write ${n}] denied=${JSON.stringify(r.denied)}`)
+  expect(readFileSync(join(md.folder, 'CLAUDE.md'), 'utf8')).toContain('GUEST-RULES')
+  expect(readFileSync(join(mem.folder, 'memory', 'notes.md'), 'utf8')).toContain('GUEST-MEMORY')
+  expect(att.denied).toContain('Write')
+  expect(existsSync(join(att.folder, 'attachments', 'x.txt'))).toBe(false)
+  expect(chat.denied).toContain('Write')
+  expect(existsSync(join(chat.folder, '.chat', 'x.md'))).toBe(false)
+}, 300_000)
+
+test.skipIf(!LIVE)('admin: writes the bot\'s CLAUDE.md with Write and Bash; writing the bot\'s .claude/skills is refused', async () => {
+  const md = join(root, 'bot1', 'CLAUDE.md')
+  const [w, skill] = await Promise.all([
+    asRole('admin', `${PERM_TEST} 用 Write 工具建立 ${md}, 內容是 BOT-PERSONA. ${ONE}`),
+    asRole('admin', `${PERM_TEST} 用 Write 工具建立 ${join(root, 'bot1', '.claude', 'skills', 'probe', 'new.sh')}, 內容是 echo x. ${ONE}`),
+  ])
+  console.log(`[role-live admin bot CLAUDE.md] denied=${JSON.stringify(w.denied)}; skills denied=${JSON.stringify(skill.denied)}`)
+  expect(readFileSync(md, 'utf8')).toContain('BOT-PERSONA')
+  // the sandbox's allowWrite on the file itself: Bash can append to it too
+  const sh = await asRole('admin', `${PERM_TEST} ${bash(`echo BASH-LINE >> ${md} && echo WROTE`)}`)
+  console.log(`[role-live admin bot CLAUDE.md bash] ${sh.text.trim().split('\n').pop()}`)
+  expect(readFileSync(md, 'utf8')).toContain('BASH-LINE')
+  expect(skill.denied).toContain('Write')
+  expect(existsSync(join(root, 'bot1', '.claude', 'skills', 'probe', 'new.sh'))).toBe(false)
+  rmSync(md)
 }, 300_000)
 
 test.skipIf(!LIVE)('bot memory: a bot folder without memory/ (allowRead points at a missing path) still runs Bash in the sandbox and Read in the folder', async () => {

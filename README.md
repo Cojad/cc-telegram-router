@@ -1,6 +1,6 @@
 # cc-telegram-router
 
-一隻 router 收 Telegram bot 的所有訊息, 每個 Telegram 對話 (私訊或群組) 交給一個獨立的 Claude Code 背景 session (`claude --bg`). 每個對話住在自己的資料夾, 有自己的 CLAUDE.md, memory 與 session, 回覆不會跑錯對話; worker 載入的 Telegram plugin 不持有 bot token, 所有收發都經 router 代為處理並記在 `router.db`.
+一隻 router 收 Telegram bot 的所有訊息, 每個 Telegram 對話 (私訊或群組) 交給一個獨立的 Claude Code 背景 session (`claude --bg`). 每個對話住在自己的資料夾, 有自己的 CLAUDE.md, memory 與 session (各層怎麼繼承, 誰能改, 存在哪裡見 [session 與記憶](docs/session-and-memory.md)), 回覆不會跑錯對話; worker 載入的 Telegram plugin 不持有 bot token, 所有收發都經 router 代為處理並記在 `router.db`.
 
 權限依角色分開: 使用者與群組對話各有角色 (owner, admin, power, user, guest), 私訊的角色就是使用者角色, router 在每個工具呼叫前依對話角色檢查. 越權的動作先擋下, 再問: 發話者角色較高時直接在對話裡貼出提權詢問, 否則可以向 owner 申請; 跨對話傳訊與套件安裝也走審核, 核准過的授權可以撤銷, 每次使用都留紀錄. 密鑰 (bot token, API key) 一律由 router 保管與代呼叫, 不進 worker 也不以明文留在資料庫.
 
@@ -28,7 +28,7 @@
 ## Feature highlights
 
 - **一個對話一個 session**: 私訊與群組各自一個 worker 與資料夾, 被回收後下一則訊息自動喚醒, 連發多則只喚醒一次且不掉訊息.
-- **Session 隔離**: 每個對話是獨立的背景 session, context 各自分開; owner 以外的角色, 檔案工具只能碰自己的對話資料夾, Bash 跑在 Claude Code 的 sandbox (Linux 上是 bubblewrap) 裡, router 的家目錄, 狀態目錄與使用者家目錄 (另可設定額外路徑) 都被隱藏, 只開放自己的資料夾, 共用技能與 bot 的共用記憶 (唯讀), 讀不到其他對話的檔案, 對話紀錄, router 的資料庫與憑證; 回覆只能送回自己的對話, 送往其他對話要經過核准. 特權技能另由 router 在 bwrap 專屬沙箱執行.
+- **Session 隔離**: 每個對話是獨立的背景 session, context 各自分開; owner 以外的角色, 檔案工具只能碰自己的對話資料夾, Bash 跑在 Claude Code 的 sandbox (Linux 上是 bubblewrap) 裡, router 的家目錄, 狀態目錄與使用者家目錄 (另可設定額外路徑) 都被隱藏, 只開放自己的資料夾, 共用技能 (唯讀) 與 bot 的共用記憶 (admin 能改 bot 的 CLAUDE.md 與 memory, 其他角色唯讀; guest 在自己資料夾只能讀附件, 讀寫 CLAUDE.md 與 memory, 見 [session 與記憶](docs/session-and-memory.md)), 讀不到其他對話的檔案, 對話紀錄, router 的資料庫與憑證; 回覆只能送回自己的對話, 送往其他對話要經過核准. 特權技能另由 router 在 bwrap 專屬沙箱執行.
 - **先擋再問的提權**: 越權就擋下並告訴模型改用不越權的方法; 發話者角色較高時在對話裡貼出「允許一次 / 永久允許 / 拒絕」, 按下的人以他的角色執行下一個 subagent.
 - **審核與授權**: 跨對話傳訊, 套件安裝, 提權申請送到審核群組 (六個話題) 或 owner 私訊; 核准過的可以撤銷, 每次使用記在「🧾 執行授權」. 陌生人私訊拿到配對碼時, 申請貼在「🤝 配對申請」, owner 或 admin 按一下就能同意或拒絕.
 - **密鑰不落地**: bot_api / http_api 由 router 代呼叫, 回應裡回顯的 key 先遮蔽; 對話可以自己登記密鑰, 不用提權.
@@ -178,6 +178,7 @@
 | 文件 | 內容 |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | 結構, 運作方式, 目錄, 訊息紀錄, 廣播頻道 |
+| [docs/session-and-memory.md](docs/session-and-memory.md) | session 與記憶: 各層 CLAUDE.md 與記憶的繼承, 依角色的讀寫權限, session 存在哪裡與怎麼接續, managed 模式的自動遷移, 從 OpenClaw 轉過來時檔案放哪裡 |
 | [docs/permissions.md](docs/permissions.md) | 權限檢查與提權, 套件安裝審核, 審核按鈕, 撤銷, 執行授權 |
 | [docs/credentials-and-skills.md](docs/credentials-and-skills.md) | 技能範圍, 憑證 (bot_api, http_api), 特權技能 |
 | [docs/skill-runtime.md](docs/skill-runtime.md) | 特權技能的執行環境規格: 掛載路徑, 環境變數, 工具箱, Python 套件 (uv), 工作目錄, 網路, 主機存取, 對外 port, 核准, exit code 與輸出 |

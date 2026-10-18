@@ -38,7 +38,7 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 ```
 <home>/CLAUDE.md                共用規則 (FORCED / GENERAL / Default suggestions 三層)
 <home>/bot<id>/CLAUDE.md        該 bot 的人設 (初次設定訪談產生)
-<home>/bot<id>/memory/          這隻 bot 所有對話共用的記憶 (owner 以外唯讀, 見 permissions.md 的 bot 共用記憶)
+<home>/bot<id>/memory/          這隻 bot 所有對話共用的記憶 (owner 與 admin 能改, 其他唯讀, 見 session-and-memory.md)
 <home>/bot<id>/<type>-<chat>/   一個對話: CLAUDE.md, memory/, attachments/, .chat/
 <home>/.router/                 stateDir (可放在 home 以外): router 執行檔, config.json, access.json, router.db, sessions/ (各對話 settings)
 ```

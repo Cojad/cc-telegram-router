@@ -22,9 +22,9 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 | owner | 全部, 不受資料夾與 sandbox 限制 |
 | admin, power | 自己資料夾內讀寫, Bash 在 sandbox 裡執行 (python3, node, bun), 可連 PyPI 與 npm. power 安裝套件要經過審核 |
 | user | 自己資料夾內讀寫, Bash 只能跑唯讀指令 (ls, cat, head, tail, wc, grep, rg, find, stat, file, jq, cut, sort, uniq, tr, seq, which, hostname, cd, date, echo, pwd; 用 `>` `>>` 重導向或 `sort -o`, `uniq 輸入 輸出` 寫檔不算唯讀, 寫檔請用 Write 工具) |
-| guest | 只能對話, 讀收到的附件 |
+| guest | 對話, 讀收到的附件 (`attachments/`), 讀寫自己資料夾的 `CLAUDE.md` 與 `memory/`; 不能用 Bash, 資料夾的其他檔案不能讀寫 |
 
-owner 以外的角色都能讀這隻 bot 的共用記憶 (bot 資料夾的 `memory/`, 唯讀, 由 owner 維護); bot 的人設 CLAUDE.md 會寫明什麼情況要讀哪個檔.
+owner 以外的角色都能讀這隻 bot 的共用記憶 (bot 資料夾的 `memory/`); admin 還能改它與 bot 的人設 CLAUDE.md (改動套用到這隻 bot 的所有對話), power, user, guest 唯讀, 要改請 owner 或 admin. bot 的人設 CLAUDE.md 會寫明什麼情況要讀哪個檔.
 
 ## 權限不足與提權
 

@@ -1,8 +1,10 @@
 // Phase 3 acceptance (plan 10 Phase 3; 03 對話權限怎麼算 and /router perm, 07
-// 權限與隔離 and 提權, 00 跨對話傳訊). Keep in sync with those sections.
+// 權限與隔離 and 提權, 00 跨對話傳訊). Keep in sync with those sections, and with
+// docs/session-and-memory.md 「讀寫權限」 and docs/permissions.md 「bot 共用記憶」 (who
+// reads and writes which CLAUDE.md and memory/, `..` and symlinks resolved).
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, symlinkSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { Config } from '../config'
@@ -56,7 +58,9 @@ test('five role templates: owner bypass; admin/power write and run code in a san
   expect(user.permissions.allow).not.toContain('Bash')
   expect(user.sandbox.autoAllowBashIfSandboxed).toBe(false)
   const guest = renderSettings(TEMPLATES, 'guest', vars(f)) as any
-  expect(guest.permissions.allow).toEqual(['mcp__plugin_telegram_telegram', `Read(/${f}/attachments/**)`, 'Read(/{{botDir}}/memory/**)', 'Read(/{{transcripts}}/*/tool-results/**)']) // vars() here gives no botDir or transcripts
+  // guest: the plugin, attachments to read, and the conversation's own CLAUDE.md and memory/ to read and write (2.32.4)
+  expect(guest.permissions.allow).toEqual(['mcp__plugin_telegram_telegram', `Read(/${f}/attachments/**)`, `Read(/${f}/CLAUDE.md)`, `Edit(/${f}/CLAUDE.md)`, `Write(/${f}/CLAUDE.md)`, `Read(/${f}/memory/**)`, `Edit(/${f}/memory/**)`, `Write(/${f}/memory/**)`, 'Read(/{{botDir}}/memory/**)', 'Read(/{{transcripts}}/*/tool-results/**)']) // vars() here gives no botDir or transcripts
+  expect(guest.permissions.deny).toEqual(['Bash'])
   // every non-owner template keeps the progress + elevation hooks
   for (const r of ['admin', 'power', 'user', 'guest']) {
     const h = (renderSettings(TEMPLATES, r, vars(f)) as any).hooks
@@ -258,8 +262,8 @@ test('grants: target mode asks the target chat and the owner at once; the first 
 // Bot-wide memory (docs/permissions.md 「bot 共用記憶」): <botDir>/memory is
 // readable by every role below owner (permission rule and sandbox allowRead),
 // writable by none. role-live checks the same with the real claude.
-test('bot memory: admin, power, user and guest read <botDir>/memory (Read rule and sandbox allowRead), none of them writes it', () => {
-  const home = '/srv/cc', bot = `${home}/bot1`, f = `${bot}/group-1`, mem = `${bot}/memory`
+test('bot memory and the bot\'s CLAUDE.md: power, user and guest read <botDir>/memory and write neither; admin reads and writes both (Edit/Write rules and sandbox allowWrite, 2.32.4), the rest of the bot folder as before', () => {
+  const home = '/srv/cc', bot = `${home}/bot1`, f = `${bot}/group-1`, mem = `${bot}/memory`, md = `${bot}/CLAUDE.md`
   const v = { folder: f, home, hidden: [home], botDir: bot, autoCompactWindow: 750000, hooksDir: '/h', transcripts: '/t' }
   const file = (tool: string, file_path: string) => ({ tool_name: tool, tool_input: { file_path } })
   for (const role of ['admin', 'power', 'user', 'guest']) {
@@ -267,16 +271,35 @@ test('bot memory: admin, power, user and guest read <botDir>/memory (Read rule a
     expect(s.permissions.allow).toContain(`Read(/${mem}/**)`)
     expect(s.sandbox.filesystem.allowRead).toContain(mem)
     expect(s.sandbox.filesystem.denyRead).toEqual([home, '~'])
-    // nothing opens it for writing: no Edit/Write rule, no sandbox allowWrite
-    expect((s.permissions.allow as string[]).filter(r => /^(Edit|Write)\(/.test(r) && r.includes(mem))).toEqual([])
-    expect(s.sandbox.filesystem.allowWrite ?? []).toEqual([])
     expect(checkCall(s, file('Read', `${mem}/facts.md`), f, role).ok).toBe(true)
     expect(checkCall(s, { tool_name: 'Grep', tool_input: { pattern: 'x', path: mem } }, f, role).ok).toBe(true)
-    expect(checkCall(s, file('Write', `${mem}/facts.md`), f, role)).toEqual({ ok: false, why: `${role} 不能寫入允許範圍外的路徑: ${mem}/facts.md` })
-    expect(checkCall(s, file('Edit', `${mem}/facts.md`), f, role).ok).toBe(false)
-    // only memory/: the bot's persona and other conversations stay out
-    expect(checkCall(s, file('Read', `${bot}/CLAUDE.md`), f, role).ok).toBe(false)
+    // other conversations and the bot's skills are never written; other conversations not read
     expect(checkCall(s, file('Read', `${bot}/dm-2/notes.txt`), f, role).ok).toBe(false)
+    expect(checkCall(s, file('Write', `${bot}/.claude/skills/x/SKILL.md`), f, role).ok).toBe(false)
+    expect(checkCall(s, file('Write', `${bot}/dm-2/notes.txt`), f, role).ok).toBe(false)
+    if (role === 'admin') {
+      for (const r of ['Read', 'Edit', 'Write']) expect(s.permissions.allow).toContain(`${r}(/${md})`)
+      for (const r of ['Edit', 'Write']) expect(s.permissions.allow).toContain(`${r}(/${mem}/**)`)
+      expect(s.sandbox.filesystem.allowRead).toContain(md)
+      expect(s.sandbox.filesystem.allowWrite).toEqual([mem, md])
+      for (const t of ['Write', 'Edit']) {
+        expect(checkCall(s, file(t, `${mem}/facts.md`), f, role).ok).toBe(true)
+        expect(checkCall(s, file(t, `${mem}/sub/deeper.md`), f, role).ok).toBe(true)
+        expect(checkCall(s, file(t, md), f, role).ok).toBe(true)
+      }
+      expect(checkCall(s, file('Read', md), f, role).ok).toBe(true)
+      // only those two: the bot folder's other files stay out
+      expect(checkCall(s, file('Write', `${bot}/notes.md`), f, role).ok).toBe(false)
+      expect(checkCall(s, file('Write', `${bot}/CLAUDE.md.bak`), f, role).ok).toBe(false)
+      expect(checkCall(s, file('Write', `${mem}/../.claude/skills/x/SKILL.md`), f, role)).toEqual({ ok: false, why: `admin 不能寫入允許範圍外的路徑: ${bot}/.claude/skills/x/SKILL.md` })
+    } else {
+      expect((s.permissions.allow as string[]).filter(r => /^(Edit|Write)\(/.test(r) && (r.includes(mem) || r.includes(md)))).toEqual([])
+      expect(s.sandbox.filesystem.allowWrite ?? []).toEqual([])
+      expect(checkCall(s, file('Write', `${mem}/facts.md`), f, role)).toEqual({ ok: false, why: `${role} 不能寫入允許範圍外的路徑: ${mem}/facts.md` })
+      expect(checkCall(s, file('Edit', `${mem}/facts.md`), f, role).ok).toBe(false)
+      expect(checkCall(s, file('Read', md), f, role).ok).toBe(false)
+      expect(checkCall(s, file('Write', md), f, role).ok).toBe(false)
+    }
   }
   // user: cat is on the read-only list, a redirection into memory/ is not
   const user = applyOverrides(renderSettings(TEMPLATES, 'user', v), [])
@@ -285,6 +308,71 @@ test('bot memory: admin, power, user and guest read <botDir>/memory (Read rule a
   expect(checkCall(user, bash(`echo x >> ${mem}/facts.md`), f, 'user')).toMatchObject({ ok: false, redirect: true })
   // owner is unrestricted as before
   expect((renderSettings(TEMPLATES, 'owner', v) as any).permissions.defaultMode).toBe('bypassPermissions')
+})
+
+test('guest: its own CLAUDE.md and memory/ read and written; attachments only read; .chat, other files, other conversations and Bash refused', () => {
+  const home = '/srv/cc', bot = `${home}/bot1`, f = `${bot}/dm-7`
+  const s = applyOverrides(renderSettings(TEMPLATES, 'guest', { folder: f, home, hidden: [home], botDir: bot, autoCompactWindow: 750000, hooksDir: '/h', transcripts: '/t' }), []) as any
+  const file = (tool: string, file_path: string) => ({ tool_name: tool, tool_input: { file_path } })
+  for (const t of ['Read', 'Edit', 'Write']) {
+    expect(checkCall(s, file(t, `${f}/CLAUDE.md`), f, 'guest').ok).toBe(true)
+    expect(checkCall(s, file(t, `${f}/memory/notes.md`), f, 'guest').ok).toBe(true)
+    expect(checkCall(s, file(t, 'memory/notes.md'), f, 'guest').ok).toBe(true) // relative to the folder
+  }
+  expect(checkCall(s, file('Read', `${f}/attachments/a.jpg`), f, 'guest').ok).toBe(true)
+  expect(checkCall(s, file('Write', `${f}/attachments/a.jpg`), f, 'guest')).toEqual({ ok: false, why: `guest 不能寫入允許範圍外的路徑: ${f}/attachments/a.jpg` })
+  expect(checkCall(s, file('Write', `${f}/.chat/context.md`), f, 'guest').ok).toBe(false)
+  expect(checkCall(s, file('Read', `${f}/notes.txt`), f, 'guest').ok).toBe(false)
+  expect(checkCall(s, file('Write', `${f}/notes.txt`), f, 'guest').ok).toBe(false)
+  expect(checkCall(s, file('Write', `${f}/memory/../.chat/context.md`), f, 'guest')).toEqual({ ok: false, why: `guest 不能寫入允許範圍外的路徑: ${f}/.chat/context.md` })
+  expect(checkCall(s, file('Write', `${bot}/dm-8/CLAUDE.md`), f, 'guest').ok).toBe(false)
+  expect(checkCall(s, file('Write', `${bot}/CLAUDE.md`), f, 'guest').ok).toBe(false)
+  expect(checkCall(s, { tool_name: 'Bash', tool_input: { command: `echo x >> ${f}/memory/notes.md` } }, f, 'guest')).toEqual({ ok: false, why: 'guest 不能使用 Bash' })
+  // no Bash, so no sandbox write is needed
+  expect(s.sandbox.filesystem.allowWrite ?? []).toEqual([])
+})
+
+test('permcheck follows symlinks: a link inside an allowed folder that leads out is judged by where it leads; a home reached through a symlink still matches its own rules', () => {
+  const home = join(dir, 'home'), bot = join(home, 'bot1'), f = join(bot, 'dm-7')
+  mkdirSync(join(f, 'memory'), { recursive: true }); mkdirSync(join(f, '.chat'), { recursive: true }); mkdirSync(join(bot, 'memory'), { recursive: true }); mkdirSync(join(bot, '.claude', 'skills', 'x'), { recursive: true })
+  writeFileSync(join(f, '.chat', 'context.md'), ''); writeFileSync(join(bot, '.claude', 'skills', 'x', 'SKILL.md'), '')
+  symlinkSync(join(f, '.chat'), join(f, 'memory', 'to-chat'))
+  symlinkSync(join(f, '.chat', 'context.md'), join(f, 'CLAUDE.md'))
+  symlinkSync(join(bot, '.claude', 'skills'), join(bot, 'memory', 'to-skills'))
+  const file = (tool: string, file_path: string) => ({ tool_name: tool, tool_input: { file_path } })
+  const v = (folder: string, h = home, b = bot) => ({ folder, home: h, hidden: [h], botDir: b, autoCompactWindow: 750000, hooksDir: '/h', transcripts: '/t' })
+  const guest = applyOverrides(renderSettings(TEMPLATES, 'guest', v(f)), []) as any
+  expect(checkCall(guest, file('Write', join(f, 'memory', 'to-chat', 'context.md')), f, 'guest')).toEqual({ ok: false, why: `guest 不能寫入允許範圍外的路徑: ${join(f, 'memory', 'to-chat', 'context.md')} (實際是 ${join(f, '.chat', 'context.md')})` })
+  expect(checkCall(guest, file('Edit', join(f, 'CLAUDE.md')), f, 'guest').ok).toBe(false) // CLAUDE.md itself a link into .chat
+  expect(checkCall(guest, file('Write', join(f, 'memory', 'new.md')), f, 'guest').ok).toBe(true) // a file not there yet
+  const admin = applyOverrides(renderSettings(TEMPLATES, 'admin', v(f)), []) as any
+  expect(checkCall(admin, file('Write', join(bot, 'memory', 'to-skills', 'x', 'SKILL.md')), f, 'admin').ok).toBe(false)
+  expect(checkCall(admin, file('Write', join(f, 'memory', 'to-chat', 'context.md')), f, 'admin')).toMatchObject({ ok: false, why: expect.stringContaining('admin 禁止寫入') }) // the .chat deny reached through a link
+  expect(checkCall(admin, file('Write', join(bot, 'memory', 'facts.md')), f, 'admin').ok).toBe(true)
+  // the whole home through a symlink: rules and calls both written with the link
+  const linked = join(dir, 'home-link')
+  symlinkSync(home, linked)
+  const lf = join(linked, 'bot1', 'dm-7')
+  const g2 = applyOverrides(renderSettings(TEMPLATES, 'guest', v(lf, linked, join(linked, 'bot1'))), []) as any
+  expect(checkCall(g2, file('Write', join(lf, 'memory', 'new.md')), lf, 'guest').ok).toBe(true)
+  expect(checkCall(g2, file('Write', join(lf, 'notes.txt')), lf, 'guest').ok).toBe(false)
+})
+
+test('docs/session-and-memory.md: the read/write table says what the role templates do for the conversation\'s and the bot\'s CLAUDE.md and memory/', () => {
+  const doc = readFileSync(join(import.meta.dir, '..', '..', 'docs', 'session-and-memory.md'), 'utf8')
+  const row = (head: string) => doc.split('\n').find(l => l.startsWith(`| ${head} |`))!.split('|').slice(2, 7).map(c => c.trim())
+  const roles = ['owner', 'admin', 'power', 'user', 'guest']
+  const conv = row('對話層 `CLAUDE.md`, `memory/`'), bot = row('bot 層 `CLAUDE.md`, `memory/`')
+  const home = '/srv/cc', botDir = `${home}/bot1`, f = `${botDir}/dm-7`
+  const v = { folder: f, home, hidden: [home], botDir, autoCompactWindow: 750000, hooksDir: '/h', transcripts: '/t' }
+  const can = (role: string, path: string, tool: string) => role === 'owner' || checkCall(applyOverrides(renderSettings(TEMPLATES, role, v), []), { tool_name: tool, tool_input: { file_path: path } }, f, role).ok
+  for (const [i, role] of roles.entries()) {
+    const says = (cell: string) => cell.startsWith('讀寫') ? 'rw' : cell.startsWith('唯讀') ? 'r' : '?'
+    const does = (paths: string[]) => paths.every(p => can(role, p, 'Write')) ? 'rw' : paths.every(p => can(role, p, 'Read')) ? 'r' : 'none'
+    expect([role, says(conv[i]!)]).toEqual([role, does([`${f}/CLAUDE.md`, `${f}/memory/notes.md`])])
+    // the bot's CLAUDE.md is loaded by Claude Code for every role; a Read rule for it is only needed where it may be written
+    expect([role, says(bot[i]!)]).toEqual([role, can(role, `${botDir}/CLAUDE.md`, 'Write') && can(role, `${botDir}/memory/x.md`, 'Write') ? 'rw' : can(role, `${botDir}/memory/x.md`, 'Read') ? 'r' : 'none'])
+  }
 })
 
 // --- 07 權限檢查 --------------------------------------------------------------
