@@ -168,14 +168,14 @@ function lintLock(dir: string, errors: string[], warnings: string[]) {
 /** What this role can do with a skill once it checks out. */
 function nextSteps(role: string, name: string, privileged: boolean): string {
   const approve = `owner 或 admin 在 Telegram 打 /router skill approve ${name} 核准 (核准記下檔案雜湊, 之後改了任何檔案就暫停, 要重新核准)`
-  const tryFirst = privileged && (role === 'owner' || role === 'admin' || role === 'power') ? '先用 skill_try 試跑每個動作 (假憑證, 試跑資料庫, 不用核准); 然後' : ''
+  const tryFirst = privileged && (role === 'owner' || role === 'admin' || role === 'power' || role === 'user') ? '先用 skill_try 試跑每個動作 (假憑證, 試跑資料庫, 不用核准); 然後' : ''
   if (role === 'owner' || role === 'admin') return privileged
     ? `${tryFirst}用 install_skill (name ${name}, scope bot 或 all) 安裝 (特權動作只在這隻 bot 或全部 bot 範圍有效), 再請 ${approve}, 之後對話用 run_skill 呼叫`
     : `用 install_skill (name ${name}) 安裝: scope conversation (只有這個對話), bot (這隻 bot), all (全部 bot)`
   if (role === 'power') return privileged
     ? `${tryFirst}特權動作只在這隻 bot 或全部 bot 範圍有效, 這兩個範圍只有 owner 與 admin 能裝 (install_skill scope bot 會走提權); 請 owner 或 admin 安裝, 再由 ${approve}`
     : `可以用 install_skill (name ${name}, scope conversation) 裝在這個對話; 要給這隻 bot 的其他對話用, 請 owner 或 admin 安裝`
-  return `${role} 角色現在還不能安裝技能: 草稿留在 ${SKILL_SRC}/${name}/, 請 owner 或 admin 安裝${privileged ? ` 並核准 (${approve})` : ''}`
+  return `${privileged && role === 'user' ? '先用 skill_try 試跑每個動作 (假憑證, 試跑資料庫, 不用核准); ' : ''}${role} 角色現在還不能安裝技能: 草稿留在 ${SKILL_SRC}/${name}/, 請 owner 或 admin 安裝${privileged ? ` 並核准 (${approve})` : ''}`
 }
 
 /** The whole check, as the text the worker gets back. ok: no errors. */

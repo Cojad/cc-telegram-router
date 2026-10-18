@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+## [2.25.0] - 2026-10-18
+
+### Changed
+
+- `skill_try` 開放給 user 對話 (guest 仍拒絕, 它不能寫檔, 沒有草稿): 試跑在白名單沙箱裡 (看不到主機, 外網只開 80, 443, 53, 22 與宣告的 `outbound_ports`, 預設資源上限, 沒有主機存取), 未經核准的程式不再需要限 power 以上. `skill_check` 給 user 的下一步改成先試跑; `/telegram:bot-skill` 的角色表, `/telegram:doc`, README 與 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#試跑技能草稿) 跟著改.
+
+### Fixed
+
+- 試跑或執行時 bwrap 自己在設定階段失敗 (例如要掛載的路徑不存在) 而錯誤在放行之後才出現時, 偶爾被算成動作失敗 (`failed`); 現在一律算沒有執行 (`refused`, 附 bwrap 的錯誤).
+
 ## [2.24.0] - 2026-10-18
 
 ### Added

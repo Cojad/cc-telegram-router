@@ -1,5 +1,5 @@
 // skill_try: run one action of a skill draft (in the conversation's own
-// folder) without approval, for power and up (docs/credentials-and-skills.md
+// folder) without approval, for user and up (docs/credentials-and-skills.md
 // 「試跑技能草稿」). It goes through the same run as run_skill and the
 // terminal's trial (router/skillrun.ts runPrepared: argument patterns, argv,
 // sandbox, store staging and write-back checks, output scan) but:
@@ -22,7 +22,10 @@
 //     <conversation>/skill-try/<time>-<action>/
 //   - at most 20 runs per conversation per hour, recorded in skill_runs as
 //     try:<conversation key>, apart from run_skill's 10
-// user conversations are refused until the whitelisted sandbox (phase 2).
+// user and up (guest refused: it cannot write a draft), since the
+// whitelisted sandbox (docs/skill-runtime.md): an unapproved draft sees nothing
+// of the host, reaches only internet ports 80, 443, 53, 22, and gets the
+// default resource limits.
 
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync } from 'fs'
 import { randomBytes } from 'crypto'
@@ -116,7 +119,8 @@ const refused = (why: string) => ({ ok: false, text: `skill try: refused\n${why}
 
 /** One trial run; the reply starts with "skill try: ok|failed|refused". role: the conversation's (or elevated) role. */
 export async function trySkill(deps: SkillTryDeps, conv: Conversation, role: string, args: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
-  if ((RANK[role] ?? 0) < RANK.power!) return refused(`skill_try 只開放 power 以上的對話 (這個對話是 ${role}): 試跑的程式還沒經過核准, 要等之後的白名單沙箱才開放給 user. 可以先用 skill_check 檢查草稿`)
+  // user and up (phase 2, the whitelisted sandbox: 柯姊 2026-10-18); guest cannot write a draft to try
+  if ((RANK[role] ?? 0) < RANK.user!) return refused(`skill_try 不開放 ${role} 角色的對話 (user 以上才能用): ${role} 不能寫檔, 沒有草稿可以試跑`)
   const as = args.role === undefined ? role : String(args.role)
   if (RANK[as] === undefined) return refused(`沒有這個角色: ${as} (${Object.keys(RANK).join(', ')})`)
   if (RANK[as]! > RANK[role]!) return refused(`role 只能扮演等於或低於自己的角色 (這個對話是 ${role})`)

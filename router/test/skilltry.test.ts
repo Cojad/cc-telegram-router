@@ -13,7 +13,8 @@
 // fake service on the sandbox's 127.0.0.1 gets the calls, the fake key and
 // token never come back), databases start empty (never from the real ones),
 // store_seed and session, role simulation (never above one's own), user
-// refused until phase 2, internal actions without mounts and env, the
+// and up (guest refused) since the whitelisted sandbox, internal actions
+// without host access, the
 // timeout cap, the hourly limit of 20 apart from run_skill's, missing
 // credentials noted, the output folder. Keep in sync with those sections.
 
@@ -212,12 +213,15 @@ test('skill_try: session keeps the trial databases between runs; store_seed star
   expect((await trySkill(deps, c, 'admin', { path: 'signup', action: 'list', store_seed: '/etc' })).text).toContain('不在這個對話的資料夾裡')
 }, 120_000)
 
-test('skill_try: power and up only (user waits for phase 2); role is simulated but never above one\'s own; roles and argument roles refuse as run_skill would', async () => {
+test('skill_try: user and up (since the whitelisted sandbox), guest refused; role is simulated but never above one\'s own; roles and argument roles refuse as run_skill would', async () => {
   const u = conv('dm-8', 'user')
   example(u)
   const r = await trySkill(deps, u, 'user', { path: 'signup', action: 'join', args: { name: 'x' } })
-  expect(r.text).toBe('skill try: refused\nskill_try 只開放 power 以上的對話 (這個對話是 user): 試跑的程式還沒經過核准, 要等之後的白名單沙箱才開放給 user. 可以先用 skill_check 檢查草稿')
-  expect((await trySkill(deps, u, 'guest', { path: 'signup', action: 'list' })).text).toContain('只開放 power 以上')
+  expect(r.text, r.text).toStartWith('skill try: ok\n')
+  expect(r.text).toContain('扮演角色 user')
+  expect(r.text).toContain('網路: 外網只開 port 80, 443, 53, 22, 主機本機與內網擋下')
+  expect((await trySkill(deps, u, 'guest', { path: 'signup', action: 'list' })).text).toBe('skill try: refused\nskill_try 不開放 guest 角色的對話 (user 以上才能用): guest 不能寫檔, 沒有草稿可以試跑')
+  expect((await trySkill(deps, u, 'user', { path: 'signup', action: 'list', role: 'power' })).text).toBe('skill try: refused\nrole 只能扮演等於或低於自己的角色 (這個對話是 user)')
   const p = conv('dm-7', 'power')
   example(p)
   expect((await trySkill(deps, p, 'power', { path: 'signup', action: 'cancel', args: { index: '1' } })).text).toBe('skill try: refused\n動作 cancel 不開放給 power 角色 (正式執行時也會這樣拒絕)')
@@ -261,10 +265,10 @@ test('skill_try is a tool; the guide and docs say what it does', async () => {
   const t = (TOOL_DEFINITIONS as any[]).find(d => d.name === 'skill_try')
   expect(t.inputSchema.required).toEqual(['path', 'action'])
   for (const k of ['path', 'action', 'args', 'role', 'session', 'store_seed']) expect(t.inputSchema.properties[k]).toBeDefined()
-  expect(t.description).toContain('power and up')
-  for (const s of ['### 試跑 (skill_try)', '**憑證全是假的**', '**資料庫從空的開始**', '**試跑的網路: 跟正式執行一樣, 外網只開 port 80, 443, 53, 22 與動作宣告的 `outbound_ports`, 連不到主機本機與內網**', '**網路: 外網只開 port 80, 443, 53, 22**', '**白名單: 只看得到列出來的東西**', '每個對話每小時 20 次', 'timeout 最多 600 秒', '| user | 可以 | 可以 | 不行 (試跑的程式還沒核准, 要等之後的白名單沙箱)']) expect(GUIDE).toContain(s)
+  expect(t.description).toContain('user and up (not guest)')
+  for (const s of ['### 試跑 (skill_try)', '**憑證全是假的**', '**資料庫從空的開始**', '**試跑的網路: 跟正式執行一樣, 外網只開 port 80, 443, 53, 22 與動作宣告的 `outbound_ports`, 連不到主機本機與內網**', '**網路: 外網只開 port 80, 443, 53, 22**', '**白名單: 只看得到列出來的東西**', '每個對話每小時 20 次', 'timeout 最多 600 秒', '| user | 可以 | 可以 | 可以 |']) expect(GUIDE).toContain(s)
   const docs = readFileSync(join(ROOT, 'docs', 'credentials-and-skills.md'), 'utf8')
-  for (const s of ['### 試跑技能草稿', '### 試跑的網路', 'user 對話一律拒絕', '試跑 internal 動作也一樣, 不像正式執行不限 port']) expect(docs).toContain(s)
+  for (const s of ['### 試跑技能草稿', '### 試跑的網路', '**guest 對話一律拒絕**', '試跑 internal 動作也一樣, 不像正式執行不限 port']) expect(docs).toContain(s)
   expect(docs).not.toContain('**已知限制**: 已核准的特權動作') // phase 2: every privileged action has the network now
   const spec = readFileSync(join(ROOT, 'docs', 'skill-runtime.md'), 'utf8')
   for (const s of ['## 網路', 'NS_GET_USERNS', '白名單檔案系統裡本來就沒有 `/run`', 'AF_UNIX socket 的 `socket(2)` 失敗', '`io_uring_setup`', 'tcp 與 udp 只開 port 80, 443, 53, 22']) expect(spec).toContain(s)

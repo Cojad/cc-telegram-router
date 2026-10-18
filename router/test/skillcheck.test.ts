@@ -83,7 +83,7 @@ test('the guide\'s example: its three files are in the guide; skill_check passes
   expect(r.text).toContain('只讀檔案, 沒有執行任何程式')
   expect(r.text).toContain(`核准時 /router skill approve signup 會列出:\n${describeActions(root)}`)
   for (const s of ['join: python3 -B scripts/signup.py join {name} {note?}; 角色 owner, admin, power, user; API 憑證 event-api; bot 憑證 notify-bot; 資料庫 signup (append)', 'cancel: python3 -B scripts/signup.py cancel {index}; 角色 owner, admin; 資料庫 signup (full)']) expect(r.text).toContain(s)
-  expect(r.text).toContain('下一步: user 角色現在還不能安裝技能')
+  expect(r.text).toContain('下一步: 先用 skill_try 試跑每個動作 (假憑證, 試跑資料庫, 不用核准); user 角色現在還不能安裝技能')
   // a bare name means skills/<name>
   expect(checkSkill(folder, 'signup', 'user', { cred }).text.split('\n')[0]).toBe('skill check: ok')
   // credentials the router does not have: said, by name and kind only
@@ -242,7 +242,7 @@ test('skill_check: the next step says what each role can do with a privileged sk
   expect(next('owner')).toContain('下一步: 先用 skill_try 試跑每個動作 (假憑證, 試跑資料庫, 不用核准); 然後用 install_skill (name signup, scope bot 或 all) 安裝 (特權動作只在這隻 bot 或全部 bot 範圍有效), 再請 owner 或 admin 在 Telegram 打 /router skill approve signup 核准')
   expect(next('admin')).toBe(next('owner'))
   expect(next('power')).toContain('下一步: 先用 skill_try 試跑每個動作')
-  expect(next('user')).not.toContain('skill_try')
+  expect(next('user')).toContain('下一步: 先用 skill_try 試跑每個動作 (假憑證, 試跑資料庫, 不用核准); user 角色現在還不能安裝技能') // user and up since 2.25.0
   expect(next('power')).toContain('這兩個範圍只有 owner 與 admin 能裝 (install_skill scope bot 會走提權); 請 owner 或 admin 安裝')
   expect(next('user')).toContain('user 角色現在還不能安裝技能: 草稿留在 skills/signup/, 請 owner 或 admin 安裝 並核准')
 })

@@ -238,6 +238,8 @@ export async function runIsolated(o: IsolatedRun): Promise<NetRun> {
     writeFileSync(fifo, 'go')
     const [out, err] = await output
     const code = await p.exited
+    // bwrap's own setup failing after the go (a path it mounts is missing): nothing ran, say it in bwrap's words
+    if (code === 1 && !out && /^bwrap: /.test(err.trim()) && !err.trim().includes('\n')) return { error: `沙箱在設定網路前就結束了 (exit 1): ${err.trim().slice(-500)}` }
     return { code, out: `${out}${err}`.trim(), ...(timedOut ? { timedOut } : {}), ...(outputOver ? { outputOver } : {}) }
   } finally {
     clearTimeout(kill)

@@ -75,7 +75,7 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 ### 流程
 
 1. 在 `skills/<名稱>/` 寫 SKILL.md, privileged.json, 腳本.
-2. `skill_check` 檢查到 `skill check: ok`, 把它回報的「核准時會列出」給使用者看. power 以上的對話再用 `skill_try` 試跑每個動作 (見[試跑](#試跑-skill_try)).
+2. `skill_check` 檢查到 `skill check: ok`, 把它回報的「核准時會列出」給使用者看. user 以上的對話再用 `skill_try` 試跑每個動作 (見[試跑](#試跑-skill_try)).
 3. 特權動作只在**這隻 bot 或全部 bot 範圍**有效 (只裝在對話範圍的技能, 對話自己改得到, 不給特權): 由 owner 或 admin 的對話 `install_skill` (scope `bot` 或 `all`).
 4. owner 或 admin 在 Telegram 打 `/router skill approve <名稱>` 核准. 核准記下檔案雜湊 (不含 venv, node_modules, `__pycache__`, `.git`), **之後改了任何檔案都自動暫停**, 要重新核准; 所以改好, 裝好之後再請他核准.
 5. 動作用到的憑證要先登記 (見上面「技能需要 token 時」); 憑證本身的 roles 與 methods 不套用在特權動作上, 由核准與動作的 `roles` 把關.
@@ -135,7 +135,7 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 
 ### 試跑 (skill_try)
 
-power 以上的對話用 `skill_try` (path, action, args, 選填 role, session, store_seed) 不用核准就跑一次草稿的動作. 跑法跟正式執行一樣 (參數比對, 沙箱, 工作目錄, 資料庫寫回檢查, 輸出掃描), 差別:
+user 以上的對話用 `skill_try` (path, action, args, 選填 role, session, store_seed) 不用核准就跑一次草稿的動作. 跑法跟正式執行一樣 (參數比對, 沙箱, 工作目錄, 資料庫寫回檢查, 輸出掃描), 差別:
 
 - **憑證全是假的**: `$<ENV>_URL` 與 `$<ENV>_API` 指到沙箱裡 127.0.0.1 上的假服務 (Bot API 一律回 `{"ok":true,"result":true}`, http API 一律回 `{"fake":true}`), key 與 token 是隨機的假值, `$<ENV>_HEADER` 的標頭名稱與前綴照真的憑證; creds 資料夾是空的. 所以腳本要能處理回應裡沒有想要的欄位 (範例的「查不到活動名稱」). 回傳會列出假服務收到的每個請求 (方法, 路徑, 大小與開頭).
 - **資料庫從空的開始**, 不會複製這隻 bot 的正式資料庫. `store_seed` 給你資料夾裡的一個資料夾 (每個子資料夾是一個資料庫, 名稱同 privileged.json, 只能有一般檔案) 當初始內容; `session` 給一個名字 (小寫英數與 `-`), 試跑資料庫與 creds 資料夾就留給下一次 (最後一次使用後 24 小時清掉), 例如先 join 兩次再 list, cancel. 回傳列出這次資料庫的變動 (新增, 修改含 `.jsonl` 行數, 刪除); 寫回檢查不過時說明原因.
@@ -154,10 +154,10 @@ power 以上的對話用 `skill_try` (path, action, args, 選填 role, session, 
 |---|---|---|---|---|---|
 | owner, admin | 可以 | 可以 | 可以 | 對話, 這隻 bot, 全部 bot 範圍 | 可以 (在 Telegram 打指令, 不是工具) |
 | power | 可以 | 可以 | 可以 | 只有對話範圍; bot 與 all 範圍會被擋並走提權 | 不行 |
-| user | 可以 | 可以 | 不行 (試跑的程式還沒核准, 要等之後的白名單沙箱) | 現在還不能 (被擋時走提權; 開放 user 自己安裝要等之後的階段) | 不行 |
+| user | 可以 | 可以 | 可以 | 現在還不能 (被擋時走提權; 開放 user 自己安裝要等之後的階段) | 不行 |
 | guest | 不行 (不能寫檔) | 不行 | 不行 | 不行 | 不行 |
 
-所以 user 與 power 對話寫特權技能的終點是: 草稿寫好, `skill_check` 通過 (power 再加 `skill_try` 試跑過), 把結果 (特別是「核准時會列出」那段) 告訴使用者, 請 owner 或 admin 安裝到 bot 範圍並核准. 不要自己宣稱已經可以用.
+所以 user 與 power 對話寫特權技能的終點是: 草稿寫好, `skill_check` 通過, `skill_try` 試跑過, 把結果 (特別是「核准時會列出」那段) 告訴使用者, 請 owner 或 admin 安裝到 bot 範圍並核准. 不要自己宣稱已經可以用.
 
 ### 範例: 活動報名清單
 
@@ -307,5 +307,5 @@ else:
 - [ ] 需要的憑證已登記, 方法只開放必要的
 - [ ] 範圍與使用者確認過
 - [ ] `skill_check` 第一行是 `skill check: ok`
-- [ ] power 以上: 每個動作都用 `skill_try` 試跑過 (失敗與被擋的情況也試)
+- [ ] user 以上: 每個動作都用 `skill_try` 試跑過 (失敗與被擋的情況也試)
 - [ ] 一般技能實際跑過一次; 特權動作已安裝到 bot 或全部 bot 範圍並核准後, 用 `run_skill` 跑過一次
