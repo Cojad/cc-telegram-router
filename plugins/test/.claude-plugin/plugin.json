@@ -1,0 +1,1 @@
+{ "name": "test", "version": "0.0.1", "description": "Minimal channel plugin: pushes files dropped in .channel-probe/inbox as channel events, reply writes to .channel-probe/outbox.log" }

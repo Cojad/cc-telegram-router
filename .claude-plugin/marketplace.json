@@ -1,0 +1,7 @@
+{
+  "name": "Cojad",
+  "owner": { "name": "Cojad" },
+  "plugins": [
+    { "name": "test", "source": "./plugins/test", "description": "Minimal channel plugin for testing a GitHub-hosted marketplace" }
+  ]
+}
