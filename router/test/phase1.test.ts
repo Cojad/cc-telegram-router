@@ -68,7 +68,7 @@ test('first message creates the folder skeleton once', () => {
 
 // --- 07 權限: settings templates ---------------------------------------------
 
-test('user settings: dontAsk, own folder only, sandbox hides the router home and ~ but reads own folder (and the shared skill folders, read-only), plugin enabled', () => {
+test('user settings: dontAsk, own folder only, sandbox hides the router home and ~ but reads own folder (and the shared skill folders and the bot memory, read-only), plugin enabled', () => {
   const s = renderSettings(TEMPLATES, 'user', { folder: '/srv/cc/group-1', home: '/srv/cc', hidden: ['/srv/cc'], botDir: '/srv/cc/bot1', autoCompactWindow: 750000 }) as any
   expect(s.permissions.defaultMode).toBe('dontAsk')
   expect(s.permissions.allow).toContain('Read(//srv/cc/group-1/**)')
@@ -77,9 +77,10 @@ test('user settings: dontAsk, own folder only, sandbox hides the router home and
   expect(s.sandbox.enabled).toBe(true)
   expect(s.sandbox.autoAllowBashIfSandboxed).toBe(false)
   expect(s.sandbox.filesystem.denyRead).toEqual(['/srv/cc', '~'])
-  expect(s.sandbox.filesystem.allowRead).toEqual(['/srv/cc/group-1', '/srv/cc/.claude/skills', '/srv/cc/bot1/.claude/skills'])
-  expect(s.permissions.allow).toEqual(expect.arrayContaining(['Read(//srv/cc/.claude/skills/**)', 'Read(//srv/cc/bot1/.claude/skills/**)']))
+  expect(s.sandbox.filesystem.allowRead).toEqual(['/srv/cc/group-1', '/srv/cc/.claude/skills', '/srv/cc/bot1/.claude/skills', '/srv/cc/bot1/memory'])
+  expect(s.permissions.allow).toEqual(expect.arrayContaining(['Read(//srv/cc/.claude/skills/**)', 'Read(//srv/cc/bot1/.claude/skills/**)', 'Read(//srv/cc/bot1/memory/**)']))
   expect(s.permissions.allow).not.toContain('Write(//srv/cc/bot1/.claude/skills/**)')
+  expect(s.permissions.allow).not.toContain('Write(//srv/cc/bot1/memory/**)')
   expect(s.autoCompactWindow).toBe(750000)
   expect(s.autoMemoryDirectory).toBe('/srv/cc/group-1/memory')
   expect(s.enabledPlugins['telegram@claude-plugins-official']).toBe(true)

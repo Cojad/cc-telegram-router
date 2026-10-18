@@ -132,7 +132,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/e2e-diagnose.test.ts` | 同上, 真的 router (從原始碼, 暫存 HOME, PATH 沒有 bun) + 假 Bot API + 回 Workspace not trusted 的假 claude: 啟動時通知 bun 不在 PATH, home 沒被信任, 模型要 1M 額度; 叫不醒時通知原因與修法一次, 間隔內的下一則訊息不再啟動 claude 也不再通知; StopFailure (Usage credits required for 1M context) 通知 owner 原因與修法, 對話裡回暫時無法回應, 短時間內不重複, /router status 顯示原因, token 不外流; /router doctor |
 | `router/test/format.test.ts` | 長訊息切段 (`chunk`: 不超過上限, 優先在段落, 空白切開, 硬切不拆開 emoji 的 surrogate pair) 與訊息紀錄的單筆格式 (GMT+8, 固定兩行, 附件 file_id 不截斷, 沒送進 Claude 的標記, reply_to, rich_message 標記, 沒有訊息時的文字) |
 | `router/test/rich.test.ts` | Bot API Rich Message 區塊轉成文字: 段落與行內標記轉 Markdown, 編號清單, 核取方塊, 表格 (跳脫 `|`), 程式碼語言, 引言出處, details, 只有圖片或媒體時留下佔位文字 (保留說明文字), 不認得的區塊照樣顯示 |
-| `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行 (router 家目錄與 stateDir 都是臨時位置), 驗證 Claude Code 實際放行與擋下的事; 最後三條帶 user 對話的 hook, 驗證高風險工具真的觸發 PreToolUse 並被 router 擋下, owner 的一輪 ListAgents 自動提權放行, 傳給自己命名的 subagent 則放行; power 的 sandbox 看不到放在 home 與 stateDir 以外的 router socket |
+| `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行 (router 家目錄與 stateDir 都是臨時位置), 驗證 Claude Code 實際放行與擋下的事; 最後三條帶 user 對話的 hook, 驗證高風險工具真的觸發 PreToolUse 並被 router 擋下, owner 的一輪 ListAgents 自動提權放行, 傳給自己命名的 subagent 則放行; power 的 sandbox 看不到放在 home 與 stateDir 以外的 router socket; [bot 共用記憶](permissions.md#bot-共用記憶) 四種角色唯讀, 寫入被擋, 資料夾不存在時 sandbox 照常 |
 | `router/test/portability.test.ts` | [安裝位置](operations.md#安裝位置): config `sandboxDenyRead`, `sandboxExtraRo` 與隱藏清單, 角色範本的 denyRead, 特權技能 bwrap (白名單, 含真的 bwrap 在 /var/tmp 的安裝, 與放在別處的 socket 不存在), 位置檔與 `register`, plugin 與 hook 經位置檔連上 router, `deploy/install.sh` 不預設位置 |
 | `router/test/pluginguard.test.ts` | [官方 plugin 的自動更新與快取檢查](operations.md#官方-plugin-的自動更新與快取檢查): 每個角色產生的 worker settings 都宣告官方商店 `autoUpdate: false` 且來源是 github `anthropics/claude-plugins-official`, 角色範本不重新定義它; 指紋 (相對路徑與 sha256, 符號連結, 略過 `.in_use` 與 `.orphaned_at`); 檢查: 照部署, 沒有指紋, 官方換版 (installPath, 其他版本資料夾, `.orphaned_at`), 原地改檔, 多檔與少檔, 資料夾不見, 沒安裝, installed_plugins.json 讀不到; owner 通知的內容; hello 只在問題變了才通知, 每日有問題就通知, 恢復與沒有指紋只寫 log, 檢查不改任何檔, 通知失敗只寫 log; 每日時間 (GMT+8) 與 config `pluginCheckAt`; 真的 `deploy/install.sh plugin` (暫存 HOME) 部署並記下指紋, 檢查結果一致, 不知道 stateDir 時只部署並提示 |
 | `router/test/toolhistory.test.ts` | [工具呼叫紀錄](permissions.md#工具呼叫紀錄): 一筆的內容 (不存參數, 遮蔽與截斷), 寫入失敗只記 log, 30 天清除, 報表, `/router tools` 的權限與參數 |
@@ -184,6 +184,8 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | 驗收項目 | 測試 |
 |---|---|
 | 每個角色: 能做的做得到, 不能做的被擋且原因正確 | phase3「five role templates…」「permcheck: each role template…」; 真的 claude 執行: role-live (LIVE=1) |
+| [bot 共用記憶](permissions.md#bot-共用記憶): admin, power, user, guest 的 settings 都有 `Read(/<bot 資料夾>/memory/**)` 與 sandbox `allowRead`, 沒有任何寫入規則; 只開 `memory/`, bot 的 CLAUDE.md 與其他對話照樣讀不到; user 的 cat 可以, 重導向寫入擋下 | phase3「bot memory: admin, power, user and guest read…」; phase1「user settings…」 |
+| 真的 claude: 四種角色用 Read 讀得到 bot 共用記憶, Write 被擋; admin, power, user 用 cat 讀得到, 用 Bash 寫入失敗 (admin, power 被 sandbox 擋, user 被唯讀白名單擋), 檔案不變; bot 資料夾沒有 `memory/` 時 power 與 user 的 Bash, guest 的 Read 照常 | role-live「bot memory: …」三條 (LIVE=1; 2026-10-18 Claude Code 2.1.302 通過: Read 四種角色都讀到, Write 四種角色都在 permission_denials, admin 與 power 的 `echo >>` 指令失敗, user 的 Bash 在 permission_denials; 沒有 `memory/` 時三個角色都照常) |
 | 越權被擋時告訴模型改用不越權的方法, 做不到就問要不要向 owner 申請 | phase3「elevation: a plain user turn is refused with advice…」 |
 | 唯讀白名單的角色用重導向寫檔視為寫入: 擋下, 記錄, 發話者較高時提權 (只能允許一次) | phase3「permcheck: each role template…」「writesFile: …」「elevation: a user conversation writing a file through a redirection…」 |
 | 白名單比對的切段尊重引號與跳脫 (`grep -E 'a|b'` 放行); user 可用 cut, sort, uniq, 但 `sort -o`, `uniq 輸入 輸出` 視為寫入 | phase3「subcommands: split at &&, ||, |, ; and newlines…」 |
@@ -275,7 +277,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 
 | 驗收項目 | 測試 |
 |---|---|
-| 角色範本不寫死路徑: sandbox 隱藏 router 家目錄, 不在家目錄底下的 stateDir, `sandboxDenyRead` 與 `~`, 自己的資料夾與共用技能再打開; 隱藏清單沒填入就拒絕產生 settings | portability「role templates follow the install…」「fill splices a list…」; phase1「user settings…」 |
+| 角色範本不寫死路徑: sandbox 隱藏 router 家目錄, 不在家目錄底下的 stateDir, `sandboxDenyRead` 與 `~`, 自己的資料夾, 共用技能與 bot 共用記憶再打開; 隱藏清單沒填入就拒絕產生 settings | portability「role templates follow the install…」「fill splices a list…」; phase1「user settings…」 |
 | `sandboxDenyRead`: 絕對路徑才收, 寫錯只略過並警告, router 照常啟動; 互相包含的路徑只留最外層 | portability「config sandboxDenyRead…」「hiddenPaths…」 |
 | `/router perm path read` 可以打開隱藏路徑裡的子目錄, 隱藏清單不變 | portability「role templates follow the install…」 |
 | 特權技能 bwrap: 白名單 (不掛整個根目錄), 隱藏清單只在被掛進來的路徑 (`/usr`, `sandboxExtraRo`) 裡才蓋上, 都在技能自己的 bind 之前; 真的執行時看不到其他對話, 家目錄以外的 stateDir 與 `sandboxDenyRead` | portability「skill bwrap: a whitelist…」「skill bwrap, real run: other conversations…」 |

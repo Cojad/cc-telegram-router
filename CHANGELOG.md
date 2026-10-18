@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.28.0] - 2026-10-18
+
+### Added
+
+- bot 共用記憶: bot 資料夾的 `memory/` (`<home>/bot<id>/memory/`) 對 admin, power, user, guest 都唯讀可讀 (角色範本加 `Read(/{{botDir}}/memory/**)` 與 sandbox `allowRead`), 寫入一律不開, owner 本來就不受限. bot 的 CLAUDE.md 用一般文字寫「什麼情況讀 memory/xxx.md」, worker 需要時自己用 Read 讀; `@memory/xxx.md` 引入不會載入 (在對話資料夾以外, 算外部引入, worker 的資料夾都沒同意過), 也不能打開. 資料夾不存在時 sandbox 照常 (Claude Code 2.1.302 實測), router 不預先建立. 已經在跑的 worker 輪替或閒置停掉後, 下一次叫醒才套用. 見 [docs/permissions.md](docs/permissions.md#bot-共用記憶); `/telegram:doc`, README, architecture.md, operations.md 與 `templates/CLAUDE.md.example` 跟著改.
+- 測試: phase3「bot memory: …」(四種角色的規則, 不能寫, 只開 `memory/`), phase1 的 user settings, role-live 三條 (`LIVE=1`, 真的 claude: Read 與 cat 讀得到, Write 與 Bash 寫入被擋, 沒有 `memory/` 時照常).
+
 ## [2.27.0] - 2026-10-18
 
 ### Added

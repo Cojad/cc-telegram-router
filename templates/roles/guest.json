@@ -1,12 +1,12 @@
 {
   "permissions": {
     "defaultMode": "dontAsk",
-    "allow": ["mcp__plugin_telegram_telegram", "Read(/{{folder}}/attachments/**)", "Read(/{{transcripts}}/*/tool-results/**)"],
+    "allow": ["mcp__plugin_telegram_telegram", "Read(/{{folder}}/attachments/**)", "Read(/{{botDir}}/memory/**)", "Read(/{{transcripts}}/*/tool-results/**)"],
     "deny": ["Bash"]
   },
   "sandbox": {
     "enabled": true,
     "autoAllowBashIfSandboxed": false,
-    "filesystem": { "denyRead": ["{{hidden}}", "~"], "allowRead": ["{{folder}}"] }
+    "filesystem": { "denyRead": ["{{hidden}}", "~"], "allowRead": ["{{folder}}", "{{botDir}}/memory"] }
   }
 }

@@ -56,7 +56,7 @@ test('five role templates: owner bypass; admin/power write and run code in a san
   expect(user.permissions.allow).not.toContain('Bash')
   expect(user.sandbox.autoAllowBashIfSandboxed).toBe(false)
   const guest = renderSettings(TEMPLATES, 'guest', vars(f)) as any
-  expect(guest.permissions.allow).toEqual(['mcp__plugin_telegram_telegram', `Read(/${f}/attachments/**)`, 'Read(/{{transcripts}}/*/tool-results/**)']) // vars() here gives no transcripts
+  expect(guest.permissions.allow).toEqual(['mcp__plugin_telegram_telegram', `Read(/${f}/attachments/**)`, 'Read(/{{botDir}}/memory/**)', 'Read(/{{transcripts}}/*/tool-results/**)']) // vars() here gives no botDir or transcripts
   // every non-owner template keeps the progress + elevation hooks
   for (const r of ['admin', 'power', 'user', 'guest']) {
     const h = (renderSettings(TEMPLATES, r, vars(f)) as any).hooks
@@ -253,6 +253,38 @@ test('grants: target mode asks the target chat and the owner at once; the first 
   expect(sendGranted(['*'], '-100123', id => id === '-100123')).toBe(true)
   expect(sendGranted(['*'], '-100124', () => false)).toBe(false) // only chats the bot is allowed in
   expect(await requestGrant(g, from, '-100555', 'owner', 'x')).toBe('已經可以送往 -100555, 直接送出即可')
+})
+
+// Bot-wide memory (docs/permissions.md 「bot 共用記憶」): <botDir>/memory is
+// readable by every role below owner (permission rule and sandbox allowRead),
+// writable by none. role-live checks the same with the real claude.
+test('bot memory: admin, power, user and guest read <botDir>/memory (Read rule and sandbox allowRead), none of them writes it', () => {
+  const home = '/srv/cc', bot = `${home}/bot1`, f = `${bot}/group-1`, mem = `${bot}/memory`
+  const v = { folder: f, home, hidden: [home], botDir: bot, autoCompactWindow: 750000, hooksDir: '/h', transcripts: '/t' }
+  const file = (tool: string, file_path: string) => ({ tool_name: tool, tool_input: { file_path } })
+  for (const role of ['admin', 'power', 'user', 'guest']) {
+    const s = applyOverrides(renderSettings(TEMPLATES, role, v), []) as any
+    expect(s.permissions.allow).toContain(`Read(/${mem}/**)`)
+    expect(s.sandbox.filesystem.allowRead).toContain(mem)
+    expect(s.sandbox.filesystem.denyRead).toEqual([home, '~'])
+    // nothing opens it for writing: no Edit/Write rule, no sandbox allowWrite
+    expect((s.permissions.allow as string[]).filter(r => /^(Edit|Write)\(/.test(r) && r.includes(mem))).toEqual([])
+    expect(s.sandbox.filesystem.allowWrite ?? []).toEqual([])
+    expect(checkCall(s, file('Read', `${mem}/facts.md`), f, role).ok).toBe(true)
+    expect(checkCall(s, { tool_name: 'Grep', tool_input: { pattern: 'x', path: mem } }, f, role).ok).toBe(true)
+    expect(checkCall(s, file('Write', `${mem}/facts.md`), f, role)).toEqual({ ok: false, why: `${role} 不能寫入允許範圍外的路徑: ${mem}/facts.md` })
+    expect(checkCall(s, file('Edit', `${mem}/facts.md`), f, role).ok).toBe(false)
+    // only memory/: the bot's persona and other conversations stay out
+    expect(checkCall(s, file('Read', `${bot}/CLAUDE.md`), f, role).ok).toBe(false)
+    expect(checkCall(s, file('Read', `${bot}/dm-2/notes.txt`), f, role).ok).toBe(false)
+  }
+  // user: cat is on the read-only list, a redirection into memory/ is not
+  const user = applyOverrides(renderSettings(TEMPLATES, 'user', v), [])
+  const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } })
+  expect(checkCall(user, bash(`cat ${mem}/facts.md`), f).ok).toBe(true)
+  expect(checkCall(user, bash(`echo x >> ${mem}/facts.md`), f, 'user')).toMatchObject({ ok: false, redirect: true })
+  // owner is unrestricted as before
+  expect((renderSettings(TEMPLATES, 'owner', v) as any).permissions.defaultMode).toBe('bypassPermissions')
 })
 
 // --- 07 權限檢查 --------------------------------------------------------------

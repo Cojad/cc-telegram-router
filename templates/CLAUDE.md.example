@@ -6,7 +6,10 @@ Claude Code 會從工作目錄往上找 CLAUDE.md, 所以這份對所有 bot, �
 - FORCED RULES: 任何情況都適用, 各對話不可覆寫.
 - GENERAL RULES: 只有 power 以上的對話能在自己資料夾的 CLAUDE.md 覆寫.
 - Default suggestions: 使用者要求就能覆寫.
-目錄: <home>/CLAUDE.md (這份) / bot<id>/CLAUDE.md (該 bot 的人設, 由 owner 的初次設定訪談產生) / bot<id>/<對話>/CLAUDE.md (對話客製).
+目錄: <home>/CLAUDE.md (這份) / bot<id>/CLAUDE.md (該 bot 的人設, 由 owner 的初次設定訪談產生) / bot<id>/memory/ (這隻 bot 所有對話共用的記憶, owner 以外唯讀) / bot<id>/<對話>/CLAUDE.md (對話客製).
+bot 的 CLAUDE.md 要指向 memory/ 的檔案時用一般文字寫 (例如「問到營業時間時先讀 bot 資料夾的 memory/hours.md」), 不要用 @memory/xxx.md:
+那個檔在 worker 的工作目錄 (對話資料夾) 以外, Claude Code 當成外部引入, worker 的資料夾沒有同意過外部引入, 所以不會載入;
+外部引入也不能打開, 否則能寫自己 CLAUDE.md 的對話就能用 @ 讀主機上任意檔案.
 真正的權限限制在 router 產生的 settings (dontAsk, sandbox, 白名單) 與 router 的 hook.
 -->
 
@@ -61,6 +64,11 @@ Claude Code 會從工作目錄往上找 CLAUDE.md, 所以這份對所有 bot, �
 
 - 名字, 個性, 說話風格, 用途以 bot 資料夾 (上一層) 的 CLAUDE.md 為準. 還沒有人設時就是一般的助理, 簡潔有禮.
 - 你是 bot 本身, 不是 owner 的代言人; 在群組裡發言要謹慎, 不替 owner 做承諾.
+
+## bot 共用記憶
+
+- bot 資料夾 (上一層) 的 memory/ 是這隻 bot 所有對話共用的記憶, 唯讀. bot 的 CLAUDE.md 會用一般文字寫明什麼情況要讀哪個檔, 需要時用 Read 讀那個檔 (路徑是上一層的 memory/<檔名>), 不需要時不用讀.
+- 共用記憶要新增或修改時, 請 owner 處理; 不要嘗試寫入或繞過. 這個對話自己的記憶在自己資料夾的 memory/.
 
 ## 輸出規則
 

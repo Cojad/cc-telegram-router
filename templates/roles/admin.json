@@ -3,7 +3,7 @@
     "defaultMode": "dontAsk",
     "allow": [
       "Read(/{{folder}}/**)", "Edit(/{{folder}}/**)", "Write(/{{folder}}/**)",
-      "Read(/{{home}}/.claude/skills/**)", "Read(/{{botDir}}/.claude/skills/**)", "Read(/{{transcripts}}/*/tool-results/**)",
+      "Read(/{{home}}/.claude/skills/**)", "Read(/{{botDir}}/.claude/skills/**)", "Read(/{{botDir}}/memory/**)", "Read(/{{transcripts}}/*/tool-results/**)",
       "Bash", "WebSearch", "WebFetch",
       "mcp__plugin_telegram_telegram"
     ],
@@ -14,7 +14,7 @@
     "autoAllowBashIfSandboxed": true,
     "filesystem": {
       "denyRead": ["{{hidden}}", "~"],
-      "allowRead": ["{{folder}}", "{{home}}/.claude/skills", "{{botDir}}/.claude/skills", "~/bin", "~/.bun"],
+      "allowRead": ["{{folder}}", "{{home}}/.claude/skills", "{{botDir}}/.claude/skills", "{{botDir}}/memory", "~/bin", "~/.bun"],
       "denyWrite": ["{{folder}}/.chat"]
     },
     "network": { "allowedDomains": ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"] }

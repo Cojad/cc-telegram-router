@@ -3,7 +3,7 @@
     "defaultMode": "dontAsk",
     "allow": [
       "Read(/{{folder}}/**)", "Edit(/{{folder}}/**)", "Write(/{{folder}}/**)",
-      "Read(/{{home}}/.claude/skills/**)", "Read(/{{botDir}}/.claude/skills/**)",
+      "Read(/{{home}}/.claude/skills/**)", "Read(/{{botDir}}/.claude/skills/**)", "Read(/{{botDir}}/memory/**)",
       "Bash(ls *)", "Bash(ls)", "Bash(cat *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)",
       "Bash(grep *)", "Bash(rg *)", "Bash(find *)", "Bash(stat *)", "Bash(file *)",
       "Bash(jq *)", "Bash(cut)", "Bash(cut *)", "Bash(sort)", "Bash(sort *)", "Bash(uniq)", "Bash(uniq *)", "Bash(date)", "Bash(date *)", "Bash(echo *)", "Bash(pwd)",
@@ -21,6 +21,6 @@
   "sandbox": {
     "enabled": true,
     "autoAllowBashIfSandboxed": false,
-    "filesystem": { "denyRead": ["{{hidden}}", "~"], "allowRead": ["{{folder}}", "{{home}}/.claude/skills", "{{botDir}}/.claude/skills"] }
+    "filesystem": { "denyRead": ["{{hidden}}", "~"], "allowRead": ["{{folder}}", "{{home}}/.claude/skills", "{{botDir}}/.claude/skills", "{{botDir}}/memory"] }
   }
 }

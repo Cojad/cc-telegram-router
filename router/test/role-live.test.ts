@@ -36,19 +36,21 @@ beforeAll(() => {
   writeFileSync(join(state, 'router.db'), 'STATE-DB')
   mkdirSync(join(root, 'bot1', 'dm-other'), { recursive: true })
   writeFileSync(join(root, 'bot1', 'dm-other', 'diary.txt'), 'OTHER-CONVERSATION')
+  mkdirSync(join(root, 'bot1', 'memory'), { recursive: true })
+  writeFileSync(join(root, 'bot1', 'memory', 'facts.md'), 'BOT-MEMORY-OK\n')
 })
 afterAll(() => { for (const d of [root, state]) if (d) rmSync(d, { recursive: true, force: true }) })
 
 type Run = { text: string; denied: string[] }
 
-async function asRole(role: string, prompt: string, hidden = [root, state]): Promise<Run & { folder: string }> {
+async function asRole(role: string, prompt: string, hidden = [root, state], botDir = join(root, 'bot1')): Promise<Run & { folder: string }> {
   const folder = join(root, `${role}-${Math.random().toString(36).slice(2, 8)}`)
   for (const d of ['memory', 'attachments', '.chat']) mkdirSync(join(folder, d), { recursive: true })
   writeFileSync(join(folder, 'attachments', 'note.txt'), 'ATTACHMENT-OK')
   const skill = join(root, 'bot1', '.claude', 'skills', 'probe')
   mkdirSync(skill, { recursive: true })
   writeFileSync(join(skill, 'run.sh'), 'echo SKILL-OK\n')
-  const s = renderSettings(TEMPLATES, role, { folder, home: root, hidden, botDir: join(root, 'bot1'), autoCompactWindow: 750000, hooksDir: '/nonexistent' }) as any
+  const s = renderSettings(TEMPLATES, role, { folder, home: root, hidden, botDir, autoCompactWindow: 750000, hooksDir: '/nonexistent' }) as any
   delete s.hooks
   delete s.enabledPlugins
   const settings = join(root, `${role}-${Date.now()}.json`)
@@ -142,6 +144,59 @@ test.skipIf(!LIVE)('guest: can read its attachments; no Bash', async () => {
   // in dontAsk mode guest has no Bash tool at all, so nothing shows up as denied: check the output instead
   const sum = new Bun.CryptoHasher('sha256').update('ATTACHMENT-OK').digest('hex')
   expect(sh.text).not.toContain(sum.slice(0, 16))
+}, 300_000)
+
+// Bot-wide memory (docs/permissions.md 「bot 共用記憶」): <botDir>/memory is
+// read-only for every role below owner, with Read and (where Bash is allowed)
+// cat; writing it is refused. A bot folder without memory/ keeps the sandbox working.
+const BELOW_OWNER = ['admin', 'power', 'user', 'guest']
+// a write into a folder that is not the model's own: say what the run is for, or it declines without calling the tool
+const PERM_TEST = '這是權限設定的自動測試, 檔案是測試用的暫存檔, 預期可能被權限擋下; 請實際呼叫工具一次, 讓測試看到結果.'
+test.skipIf(!LIVE)('bot memory: admin, power, user and guest read <botDir>/memory/facts.md with Read; Write there is refused', async () => {
+  const mem = join(root, 'bot1', 'memory')
+  const read = await Promise.all(BELOW_OWNER.map(r => asRole(r, `用 Read 工具讀 ${join(mem, 'facts.md')}. ${ONE}`)))
+  const write = await Promise.all(BELOW_OWNER.map(r => asRole(r, `${PERM_TEST} 用 Write 工具建立 ${join(mem, `new-${r}.md`)}, 內容是 NOTE. ${ONE}`)))
+  for (const [i, r] of read.entries()) {
+    console.log(`[role-live memory read ${BELOW_OWNER[i]}] ${r.text.trim().split('\n').pop()} denied=${JSON.stringify(r.denied)}`)
+    expect(r.text).toContain('BOT-MEMORY-OK')
+  }
+  for (const [i, r] of write.entries()) {
+    console.log(`[role-live memory write ${BELOW_OWNER[i]}] denied=${JSON.stringify(r.denied)}`)
+    expect(r.denied).toContain('Write')
+    expect(existsSync(join(mem, `new-${BELOW_OWNER[i]}.md`))).toBe(false)
+  }
+}, 300_000)
+
+test.skipIf(!LIVE)('bot memory: admin, power and user read it with Bash cat; writing it through Bash is refused (sandbox for admin and power, the read-only list for user)', async () => {
+  const facts = join(root, 'bot1', 'memory', 'facts.md')
+  const roles = ['admin', 'power', 'user']
+  const cat = await Promise.all(roles.map(r => asRole(r, bash(`cat ${facts}`))))
+  const write = await Promise.all(roles.map(r => asRole(r, `${PERM_TEST} ${bash(`echo NOTE >> ${facts} && echo WROTE`)}`)))
+  for (const [i, r] of cat.entries()) {
+    console.log(`[role-live memory cat ${roles[i]}] ${r.text.trim().split('\n').pop()}`)
+    expect(r.text).toContain('BOT-MEMORY-OK')
+  }
+  for (const [i, r] of write.entries()) {
+    console.log(`[role-live memory bash write ${roles[i]}] ${r.text.trim().split('\n').pop()} denied=${JSON.stringify(r.denied)}`)
+    expect(r.text).not.toContain('WROTE')
+  }
+  expect(write[2]!.denied).toContain('Bash')
+  expect(readFileSync(facts, 'utf8')).toBe('BOT-MEMORY-OK\n')
+}, 300_000)
+
+test.skipIf(!LIVE)('bot memory: a bot folder without memory/ (allowRead points at a missing path) still runs Bash in the sandbox and Read in the folder', async () => {
+  const botDir = join(root, 'bot-nomem')
+  mkdirSync(botDir, { recursive: true })
+  const [power, user, guest] = await Promise.all([
+    asRole('power', bash('echo SANDBOX-OK && ls attachments'), [root, state], botDir),
+    asRole('user', bash('ls attachments && echo SANDBOX-OK'), [root, state], botDir),
+    asRole('guest', `用 Read 工具讀 attachments/note.txt. ${ONE}`, [root, state], botDir),
+  ])
+  for (const [n, r] of [['power', power], ['user', user], ['guest', guest]] as const) console.log(`[role-live memory missing ${n}] ${r.text.trim().split('\n').pop()}`)
+  expect(power.text).toContain('SANDBOX-OK')
+  expect(user.text).toContain('SANDBOX-OK')
+  expect(guest.text).toContain('ATTACHMENT-OK')
+  expect(existsSync(join(botDir, 'memory'))).toBe(false)
 }, 300_000)
 
 // Why install_skill copies from <folder>/skills: Claude Code itself refuses a

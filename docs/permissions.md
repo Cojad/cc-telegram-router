@@ -13,6 +13,14 @@
 - 私訊的權限覆寫 (`/router perm <私訊> tool|path|net|mcp|send|pkg ...`) 照常保留, 疊在使用者角色的範本上; `reset` 只清覆寫. 那位使用者自己的[使用者覆寫](#使用者覆寫)也套用在他的私訊: 先疊使用者覆寫, 再疊私訊覆寫 (覆寫只會增加 allow, deny, 路徑與網域, 拒絕規則永遠優先, 順序不影響結果).
 - 遷移: 以前私訊可以有自己的角色. router 啟動時把每個私訊的 `conversations.role` 對齊使用者角色, 有變的記一行 log (`dm role <對話>: <舊> -> <新> (the user's role)`), chat context 版本加一, 並標記待輪替.
 
+## bot 共用記憶
+
+每隻 bot 的資料夾可以放一個 `memory/` (`<home>/bot<id>/memory/`), 存這隻 bot 所有對話共用的記憶 (例如常用名詞, 店家資訊, 固定流程); 跟對話資料夾裡那個對話自己的 `memory/` (auto memory) 是兩回事. owner 以外的四種角色 (admin, power, user, guest) 都**唯讀**: 角色範本的 `permissions.allow` 有 `Read(/<bot 資料夾>/memory/**)`, sandbox 的 `allowRead` 有 `<bot 資料夾>/memory`, 所以 Read, Glob, Grep 讀得到, 有 Bash 的角色 (admin, power, user) 用 `cat`, `grep` 也讀得到. 寫入一律不開: 沒有 Edit 與 Write 規則, sandbox 不可寫 (admin, power 用 Bash 寫會失敗), user 的重導向照樣擋; 共用記憶由 owner (終端機或 owner 的對話) 維護. 只開 `memory/` 這一層: bot 資料夾的其他檔與其他對話照樣看不到. owner 的對話本來就不受限.
+
+用法: 在 bot 的 CLAUDE.md (`<home>/bot<id>/CLAUDE.md`) 用一般文字寫指標, 例如「問到營業時間時, 先讀 bot 資料夾的 memory/hours.md」, worker 需要時自己用 Read 讀. **不要用 `@memory/xxx.md` 引入**: bot 的 CLAUDE.md 本體每個 worker 都會自動載入, 但裡面的 `@` 引入指向工作目錄 (對話資料夾) 以外, Claude Code 當成外部引入, 要那個資料夾同意過才載入, worker 的資料夾都沒有同意過 (2.1.302 實測不會載入). 外部引入也不能打開: user 以上的角色能寫自己對話的 CLAUDE.md, 打開就等於讓它用 `@` 讀主機上任意檔案.
+
+`memory/` 不用預先建立, router 也不建: 資料夾不存在時 sandbox 照常執行 (2.1.302 實測, bubblewrap 不會因為 `allowRead` 指向不存在的路徑出錯). router 每次叫醒 worker 都重寫它的 settings, 所以角色範本改了之後, 已經在跑的 worker 要輪替 (`/router session rotate`) 或閒置停掉, 下一次叫醒才套用.
+
 ## 私訊配對
 
 bot 的私訊收不收陌生人, 看 `access.json` 的 `dmPolicy` (`allowlist`, `pairing`, `disabled`, 見[部署與維運: 私訊與群組的存取](operations.md#私訊與群組的存取)). owner 一律在 `allowFrom` 裡, 不用配對. `pairing` 模式下 `allowFrom` 以外的人私訊時, bot 回一個 6 碼的配對碼 (一小時內有效), 訊息不送進 worker.

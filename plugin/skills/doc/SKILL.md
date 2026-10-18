@@ -24,6 +24,8 @@ description: cc-telegram-router 的使用說明: /router 指令, /id 查 uid, �
 | user | 自己資料夾內讀寫, Bash 只能跑唯讀指令 (ls, cat, head, tail, wc, grep, rg, find, stat, file, jq, cut, sort, uniq, tr, seq, which, hostname, cd, date, echo, pwd; 用 `>` `>>` 重導向或 `sort -o`, `uniq 輸入 輸出` 寫檔不算唯讀, 寫檔請用 Write 工具) |
 | guest | 只能對話, 讀收到的附件 |
 
+owner 以外的角色都能讀這隻 bot 的共用記憶 (bot 資料夾的 `memory/`, 唯讀, 由 owner 維護); bot 的人設 CLAUDE.md 會寫明什麼情況要讀哪個檔.
+
 ## 權限不足與提權
 
 - 每個工具呼叫都會先由 router 依對話角色檢查; 越權就擋下, worker 會改用不越權的方法, 做不到時告訴你並問要不要向 bot owner 申請.
