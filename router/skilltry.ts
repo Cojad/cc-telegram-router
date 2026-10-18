@@ -5,7 +5,7 @@
 // sandbox, store staging and write-back checks, output scan) but:
 //   - the skill folder is the draft itself, read-only in the sandbox; no
 //     approval or hash check; internal actions may be tried, without their
-//     mounts and env; the timeout is at most 600 seconds
+//     host access (ports, mounts, env); the timeout is at most 600 seconds
 //   - credentials are fake: each http credential's URL and each bot's API
 //     point at a fake service on the sandbox's own 127.0.0.1
 //     (router/skilltry-fake.ts) with random keys and tokens, scrubbed from
@@ -14,8 +14,10 @@
 //     may name any database), or from store_seed, a folder in the
 //     conversation folder; session keeps them (and the credential folders)
 //     for the runs that follow, for 24 hours after its last use
-//   - the network is router/sandboxnet.ts: the internet, but nothing on the
-//     host or its private networks; refused when that cannot be set up
+//   - the network is router/sandboxnet.ts, as for every action: the internet
+//     on ports 80, 443, 53, 22 and the action's outbound_ports (an internal
+//     action's trial too), nothing on the host or its private networks;
+//     refused when that cannot be set up
 //   - the working folder, the only writable one, is
 //     <conversation>/skill-try/<time>-<action>/
 //   - at most 20 runs per conversation per hour, recorded in skill_runs as
@@ -28,11 +30,11 @@ import { basename, isAbsolute, join, relative } from 'path'
 import type { Conversation } from './db'
 import type { Credential } from './config'
 import { loadManifest, argRoleRefusal, redact, type Action, type Manifest } from './privskill'
-import { runPrepared, type SkillRunDeps } from './skillrun'
+import { runPrepared, NET_FAILED, type SkillRunDeps } from './skillrun'
 import { resolveSkillDir } from './skillcheck'
 import { snap, diff } from './skillcli'
 import { RANK } from './permcheck'
-import { netMissing, runIsolated } from './sandboxnet'
+import { netMissing, runIsolated, OUT_PORTS } from './sandboxnet'
 
 export const TRY_PER_HOUR = 20
 export const TRY_MAX_TIMEOUT = 600
@@ -47,12 +49,8 @@ export interface SkillTryDeps extends SkillRunDeps {
   stateDir: string
   /** A credential by name (router config): only its kind, header and scheme are used. */
   cred(name: string): Credential | undefined
-  /** The host's own addresses to refuse (router/sandboxnet.ts). */
-  hostAddrs(): Promise<string[]>
   /** How the sandbox starts the fake service, and what it must see read-only for that (router/selfpath.ts fakeService). */
   fake: { cmd: string[]; ro: string[] }
-  /** Which network tools are missing (router/sandboxnet.ts netMissing; replaced in tests). */
-  netMissing?(): string | null
 }
 
 const inside = (p: string, dir: string) => { const r = relative(dir, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)) }
@@ -80,10 +78,10 @@ function seedDir(folder: string, p: string): string | { error: string } {
   return why ? { error: why } : real
 }
 
-/** A copy of an action fit for a trial: no mounts or env, the timeout capped. What changed goes to notes. */
+/** A copy of an action fit for a trial: no host access, the timeout capped. What changed goes to notes. */
 function forTrial(n: string, a: Action, notes: string[]): Action {
   const t = { ...a }
-  if (a.mounts?.length || (a.env && Object.keys(a.env).length)) { delete t.mounts; delete t.env; notes.push(`動作 ${n} 的 mounts 與 env 在試跑時一律不給 (正式執行時 internal 動作才有)`) }
+  if (a.host || a.mounts?.length || (a.env && Object.keys(a.env).length)) { delete t.host; delete t.mounts; delete t.env; notes.push(`動作 ${n} 的主機存取 (host: ports, mounts, env) 在試跑時一律不給 (正式執行時 owner 核准的 internal 動作才有)`) }
   if ((a.timeout ?? 600) > TRY_MAX_TIMEOUT) { t.timeout = TRY_MAX_TIMEOUT; notes.push(`動作 ${n} 的 timeout 在試跑時最多 ${TRY_MAX_TIMEOUT} 秒`) }
   return t
 }
@@ -160,7 +158,6 @@ export async function trySkill(deps: SkillTryDeps, conv: Conversation, role: str
     for (const [env, n] of Object.entries(a.bots ?? {})) botEnv.set(n, env)
   }
   for (const a of Object.values(actions)) for (const tok of a.run ?? []) if (/^(venv|node_modules)\//.test(tok)) notes.push(`${tok}: install_skill 不複製 ${tok.split('/')[0]}, 安裝後要由 owner 在安裝位置建好, 否則正式執行找不到`)
-  const hostAddrs = await deps.hostAddrs()
   const notices: string[] = []
   let attempt = 0
   const d: SkillRunDeps = {
@@ -171,21 +168,20 @@ export async function trySkill(deps: SkillTryDeps, conv: Conversation, role: str
     httpCred: n => fakeOf(n, 'http', httpEnv.get(n) ?? n.toUpperCase().replace(/\W/g, '_')),
     botCred: n => fakeOf(n, 'telegram-bot', botEnv.get(n) ?? n),
     notifyOwner: (_c, text) => notices.push(text),
-    exec: async (argv, env, timeoutMs) => {
-      const r = await runIsolated({ argv, env, timeoutMs, workDir: join(io, `net-${++attempt}`), hostAddrs, wrap: [...deps.fake.cmd, log, '--'], extraRo: deps.fake.ro, extraRw: [io] })
-      return 'error' in r ? { code: -1, out: `試跑的網路隔離失敗, 沒有執行: ${r.error}` } : r
-    },
+    // the fake service starts first inside the sandbox, then runs the action; an internal action's
+    // trial still gets only the ports every other action gets (80, 443, 53, 22 and outbound_ports)
+    isolated: o => (deps.isolated ?? runIsolated)({ ...o, workDir: join(io, `net-${++attempt}`), wrap: [...deps.fake.cmd, log, '--'], extraRo: [...(o.extraRo ?? []), ...deps.fake.ro], extraRw: [...(o.extraRw ?? []), io], outPorts: o.outPorts ?? OUT_PORTS }),
   }
   const out = join(conv.folder, TRY_OUT, `${stamp()}-${actionName}`)
   mkdirSync(out, { recursive: true })
   const before = snap(mine)
   try {
     const r = await runPrepared(d, { ...conv, folder: out }, runAs, skill, actionName, dir, { actions }, action, call)
-    const status = r.ok ? 'ok' : r.text.includes('\n試跑的網路隔離失敗, 沒有執行: ') ? 'refused' : 'failed'
+    const status = r.ok ? 'ok' : r.text.includes(`\n${NET_FAILED}`) ? 'refused' : 'failed'
     const secrets = [...fakes.values()].map(c => c.token)
     const lines = [
       `skill try: ${status}`,
-      `草稿 ${relative(realpathSync(conv.folder), dir)} 的 ${actionName}, 扮演角色 ${as}, 輸出在 ${relative(conv.folder, out)}; 沒有核准, 憑證是假的, 資料庫是試跑複本 (${session ? `session ${session}, 最後一次使用後保留 24 小時` : '用完即丟'}${fresh && seed ? ', 從 store_seed 開始' : fresh ? ', 從空的開始' : ''}); 網路: 外網可連, 主機本機與內網擋下`,
+      `草稿 ${relative(realpathSync(conv.folder), dir)} 的 ${actionName}, 扮演角色 ${as}, 輸出在 ${relative(conv.folder, out)}; 沒有核准, 憑證是假的, 資料庫是試跑複本 (${session ? `session ${session}, 最後一次使用後保留 24 小時` : '用完即丟'}${fresh && seed ? ', 從 store_seed 開始' : fresh ? ', 從空的開始' : ''}); 網路: 外網只開 port ${[...new Set([...OUT_PORTS, ...(action.outbound_ports ?? [])])].join(', ')}, 主機本機與內網擋下`,
       r.text,
     ]
     const changes = diff(before, snap(mine))

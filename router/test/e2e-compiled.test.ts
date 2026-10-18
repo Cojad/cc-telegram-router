@@ -16,6 +16,10 @@
 // (`cc-telegram-router --config <path> setup`) in the compiled router: no
 // terminal, refused; in a pseudo terminal, a new config with the token as *
 // only (from source in e2e-wizard.test.ts).
+// And run_skill of an approved skill (docs/skill-runtime.md): the whitelisted
+// file system and its own network, from the compiled router with the unit's
+// PATH (nft, nsenter found outside it); a bot credential with its own
+// apiRoot on the host's 127.0.0.1 is reached at 10.0.2.2 on that port.
 
 import { test, expect, beforeAll, afterAll } from 'bun:test'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'fs'
@@ -29,6 +33,7 @@ import { inTerminal } from './pty'
 const ROOT = join(import.meta.dir, '..', '..')
 const GUIDE = readFileSync(join(ROOT, 'plugin', 'skills', 'bot-skill', 'SKILL.md'), 'utf8')
 const EXAMPLE: Record<string, string> = Object.fromEntries([...GUIDE.matchAll(/^`skills\/signup\/([^`]+)`:\n\n```\w*\n([\s\S]*?)\n```$/gm)].map(m => [m[1]!, `${m[2]!}\n`]))
+const BOT_TOKEN = '4242424242:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD'
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const dir = mkdtempSync(join(tmpdir(), 'cctr-compiled-'))
 const state = join(dir, '.router')
@@ -74,7 +79,7 @@ beforeAll(async () => {
   const fakeClaude = join(dir, 'fake-claude')
   writeFileSync(fakeClaude, `#!/bin/bash\ncase "$*" in *agents*) echo '[]' ;; *--bg*) echo "backgrounded · abcd1234 · tg-x (idle)" ;; esac\n`)
   chmodSync(fakeClaude, 0o755)
-  writeFileSync(join(state, 'config.json'), JSON.stringify({ bots: [{ name: 'cc', token: '123:test', apiRoot: `http://127.0.0.1:${api.port}`, localFilesDir: serverDir }], home: dir, stateDir: state, owners: ['555'], claudeBin: fakeClaude, apiRoot: `http://127.0.0.1:${globalApi.port}` }), { mode: 0o600 })
+  writeFileSync(join(state, 'config.json'), JSON.stringify({ bots: [{ name: 'cc', token: '123:test', apiRoot: `http://127.0.0.1:${api.port}`, localFilesDir: serverDir }], home: dir, stateDir: state, owners: ['555'], claudeBin: fakeClaude, apiRoot: `http://127.0.0.1:${globalApi.port}`, credentials: { 'notify-bot': { token: BOT_TOKEN, methods: [], apiRoot: `http://127.0.0.1:${api.port}` } } }), { mode: 0o600 })
   writeFileSync(join(state, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: ['555'], groups: {}, pending: {} }))
   // as deploy/cc-telegram-router.service starts it
   const home = process.env.HOME!
@@ -140,3 +145,46 @@ test.skipIf(!Bun.which('script'))('the compiled router\'s setup wizard: no termi
   expect(JSON.parse(readFileSync(other, 'utf8')).bots).toEqual([{ name: 'cc', token, apiRoot: `http://127.0.0.1:${api.port}` }])
   expect(JSON.parse(readFileSync(join(dir, 'wizard', '.router', 'access.json'), 'utf8')).allowFrom).toEqual(['555'])
 }, 60000)
+
+test('the compiled router runs an approved skill (run_skill) in the whitelisted sandbox and its own network: no home, no state dir, no other conversation, nothing on the host but its Bot API\'s port for an action with bots; internet ports 80, 443, 53, 22 only', async () => {
+  const folder = join(dir, 'bot123', 'dm-555')
+  await until(() => q("SELECT key FROM conversations WHERE key = 'dm-555'")[0])
+  writeFileSync(join(dir, 'bot123', 'other.txt'), 'other\n')
+  const skill = join(dir, 'bot123', '.claude', 'skills', 'probe')
+  mkdirSync(join(skill, 'scripts'), { recursive: true })
+  writeFileSync(join(skill, 'SKILL.md'), '---\nname: probe\ndescription: x\n---\n')
+  writeFileSync(join(skill, 'scripts', 'p.sh'), `for f in ${process.env.HOME} ${state} ${join(dir, 'bot123', 'other.txt')} /home /run; do [ -e "$f" ] && echo "SEE $f" || echo "GONE $f"; done
+python3 -B - <<'PY'
+import socket
+for h, p in [('127.0.0.1', ${api.port}), ('10.0.2.2', ${api.port}), ('203.0.113.7', 443), ('203.0.113.7', 8080)]:
+    try: socket.create_connection((h, p), timeout=2.5).close(); print(h, p, 'ok')
+    except (socket.timeout, TimeoutError): print(h, p, 'timeout')
+    except Exception as e: print(h, p, 'refused', type(e).__name__)
+PY
+`)
+  // bots: the router's Bot API (config apiRoot) is on the host's 127.0.0.1, like a self-hosted one
+  writeFileSync(join(skill, 'scripts', 'bot.sh'), 'echo "API=$BOT_API"; python3 -B -c "import urllib.request, os; print(urllib.request.urlopen(os.environ[\'BOT_API\'] + \'/getMe\').read().decode())"\n')
+  writeFileSync(join(skill, 'privileged.json'), JSON.stringify({ actions: { go: { run: ['bash', 'scripts/p.sh'] }, bot: { run: ['bash', 'scripts/bot.sh'], bots: { BOT: 'notify-bot' } } } }))
+  const { openRouterDb } = await import('../db')
+  const { hashSkill } = await import('../privskill')
+  const db = openRouterDb(join(state, 'router.db'))
+  db.approveSkill(skill, 'probe', hashSkill(skill), 'test')
+  db.close()
+  const plugin = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: folder, pid: 78 }, onMessage(m) { if (m.t === 'deliver') plugin.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => plugin.state().kind === 'ready')
+  const r = await plugin.call('run_skill', { skill: 'probe', action: 'go' })
+  const text = r.content[0]!.text
+  expect(text, text).toStartWith('exit 0')
+  for (const f of [process.env.HOME!, state, join(dir, 'bot123', 'other.txt'), '/home', '/run']) expect(text).toContain(`GONE ${f}\n`)
+  expect(text).toContain(`127.0.0.1 ${api.port} refused`)
+  expect(text).toContain(`10.0.2.2 ${api.port} refused`)
+  expect(text).toContain('203.0.113.7 443 timeout')
+  expect(text).toContain('203.0.113.7 8080 refused')
+  const b = (await plugin.call('run_skill', { skill: 'probe', action: 'bot' })).content[0]!.text
+  expect(b, b).toStartWith('exit 0')
+  expect(b).toContain(`API=http://10.0.2.2:${api.port}/bot<已遮蔽>`)
+  expect(b).toContain('"username":"cc_bot"')
+  expect(b).not.toContain(BOT_TOKEN)
+  expect(q("SELECT status FROM skill_runs WHERE conv = 'dm-555' AND skill = 'probe'").map(x => x.status)).toEqual(['ok', 'ok'])
+  plugin.close()
+}, 120_000)

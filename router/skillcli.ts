@@ -149,6 +149,8 @@ export async function terminalRun(deps: SkillRunDeps, conv: Conversation, o: Ski
   const d: SkillRunDeps = {
     ...deps,
     ...(trialRoot ? { storeRoot: trialRoot } : {}),
+    // trial: every bot credential goes to the fake Bot API on the host; the sandbox reaches it at slirp's
+    // host alias, its port only (skillrun apiForSandbox)
     ...(o.api ? { apiRoot: o.api, apiRootFixed: o.api } : {}),
     notifyOwner: (_c, text) => notices.push(text),
   }

@@ -208,7 +208,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'skill_try',
-    description: 'Try one action of a skill draft in your folder (its privileged.json) without approval: power and up only (user conversations wait for a later phase). It runs the way run_skill would, but every credential is fake (http URLs and bot APIs point at a fake service inside the sandbox that answers and logs each call), databases start empty (or from store_seed, a folder in your folder; session keeps them between tries), the network reaches the internet but nothing on the host or private networks, and output lands in <your folder>/skill-try/<time>-<action>/. role tries a lower role. At most 20 tries per hour. See /telegram:bot-skill.',
+    description: 'Try one action of a skill draft in your folder (its privileged.json) without approval: power and up only (user conversations wait for a later phase). It runs the way run_skill would, but every credential is fake (http URLs and bot APIs point at a fake service inside the sandbox that answers and logs each call), databases start empty (or from store_seed, a folder in your folder; session keeps them between tries), the network is that of every privileged action (internet ports 80, 443, 53, 22 and the outbound_ports it declares, nothing on the host or private networks), and output lands in <your folder>/skill-try/<time>-<action>/. role tries a lower role. At most 20 tries per hour. See /telegram:bot-skill.',
     inputSchema: {
       type: 'object',
       properties: {

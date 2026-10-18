@@ -12,7 +12,7 @@ import { AsyncLocalStorage } from 'async_hooks'
 import { Bot, InputFile } from 'grammy'
 import { randomBytes } from 'crypto'
 import { spawn } from 'child_process'
-import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFileSync, realpathSync, readdirSync } from 'fs'
+import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFileSync, realpathSync, readdirSync, rmSync } from 'fs'
 import { basename, dirname, join } from 'path'
 import { defaultConfigPath, loadConfig, hiddenPaths, botApiRoot, credApiRoot, OFFICIAL_API_ROOT, type BotConfig } from './config'
 import { fetchBotFile } from './telegram/files'
@@ -36,10 +36,11 @@ import { PAIRING_TOPIC, PAIRING_TOPIC_INTRO, postPairingRequest, decidePairButto
 import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
 import { fingerprint, noteStart, STALE_NOTE } from './freshness'
 import { createAuthz } from './authz'
-import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
+import { runSkill, skillDirs, describeActions, approveRefusal, type SkillRunDeps } from './skillrun'
 import { checkSkill } from './skillcheck'
 import { trySkill, type SkillTryDeps } from './skilltry'
 import { interfaceAddrs, cloudPublicAddrs } from './sandboxnet'
+import { writeSandboxEtc } from './sandboxfs'
 import { relaunchArgs, ownArgs, fakeService, FAKE_SUBCOMMAND } from './selfpath'
 import { runFakeService } from './skilltry-fake'
 import { scheduleRefresh, type RefreshDeps } from './skillrefresh'
@@ -707,21 +708,20 @@ const authz = createAuthz({
 const grantDeps: GrantDeps = { db, approvals: approvalDeps, notify: notifyConversation, label, authz }
 
 /** Privileged skill actions (router/skillrun.ts): sandboxed, credentials never reach the worker. */
+// each run's network files: whatever a crash left behind goes
+rmSync(join(cfg.stateDir, 'sandbox-run'), { recursive: true, force: true })
 const skillDeps: SkillRunDeps = {
   db, home: cfg.home, credsRoot: join(cfg.stateDir, 'creds'), userHome: homedir(), hidden: hiddenPaths(cfg),
-  extraRo: [join(homedir(), '.local', 'bin'), join(homedir(), '.local', 'lib'), join(homedir(), '.deno', 'bin')],
+  // the whitelisted sandbox (docs/skill-runtime.md): config sandboxExtraRo, generated /etc files, each run's network files
+  extraRo: cfg.sandboxExtraRo ?? [],
+  etcDir: writeSandboxEtc(join(cfg.stateDir, 'sandbox-etc')),
+  runRoot: join(cfg.stateDir, 'sandbox-run'),
+  hostAddrs: async () => [...interfaceAddrs(), ...await cloudPublicAddrs()],
   botDir: b => botDir(cfg, b),
   httpCred: name => cfg.credentials[name],
   botCred: name => cfg.credentials[name],
   apiRoot: cfg.apiRoot,
   storeRoot: join(cfg.stateDir, 'skill-store'),
-  async exec(argv, env, timeoutMs) {
-    const p = Bun.spawn(argv, { env, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore' })
-    const timer = setTimeout(() => p.kill(9), timeoutMs)
-    const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
-    clearTimeout(timer)
-    return { code: await p.exited, out: `${out}${err ? `\n${err}` : ''}`.trim() }
-  },
   notifyOwner: (c, text) => void postNotice(approvalDeps, c.bot, text),
   log,
 }
@@ -729,7 +729,6 @@ const skillDeps: SkillRunDeps = {
 const tryDeps: SkillTryDeps = {
   ...skillDeps, stateDir: cfg.stateDir,
   cred: n => cfg.credentials[n],
-  hostAddrs: async () => [...interfaceAddrs(), ...await cloudPublicAddrs()],
   // compiled: the router's own executable runs the fake service; from source: bun and the script (router/selfpath.ts)
   fake: fakeService(),
 }
@@ -1191,10 +1190,11 @@ const commandDeps: CommandDeps = {
       }
       return rows.join('\n') || '沒有帶 privileged.json 的技能'
     },
-    approve(bot, name, by) {
+    approve(bot, name, by, role) {
       const dir = skillDirs({ home: cfg.home, botDir: b => botDir(cfg, b) }, bot, name)[0]
       if (!dir) return `找不到帶 privileged.json 的技能 ${name} (只看這隻 bot 與全部 bot 範圍)`
-      try { loadManifest(dir) } catch (e) { return `privileged.json 有誤: ${e instanceof Error ? e.message : e}` }
+      const why = approveRefusal(dir, name, role)
+      if (why) return why
       db.approveSkill(dir, name, hashSkill(dir), by)
       return `已核准技能 ${name} 的特權動作 (${dir}):\n${describeActions(dir)}\n之後檔案若被改動會自動暫停, 需要重新核准`
     },

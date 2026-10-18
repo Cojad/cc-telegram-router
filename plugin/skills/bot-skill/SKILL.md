@@ -89,35 +89,37 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 | `run` | 要執行的指令, 字串陣列, 不經 shell. 含 `/` 的相對路徑 (例如 `scripts/x.py`) 換成技能資料夾裡那個檔的絕對路徑; 找不到這個檔就原樣傳入, 而工作目錄是對話資料夾, 所以一定失敗 |
 | `{名稱}` | `run` 裡獨占一個元素的參數, 換成 `args` 裡同名參數的值; 沒帶就拒絕執行. 不能跟其他字黏在一起 (`"--url={url}"` 會原樣傳入), 要寫成 `"--url", "{url}"` |
 | `{名稱?}` | 可省的參數: 沒帶 (或空字串) 就整個略過, 不傳空字串 |
-| `{cred:環境變數}` | 換成 `creds` 裡那個環境變數對應的憑證資料夾路徑 |
+| `{cred:環境變數}` | 換成 `creds` 裡那個環境變數對應的憑證資料夾路徑 (沙箱裡的 `/cctr/creds/<環境變數>`) |
 | `args.<名稱>.pattern` | 正規表示式, **整串比對** (router 包成 `^(?:pattern)$`), 所以不用自己加 `^` `$`, 也不能只比對到一部分就過. 值最長 2000 字, 不能有換行. 沒寫 pattern 就是任何一行字 |
 | `args.<名稱>.flag` | 開關型參數: 值是 `true` 時傳入這個字 (例如 `--force`), 否則略過 |
 | `args.<名稱>.roles` | 只有這些角色能帶這個參數, 較低角色帶了照一般流程觸發提權申請 (只能一次一次允許) |
 | `roles` | 能呼叫的對話角色; 沒寫是 owner, admin, power, user (guest 不行) |
-| `creds` | `{環境變數: 憑證資料夾名稱}`: 資料夾在 router 那邊 (`<stateDir>/creds/<名稱>`), 由 owner 放入檔案 (例如 cookie); 腳本在 `$環境變數` 拿到路徑, 唯讀 |
+| `creds` | `{環境變數: 憑證資料夾名稱}`: 資料夾在 router 那邊, 由 owner 放入檔案 (例如 cookie); 腳本在 `$環境變數` 拿到沙箱裡的路徑 `/cctr/creds/<環境變數>`, 唯讀 |
 | `http` | `{環境變數: http 憑證名稱}`: 腳本拿到 `$<ENV>_URL` (base URL, 結尾沒有 `/`) 與 `$<ENV>_HEADER` (整行授權標頭, 例如 `Authorization: Bearer ...`) |
-| `bots` | `{環境變數: telegram-bot 憑證名稱}`: 腳本拿到 `$<ENV>_API` (`https://api.telegram.org/bot<token>` 這種網址), 例如 `$NOTIFY_BOT_API/sendMessage` |
+| `bots` | `{環境變數: telegram-bot 憑證名稱}`: 腳本拿到 `$<ENV>_API` (`https://api.telegram.org/bot<token>` 這種網址; router 用自架的 Bot API 時可能是 `http://10.0.2.2:<埠>/bot<token>`, 照用即可), 例如 `$NOTIFY_BOT_API/sendMessage` |
 | `store` | `{環境變數: 資料庫名稱}` 或 `{環境變數: {"name": ..., "mode": "full"}}`: 這隻 bot 共用的資料庫, 腳本在 `$環境變數` 拿到工作副本的路徑 (規則見下) |
 | `timeout` | 秒, 沒寫是 600; 超過就被終止 |
 | `internal` | `true`: 對話不能呼叫, 只由 router 執行 (憑證更新) |
 | `auth_failure`, `refresh` | 輸出比對到 `auth_failure` (正規表示式, 不分大小寫) 時, router 執行 `refresh` 指的 internal 動作一次 (只有它能寫憑證資料夾) 再重試; router 每天固定時間 (預設 05:00 GMT+8) 與啟動時發現超過 24 小時沒成功更新, 也會主動執行它, 所以它要能在憑證還有效時重複執行 |
-| `mounts`, `env` | 只給 internal 動作: 額外唯讀可見的路徑, 額外的環境變數 |
+| `outbound_ports` | 只給非 internal 動作: 外網要多開的 port (1~65535 的整數陣列, tcp 與 udp), 預設只開 80, 443, 53, 22. 開不了主機本機與內網. **有這個宣告的技能只有 owner 能核准** |
+| `host` | 只給 internal 動作, 主機存取: `{"ports": [主機的 port], "mounts": [唯讀可見的主機路徑, "~/" 是 router 使用者的家目錄], "env": {額外的環境變數}}`. `ports` 經 `$CCTR_HOST` 連 (例如 `http://$CCTR_HOST:9222`; 沙箱裡的 127.0.0.1 是沙箱自己, 不是主機); 有 `mounts` 時可以連掛進來的 unix socket (例如 ssh agent). 主機其他 port 與內網照樣連不到. **有這個宣告的技能只有 owner 能核准** |
+| `mounts`, `env` | 舊寫法, internal 動作的 `host.mounts` 與 `host.env`; 寫在其他動作上沒有作用 |
 
-環境變數名稱不能重複 (包含 `http` 展開的 `_URL`, `_HEADER` 與 `bots` 展開的 `_API`), 也不能是 PATH, HOME, LANG, TMPDIR, PYTHONUSERBASE. 資料庫名稱是小寫英數字與 `-`. internal 動作不能用 store 與 bots.
+環境變數名稱不能重複 (包含 `http` 展開的 `_URL`, `_HEADER` 與 `bots` 展開的 `_API`), 也不能是 PATH, HOME, LANG, TMPDIR, TZ, CCTR_HOST, VIRTUAL_ENV. 資料庫名稱是小寫英數字與 `-`. internal 動作不能用 store 與 bots.
 
 ### 執行時的環境
 
 - **工作目錄是對話資料夾** (呼叫它的那個對話), 也是唯一寫得到的地方 (它的 `.chat` 唯讀), 輸出檔就寫在這裡, 寫相對路徑即可; 之後你用 `reply` 的 `files` 送出.
-- **技能資料夾在沙箱裡唯讀**. Python 一律加 `-B` (例如 `["python3", "-B", "scripts/x.py"]`), 或 internal 動作的 env 設 `PYTHONDONTWRITEBYTECODE=1`, 不要寫 `__pycache__`.
-- `HOME` 是沙箱私有的 `/tmp` (每次執行都是空的, 跑完就消失), `TMPDIR` 也是; 憑證的工作副本 (例如要改寫的 cookie 檔) 放這裡, 不要寫進對話資料夾. `PATH` 是 `~/.local/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`; Python 找得到 router 使用者裝在 `~/.local` 的套件 (唯讀).
-- 看不到: router 的家目錄 (其他對話), router 狀態目錄, router 使用者的 $HOME, config `sandboxDenyRead`. 看得到的只有系統, 技能資料夾, 宣告的憑證資料夾, 資料庫副本, 對話資料夾.
-- **不要從對話資料夾載入程式或套件** (例如 `PYTHONPATH=./.pylib`, `source ./x.sh`): 那個資料夾對話自己寫得到, 等於讓對話用動作的憑證跑任意程式. 套件用系統的, `~/.local` 的, 或技能資料夾裡的 venv (`install_skill` 不複製 venv, 雜湊也不含它, 要由 owner 在安裝位置建好).
+- **技能資料夾在沙箱裡唯讀**. Python 一律加 `-B` (例如 `["python3", "-B", "scripts/x.py"]`), 或 internal 動作的 `host.env` 設 `PYTHONDONTWRITEBYTECODE=1`, 不要寫 `__pycache__`.
+- `HOME` 是沙箱私有的 `/tmp` (每次執行都是空的, 跑完就消失), `TMPDIR` 也是; 憑證的工作副本 (例如要改寫的 cookie 檔) 放這裡, 不要寫進對話資料夾. `PATH` 是 `/usr/local/bin`, `/usr/bin`, `/bin`.
+- **白名單: 只看得到列出來的東西**, 像手機 App. 有: `/usr` (系統的程式與函式庫, 例如 bash, curl, python3), 少數 `/etc` 檔 (CA 憑證, 名稱解析; `/etc/passwd` 只有沙箱自己的使用者), 技能資料夾, 宣告的憑證資料夾 (`/cctr/creds/<環境變數>`), 資料庫副本 (`/cctr/store/<環境變數>`), 對話資料夾, 私有的 `/tmp`. 其他全部不存在: router 使用者的家目錄 (裡面裝的套件與工具也用不到), `/home`, `/opt`, `/run`, `/sys`, router 的家目錄 (其他對話), router 狀態目錄, 其他技能.
+- **不要從對話資料夾載入程式或套件** (例如 `PYTHONPATH=./.pylib`, `source ./x.sh`): 那個資料夾對話自己寫得到, 等於讓對話用動作的憑證跑任意程式. 套件用系統的, 或技能資料夾裡的 venv (`install_skill` 不複製 venv, 雜湊也不含它, 要由 owner 在安裝位置建好).
 - 參數是呼叫者給的輸入, 一律當資料: 不要拿去 `eval` 或組 shell 指令. 參數是檔名時, pattern 擋掉 `..` (例如 `(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}`), 腳本再確認它在工作目錄裡.
 - 授權標頭與 bot 網址不要放在命令列 (別的程序看得到), 也不要印出來或寫進檔案: Python 直接放進請求; shell 先寫進 `/tmp` 的檔再 `curl -H @檔案`. 印錯誤時只印錯誤種類, 不要印整個請求或網址.
 - **exit code 不是 0 就算失敗** (資料庫也不寫回). 對話收到 `exit <碼>` 開頭, 加上輸出 (stdout 與 stderr) 的最後 60 行.
 - **輸出會掃描憑證**: 回傳文字裡出現的憑證內容 (cookie 值, http key, bot token) 遮蔽成 `<已遮蔽>`; 這次執行在對話資料夾寫出的文字檔含有憑證內容, 或檔名像 cookie 檔, 就刪除; 兩種都會通知 owner.
 - **每個對話每小時最多 10 次** (`run_skill`, 不分技能).
-- 正式執行沒有網路隔離, 腳本可以連網.
+- **網路: 外網只開 port 80, 443, 53, 22** (tcp 與 udp; 要別的 port 宣告 `outbound_ports`, owner 核准), **連不到主機本機與內網** (127.0.0.0/8, 10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16 含雲端 metadata, IPv6 的本機與內網位址, 主機自己的位址); DNS 照常可用. 沙箱裡的 127.0.0.1 是沙箱自己. **不能建立 unix socket** (`/run` 不存在, 建立 AF_UNIX socket 一律失敗; `socketpair` 照常), 所以腳本不要依賴 docker, dbus 這類本機服務. router 自己執行的 internal 動作外網不限 port, 主機只連得到 `host.ports` 宣告的.
 
 ### 資料庫 store
 
@@ -133,9 +135,9 @@ power 以上的對話用 `skill_try` (path, action, args, 選填 role, session, 
 - **憑證全是假的**: `$<ENV>_URL` 與 `$<ENV>_API` 指到沙箱裡 127.0.0.1 上的假服務 (Bot API 一律回 `{"ok":true,"result":true}`, http API 一律回 `{"fake":true}`), key 與 token 是隨機的假值, `$<ENV>_HEADER` 的標頭名稱與前綴照真的憑證; creds 資料夾是空的. 所以腳本要能處理回應裡沒有想要的欄位 (範例的「查不到活動名稱」). 回傳會列出假服務收到的每個請求 (方法, 路徑, 大小與開頭).
 - **資料庫從空的開始**, 不會複製這隻 bot 的正式資料庫. `store_seed` 給你資料夾裡的一個資料夾 (每個子資料夾是一個資料庫, 名稱同 privileged.json, 只能有一般檔案) 當初始內容; `session` 給一個名字 (小寫英數與 `-`), 試跑資料庫與 creds 資料夾就留給下一次 (最後一次使用後 24 小時清掉), 例如先 join 兩次再 list, cancel. 回傳列出這次資料庫的變動 (新增, 修改含 `.jsonl` 行數, 刪除); 寫回檢查不過時說明原因.
 - 工作目錄是你資料夾裡的 `skill-try/<時間>-<動作>/`, 輸出檔在那裡.
-- **試跑的網路: 連得到外網, 連不到主機本機與內網** (127.0.0.0/8, 10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16 含雲端 metadata, IPv6 的本機與內網位址, 主機自己的位址); DNS 照常可用. 沙箱裡自己的 127.0.0.1 是假服務, 不是主機. **也不能建立 unix socket** (`/run` 是空的, 建立 AF_UNIX socket 一律失敗; `socketpair` 照常), 所以腳本不要依賴 docker, dbus 這類本機服務.
+- **試跑的網路: 跟正式執行一樣, 外網只開 port 80, 443, 53, 22 與動作宣告的 `outbound_ports`, 連不到主機本機與內網**; 試跑 internal 動作也是這幾個 port. DNS 照常可用. 沙箱裡自己的 127.0.0.1 是假服務, 不是主機. **也不能建立 unix socket** (`/run` 不存在, 建立 AF_UNIX socket 一律失敗; `socketpair` 照常), 所以腳本不要依賴 docker, dbus 這類本機服務.
 - `role` 扮演等於或低於自己的角色, 看 `roles` 與 `args.roles` 擋不擋; 試跑不送提權申請.
-- internal 動作也能試 (例如憑證更新腳本), 但沒有 mounts 與 env; timeout 最多 600 秒.
+- internal 動作也能試 (例如憑證更新腳本), 但沒有主機存取 (`host` 的 ports, mounts, env); timeout 最多 600 秒.
 - 每個對話每小時 20 次, 不算進 `run_skill` 的 10 次.
 - 第一行是 `skill try: ok`, `failed` (跑了, 但 exit 不是 0 或資料庫寫回被拒) 或 `refused` (沒有跑, 附原因).
 

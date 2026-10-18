@@ -20,6 +20,7 @@ import { runSkill, describeActions, type SkillRunDeps } from '../skillrun'
 import { nextRefreshAt, refreshAll, scheduleRefresh, REFRESH_CONV, type RefreshDeps } from '../skillrefresh'
 import { parseRefreshAt, refreshAtOrOff, loadConfig } from '../config'
 import type { Conversation } from '../db'
+import { sandboxDeps } from './fixtures/sandbox'
 
 const COOKIE = 'SAPISIDabcdefghijklmnopqrstuvwxyz0123456789'
 let dir: string, db: RouterDb, deps: SkillRunDeps, conv: Conversation, skill: string, told: string[]
@@ -61,15 +62,9 @@ beforeEach(() => {
   conv = { key: 'dm-7', bot: 'cc', chat_id: '7', type: 'dm', folder, role: 'user', session_id: null, created_at: '' }
   told = []
   deps = {
-    db, home: join(dir, 'home'), credsRoot: join(dir, 'state', 'creds'), userHome: join(dir, 'fakehome'), hidden: [join(dir, 'home'), join(dir, 'state')], extraRo: [],
+    db, home: join(dir, 'home'), credsRoot: join(dir, 'state', 'creds'), userHome: join(dir, 'fakehome'), hidden: [join(dir, 'home'), join(dir, 'state')],
     botDir: () => join(dir, 'home', 'bot1'),
-    async exec(argv, env, timeoutMs) {
-      const p = Bun.spawn(argv, { env, stdout: 'pipe', stderr: 'pipe' })
-      const t = setTimeout(() => p.kill(9), timeoutMs)
-      const [o, e] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
-      clearTimeout(t)
-      return { code: await p.exited, out: `${o}${e}`.trim() }
-    },
+    ...sandboxDeps(join(dir, 'state')),
     notifyOwner: (_c, t) => told.push(t),
   }
   mkdirSync(deps.userHome)
@@ -86,14 +81,20 @@ test('buildArgv: script paths resolve in the skill, arguments must match, flags 
   expect(buildArgv(a, skill, {}, n => n)).toEqual({ error: '缺少參數 url' })
 })
 
-test('sandbox env: a private HOME, yet Python finds the user\'s packages under the real ~/.local (read-only)', async () => {
+test('sandbox env: a private HOME, the system PATH (extra bin folders first), no user packages; the whitelist, never the whole root', async () => {
   const { sandboxArgv } = await import('../privskill')
-  const sb = sandboxArgv({ argv: ['true'], skillDir: skill, convFolder: conv.folder, creds: {}, home: '/home/u', hidden: [], extraRo: [] })
-  expect(sb.env).toMatchObject({ HOME: '/tmp', PYTHONUSERBASE: '/home/u/.local', PATH: '/home/u/.local/bin:/usr/local/bin:/usr/bin:/bin' })
-  // a bin dir made visible (deno for yt-dlp) is on PATH as well, so a script finds it with $HOME hidden
-  const withDeno = sandboxArgv({ argv: ['true'], skillDir: skill, convFolder: conv.folder, creds: {}, home: '/home/u', hidden: [], extraRo: ['/home/u/.local/bin', '/home/u/.local/lib', '/home/u/.deno/bin'] })
-  expect(withDeno.env.PATH).toBe('/home/u/.local/bin:/home/u/.deno/bin:/usr/local/bin:/usr/bin:/bin')
-  expect(sb.argv.slice(0, 13)).toEqual(['bwrap', '--die-with-parent', '--unshare-pid', '--new-session', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp'])
+  const sb = sandboxArgv({ argv: ['true'], skillDir: skill, convFolder: conv.folder, etcDir: deps.etcDir, hidden: [] })
+  expect(sb.env).toEqual({ PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/tmp', LANG: 'C.UTF-8', TMPDIR: '/tmp' })
+  // a bin folder made visible (config sandboxExtraRo) is on PATH too
+  const extra = sandboxArgv({ argv: ['true'], skillDir: skill, convFolder: conv.folder, etcDir: deps.etcDir, hidden: [], extraRo: ['/opt/tools/bin', '/opt/tools/lib'] })
+  expect(extra.env.PATH).toBe('/opt/tools/bin:/usr/local/bin:/usr/bin:/bin')
+  expect(sb.argv.slice(0, 7)).toEqual(['bwrap', '--die-with-parent', '--unshare-pid', '--new-session', '--ro-bind', '/usr', '/usr'])
+  expect(sb.argv.join(' ')).not.toContain('--ro-bind / /')
+  // credentials and databases at fixed paths: the router's state dir never shows
+  const v = sandboxArgv({ argv: ['true'], skillDir: skill, convFolder: conv.folder, etcDir: deps.etcDir, hidden: [], creds: { COOKIE_DIR: join(dir, 'state', 'creds', 'yt') }, stores: { DB: join(dir, 'state', 'skill-store-work', 'run-1', 'DB') } })
+  expect(v.env).toMatchObject({ COOKIE_DIR: '/cctr/creds/COOKIE_DIR', DB: '/cctr/store/DB' })
+  expect(v.argv.join(' ')).toContain(`--ro-bind ${join(dir, 'state', 'creds', 'yt')} /cctr/creds/COOKIE_DIR`)
+  expect(v.argv.join(' ')).toContain(`--bind ${join(dir, 'state', 'skill-store-work', 'run-1', 'DB')} /cctr/store/DB`)
 })
 
 test('secrets: cookie values are found, removed from outputs and masked in text', () => {

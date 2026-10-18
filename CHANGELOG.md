@@ -6,6 +6,21 @@
 
 ## [Unreleased]
 
+## [2.22.0] - 2026-10-18
+
+### Changed
+
+- 特權技能的沙箱改成白名單 (柯姊 2026-10-18, 像手機 App 的隔離; `router/sandboxfs.ts`): 不再唯讀掛上整個根目錄再藏幾個資料夾, 改成只放 `/usr`, 少數 `/etc` 檔 (CA, 名稱解析, 動態連結; 沒有 `ssl/private`, `shadow` 這類), router 產生的 passwd, group, hosts, 私有的 `/tmp`, `/var/tmp`, `/dev/shm`, 唯讀的技能資料夾, 可寫的對話資料夾. router 使用者的家目錄, `/home`, `/opt`, `/run`, `/sys`, router 的家目錄 (其他對話), stateDir, 其他技能一律不存在. 憑證資料夾與資料庫副本改掛在固定路徑 `/cctr/creds/<環境變數>`, `/cctr/store/<環境變數>`, 腳本看不到 stateDir 在哪. 原本寫死給沙箱看的 `~/.local/bin`, `~/.local/lib`, `~/.deno/bin` 與 `PYTHONUSERBASE` 拿掉, 改由新的 config `sandboxExtraRo` (預設空) 加路徑. **家目錄裡裝的工具 (例如 yt-dlp, deno) 在沙箱裡用不到了, 現有技能要改用之後版本的工具箱與 uv 環境再部署.**
+- 所有特權動作 (`run_skill`, 終端機 `cli skill run`, 每日與終端機的憑證更新) 都在獨立的網路空間執行 (原本只有 `skill_try`): 連不到主機本機, 內網, metadata 與主機位址, 不能建 unix socket. 外網的 tcp 與 udp 只開 port 80, 443, 53, 22 (對話呼叫的動作與所有試跑); router 自己執行的 internal 動作外網不限 port. 缺工具或設定失敗時拒絕執行. 2.17 的已知限制解除.
+- Bot API 設在主機本機時 (bot 憑證解析後的 apiRoot, 也就是憑證自己的 `apiRoot` 或 config 的 `apiRoot`, 指到 `http://127.0.0.1:<埠>`, `localhost` 或 `[::1]` 的自架 Bot API server, 或終端機試跑的 `--api`): 宣告了 `bots` 的動作經 slirp 的主機別名 `10.0.2.2` 只連得到那個 port, `$<ENV>_API` 跟著改成 `http://10.0.2.2:<埠>/bot<token>`; 其他動作連不到.
+
+### Added
+
+- privileged.json 的 `host` (只給 internal 動作): `ports` (主機的 port, 經 `$CCTR_HOST` 連), `mounts` (唯讀的主機路徑, 有它時可以連掛進來的 unix socket), `env`. 舊的頂層 `mounts`, `env` 照 `host` 讀. 仍在獨立網路裡, 主機只連得到宣告的 port.
+- privileged.json 的 `outbound_ports` (只給非 internal 動作): 外網多開的 port; 開不了主機與內網.
+- 有 `host` 或 `outbound_ports` 的技能只有 owner 能核准: admin 下 `/router skill approve` 被拒並說明原因, 核准畫面以 ⚠️ 列出主機存取與額外的對外 port. `skill_check` 提醒舊寫法, `$CCTR_HOST`, 與只有 owner 能核准.
+- [docs/skill-runtime.md](docs/skill-runtime.md)「執行環境規格」: 掛載路徑, 環境變數, 工作目錄, 網路, 主機存取 host, 對外 port, 核准, exit code 與輸出; 網路的實作說明從 credentials-and-skills.md 搬過來. `/telegram:bot-skill` 的執行環境與欄位表跟著改. 新測試 `router/test/whitelist.test.ts` (10 項), `router/test/e2e-compiled.test.ts` 加上編譯版 router 的 run_skill (含連主機本機的 Bot API).
+
 ## [2.21.0] - 2026-10-18
 
 ### Added

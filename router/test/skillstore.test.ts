@@ -20,6 +20,7 @@ import { join } from 'path'
 import { openRouterDb, type RouterDb, type Conversation } from '../db'
 import { hashSkill, loadManifest } from '../privskill'
 import { runSkill, describeActions, type SkillRunDeps } from '../skillrun'
+import { sandboxDeps } from './fixtures/sandbox'
 
 const TOKEN = '1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 const MB = 1024 * 1024
@@ -92,16 +93,10 @@ beforeEach(() => {
   conv2 = mkConv('dm-8')
   told = []
   deps = {
-    db, home: join(dir, 'home'), credsRoot: join(dir, 'state', 'creds'), userHome: join(dir, 'fakehome'), hidden: [join(dir, 'home'), join(dir, 'state')], extraRo: [],
+    db, home: join(dir, 'home'), credsRoot: join(dir, 'state', 'creds'), userHome: join(dir, 'fakehome'), hidden: [join(dir, 'home'), join(dir, 'state')],
     storeRoot: join(dir, 'state', 'skill-store'), apiRoot: 'http://127.0.0.1:9',
     botDir: () => join(dir, 'home', 'bot1'),
-    async exec(argv, env, timeoutMs) {
-      const p = Bun.spawn(argv, { env, stdout: 'pipe', stderr: 'pipe' })
-      const t = setTimeout(() => p.kill(9), timeoutMs)
-      const [o, e] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
-      clearTimeout(t)
-      return { code: await p.exited, out: `${o}${e}`.trim() }
-    },
+    ...sandboxDeps(join(dir, 'state')),
     notifyOwner: (_c, t) => told.push(t),
   }
   mkdirSync(deps.userHome)
@@ -235,15 +230,16 @@ test('bots: the script gets <apiRoot>/bot<token>; the token never comes back (ou
   expect((await runSkill(deps, conv, 'user', 'sticker', 'send', {})).text).toContain('需要的 bot 憑證 baldeagle 是 http 類, bots 只接受 telegram-bot 憑證')
   deps.botCred = name => name === 'baldeagle' ? { token: TOKEN, methods: ['addStickerToSet'] } : undefined
   const r = await runSkill(deps, conv, 'user', 'sticker', 'send', {})
-  expect(r.text).toContain('api=http://127.0.0.1:9')
-  expect(r.text).toContain('http://127.0.0.1:9/bot<已遮蔽>')
+  expect(r.text).toContain('api=http://10.0.2.2:9')
+  expect(r.text).toContain('http://10.0.2.2:9/bot<已遮蔽>')
   expect(r.text).not.toContain(TOKEN)
   expect(existsSync(join(conv.folder, 'out.txt'))).toBe(false)
   expect(told.some(t => t.includes('含有憑證內容'))).toBe(true)
   // a credential with its own apiRoot (a self-hosted Bot API server) gets that one; a trial run's fixed server wins over it
   deps.botCred = name => name === 'baldeagle' ? { token: TOKEN, methods: ['addStickerToSet'], apiRoot: 'http://127.0.0.1:8081' } : undefined
-  expect((await runSkill(deps, conv, 'user', 'sticker', 'send', {})).text).toContain('api=http://127.0.0.1:8081')
-  expect((await runSkill({ ...deps, apiRootFixed: 'http://127.0.0.1:7' }, conv, 'user', 'sticker', 'send', {})).text).toContain('api=http://127.0.0.1:7\n')
+  // on the host's loopback: the sandbox reaches it at slirp's host alias (docs/skill-runtime.md 「網路」)
+  expect((await runSkill(deps, conv, 'user', 'sticker', 'send', {})).text).toContain('api=http://10.0.2.2:8081')
+  expect((await runSkill({ ...deps, apiRootFixed: 'http://127.0.0.1:7' }, conv, 'user', 'sticker', 'send', {})).text).toContain('api=http://10.0.2.2:7\n')
   deps.botCred = name => name === 'baldeagle' ? { token: TOKEN, methods: ['addStickerToSet'] } : undefined
   told = []
   seed()
@@ -270,8 +266,8 @@ test('store, bots and http together in one action (the generate action\'s mix): 
   expect(r.ok).toBe(true)
   expect(r.text).toContain('url=https://api.example.com')
   expect(r.text).toContain('header-set')
-  expect(r.text).toContain('api=http://127.0.0.1:9')
-  expect(r.text).toContain('Authorization: Bearer <已遮蔽> http://127.0.0.1:9/bot<已遮蔽>')
+  expect(r.text).toContain('api=http://10.0.2.2:9')
+  expect(r.text).toContain('Authorization: Bearer <已遮蔽> http://10.0.2.2:9/bot<已遮蔽>')
   expect(r.text).not.toContain(KEY)
   expect(r.text).not.toContain(TOKEN)
   expect(readFileSync(join(store, 'log.jsonl'), 'utf8')).toBe('{"id":1}\n{"id":2}\n')

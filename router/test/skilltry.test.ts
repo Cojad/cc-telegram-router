@@ -26,6 +26,7 @@ import { sandboxArgv } from '../privskill'
 import { nftRules, netMissing, runIsolated, interfaceAddrs, unixBlockFilter, BLOCKED_V4 } from '../sandboxnet'
 import { trySkill, TRY_PER_HOUR, type SkillTryDeps } from '../skilltry'
 import type { Credential } from '../config'
+import { sandboxDeps } from './fixtures/sandbox'
 
 const ROOT = join(import.meta.dir, '..', '..')
 const GUIDE = readFileSync(join(ROOT, 'plugin', 'skills', 'bot-skill', 'SKILL.md'), 'utf8')
@@ -49,23 +50,15 @@ const conv = (key: string, role: string): Conversation => {
   mkdirSync(join(folder, '.chat'), { recursive: true })
   return { key, bot: 'cc', chat_id: key.replace(/\D/g, ''), type: 'dm', folder, role, session_id: null, created_at: '' }
 }
-function exec(argv: string[], env: Record<string, string>, timeoutMs: number) {
-  return (async () => {
-    const p = Bun.spawn(argv, { env, stdout: 'pipe', stderr: 'pipe' })
-    const t = setTimeout(() => p.kill(9), timeoutMs)
-    const [o, e] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
-    clearTimeout(t)
-    return { code: await p.exited, out: `${o}${e}`.trim() }
-  })()
-}
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'cctr-try-'))
   mkdirSync(join(dir, 'state'))
   db = openRouterDb(join(dir, 'state', 'router.db'))
   deps = {
-    db, home: join(dir, 'home'), credsRoot: join(dir, 'state', 'creds'), userHome: join(dir, 'fakehome'), hidden: [join(dir, 'home'), join(dir, 'state')], extraRo: [],
-    storeRoot: join(dir, 'state', 'skill-store'), botDir: () => join(dir, 'home', 'bot1'), exec, notifyOwner: () => {},
-    stateDir: join(dir, 'state'), cred: n => CREDS[n], hostAddrs: async () => interfaceAddrs(),
+    db, home: join(dir, 'home'), credsRoot: join(dir, 'state', 'creds'), userHome: join(dir, 'fakehome'), hidden: [join(dir, 'home'), join(dir, 'state')],
+    storeRoot: join(dir, 'state', 'skill-store'), botDir: () => join(dir, 'home', 'bot1'), notifyOwner: () => {},
+    ...sandboxDeps(join(dir, 'state')),
+    stateDir: join(dir, 'state'), cred: n => CREDS[n],
     fake: { cmd: [process.execPath, join(ROOT, 'router', 'skilltry-fake.ts')], ro: [process.execPath, join(ROOT, 'router', 'skilltry-fake.ts')] },
   }
   mkdirSync(deps.userHome)
@@ -97,7 +90,7 @@ async function probe(urls: string[], extra = ''): Promise<string> {
   mkdirSync(folder, { recursive: true }); mkdirSync(skill, { recursive: true })
   writeFileSync(join(skill, 'probe.py'), PROBE)
   const cmd = ['bash', '-c', `${extra}python3 -B ${join(skill, 'probe.py')} "$@"`, 'probe', ...urls]
-  const sb = sandboxArgv({ argv: cmd, skillDir: skill, convFolder: folder, creds: {}, home: deps.userHome, hidden: deps.hidden })
+  const sb = sandboxArgv({ argv: cmd, skillDir: skill, convFolder: folder, etcDir: deps.etcDir, hidden: deps.hidden })
   const r = await runIsolated({ argv: sb.argv, env: sb.env, timeoutMs: 60_000, workDir: join(dir, 'state', 'net'), hostAddrs: interfaceAddrs() })
   if ('error' in r) throw new Error(r.error)
   return r.out
@@ -127,7 +120,7 @@ test('sandbox network: the host\'s 127.0.0.1, its own address, 169.254.169.254, 
   expect(out).toMatch(/Operation not permitted|you must be root/)
 }, 90_000)
 
-test('sandbox unix sockets: /run and /var/run are empty (docker.sock is gone), no AF_UNIX socket can be made (a socket in a visible folder, every socket under /run/user/<uid>), socketpair and TCP still work; DNS is still set', async () => {
+test('sandbox unix sockets: /run and /var/run do not exist (docker.sock is gone), no AF_UNIX socket can be made (a socket in a visible folder, every socket under /run/user/<uid>), socketpair and TCP still work; DNS is still set', async () => {
   const uid = process.getuid!()
   const userRun = `/run/user/${uid}`
   const hostSocks = existsSync(userRun) ? (Bun.spawnSync(['find', userRun, '-maxdepth', '3', '-type', 's']).stdout.toString().split('\n').filter(Boolean).slice(0, 5)) : []
@@ -137,12 +130,13 @@ test('sandbox unix sockets: /run and /var/run are empty (docker.sock is gone), n
   const listener = Bun.listen({ unix: join(folder, 'host.sock'), socket: { open() { accepted++ }, data() {} } })
   try {
     const targets = ['/run/docker.sock', '/var/run/docker.sock', '/run/dbus/system_bus_socket', join(folder, 'host.sock'), ...hostSocks].map(s => `unix:${s}`)
-    const out = await probe(targets, `ls -A /run; ls -A /var/run; cat /etc/resolv.conf; python3 -c "import socket; socket.socketpair(); socket.socket(socket.AF_INET); print('pair and tcp ok')"; `)
+    const out = await probe(targets, `ls -d /run /var/run 2>&1 | sed 's/^/LS /'; cat /etc/resolv.conf; python3 -c "import socket; socket.socketpair(); socket.socket(socket.AF_INET); print('pair and tcp ok')"; `)
     for (const t of targets) expect(out).toMatch(new RegExp(`^${t.replace(/[.?*+/]/g, '\\$&')} no `, 'm'))
     expect(out).toContain(`unix:${join(folder, 'host.sock')} no PermissionError`)
     expect(out).toContain('pair and tcp ok')
     expect(out).toContain('nameserver 10.0.2.3')
-    expect(out).not.toContain('docker.sock\n')
+    expect(out).toContain("LS ls: cannot access '/run': No such file or directory")
+    expect(out).toContain("LS ls: cannot access '/var/run': No such file or directory")
     expect(accepted).toBe(0)
   } finally { listener.stop(true) }
 }, 90_000)
@@ -176,7 +170,7 @@ test('skill_try on the guide\'s example: power runs join with fake credentials o
   expect(r.text.split('\n')[0]).toBe('skill try: ok')
   expect(r.ok).toBe(true)
   expect(r.text).toContain('扮演角色 power')
-  expect(r.text).toContain('網路: 外網可連, 主機本機與內網擋下')
+  expect(r.text).toContain('網路: 外網只開 port 80, 443, 53, 22, 主機本機與內網擋下')
   expect(r.text).toContain('小明 報名成功, 目前 1 人 (這次活動)')
   expect(r.text).toContain('試跑資料庫的變動: \n新增 signup/signups.jsonl (')
   expect(r.text).toContain('1 行)')
@@ -237,7 +231,7 @@ test('skill_try: power and up only (user waits for phase 2); role is simulated b
   expect(db.skillRunsSince('try:dm-9', '2000-01-01')).toBe(0)
 }, 60_000)
 
-test('skill_try: internal actions run without mounts and env; the timeout is capped at 600 seconds; credentials missing from the router are noted; refused without the network tools; the hourly limit is 20', async () => {
+test('skill_try: internal actions run without host access; the timeout is capped at 600 seconds; credentials missing from the router are noted; refused without the network tools; the hourly limit is 20', async () => {
   const c = conv('dm-7', 'owner')
   draft(c, 'refresher', {
     'SKILL.md': '---\nname: refresher\ndescription: x\n---\n',
@@ -250,7 +244,7 @@ test('skill_try: internal actions run without mounts and env; the timeout is cap
   const r = await trySkill(deps, c, 'owner', { path: 'refresher', action: 'refresh' })
   expect(r.text.split('\n')[0]).toBe('skill try: ok')
   expect(r.text).toContain('secret=unset')
-  expect(r.text).toContain('動作 refresh 的 mounts 與 env 在試跑時一律不給')
+  expect(r.text).toContain('動作 refresh 的主機存取 (host: ports, mounts, env) 在試跑時一律不給')
   const g = await trySkill(deps, c, 'owner', { path: 'refresher', action: 'go' })
   expect(g.text).toContain('動作 go 的 timeout 在試跑時最多 600 秒')
   expect(g.text).toContain('憑證 nowhere 在 router 裡不存在: 試跑用假的照跑, 核准後正式執行會拒絕')
@@ -268,16 +262,19 @@ test('skill_try is a tool; the guide and docs say what it does', async () => {
   expect(t.inputSchema.required).toEqual(['path', 'action'])
   for (const k of ['path', 'action', 'args', 'role', 'session', 'store_seed']) expect(t.inputSchema.properties[k]).toBeDefined()
   expect(t.description).toContain('power and up')
-  for (const s of ['### 試跑 (skill_try)', '**憑證全是假的**', '**資料庫從空的開始**', '**試跑的網路: 連得到外網, 連不到主機本機與內網**', '每個對話每小時 20 次', 'timeout 最多 600 秒', '| user | 可以 | 可以 | 不行 (試跑的程式還沒核准, 要等之後的白名單沙箱)']) expect(GUIDE).toContain(s)
+  for (const s of ['### 試跑 (skill_try)', '**憑證全是假的**', '**資料庫從空的開始**', '**試跑的網路: 跟正式執行一樣, 外網只開 port 80, 443, 53, 22 與動作宣告的 `outbound_ports`, 連不到主機本機與內網**', '**網路: 外網只開 port 80, 443, 53, 22**', '**白名單: 只看得到列出來的東西**', '每個對話每小時 20 次', 'timeout 最多 600 秒', '| user | 可以 | 可以 | 不行 (試跑的程式還沒核准, 要等之後的白名單沙箱)']) expect(GUIDE).toContain(s)
   const docs = readFileSync(join(ROOT, 'docs', 'credentials-and-skills.md'), 'utf8')
-  for (const s of ['### 試跑技能草稿', '### 試跑的網路', 'user 對話一律拒絕', 'NS_GET_USERNS', '`/run` 蓋上空的 tmpfs', 'AF_UNIX socket 的 `socket(2)` 失敗', '`io_uring_setup`', '**已知限制**: 已核准的特權動作']) expect(docs).toContain(s)
+  for (const s of ['### 試跑技能草稿', '### 試跑的網路', 'user 對話一律拒絕', '試跑 internal 動作也一樣, 不像正式執行不限 port']) expect(docs).toContain(s)
+  expect(docs).not.toContain('**已知限制**: 已核准的特權動作') // phase 2: every privileged action has the network now
+  const spec = readFileSync(join(ROOT, 'docs', 'skill-runtime.md'), 'utf8')
+  for (const s of ['## 網路', 'NS_GET_USERNS', '白名單檔案系統裡本來就沒有 `/run`', 'AF_UNIX socket 的 `socket(2)` 失敗', '`io_uring_setup`', 'tcp 與 udp 只開 port 80, 443, 53, 22']) expect(spec).toContain(s)
   expect(GUIDE).toContain('**也不能建立 unix socket**')
 })
 
 test('a sandbox that ends before its network is set up (a path it mounts is missing, as the compiled router\'s fake script was) says why, in bwrap\'s words', async () => {
   const folder = join(dir, 'probe'), skill = join(dir, 'skill')
   mkdirSync(folder, { recursive: true }); mkdirSync(skill, { recursive: true })
-  const sb = sandboxArgv({ argv: ['true'], skillDir: skill, convFolder: folder, creds: {}, home: deps.userHome, hidden: deps.hidden })
+  const sb = sandboxArgv({ argv: ['true'], skillDir: skill, convFolder: folder, etcDir: deps.etcDir, hidden: deps.hidden })
   const r = await runIsolated({ argv: sb.argv, env: sb.env, timeoutMs: 30_000, workDir: join(dir, 'state', 'net'), hostAddrs: [], extraRo: ['/$bunfs/root/skilltry-fake.ts'] })
   expect('error' in r && r.error).toMatch(/^沙箱在設定網路前就結束了 \(exit 1\): bwrap: Can't find source path \/\$bunfs\/root\/skilltry-fake\.ts/)
 })
@@ -288,6 +285,6 @@ test('skill_try: when the sandbox cannot start (here: the fake service\'s script
   const r = await trySkill({ ...deps, fake: { cmd: [process.execPath, '/$bunfs/root/skilltry-fake.ts'], ro: ['/$bunfs/root/skilltry-fake.ts'] } }, c, 'power', { path: 'signup', action: 'join', args: { name: '小明' } })
   expect(r.ok).toBe(false)
   expect(r.text.split('\n')[0]).toBe('skill try: refused')
-  expect(r.text).toContain("試跑的網路隔離失敗, 沒有執行: 沙箱在設定網路前就結束了 (exit 1): bwrap: Can't find source path /$bunfs/root/skilltry-fake.ts")
+  expect(r.text).toContain("沙箱的網路隔離失敗, 沒有執行: 沙箱在設定網路前就結束了 (exit 1): bwrap: Can't find source path /$bunfs/root/skilltry-fake.ts")
   expect(r.text).toContain('試跑資料庫的變動: 無')
 })

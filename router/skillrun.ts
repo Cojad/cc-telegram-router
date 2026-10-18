@@ -7,10 +7,11 @@
 // lock, on a staged copy written back only when the checks pass
 // (router/skillstore.ts).
 
-import { mkdirSync, existsSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, existsSync, rmSync } from 'fs'
 import { basename, join } from 'path'
 import type { Conversation, RouterDb } from './db'
-import { loadManifest, hashSkill, buildArgv, sandboxArgv, secretsIn, scrubOutputs, redact, argRoleRefusal, storeOf, RUNS_PER_HOUR, type Action, type Manifest } from './privskill'
+import { loadManifest, hashSkill, buildArgv, sandboxArgv, secretsIn, scrubOutputs, redact, argRoleRefusal, storeOf, hostOf, ownerOnly, VIRT, RUNS_PER_HOUR, type Action, type Manifest } from './privskill'
+import { runIsolated, netMissing, OUT_PORTS, SLIRP_HOST, type IsolatedRun, type NetRun } from './sandboxnet'
 import type { Credential } from './config'
 import { storesOf, withStoreLocks, stage, check, commit, workDir, RUN_MAX, type Plan, type StoreUse } from './skillstore'
 
@@ -21,12 +22,23 @@ export interface SkillRunDeps {
   home: string
   /** Where credential folders live (router-private), <stateDir>/creds */
   credsRoot: string
-  /** $HOME of the router user, hidden in the sandbox */
+  /** $HOME of the router user: never in the sandbox ("~/" of an internal action's host mounts) */
   userHome: string
-  /** Also hidden: the router's home, its state dir, config sandboxDenyRead (config.ts hiddenPaths) */
+  /** Covered when inside something bound read-only (/usr, extraRo): the router's home, its state
+   *  dir, config sandboxDenyRead (config.ts hiddenPaths) */
   hidden: string[]
-  /** Binaries outside the system dirs the sandbox needs (e.g. ~/.local/bin/yt-dlp) */
+  /** config sandboxExtraRo: more paths every sandbox sees read-only (their bin folders on PATH) */
   extraRo: string[]
+  /** passwd, group and hosts for the sandbox's /etc (router/sandboxfs.ts writeSandboxEtc) */
+  etcDir: string
+  /** Router-private folder for each run's network files: <stateDir>/sandbox-run */
+  runRoot: string
+  /** The host's own addresses the network refuses (router/sandboxnet.ts). */
+  hostAddrs(): Promise<string[]>
+  /** Run a sandbox in its own network (router/sandboxnet.ts runIsolated; skill_try adds its fake service). */
+  isolated?(o: IsolatedRun): Promise<NetRun>
+  /** Which network tools are missing (router/sandboxnet.ts netMissing; replaced in tests). */
+  netMissing?(): string | null
   botDir(bot: string): string
   /** An http API credential by name (router config), for actions that declare http. */
   httpCred?(name: string): Credential | undefined
@@ -38,8 +50,6 @@ export interface SkillRunDeps {
   apiRootFixed?: string
   /** Databases of actions that declare store: <stateDir>/skill-store (router/skillstore.ts). */
   storeRoot?: string
-  /** Run argv with env, killed after timeoutMs. */
-  exec(argv: string[], env: Record<string, string>, timeoutMs: number): Promise<RunResult>
   notifyOwner(conv: Conversation, text: string): void
   log?(msg: string): void
 }
@@ -66,27 +76,60 @@ function botCredRefusal(deps: Pick<SkillRunDeps, 'botCred'>, a: Action): string 
 /** Every token an action's run must never hand back: http keys and bot tokens. */
 const tokensOf = (deps: Pick<SkillRunDeps, 'httpCred' | 'botCred'>, a: Action) => [...httpCreds(deps, a), ...botCreds(deps, a)].map(h => h.cred?.token ?? '').filter(t => t.length >= 16)
 
+/** A Bot API URL as the sandbox reaches it: one on the host's loopback (http://127.0.0.1, localhost or
+ *  [::1], e.g. a self-hosted Bot API server or a test's fake) becomes slirp's host alias on that port,
+ *  the one host port the run may then use (the server must listen on 127.0.0.1); any other is kept. */
+export function apiForSandbox(apiRoot: string): { root: string; port?: number } {
+  const root = apiRoot.replace(/\/+$/, '')
+  let u: URL
+  try { u = new URL(root) } catch { return { root } }
+  if (!['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname) && !/^127\./.test(u.hostname)) return { root }
+  const port = Number(u.port || (u.protocol === 'https:' ? 443 : 80))
+  return { root: `${u.protocol}//${SLIRP_HOST}:${port}${u.pathname.replace(/\/+$/, '')}`, port }
+}
+
+/** The internet ports an action may use (router/sandboxnet.ts): any for the router's own internal
+ *  actions, else 80, 443, 53, 22 and what it declared (outbound_ports, owner approval). */
+export const outPortsOf = (a: Action): number[] | null => a.internal ? null : [...new Set([...OUT_PORTS, ...(a.outbound_ports ?? [])])]
+
 /** One action in its own sandbox, the conversation (or router) folder
  *  writable: shared by run_skill and the daily refresh (router/skillrefresh.ts).
- *  Only internal (router-run) actions get extra mounts and env, and write
- *  their credential folders: a conversation's actions never see the ssh agent. */
+ *  The whitelisted file system and its own network (docs/skill-runtime.md);
+ *  only internal (router-run) actions get host access (host: ports, mounts,
+ *  env) and write their credential folders: a conversation's actions never
+ *  see the ssh agent. */
 export async function runAction(deps: Omit<SkillRunDeps, 'notifyOwner'>, dir: string, a: Action, args: Record<string, unknown>, folder: string, stores: Record<string, string> = {}): Promise<RunResult> {
   const http = httpCreds(deps, a)
   const missing = http.find(h => h.cred?.kind !== 'http' || !h.cred.baseUrl)
   if (missing) return { code: -1, out: `需要的 API 憑證 ${missing.name} 不存在或不是 http 憑證` }
   const botWhy = botCredRefusal(deps, a)
   if (botWhy) return { code: -1, out: botWhy }
-  const argv = buildArgv(a, dir, args, name => credDir(deps, name))
+  const argv = buildArgv(a, dir, args, (_name, env) => `${VIRT.creds}/${env}`)
   if ('error' in argv) return { code: -1, out: argv.error }
+  const tools = (deps.netMissing ?? netMissing)()
+  if (tools) return { code: -1, out: `這台主機缺少沙箱網路隔離需要的工具 (${tools}), 沒有執行 (不會改成不隔離)` }
   const httpEnv: Record<string, string> = Object.fromEntries(http.flatMap(({ env, cred }) => [
     [`${env}_URL`, cred!.baseUrl!.replace(/\/+$/, '')],
     [`${env}_HEADER`, `${cred!.header ?? 'Authorization'}: ${`${cred!.scheme ?? 'Bearer'} ${cred!.token}`.trim()}`],
   ]))
-  const botEnv = Object.fromEntries(botCreds(deps, a).map(({ env, cred }) => [`${env}_API`, `${(deps.apiRootFixed ?? cred!.apiRoot ?? deps.apiRoot ?? 'https://api.telegram.org').replace(/\/+$/, '')}/bot${cred!.token}`]))
-  const mounts = a.internal ? (a.mounts ?? []).map(m => m.startsWith('~/') ? join(deps.userHome, m.slice(2)) : m) : []
-  const sb = sandboxArgv({ argv, skillDir: dir, convFolder: folder, creds: credEnv(deps, a), home: deps.userHome, hidden: deps.hidden, extraRo: [...deps.extraRo, ...mounts], credsWritable: !!a.internal, writable: Object.values(stores), env: { ...(a.internal ? a.env : {}), ...httpEnv, ...botEnv, ...stores } })
-  return deps.exec(sb.argv, sb.env, (a.timeout ?? 600) * 1000)
+  // each bot credential's Bot API (a trial's fixed one, its own apiRoot, the config's, the official one); one on the
+  // host (a self-hosted server, the terminal trial's --api) is reached at slirp's host alias, its port only
+  const bots = botCreds(deps, a).map(b => ({ ...b, api: apiForSandbox(deps.apiRootFixed ?? b.cred!.apiRoot ?? deps.apiRoot ?? 'https://api.telegram.org') }))
+  const botEnv = Object.fromEntries(bots.map(({ env, cred, api }) => [`${env}_API`, `${api.root}/bot${cred!.token}`]))
+  const host = a.internal ? hostOf(a) : null
+  const mounts = (host?.mounts ?? []).map(m => m.startsWith('~/') ? join(deps.userHome, m.slice(2)) : m)
+  const hostPorts = [...new Set([...(host?.ports ?? []), ...bots.flatMap(b => b.api.port ? [b.api.port] : [])])]
+  const hostEnv = { ...(host?.env ?? {}), ...(hostPorts.length ? { CCTR_HOST: SLIRP_HOST } : {}) }
+  const sb = sandboxArgv({ argv, skillDir: dir, convFolder: folder, etcDir: deps.etcDir, creds: credEnv(deps, a), credsWritable: !!a.internal, stores, hidden: [...deps.hidden, deps.userHome], extraRo: [...deps.extraRo, ...mounts], env: { ...hostEnv, ...httpEnv, ...botEnv } })
+  mkdirSync(deps.runRoot, { recursive: true, mode: 0o700 })
+  const work = mkdtempSync(join(deps.runRoot, 'run-'))
+  try {
+    const r = await (deps.isolated ?? runIsolated)({ argv: sb.argv, env: sb.env, timeoutMs: (a.timeout ?? 600) * 1000, workDir: join(work, 'net'), hostAddrs: await deps.hostAddrs(), hostPorts, outPorts: outPortsOf(a), allowUnix: !!mounts.length })
+    return 'error' in r ? { code: -1, out: `${NET_FAILED}${r.error}` } : r
+  } finally { rmSync(work, { recursive: true, force: true }) }
 }
+/** What a run's text starts with when its network could not be set up (nothing ran). */
+export const NET_FAILED = '沙箱的網路隔離失敗, 沒有執行: '
 
 /** runAs: the skill_runs conversation to record under instead of conv.key
  *  (the owner's terminal, router/skillcli.ts); such a run is not counted
@@ -202,9 +245,31 @@ function writeBack(stores: StoreUse[], work: string, secrets: string[]): string 
   return null
 }
 
+/** Why this role may not approve the skill in dir (/router skill approve), or null: privileged.json
+ *  must load; host access and more internet ports need owner. */
+export function approveRefusal(dir: string, name: string, role: string): string | null {
+  let m: Manifest
+  try { m = loadManifest(dir)! } catch (e) { return `privileged.json 有誤: ${e instanceof Error ? e.message : e}` }
+  const why = ownerOnly(m)
+  if (why.length && role !== 'owner') return `技能 ${name} 只有 owner 能核准: ${why.join('; ')}. 沒有核准\n${describeActions(dir)}`
+  return null
+}
+
+/** An internal action's host access, as the approval shows it. */
+function hostLine(a: Action): string {
+  const h = a.internal ? hostOf(a) : null
+  if (!h) return ''
+  const parts = [
+    ...(h.ports?.length ? [`連得到主機本機的 port ${h.ports.join(', ')} (經 $CCTR_HOST)`] : []),
+    ...(h.mounts?.length ? [`可讀 ${h.mounts.join(', ')} (可以連 unix socket)`] : []),
+    ...(Object.keys(h.env ?? {}).length ? [`環境變數 ${Object.keys(h.env!).join(', ')}`] : []),
+  ]
+  return `; ⚠️ 主機存取 (只有 owner 能核准): ${parts.join(', ')}; 主機其他 port 與內網照樣連不到`
+}
+
 /** What /router skill approve shows about a skill's actions. */
 export function describeActions(dir: string): string {
   const m = loadManifest(dir)
   if (!m) return '(沒有 privileged.json)'
-  return Object.entries(m.actions).map(([n, a]) => `${n}${a.internal ? ' (只由 router 執行)' : ''}: ${a.run.join(' ')}; 角色 ${(a.roles ?? ['owner', 'admin', 'power', 'user']).join(', ')}${a.creds ? `; 憑證 ${Object.values(a.creds).join(', ')}` : ''}${a.http ? `; API 憑證 ${Object.values(a.http).join(', ')}` : ''}${a.bots ? `; bot 憑證 ${Object.values(a.bots).join(', ')}` : ''}${a.store ? `; 資料庫 ${Object.values(a.store).map(d => { const s = storeOf(d); return `${s.name} (${s.mode})` }).join(', ')}` : ''}${Object.entries(a.args ?? {}).filter(([, s]) => s.roles).map(([n, s]) => `; 參數 ${n} 限 ${s.roles!.join(', ')}`).join('')}${a.internal && a.mounts?.length ? `; 另外可讀 ${a.mounts.join(', ')}` : ''}`).join('\n')
+  return Object.entries(m.actions).map(([n, a]) => `${n}${a.internal ? ' (只由 router 執行)' : ''}: ${a.run.join(' ')}; 角色 ${(a.roles ?? ['owner', 'admin', 'power', 'user']).join(', ')}${a.creds ? `; 憑證 ${Object.values(a.creds).join(', ')}` : ''}${a.http ? `; API 憑證 ${Object.values(a.http).join(', ')}` : ''}${a.bots ? `; bot 憑證 ${Object.values(a.bots).join(', ')}` : ''}${a.store ? `; 資料庫 ${Object.values(a.store).map(d => { const s = storeOf(d); return `${s.name} (${s.mode})` }).join(', ')}` : ''}${Object.entries(a.args ?? {}).filter(([, s]) => s.roles).map(([n, s]) => `; 參數 ${n} 限 ${s.roles!.join(', ')}`).join('')}${a.outbound_ports?.length ? `; ⚠️ 額外的對外 port ${a.outbound_ports.join(', ')} (只有 owner 能核准)` : ''}${hostLine(a)}`).join('\n')
 }

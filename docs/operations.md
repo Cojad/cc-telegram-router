@@ -94,17 +94,18 @@ router 以 `claude --bg` 在每個對話資料夾 (`<home>` 底下) 啟動 worke
 | `model` | worker 與套件審核用的模型 (`--model`); 沒寫是 `claude-opus-5-5`. |
 | `autoCompactWindow` | 新對話的 autoCompactWindow; 沒寫是 750000. |
 | `claudeBin` | 啟動 worker, 套件審核與 `cc /` 代打用的 claude 執行檔; 沒寫是 `claude` (照 PATH 找). 只有 owner 能用 `/router config set` 改. |
-| `apiRoot` | 沒有自己 `apiRoot` 的 bot 與 bot 憑證用的 Bot API 網址, 例如自架的 `http://127.0.0.1:8081`; 沒寫 (或不是 http(s) 網址) 是 `https://api.telegram.org`. 特權動作 `bots` 的 `$<ENV>_API` 也照它 (憑證有自己的 `apiRoot` 時用憑證的). 見[自架 Bot API server](#自架-bot-api-server), [bot 憑證 bots](credentials-and-skills.md#bot-憑證-bots). |
+| `apiRoot` | 沒有自己 `apiRoot` 的 bot 與 bot 憑證用的 Bot API 網址, 例如自架的 `http://127.0.0.1:8081`; 沒寫 (或不是 http(s) 網址) 是 `https://api.telegram.org`. 特權動作 `bots` 的 `$<ENV>_API` 也照它 (憑證有自己的 `apiRoot` 時用憑證的; 在主機本機時沙箱經 10.0.2.2 只連得到那個 port). 見[自架 Bot API server](#自架-bot-api-server), [bot 憑證 bots](credentials-and-skills.md#bot-憑證-bots). |
 | `credentials` | 跨 bot 的 bot token 與 http API key, 名稱 -> `{ token, kind, methods, baseUrl, apiRoot, header, scheme, query, defaultHeaders, roles, label, addedBy }`; 由 `/router cred` 與 `cred-import` 管理, 不要手改 (例外: telegram-bot 類的 `apiRoot`, 這個憑證要走的 Bot API server, 沒寫用全域 `apiRoot`, 手改後 `/router cred reload`). 見[憑證](credentials-and-skills.md#憑證). |
 | `secretKey` | 加密對話密鑰與原始事件的 AES-256 key (base64); 沒有時 router 啟動時產生並寫回 config.json. 遺失就解不開已存的密鑰與原文, 要跟 router.db 一起備份. 見[密鑰](secrets.md). |
 | `skillRefreshAt` | 特權技能每日更新憑證的時間, GMT+8 `"HH:MM"`, `"off"` 關閉; 沒寫是 `"05:00"`, 寫錯只關閉每日更新. 見[特權技能](credentials-and-skills.md#特權技能). |
 | `pluginCheckAt` | 每天檢查官方 plugin 快取的時間, GMT+8 `"HH:MM"`, `"off"` 關閉; 沒寫是 `"09:07"`, 寫錯只關閉每日檢查 (worker 打招呼時的檢查照舊). 見[官方 plugin 的自動更新與快取檢查](#官方-plugin-的自動更新與快取檢查). |
 | `classifier` | 工具呼叫分類器 (選配, 預設關閉, 第一階段只記錄); 格式錯只關閉它. 見[工具呼叫分類器](classifier.md). |
 | `sandboxDenyRead` | 所有沙箱 (角色範本與特權動作) 額外隱藏的絕對路徑, 例如同一台機器上其他專案; 沒寫是沒有, 寫錯的項目略過. 見[安裝位置](#安裝位置). |
+| `sandboxExtraRo` | 特權技能的沙箱額外唯讀看得到的絕對路徑 (沙箱是白名單, 預設只有 `/usr` 與少數 `/etc` 檔), 結尾是 `/bin` 的放進 PATH; 沒寫是沒有, 寫錯的項目略過. 見[執行環境規格](skill-runtime.md#掛載路徑). |
 | `receiveReact` | 對話沒有自己設定時收哪些表情回應: `all`, `botself_only`, `disable`; 沒寫是 `botself_only`. 見[表情回應 (reaction)](#表情回應-reaction). |
 | `reactFlushMs` | 表情回應等多少毫秒沒有新訊息就單獨交給 worker; 沒寫是 60000, 測試才縮短. 見[表情回應 (reaction)](#表情回應-reaction). |
 
-選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `receiveReact`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
+選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `sandboxExtraRo`, `receiveReact`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
 
 ## 官方 plugin 的自動更新與快取檢查
 
@@ -207,7 +208,7 @@ router 可以裝在任何位置, 程式不假設固定路徑:
 - `home` 是 router 的家目錄, 每隻 bot 一個 `bot<id>/`, 每個對話一個資料夾都在這裡; 不寫時是 config.json 所在目錄的上一層. `stateDir` 放 router 執行檔, config.json, access.json, router.db, socket 與各對話的 settings; 不寫時是 config.json 所在目錄. 慣例是 `<home>/.router`, 也可以放在 home 以外.
 - 位置檔: worker 的 plugin 與 hook 從 `~/.config/cc-telegram-router/router.json` 讀 router 的 `home`, `stateDir` 與 `socket` (`shared/locate.ts`). 不用環境變數, 因為背景 session 繼承的是 claude daemon 的環境, 而 owner 自己在 `<home>` 開的終端機 session 也要找得到 router. 位置檔由 `cc-telegram-router register` 依 config.json 寫入, `deploy/install.sh router` 在 config.json 已存在時會執行它. router 啟動時檢查位置檔: 指向自己 (同一個 `stateDir`) 但 `home` 或 `socket` 改過就更新並記 log; 不存在或指向另一個 router 只記 log, 不會改寫 (測試與第二套安裝不會蓋掉正式的位置檔). 位置檔不存在時, plugin 回報「不是 Telegram worker」並說明原因, hook 視同 router 連不上 (不准跳出 sandbox). plugin 只在 session 啟動時讀一次, 所以要先寫好位置檔再叫醒 worker.
 - `deploy/install.sh router` 與 `unit` 要知道 `stateDir`: 第一次用 `CC_ROUTER_STATE=<home>/.router` 指定, 之後從位置檔讀; 兩者都沒有就停下並說明, 不會裝到預設位置.
-- sandbox 隱藏的路徑: owner 以外的角色範本 `denyRead` 是 `{{hidden}}` 加上 `~` (使用者家目錄). `{{hidden}}` 是 router 的家目錄, `stateDir` (在家目錄底下時已包含在內) 與 config `sandboxDenyRead` (額外要隱藏的絕對路徑, 預設空; 例如同一台機器上其他專案所在的目錄), 互相包含的只留最外層. config `socket` 設在這些位置以外時, socket 檔本身也列入 (只藏那個檔, 不藏它所在的資料夾, 例如 `/tmp`, `/run`); socket 在使用者家目錄裡時 `~` 已經藏住, 不另外列; 設成系統資料夾 (`/`, `/tmp`, `/var/tmp`, `/run`, `/var/run` 等), 使用者家目錄或它的上層時不列, 以免 worker 壞掉. 自己的對話資料夾與共用技能資料夾再由 `allowRead` 打開. 特權技能的 bwrap 沙箱隱藏同一份清單 (見 [憑證與技能](credentials-and-skills.md)): 資料夾蓋上空的 tmpfs, 檔案 (socket) 蓋上 `/dev/null`, 不存在的略過; Claude Code 的 sandbox 對 `denyRead` 裡的檔案同樣蓋上 `/dev/null` (2.1.302 實測: 在 sandbox 裡 socket 變成字元裝置, 同資料夾的其他檔照常可讀; 連線另外被 sandbox 拒絕, `Operation not permitted`). `sandboxDenyRead` 的項目不是絕對路徑或是 `/` 時略過並在 log 寫一行, 其他項目照常隱藏. 改了要重啟 router, 再 `/router session rotate all` 讓 worker 用新的 settings.
+- sandbox 隱藏的路徑: owner 以外的角色範本 `denyRead` 是 `{{hidden}}` 加上 `~` (使用者家目錄). `{{hidden}}` 是 router 的家目錄, `stateDir` (在家目錄底下時已包含在內) 與 config `sandboxDenyRead` (額外要隱藏的絕對路徑, 預設空; 例如同一台機器上其他專案所在的目錄), 互相包含的只留最外層. config `socket` 設在這些位置以外時, socket 檔本身也列入 (只藏那個檔, 不藏它所在的資料夾, 例如 `/tmp`, `/run`); socket 在使用者家目錄裡時 `~` 已經藏住, 不另外列; 設成系統資料夾 (`/`, `/tmp`, `/var/tmp`, `/run`, `/var/run` 等), 使用者家目錄或它的上層時不列, 以免 worker 壞掉. 自己的對話資料夾與共用技能資料夾再由 `allowRead` 打開. 特權技能的 bwrap 沙箱是白名單 (見[執行環境規格](skill-runtime.md#掛載路徑)), 這份清單裡的路徑本來就不在沙箱裡; 只有被掛進沙箱的路徑 (`/usr`, `sandboxExtraRo`, internal 動作的 `host.mounts`) 裡含有清單上的路徑時才蓋住: 資料夾蓋上空的 tmpfs, 檔案 (socket) 蓋上 `/dev/null`, 不存在的略過; Claude Code 的 sandbox 對 `denyRead` 裡的檔案同樣蓋上 `/dev/null` (2.1.302 實測: 在 sandbox 裡 socket 變成字元裝置, 同資料夾的其他檔照常可讀; 連線另外被 sandbox 拒絕, `Operation not permitted`). `sandboxDenyRead` 的項目不是絕對路徑或是 `/` 時略過並在 log 寫一行, 其他項目照常隱藏. 改了要重啟 router, 再 `/router session rotate all` 讓 worker 用新的 settings.
 
 ## 新 bot 初次設定與審核群組
 

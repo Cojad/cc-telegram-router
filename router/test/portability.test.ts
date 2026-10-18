@@ -12,9 +12,10 @@ import { join } from 'path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { Config } from '../config'
-import { loadConfig, parseDenyRead, hiddenPaths } from '../config'
+import { loadConfig, parseDenyRead, parseExtraRo, hiddenPaths } from '../config'
 import { renderSettings, applyOverrides, fill, outermost } from '../settings'
 import { sandboxArgv } from '../privskill'
+import { writeSandboxEtc } from '../sandboxfs'
 import { openRouterDb, type RouterDb } from '../db'
 import { ensureConversation, findByFolder } from '../conversations'
 import { createIpc } from '../ipc'
@@ -54,6 +55,17 @@ const envAt = (extra: Record<string, string>) => {
 }
 
 // --- config sandboxDenyRead and hiddenPaths ---------------------------------
+
+test('config sandboxExtraRo: absolute paths kept, the rest left out with a warning, the router still starts; default none', () => {
+  const w: string[] = []
+  expect(parseExtraRo(undefined, w)).toEqual([])
+  expect(parseExtraRo(['/opt/tools/bin/', 'rel', '/'], w)).toEqual(['/opt/tools/bin'])
+  expect(w).toEqual(['sandboxExtraRo 的 "rel" 不是絕對路徑 (也不能是 /), 略過', 'sandboxExtraRo 的 "/" 不是絕對路徑 (也不能是 /), 略過'])
+  writeFileSync(cfg.path, JSON.stringify({ bots: [{ name: 'main', token: '1:x' }], home: cfg.home, sandboxExtraRo: '/opt' }))
+  const c = loadConfig(cfg.path)
+  expect(c.sandboxExtraRo).toEqual([])
+  expect(c.warnings).toContain('sandboxExtraRo 要是路徑陣列, 收到 "/opt"; 特權技能的沙箱沒有額外的唯讀路徑')
+})
 
 test('config sandboxDenyRead: absolute paths kept, the rest left out with a warning; default none', () => {
   const w: string[] = []
@@ -132,36 +144,39 @@ test('role templates follow the install: denyRead is the router home, the state 
 
 // --- privileged skill bwrap -------------------------------------------------
 
-test('skill bwrap: tmpfs over /tmp, $HOME and the hidden paths (existing, not nested, not under /tmp), all before the binds', () => {
-  const sb = sandboxArgv({ argv: ['true'], skillDir: '/srv/tg/.claude/skills/s', convFolder: '/srv/tg/bot1/dm-7', creds: {}, home: '/home/u', hidden: ['/srv/tg', '/srv/tg/.router', '/nonexistent-cctr', join(dir, 'var')], extraRo: [] })
+test('skill bwrap: a whitelist (never the whole root); a hidden path is covered only inside what is bound (/usr, sandboxDenyRead inside sandboxExtraRo), before the skill\'s own binds', () => {
+  const etcDir = writeSandboxEtc(join(dir, 'etc'))
+  const sb = sandboxArgv({ argv: ['true'], skillDir: '/srv/tg/.claude/skills/s', convFolder: '/srv/tg/bot1/dm-7', etcDir, hidden: ['/srv/tg', '/srv/tg/.router', '/nonexistent-cctr', join(dir, 'var'), userHome] })
   const a = sb.argv
   const tmpfs = a.flatMap((x, i) => x === '--tmpfs' ? [a[i + 1]] : [])
-  // /srv/tg does not exist here: left out, like any missing path; dir/var is under /tmp
-  expect(tmpfs).toEqual(['/tmp', ...(existsSync('/home/u') ? ['/home/u'] : [])])
-  const real = sandboxArgv({ argv: ['true'], skillDir: '/s', convFolder: '/c', creds: {}, home: userHome, hidden: ['/usr/share/doc', '/usr/share'], extraRo: [] }).argv
-  expect(real.flatMap((x, i) => x === '--tmpfs' ? [real[i + 1]] : [])).toEqual(['/tmp', '/usr/share'])
-  expect(real.lastIndexOf('--tmpfs')).toBeLessThan(real.indexOf('--ro-bind', 5))
+  // only the sandbox's own temporary folders: nothing hidden is bound, so nothing needs covering
+  expect(tmpfs).toEqual(['/tmp', '/var/tmp', '/dev/shm'])
+  expect(a.join(' ')).not.toContain('--ro-bind / /')
+  expect(a).not.toContain(userHome)
+  const real = sandboxArgv({ argv: ['true'], skillDir: '/s', convFolder: '/c', etcDir, hidden: ['/usr/share/doc', '/usr/share'] }).argv
+  expect(real.flatMap((x, i) => x === '--tmpfs' ? [real[i + 1]] : [])).toEqual(['/tmp', '/var/tmp', '/dev/shm', '/usr/share'])
+  expect(real.lastIndexOf('--tmpfs')).toBeLessThan(real.indexOf('/s'))
+  expect(real.slice(real.indexOf('/etc/passwd') - 2, real.indexOf('/etc/passwd') + 1)).toEqual(['--ro-bind', join(etcDir, 'passwd'), '/etc/passwd'])
   expect(a).not.toContain('/x')
 })
 
-test('skill bwrap: a hidden file (the socket elsewhere) is covered with /dev/null, a hidden folder with tmpfs; a missing one is left out', () => {
-  const f = join(dir, 'var', 'r.sock')
+test('skill bwrap: a hidden file inside something bound is covered with /dev/null, a hidden folder with tmpfs; a missing one is left out', () => {
+  const etcDir = writeSandboxEtc(join(dir, 'etc'))
+  const extra = join(dir, 'opt'); mkdirSync(join(extra, 'secret'), { recursive: true })
+  const f = join(extra, 'r.sock')
   writeFileSync(f, '')
-  const a = sandboxArgv({ argv: ['true'], skillDir: '/s', convFolder: '/c', creds: {}, home: userHome, hidden: ['/usr/share', '/etc/hostname', '/nonexistent-cctr.sock'], extraRo: [] }).argv
-  expect(a.flatMap((x, i) => x === '--tmpfs' ? [a[i + 1]] : [])).toEqual(['/tmp', '/usr/share'])
-  const i = a.indexOf('/etc/hostname')
-  expect(existsSync('/etc/hostname') ? a.slice(i - 2, i + 1) : ['--ro-bind', '/dev/null', '/etc/hostname']).toEqual(['--ro-bind', '/dev/null', '/etc/hostname'])
+  const a = sandboxArgv({ argv: ['true'], skillDir: '/s', convFolder: '/c', etcDir, extraRo: [extra], hidden: [join(extra, 'secret'), f, '/nonexistent-cctr.sock', '/usr/bin/true'] }).argv
+  expect(a.slice(a.indexOf(join(extra, 'secret')) - 1, a.indexOf(join(extra, 'secret')) + 1)).toEqual(['--tmpfs', join(extra, 'secret')])
+  expect(a.slice(a.indexOf(f) - 2, a.indexOf(f) + 1)).toEqual(['--ro-bind', '/dev/null', f])
+  expect(a.slice(a.indexOf('/usr/bin/true') - 2, a.indexOf('/usr/bin/true') + 1)).toEqual(['--ro-bind', '/dev/null', '/usr/bin/true'])
   expect(a).not.toContain('/nonexistent-cctr.sock')
-  expect(a.indexOf('/s')).toBeGreaterThan(Math.max(a.lastIndexOf('--tmpfs'), i)) // the skill's own binds come after
-  // under /tmp: the private /tmp hides it already
-  const b = sandboxArgv({ argv: ['true'], skillDir: '/s', convFolder: '/c', creds: {}, home: userHome, hidden: [f], extraRo: [] }).argv
-  expect(b).not.toContain(f)
+  expect(a.indexOf('/s')).toBeGreaterThan(a.indexOf(f)) // the skill's own binds come after
 })
 
-// A real bwrap run with an install outside /tmp and $HOME (/var/tmp), so the
-// hidden paths themselves have to do the hiding.
+// A real bwrap run with an install outside /tmp and $HOME (/var/tmp): other
+// conversations, the state dir and sandboxDenyRead are not there at all.
 const VARTMP = (() => { try { const d = mkdtempSync('/var/tmp/cctr-port-'); rmSync(d, { recursive: true }); return Bun.which('bwrap') ? '/var/tmp' : null } catch { return null } })()
-test.skipIf(!VARTMP)('skill bwrap, real run: other conversations, the state dir elsewhere and sandboxDenyRead are hidden; its own folder is not', async () => {
+test.skipIf(!VARTMP)('skill bwrap, real run: other conversations, the state dir elsewhere and sandboxDenyRead do not exist; its own folder does', async () => {
   const root = mkdtempSync(join(VARTMP!, 'cctr-port-'))
   try {
     const home = join(root, 'tg'), state = join(root, 'state'), extra = join(root, 'other')
@@ -172,7 +187,7 @@ test.skipIf(!VARTMP)('skill bwrap, real run: other conversations, the state dir 
     writeFileSync(join(state, 'config.json'), 'STATE\n')
     writeFileSync(join(extra, 'x.txt'), 'EXTRA\n')
     writeFileSync(join(skill, 'run.sh'), `for f in ${own}/mine.txt ${sibling}/secret.txt ${state}/config.json ${extra}/x.txt; do cat $f 2>/dev/null || echo HIDDEN; done\n`)
-    const sb = sandboxArgv({ argv: ['bash', join(skill, 'run.sh')], skillDir: skill, convFolder: own, creds: {}, home: userHome, hidden: hiddenPaths({ home, stateDir: state, sandboxDenyRead: [extra] }), extraRo: [] })
+    const sb = sandboxArgv({ argv: ['bash', join(skill, 'run.sh')], skillDir: skill, convFolder: own, etcDir: writeSandboxEtc(join(state, 'sandbox-etc')), hidden: hiddenPaths({ home, stateDir: state, sandboxDenyRead: [extra] }) })
     const p = Bun.spawn(sb.argv, { env: sb.env, stdout: 'pipe', stderr: 'pipe' })
     const out = await new Response(p.stdout).text()
     const err = await new Response(p.stderr).text()
@@ -181,7 +196,7 @@ test.skipIf(!VARTMP)('skill bwrap, real run: other conversations, the state dir 
   } finally { rmSync(root, { recursive: true, force: true }) }
 }, 20000)
 
-test.skipIf(!VARTMP)('skill bwrap, real run: a router socket outside home and the state dir cannot be reached; its folder stays visible', async () => {
+test.skipIf(!VARTMP)('skill bwrap, real run: a router socket is not there, even inside a folder made visible with sandboxExtraRo (it is hidden there); the folder\'s other files are', async () => {
   const root = mkdtempSync(join(VARTMP!, 'cctr-port-'))
   const server = { stop() {} } as { stop(): void }
   try {
@@ -192,19 +207,17 @@ test.skipIf(!VARTMP)('skill bwrap, real run: a router socket outside home and th
     writeFileSync(join(run, 'neighbour.txt'), 'NEIGHBOUR\n')
     const srv = Bun.listen({ unix: sock, socket: { open(s) { s.write('ROUTER\n'); s.end() }, data() {} } })
     server.stop = () => srv.stop(true)
-    // connect from inside: prints what the router said, or REFUSED
-    writeFileSync(join(skill, 'probe.py'), `import socket, sys\ntry:\n  c = socket.socket(socket.AF_UNIX); c.connect(sys.argv[1]); print(c.recv(16).decode().strip())\nexcept Exception:\n  print('REFUSED')\nprint(open(sys.argv[2]).read().strip())\n`)
-    // async: the router socket answers from this process
-    const probe = async (hidden: string[]) => {
-      const sb = sandboxArgv({ argv: ['python3', join(skill, 'probe.py'), sock, join(run, 'neighbour.txt')], skillDir: skill, convFolder: own, creds: {}, home: userHome, hidden, extraRo: [] })
+    // connect from inside: prints what the router said, or REFUSED; then the neighbour, or GONE
+    writeFileSync(join(skill, 'probe.py'), `import socket, sys\ntry:\n  c = socket.socket(socket.AF_UNIX); c.connect(sys.argv[1]); print(c.recv(16).decode().strip())\nexcept Exception:\n  print('REFUSED')\ntry:\n  print(open(sys.argv[2]).read().strip())\nexcept Exception:\n  print('GONE')\n`)
+    const probe = async (extraRo: string[]) => {
+      const sb = sandboxArgv({ argv: ['python3', join(skill, 'probe.py'), sock, join(run, 'neighbour.txt')], skillDir: skill, convFolder: own, etcDir: writeSandboxEtc(join(state, 'sandbox-etc')), extraRo, hidden: hiddenPaths({ home, stateDir: state, sandboxDenyRead: [], socket: sock }, userHome) })
       const p = Bun.spawn(sb.argv, { env: sb.env, stdout: 'pipe', stderr: 'pipe' })
       const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
       expect(await p.exited, err).toBe(0)
       return out.trim().split('\n')
     }
-    // without the socket in the list the sandbox reaches the router (what this guards against)
-    expect(await probe(hiddenPaths({ home, stateDir: state, sandboxDenyRead: [] }, userHome))).toEqual(['ROUTER', 'NEIGHBOUR'])
-    expect(await probe(hiddenPaths({ home, stateDir: state, sandboxDenyRead: [], socket: sock }, userHome))).toEqual(['REFUSED', 'NEIGHBOUR'])
+    expect(await probe([])).toEqual(['REFUSED', 'GONE'])
+    expect(await probe([run])).toEqual(['REFUSED', 'NEIGHBOUR'])
   } finally { server.stop(); rmSync(root, { recursive: true, force: true }) }
 }, 20000)
 

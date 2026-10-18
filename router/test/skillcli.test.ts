@@ -27,6 +27,7 @@ import { REFRESH_CONV, type RefreshDeps } from '../skillrefresh'
 import { parseSkillRun, folderRefusal, terminalRun, terminalRefresh, type Guard, type SkillRunOpts } from '../skillcli'
 import { runCommand, type CommandDeps } from '../commands'
 import type { Config } from '../config'
+import { sandboxDeps } from './fixtures/sandbox'
 
 const TOKEN = '1234567890:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
 let dir: string, db: RouterDb, deps: SkillRunDeps, conv: Conversation, skill: string, store: string, guard: Guard, told: string[]
@@ -91,17 +92,11 @@ beforeEach(() => {
   api = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch(req) { const u = new URL(req.url); hits.push(u.pathname); return Response.json({ ok: true, result: true }) } })
   told = []
   deps = {
-    db, home: join(dir, 'home'), credsRoot: join(dir, 'state', 'creds'), userHome: join(dir, 'fakehome'), hidden: [join(dir, 'home'), join(dir, 'state')], extraRo: [],
+    db, home: join(dir, 'home'), credsRoot: join(dir, 'state', 'creds'), userHome: join(dir, 'fakehome'), hidden: [join(dir, 'home'), join(dir, 'state')],
     storeRoot: join(dir, 'state', 'skill-store'), apiRoot: 'http://127.0.0.1:9',
     botDir: () => join(dir, 'home', 'bot1'),
     botCred: name => name === 'baldeagle' ? { token: TOKEN, methods: [] } : undefined,
-    async exec(argv, env, timeoutMs) {
-      const p = Bun.spawn(argv, { env, stdout: 'pipe', stderr: 'pipe' })
-      const t = setTimeout(() => p.kill(9), timeoutMs)
-      const [o, e] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
-      clearTimeout(t)
-      return { code: await p.exited, out: `${o}${e}`.trim() }
-    },
+    ...sandboxDeps(join(dir, 'state')),
     notifyOwner: (_c, t) => told.push(t),
   }
   mkdirSync(deps.userHome)
@@ -175,7 +170,8 @@ test('--trial: a throwaway copy of the databases, the real ones unchanged, the c
   expect(readdirSync(join(dir, 'state', 'skill-store-trial'))).toEqual([])
   // the token never comes back, even from a trial
   const t = await terminalRun(deps, conv, opts({ action: 'token', trial: true, api: `http://127.0.0.1:${api.port}` }), guard)
-  expect(t).toContain(`http://127.0.0.1:${api.port}/bot<已遮蔽>`)
+  // the sandbox reaches the fake Bot API on the host only at slirp's host alias, on its port
+  expect(t).toContain(`http://10.0.2.2:${api.port}/bot<已遮蔽>`)
   expect(t).not.toContain(TOKEN)
   expect(t).toContain('[owner 通知] ⚠️ 技能 sticker 的 token 在 group-100 的輸出含有憑證內容')
   expect(told).toEqual([])

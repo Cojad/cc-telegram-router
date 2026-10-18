@@ -21,6 +21,7 @@ import { hashSkill } from '../privskill'
 import { runSkill, describeActions, type SkillRunDeps } from '../skillrun'
 import { checkSkill, resolveSkillDir } from '../skillcheck'
 import type { Credential } from '../config'
+import { sandboxDeps, HOST } from './fixtures/sandbox'
 
 const GUIDE = readFileSync(join(import.meta.dir, '..', '..', 'plugin', 'skills', 'bot-skill', 'SKILL.md'), 'utf8')
 /** The example's files as the guide shows them: a `skills/signup/<file>`: line, then a fenced block. */
@@ -40,7 +41,7 @@ const fake = Bun.serve({
 })
 afterAll(() => fake.stop(true))
 const CREDS: Record<string, Credential> = {
-  'event-api': { kind: 'http', token: KEY, baseUrl: `http://127.0.0.1:${fake.port}`, methods: ['*'] } as Credential,
+  'event-api': { kind: 'http', token: KEY, baseUrl: `http://${HOST}:${fake.port}`, methods: ['*'] } as Credential,
   'notify-bot': { token: TOKEN, methods: [] } as Credential,
 }
 
@@ -102,16 +103,12 @@ test('the guide\'s example runs as written (real bwrap, fake preview API and Bot
   db.approveSkill(skill, 'signup', hashSkill(skill), 'owner')
   const told: string[] = []
   const deps: SkillRunDeps = {
-    db, home: join(dir, 'home'), credsRoot: join(dir, 'state', 'creds'), userHome: join(dir, 'fakehome'), hidden: [join(dir, 'home'), join(dir, 'state')], extraRo: [],
+    db, home: join(dir, 'home'), credsRoot: join(dir, 'state', 'creds'), userHome: join(dir, 'fakehome'), hidden: [join(dir, 'home'), join(dir, 'state')],
+    // the Bot API on the host's 127.0.0.1, as a self-hosted one: the router turns it into slirp's host alias
     storeRoot: join(dir, 'state', 'skill-store'), apiRoot: `http://127.0.0.1:${fake.port}`,
     botDir: () => join(dir, 'home', 'bot1'), httpCred: cred, botCred: cred,
-    async exec(argv, env, timeoutMs) {
-      const p = Bun.spawn(argv, { env, stdout: 'pipe', stderr: 'pipe' })
-      const t = setTimeout(() => p.kill(9), timeoutMs)
-      const [o, e] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
-      clearTimeout(t)
-      return { code: await p.exited, out: `${o}${e}`.trim() }
-    },
+    // the fake http API listens on the host too: tests let the sandbox reach its port (like a host port)
+    ...sandboxDeps(join(dir, 'state'), () => [fake.port]),
     notifyOwner: (_c, t) => told.push(t),
   }
   mkdirSync(deps.userHome)
@@ -175,7 +172,7 @@ test('skill_check reports each mistake with how to fix it; approve\'s own refusa
     '動作 a: args.free 沒有 pattern 也沒有 flag',
     '動作 a: 不認得的欄位 role, 會被忽略 (是不是要寫 roles?)',
     '動作 b: 用 Python 執行時加 -B',
-    '動作 b: mounts 與 env 只給 internal 動作, 這裡會被忽略',
+    '動作 b: mounts 與 env 只給 internal 動作 (寫在 host 裡), 這裡會被忽略',
     '動作 b: auth_failure 與 refresh 要一起寫才有作用',
     '動作 d: venv/bin/python3 在 venv 裡: install_skill 不複製 venv',
     '動作 d: refresh 指的動作 b 不是 internal',

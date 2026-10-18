@@ -3,11 +3,16 @@
 // list of actions (like sudoers entries). Once owner or admin approves the
 // skill (/router skill approve), a conversation of an allowed role calls an
 // action with run_skill; the router runs it outside the conversation's own
-// sandbox, in a bwrap sandbox made for that action:
-//   - reads: the system, the skill folder, the action's credential folders
-//   - writes: the conversation folder (its .chat stays read-only), a private /tmp
-//   - hidden: the router's home (other conversations), its state dir, $HOME,
-//     config sandboxDenyRead and the router's socket when it lies elsewhere
+// sandbox, in a bwrap sandbox made for that action (docs/skill-runtime.md):
+//   - a whitelisted file system (router/sandboxfs.ts): /usr, a few /etc files,
+//     the skill folder and the action's credential folders read-only; the
+//     conversation folder (its .chat read-only) and a private /tmp writable;
+//     nothing else exists (the user's home, the router's home and state dir,
+//     other conversations and skills)
+//   - its own network (router/sandboxnet.ts): the internet on ports 80, 443,
+//     53, 22, nothing on the host or private networks
+//   - an internal action may declare host access (host: ports, mounts, env),
+//     approved only by owner
 // Credentials are handed to the script as folder paths in env vars; the
 // conversation never gets them. The skill's files are hashed at approval and
 // checked before every run. Arguments are matched against the action's
@@ -31,7 +36,7 @@
 import { createHash } from 'crypto'
 import { existsSync, readdirSync, readFileSync, statSync, lstatSync, rmSync } from 'fs'
 import { join, relative, isAbsolute } from 'path'
-import { outermost } from './settings'
+import { systemArgs } from './sandboxfs'
 
 export type ArgSpec = {
   pattern?: string
@@ -54,10 +59,12 @@ export type Action = {
   auth_failure?: string
   /** ...then run this internal action once and retry. */
   refresh?: string
-  /** Internal actions only: extra paths visible read-only ("~/" = the user's
-   *  home), e.g. an ssh agent socket and known_hosts to repair a tunnel. */
+  /** Internal actions only, owner approval: what of the host it reaches (HostDecl). */
+  host?: HostDecl
+  /** Not internal, owner approval: internet ports besides 80, 443, 53, 22 (tcp and udp). */
+  outbound_ports?: number[]
+  /** Old spelling of host.mounts and host.env (internal actions only), read as such. */
   mounts?: string[]
-  /** Internal actions only: extra environment variables. */
   env?: Record<string, string>
   /** env var -> http credential name (router config): the script gets
    *  $<ENV>_URL (base URL) and $<ENV>_HEADER ("Authorization: Bearer ..."). */
@@ -71,22 +78,73 @@ export type Action = {
   store?: Record<string, StoreDecl>
 }
 export type StoreDecl = string | { name: string; mode?: 'append' | 'full' }
+/** An internal action's host access (柯姊 2026-10-18; only owner may approve a skill that has one):
+ *  ports: the host's TCP ports it reaches, at $CCTR_HOST (slirp's host alias, the host's 127.0.0.1),
+ *  e.g. a browser's CDP and an ssh forward; mounts: host paths visible read-only ("~/" = the user's
+ *  home), e.g. an ssh agent socket and known_hosts; with mounts it may create unix sockets; env:
+ *  extra environment variables. Still its own network namespace: nothing else of the host. */
+export type HostDecl = { ports?: number[]; mounts?: string[]; env?: Record<string, string> }
 export type Manifest = { actions: Record<string, Action> }
 
 export const RUNS_PER_HOUR = 10
-const SKIP = /(^|\/)(venv|node_modules|__pycache__|\.git)(\/|$)/
+const SKIP = /(^|\/)(venv|\.venv|node_modules|__pycache__|\.git)(\/|$)/
 
 export function loadManifest(skillDir: string): Manifest | null {
   const p = join(skillDir, 'privileged.json')
   if (!existsSync(p)) return null
   const m = JSON.parse(readFileSync(p, 'utf8')) as Manifest
   if (!m.actions || typeof m.actions !== 'object') throw new Error('privileged.json 要有 actions')
-  for (const [n, a] of Object.entries(m.actions)) checkAction(n, a)
+  for (const [n, a] of Object.entries(m.actions)) {
+    if (a && typeof a === 'object' && a.internal && (a.mounts !== undefined || a.env !== undefined)) {
+      // the old spelling: top-level mounts and env of an internal action are its host mounts and env
+      a.host = { ...a.host, mounts: a.host?.mounts ?? a.mounts, env: a.host?.env ?? a.env }
+      delete a.mounts; delete a.env
+    }
+    checkAction(n, a)
+  }
   return m
 }
 
+/** What host access an action has (its host declaration), or null. */
+export function hostOf(a: Action): HostDecl | null {
+  const h = a.host
+  return h && (h.ports?.length || h.mounts?.length || Object.keys(h.env ?? {}).length) ? h : null
+}
+
+/** Why only owner may approve this skill (host access, more internet ports), or []. */
+export function ownerOnly(m: Manifest): string[] {
+  return Object.entries(m.actions).flatMap(([n, a]) => [
+    ...(hostOf(a) ? [`動作 ${n} 宣告了主機存取 (host)`] : []),
+    ...(a.outbound_ports?.length ? [`動作 ${n} 宣告了額外的對外 port (outbound_ports ${a.outbound_ports.join(', ')})`] : []),
+  ])
+}
+
+function checkHost(n: string, a: Action) {
+  const h = a.host as unknown
+  if (h === undefined) return
+  if (!h || typeof h !== 'object' || Array.isArray(h)) throw new Error(`動作 ${n} 的 host 要是物件, 例如 { "ports": [9222], "mounts": ["~/.ssh/known_hosts"] }`)
+  if (!a.internal) throw new Error(`動作 ${n} 不是 internal, 不能宣告 host (主機存取只給 router 執行的內部動作)`)
+  const { ports, mounts, env, ...rest } = h as HostDecl & Record<string, unknown>
+  const extra = Object.keys(rest)
+  if (extra.length) throw new Error(`動作 ${n} 的 host 不認得 ${extra.join(', ')} (只有 ports, mounts, env)`)
+  if (ports !== undefined) {
+    if (!Array.isArray(ports) || ports.some(p => !Number.isInteger(p) || p < 1 || p > 65535)) throw new Error(`動作 ${n} 的 host.ports 要是 1 到 65535 的整數陣列`)
+    if (new Set(ports).size !== ports.length) throw new Error(`動作 ${n} 的 host.ports 有重複`)
+  }
+  if (mounts !== undefined) {
+    if (!Array.isArray(mounts) || mounts.some(p => typeof p !== 'string' || !(p.startsWith('/') || p.startsWith('~/')) || p.split('/').includes('..') || p === '/' || p === '~/')) throw new Error(`動作 ${n} 的 host.mounts 要是絕對路徑或 ~/ 開頭的路徑 (不能是 /, 不能有 ..)`)
+  }
+  if (env !== undefined) {
+    if (!env || typeof env !== 'object' || Array.isArray(env)) throw new Error(`動作 ${n} 的 host.env 要是 {名稱: 值}`)
+    for (const [k, v] of Object.entries(env)) {
+      if (!ENV_NAME.test(k) || RESERVED_ENV.has(k)) throw new Error(`動作 ${n} 的 host.env 環境變數名稱不行: ${k}`)
+      if (typeof v !== 'string') throw new Error(`動作 ${n} 的 host.env.${k} 要是字串`)
+    }
+  }
+}
+
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
-const RESERVED_ENV = new Set(['PATH', 'HOME', 'LANG', 'TMPDIR', 'PYTHONUSERBASE'])
+const RESERVED_ENV = new Set(['PATH', 'HOME', 'LANG', 'TMPDIR', 'TZ', 'CCTR_HOST', 'VIRTUAL_ENV'])
 export const STORE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/
 
 /** A database declaration as { name, mode }. */
@@ -96,12 +154,20 @@ export function storeOf(d: StoreDecl): { name: string; mode: 'append' | 'full' }
 
 /** What loadManifest refuses in one action's store and bots (thrown, shown by /router skill approve). */
 function checkAction(n: string, a: Action) {
+  checkHost(n, a)
+  if (a.outbound_ports !== undefined) {
+    const p = a.outbound_ports as unknown
+    if (a.internal) throw new Error(`動作 ${n} 是 internal, 對外本來就不限 port, 不用 outbound_ports`)
+    if (!Array.isArray(p) || p.some(x => !Number.isInteger(x) || x < 1 || x > 65535)) throw new Error(`動作 ${n} 的 outbound_ports 要是 1 到 65535 的整數陣列`)
+    if (new Set(p).size !== p.length) throw new Error(`動作 ${n} 的 outbound_ports 有重複`)
+  }
   const envs: string[] = [...Object.keys(a.creds ?? {}), ...Object.keys(a.http ?? {}).flatMap(e => [`${e}_URL`, `${e}_HEADER`])]
   const add = (e: string, what: string) => {
     if (!ENV_NAME.test(e) || RESERVED_ENV.has(e)) throw new Error(`動作 ${n} 的 ${what} 環境變數名稱不行: ${e}`)
     if (envs.includes(e)) throw new Error(`動作 ${n} 的環境變數 ${e} 重複`)
     envs.push(e)
   }
+  for (const k of Object.keys(a.host?.env ?? {})) add(k, 'host.env')
   if (a.store !== undefined) {
     if (!a.store || typeof a.store !== 'object' || Array.isArray(a.store)) throw new Error(`動作 ${n} 的 store 要是 {環境變數: 資料庫名稱}`)
     if (a.internal && Object.keys(a.store).length) throw new Error(`動作 ${n} 是 internal, 不能用 store`)
@@ -163,7 +229,7 @@ export function argRoleRefusal(a: Action, args: Record<string, unknown>, role: s
 }
 
 /** argv for an action, or why the arguments are refused. */
-export function buildArgv(a: Action, skillDir: string, args: Record<string, unknown>, credDir: (name: string) => string): string[] | { error: string } {
+export function buildArgv(a: Action, skillDir: string, args: Record<string, unknown>, credDir: (name: string, env: string) => string): string[] | { error: string } {
   const out: string[] = []
   const known = new Set(Object.keys(a.args ?? {}))
   for (const k of Object.keys(args)) if (!known.has(k)) return { error: `沒有這個參數: ${k} (可用: ${[...known].join(', ') || '(無)'})` }
@@ -172,7 +238,7 @@ export function buildArgv(a: Action, skillDir: string, args: Record<string, unkn
     if (m?.[1]) {
       const name = a.creds?.[m[2]!]
       if (!name) return { error: `動作清單錯誤: ${tok} 沒有對應的 creds` }
-      out.push(credDir(name))
+      out.push(credDir(name, m[2]!))
       continue
     }
     if (m) {
@@ -241,33 +307,36 @@ export function redact(text: string, secrets: string[]): { text: string; hit: bo
 
 export type Sandbox = { argv: string[]; env: Record<string, string> }
 
-/** bwrap for one run: the system read-only, a private /tmp, $HOME and the
- *  hidden paths (router home, state dir, sandboxDenyRead) as empty folders,
- *  a hidden file (the router's socket elsewhere) as /dev/null, then the skill and credential folders read-only, the staged
- *  databases and the conversation folder writable. Every tmpfs comes before the binds that reopen what
- *  lies inside it. */
-export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: string; creds: Record<string, string>; home: string; hidden: string[]; extraRo?: string[]; env?: Record<string, string>; credsWritable?: boolean; writable?: string[] }): Sandbox {
-  const b = ['bwrap', '--die-with-parent', '--unshare-pid', '--new-session', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
-    '--tmpfs', '/tmp']
-  // already under /tmp: hidden by it; missing: bwrap could not mount it on the read-only root;
-  // a file (the router's socket outside its folders) cannot take a tmpfs: /dev/null over it
-  for (const p of outermost(['/tmp', o.home, ...o.hidden])) {
-    if (p === '/tmp' || !existsSync(p)) continue
-    if (statSync(p).isDirectory()) b.push('--tmpfs', p)
-    else b.push('--ro-bind', '/dev/null', p)
-  }
-  for (const p of o.extraRo ?? []) if (existsSync(p)) b.push('--ro-bind', p, p)
+/** Where the router's own folders appear in every sandbox (docs/skill-runtime.md 「掛載路徑」): fixed
+ *  paths, so a script never sees (or prints) where the router keeps them. */
+export const VIRT = {
+  /** a credential folder, by its environment variable: <stateDir>/creds/<name> */
+  creds: '/cctr/creds',
+  /** a database's staged copy, by its environment variable: <stateDir>/skill-store-work/run-* */
+  store: '/cctr/store',
+} as const
+export const SYSTEM_PATH = ['/usr/local/bin', '/usr/bin', '/bin']
+
+/** bwrap for one run on the whitelisted file system (router/sandboxfs.ts systemArgs: /usr, a few
+ *  /etc files, private /tmp; config sandboxExtraRo and an internal action's host mounts in extraRo,
+ *  the hidden paths covered inside them), then the skill folder read-only, each credential folder at
+ *  /cctr/creds/<ENV> (writable only for the router's own refresh), each staged database at
+ *  /cctr/store/<ENV> (writable), the conversation folder writable (its .chat read-only), the
+ *  conversation folder as working directory. The environment: PATH (extra bin folders first), HOME
+ *  and TMPDIR /tmp, LANG C.UTF-8, TZ, each credential and database variable with its /cctr path, env. */
+export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: string; etcDir: string; creds?: Record<string, string>; credsWritable?: boolean; stores?: Record<string, string>; hidden: string[]; extraRo?: string[]; env?: Record<string, string>; timezone?: string }): Sandbox {
+  const b = ['bwrap', '--die-with-parent', '--unshare-pid', '--new-session', ...systemArgs({ etcDir: o.etcDir, extraRo: o.extraRo, hidden: o.hidden, timezone: o.timezone })]
   b.push('--ro-bind', o.skillDir, o.skillDir)
+  const vars: Record<string, string> = {}
   // only the router's own refresh writes credentials; actions a conversation calls read them
-  for (const d of Object.values(o.creds)) b.push(o.credsWritable ? '--bind' : '--ro-bind', d, d)
-  // a database's staged copy for this run (router/skillstore.ts), under the hidden state dir
-  for (const d of o.writable ?? []) b.push('--bind', d, d)
+  for (const [env, d] of Object.entries(o.creds ?? {})) { vars[env] = `${VIRT.creds}/${env}`; b.push(o.credsWritable ? '--bind' : '--ro-bind', d, vars[env]!) }
+  // a database's staged copy for this run (router/skillstore.ts)
+  for (const [env, d] of Object.entries(o.stores ?? {})) { vars[env] = `${VIRT.store}/${env}`; b.push('--bind', d, vars[env]!) }
   b.push('--bind', o.convFolder, o.convFolder)
   if (existsSync(join(o.convFolder, '.chat'))) b.push('--ro-bind', join(o.convFolder, '.chat'), join(o.convFolder, '.chat'))
   b.push('--chdir', o.convFolder, '--', ...o.argv)
-  // HOME is a private /tmp; Python still finds the user's packages (websockets...) under the real ~/.local.
-  // Other bin dirs made visible (e.g. ~/.deno/bin, which yt-dlp needs for YouTube's JS challenge) go on PATH too.
-  const bins = [`${o.home}/.local/bin`, ...(o.extraRo ?? []).filter(p => p.endsWith('/bin') && p !== `${o.home}/.local/bin`)]
-  const env: Record<string, string> = { PATH: [...bins, '/usr/local/bin', '/usr/bin', '/bin'].join(':'), HOME: '/tmp', LANG: 'C.UTF-8', TMPDIR: '/tmp', PYTHONUSERBASE: `${o.home}/.local`, ...o.creds, ...o.env }
+  // bin folders made visible (config sandboxExtraRo, host mounts) go on PATH before the system's
+  const bins = (o.extraRo ?? []).filter(p => p.endsWith('/bin'))
+  const env: Record<string, string> = { PATH: [...bins, ...SYSTEM_PATH].join(':'), HOME: '/tmp', LANG: 'C.UTF-8', TMPDIR: '/tmp', ...(o.timezone ? { TZ: o.timezone } : {}), ...vars, ...o.env }
   return { argv: b, env }
 }

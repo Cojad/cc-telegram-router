@@ -84,6 +84,10 @@ export type Config = {
    *  privileged skill bwrap) besides home, stateDir and the user's home: e.g.
    *  other projects on the same machine. Default none. */
   sandboxDenyRead?: string[]
+  /** Extra absolute paths every privileged skill's sandbox sees read-only (router/sandboxfs.ts:
+   *  besides /usr and a few /etc files nothing of the host is there); their bin folders go on
+   *  PATH. Default none. */
+  sandboxExtraRo?: string[]
   /** Which message reactions reach workers when the conversation has no
    *  /router chat react of its own (router/reactions.ts); default botself_only. */
   receiveReact: ReactMode
@@ -119,16 +123,19 @@ export function pluginCheckAtOrOff(v: unknown, warnings: string[]): string | nul
 
 /** config sandboxDenyRead: absolute paths, not "/". A wrong entry is left out
  *  with a warning (home, stateDir and the user's home stay hidden regardless). */
-export function parseDenyRead(v: unknown, warnings: string[]): string[] {
+export function parseDenyRead(v: unknown, warnings: string[], field = 'sandboxDenyRead', none = '沒有額外隱藏的路徑'): string[] {
   if (v === undefined || v === null) return []
-  if (!Array.isArray(v)) { warnings.push(`sandboxDenyRead 要是路徑陣列, 收到 ${JSON.stringify(v)}; 沒有額外隱藏的路徑`); return [] }
+  if (!Array.isArray(v)) { warnings.push(`${field} 要是路徑陣列, 收到 ${JSON.stringify(v)}; ${none}`); return [] }
   const out: string[] = []
   for (const p of v) {
-    if (typeof p !== 'string' || !isAbsolute(p) || resolve(p) === '/') warnings.push(`sandboxDenyRead 的 ${JSON.stringify(p)} 不是絕對路徑 (也不能是 /), 略過`)
+    if (typeof p !== 'string' || !isAbsolute(p) || resolve(p) === '/') warnings.push(`${field} 的 ${JSON.stringify(p)} 不是絕對路徑 (也不能是 /), 略過`)
     else out.push(resolve(p))
   }
   return out
 }
+
+/** config sandboxExtraRo: absolute paths, not "/"; a wrong entry is left out with a warning. */
+export const parseExtraRo = (v: unknown, warnings: string[]) => parseDenyRead(v, warnings, 'sandboxExtraRo', '特權技能的沙箱沒有額外的唯讀路徑')
 
 /** Folders a worker cannot do without: a socket configured as one of these is never hidden. */
 const SYSTEM_DIRS = new Set(['/', '/tmp', '/var/tmp', '/run', '/var/run', '/run/user', '/dev', '/dev/shm', '/proc', '/sys', '/usr', '/etc', '/var', '/home'])
@@ -209,6 +216,7 @@ export function loadConfig(path: string): Config {
     pluginCheckAt: pluginCheckAtOrOff(raw.pluginCheckAt, warnings),
     classifier: parseClassifier(raw.classifier),
     sandboxDenyRead: parseDenyRead(raw.sandboxDenyRead, warnings),
+    sandboxExtraRo: parseExtraRo(raw.sandboxExtraRo, warnings),
     receiveReact: parseReactMode(raw.receiveReact, warnings),
     reactFlushMs: typeof raw.reactFlushMs === 'number' && raw.reactFlushMs > 0 ? raw.reactFlushMs : undefined,
     warnings,

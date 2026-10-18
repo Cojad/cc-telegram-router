@@ -21,8 +21,8 @@ export type SkillCheckDeps = {
 
 const ROLES = ['owner', 'admin', 'power', 'user', 'guest']
 const DEFAULT_ROLES = ['owner', 'admin', 'power', 'user']
-const KNOWN = new Set(['run', 'args', 'roles', 'creds', 'timeout', 'internal', 'auth_failure', 'refresh', 'mounts', 'env', 'http', 'bots', 'store'])
-const LIKELY: Record<string, string> = { role: 'roles', arg: 'args', cred: 'creds', command: 'run', cmd: 'run', argv: 'run', stores: 'store', bot: 'bots', mount: 'mounts', authFailure: 'auth_failure', 'auth-failure': 'auth_failure' }
+const KNOWN = new Set(['run', 'args', 'roles', 'creds', 'timeout', 'internal', 'auth_failure', 'refresh', 'host', 'outbound_ports', 'mounts', 'env', 'http', 'bots', 'store'])
+const LIKELY: Record<string, string> = { role: 'roles', arg: 'args', cred: 'creds', command: 'run', cmd: 'run', argv: 'run', stores: 'store', bot: 'bots', mount: 'mounts', authFailure: 'auth_failure', 'auth-failure': 'auth_failure', ports: 'outbound_ports (或 host.ports)', outbound: 'outbound_ports', outboundPorts: 'outbound_ports', hosts: 'host' }
 const SKIP_DIR = new Set(['venv', 'node_modules', '__pycache__'])
 const MAX_FILES = 2000
 const MAX_MANIFEST = 256 * 1024
@@ -102,7 +102,7 @@ function lintAction(dir: string, n: string, a: Action, all: Record<string, Actio
       else if (!existsSync(p)) errors.push(`${at}: 找不到 ${tok} (技能資料夾裡沒有這個檔): 執行時會原樣當成字串傳入, 而工作目錄是對話資料夾, 一定失敗`)
     }
   }
-  if (PY.test(a.run[0]!) && !a.run.includes('-B') && !(a.internal && a.env?.PYTHONDONTWRITEBYTECODE)) warnings.push(`${at}: 用 Python 執行時加 -B (例如 ["python3", "-B", "scripts/x.py"]): 技能資料夾在沙箱裡是唯讀的, 不要讓 Python 寫 __pycache__`)
+  if (PY.test(a.run[0]!) && !a.run.includes('-B') && !(a.internal && (a.host?.env ?? a.env)?.PYTHONDONTWRITEBYTECODE)) warnings.push(`${at}: 用 Python 執行時加 -B (例如 ["python3", "-B", "scripts/x.py"]): 技能資料夾在沙箱裡是唯讀的, 不要讓 Python 寫 __pycache__`)
   for (const [name, spec] of Object.entries(a.args ?? {})) {
     if (!spec || typeof spec !== 'object') { errors.push(`${at}: args.${name} 要是物件, 例如 { "pattern": "..." } 或 { "flag": "--force" }`); continue }
     if (!used.has(name)) warnings.push(`${at}: args.${name} 沒有出現在 run 裡 ({${name}} 或 {${name}?}), 帶了也不會傳給腳本`)
@@ -131,7 +131,10 @@ function lintAction(dir: string, n: string, a: Action, all: Record<string, Actio
     else if (!r.internal) warnings.push(`${at}: refresh 指的動作 ${a.refresh} 不是 internal: 對話也能直接呼叫它; 憑證更新動作通常寫 "internal": true`)
   }
   if (!!a.auth_failure !== !!a.refresh) warnings.push(`${at}: auth_failure 與 refresh 要一起寫才有作用 (輸出比對到 auth_failure 時執行 refresh 再重試)`)
-  if (!a.internal && (a.mounts?.length || (a.env && Object.keys(a.env).length))) warnings.push(`${at}: mounts 與 env 只給 internal 動作, 這裡會被忽略`)
+  if (!a.internal && (a.mounts?.length || (a.env && Object.keys(a.env).length))) warnings.push(`${at}: mounts 與 env 只給 internal 動作 (寫在 host 裡), 這裡會被忽略`)
+  if (a.host?.ports?.length) warnings.push(`${at}: host.ports 的主機 port 要連 $CCTR_HOST (例如 http://$CCTR_HOST:${a.host.ports[0]}), 不是 127.0.0.1 或 localhost (那是沙箱自己); 有 host 宣告的技能只有 owner 能核准`)
+  else if (a.host && (a.host.mounts?.length || Object.keys(a.host.env ?? {}).length)) warnings.push(`${at}: 有 host 宣告的技能只有 owner 能核准`)
+  if (a.outbound_ports?.length) warnings.push(`${at}: outbound_ports (${a.outbound_ports.join(', ')}) 讓動作連外網的這些 port (預設只有 80, 443, 53, 22); 有這個宣告的技能只有 owner 能核准`)
   for (const [env, name] of Object.entries(a.creds ?? {})) {
     if (typeof name !== 'string' || !name || name.includes('/') || name.startsWith('.')) errors.push(`${at}: creds.${env} 要是憑證資料夾名稱 (小寫英數與 -, 不能有 / 或以 . 開頭)`)
   }
@@ -185,8 +188,11 @@ export function checkSkill(folder: string, path: string, role: string, deps: Ski
       if (raw !== null) {
         try {
           const m = loadManifest(dir)!
+          const rawActions = ((raw as { actions?: Record<string, Record<string, unknown>> }).actions ?? {})
           for (const [n, a] of Object.entries(m.actions)) {
             if (!a || typeof a !== 'object' || Array.isArray(a)) { errors.push(`動作 ${n} 要是物件`); continue }
+            const r = rawActions[n] ?? {}
+            if (a.internal && (r.mounts !== undefined || r.env !== undefined)) warnings.push(`動作 ${n}: mounts 與 env 是舊寫法, 照 host.mounts 與 host.env 讀; 請改寫成 "host": { "mounts": [...], "env": {...} }`)
             lintAction(dir, n, a, m.actions, deps, errors, warnings)
           }
           if (!Object.values(m.actions).some(a => a && !a.internal)) warnings.push('沒有對話能呼叫的動作 (全部是 internal)')

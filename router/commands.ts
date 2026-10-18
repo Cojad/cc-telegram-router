@@ -95,7 +95,8 @@ export interface CommandDeps {
   /** Privileged skill actions (router/skillrun.ts). */
   skills: {
     list(bot: string): string
-    approve(bot: string, name: string, by: string): string
+    /** role: the approver's (a skill with host access or more internet ports: owner only). */
+    approve(bot: string, name: string, by: string, role: string): string
     revoke(bot: string, name: string): string
     /** Owner's terminal: one action as a conversation (router/skillcli.ts). */
     run?(conv: Conversation, o: SkillRunOpts): Promise<string>
@@ -841,7 +842,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return deps.skills.run ? done(await deps.skills.run(found.conv, o)) : done('這個 router 沒有 skill run')
       }
       if (!name) return done('用法: /router skill list | approve <技能> | revoke <技能> | run, refresh (只在終端機)')
-      if (op === 'approve') return done(deps.skills.approve(input.bot, name, `${input.senderName} ${input.senderId}`))
+      if (op === 'approve') return done(deps.skills.approve(input.bot, name, `${input.senderName} ${input.senderId}`, role))
       if (op === 'revoke') return done(deps.skills.revoke(input.bot, name))
       return done('用法: /router skill list | approve <技能> | revoke <技能> | run, refresh (只在終端機)')
     }
