@@ -107,8 +107,20 @@ export type Config = {
   backlogSweepFirstMs?: number
   /** How often due secret deletions are checked (default VAULT_TICK_MS); only tests shorten it. */
   vaultTickMs?: number
+  /** How workers get their channel (docs/managed-channel.md): auto (default) runs every claude
+   *  inside bwrap with the router's own config folder and plugin when it can, else legacy;
+   *  legacy always uses the official plugin's cache in the user's config folder. */
+  channelMode?: 'auto' | 'legacy'
   /** Optional settings that were wrong and so turned off (logged at start): the router still runs. */
   warnings?: string[]
+}
+
+/** config channelMode: "auto" (or missing) or "legacy"; anything else is auto with a warning. */
+export function parseChannelMode(v: unknown, warnings: string[]): 'auto' | 'legacy' {
+  if (v === undefined || v === null || v === 'auto') return 'auto'
+  if (v === 'legacy') return 'legacy'
+  warnings.push(`channelMode 要是 "auto" 或 "legacy", 收到 ${JSON.stringify(v)}; 用 auto`)
+  return 'auto'
 }
 
 /** skillRefreshAt as loadConfig takes it: a wrong value turns the daily refresh off with a warning instead of stopping the router (an optional feature). */
@@ -245,6 +257,7 @@ export function loadConfig(path: string): Config {
     health: parseHealth(raw.health, warnings),
     backlogSweepFirstMs: typeof raw.backlogSweepFirstMs === 'number' && raw.backlogSweepFirstMs > 0 ? raw.backlogSweepFirstMs : undefined,
     vaultTickMs: typeof raw.vaultTickMs === 'number' && raw.vaultTickMs > 0 ? raw.vaultTickMs : undefined,
+    channelMode: parseChannelMode(raw.channelMode, warnings),
     warnings,
   }
 }

@@ -7,6 +7,8 @@
 // installed_plugins.json, files, other version folders, the .orphaned_at
 // marker), tells the owner at a worker's hello when the problems change and
 // daily whenever there are any, and changes no file; config pluginCheckAt.
+// install.sh plugin also fills the router's own marketplace (managed mode,
+// docs/managed-channel.md) with its fingerprint; its check is in managed.test.ts.
 // Every test uses a temporary home, plugins root and stateDir.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
@@ -16,7 +18,7 @@ import { join } from 'path'
 import { renderSettings } from '../settings'
 import { loadConfig, parseDailyAt, pluginCheckAtOrOff } from '../config'
 import {
-  PLUGIN_ID, FINGERPRINT_FILE, fingerprintDir, writeFingerprint, readFingerprint, checkPluginCache,
+  PLUGIN_ID, FINGERPRINT_FILE, MARKETPLACE_FINGERPRINT_FILE, checkMarketplace, fingerprintDir, writeFingerprint, readFingerprint, checkPluginCache,
   formatProblems, createPluginGuard, nextDailyAt, scheduleDaily, pluginsRoot,
 } from '../pluginguard'
 
@@ -243,7 +245,7 @@ test('config pluginCheckAt: missing is 09:07, "off" or false turns the daily che
 
 // --- deploy/install.sh plugin -----------------------------------------------
 
-test('install.sh plugin: deploys into the official cache folder and records its fingerprint in the stateDir, which the check then agrees with', async () => {
+test('install.sh plugin: deploys into the official cache folder and the router\'s marketplace (managed mode) and records both fingerprints in the stateDir, which the checks then agree with', async () => {
   const home = join(dir, 'home')
   const target = join(home, '.claude', 'plugins', 'cache', 'claude-plugins-official', 'telegram', '0.0.7')
   mkdirSync(target, { recursive: true })
@@ -264,11 +266,19 @@ test('install.sh plugin: deploys into the official cache folder and records its 
   const plugins = join(home, '.claude', 'plugins')
   writeFileSync(join(plugins, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { [PLUGIN_ID]: [{ scope: 'user', installPath: target, version: '0.0.7' }] } }))
   expect(checkPluginCache(st, plugins)).toEqual([])
+  // the router's own marketplace (docs/managed-channel.md): the same files under <stateDir>/marketplace/telegram, its own fingerprint
+  const market = join(st, 'marketplace')
+  expect(out).toContain(`plugin -> ${join(market, 'telegram')}`)
+  expect(JSON.parse(readFileSync(join(market, '.claude-plugin', 'marketplace.json'), 'utf8'))).toEqual({ name: 'cc-telegram-router', owner: { name: 'cc-telegram-router' }, plugins: [{ name: 'telegram', source: './telegram', description: 'Telegram channel of cc-telegram-router' }] })
+  const { '.deployed-version': _v, ...same } = fp.files // the cache's own marker of what install.sh put there
+  expect(fingerprintDir(join(market, 'telegram'))).toEqual(same)
+  expect(readFingerprint(st, MARKETPLACE_FINGERPRINT_FILE)!.installPath).toBe(join(market, 'telegram'))
+  expect(checkMarketplace(st, join(market, 'telegram'))).toEqual([])
   // without a known state dir the plugin still deploys, the fingerprint is skipped with a hint
   const env2 = { ...env }
   delete env2.CC_ROUTER_STATE
   const p2 = Bun.spawn(['bash', join(REPO, 'deploy', 'install.sh'), 'plugin'], { env: env2, stdout: 'pipe', stderr: 'pipe' })
   const err2 = await new Response(p2.stderr).text()
   expect(await p2.exited).toBe(0)
-  expect(err2.trim()).toBe('沒有安裝位置 (CC_ROUTER_STATE 或位置檔), 沒記下 plugin 指紋: 裝好 router 後再跑一次 install.sh plugin')
+  expect(err2.trim()).toBe('沒有安裝位置 (CC_ROUTER_STATE 或位置檔), 沒部署 router 的商店也沒記下 plugin 指紋: 裝好 router 後再跑一次 install.sh plugin')
 }, 60000)

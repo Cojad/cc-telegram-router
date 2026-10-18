@@ -13,7 +13,9 @@ import type { Conversation } from './db'
 import type { AgentEntry } from './supervisor'
 import { maskTokens } from './context'
 import { modelWindowNotes, readProjects, trustFix, trustOf, unitPathCheck, unitFile } from './diagnose'
-import { checkPluginCache, pluginsRoot } from './pluginguard'
+import { checkMarketplace, checkPluginCache, pluginsRoot } from './pluginguard'
+import { resolveChannel, describeMode, LEGACY_BY_CONFIG, type Channel } from './claudecmd'
+import { checkNamespaces, writeManagedSettings, type NsCheck } from './managed'
 import { readLocator, locatorPath } from '../shared/locate'
 import { daemonReport, jobsDir, listJobs, readProcs, reportNotices, strayJobs, type JobState, type Proc } from './jobs'
 import { dirname as dirOf } from 'path'
@@ -36,6 +38,8 @@ export interface DoctorDeps {
   isConnected?: (key: string) => boolean
   which?: (cmd: string) => string | null
   version?: string
+  /** How workers get their channel (router/claudecmd.ts) and, in managed mode, the daemon's check (router/managed.ts). */
+  channel?: Channel & { check?: NsCheck | null }
 }
 
 const ok = (s: string) => `✅ ${s}`
@@ -53,10 +57,25 @@ export function doctorReport(d: DoctorDeps): string {
   if (unit.length) out.push(...unit.map(l => l.startsWith('⚠️') ? l : warn(l)))
   else out.push(ok(`bun 與 claude (${cfg.claudeBin}) 在 ${existsSync(unitFile(home)) ? 'systemd unit' : 'unit 預設'} 的 PATH 找得到`))
 
-  // the official plugin as deploy/install.sh plugin left it, for this user
-  const problems = checkPluginCache(cfg.stateDir, pluginsRoot(process.env, home))
-  if (problems.length) out.push(...problems.map(p => warn(`telegram plugin: ${p.detail}`)))
-  else out.push(ok(`telegram plugin 裝在這個使用者 (${pluginsRoot(process.env, home)}), 跟部署時相同`))
+  // the channel mode (docs/managed-channel.md): managed, or legacy and why
+  const ch = d.channel
+  const managed = ch?.launcher.mode === 'managed'
+  if (ch) {
+    const intended = ch.decision.mode === 'legacy' && ch.decision.reason === LEGACY_BY_CONFIG
+    out.push(managed || intended ? ok(`channel 模式: ${describeMode(ch.decision)}`) : warn(`channel 模式: ${describeMode(ch.decision)}`))
+    if (managed) out.push(ok(`bwrap ${ch.decision.bwrap} (sha256 與工具箱安裝時相同), 設定目錄 ${ch.paths.configDir}`))
+  }
+
+  // the telegram plugin as deploy/install.sh plugin left it: the router's marketplace (managed) or the official cache, for this user
+  if (managed) {
+    const problems = checkMarketplace(cfg.stateDir, ch!.paths.pluginDir)
+    if (problems.length) out.push(...problems.map(p => warn(`telegram plugin: ${p.detail}`)))
+    else out.push(ok(`telegram plugin 在 router 的商店 (${ch!.paths.pluginDir}), 跟部署時相同`))
+  } else {
+    const problems = checkPluginCache(cfg.stateDir, pluginsRoot(process.env, home))
+    if (problems.length) out.push(...problems.map(p => warn(`telegram plugin: ${p.detail}`)))
+    else out.push(ok(`telegram plugin 裝在這個使用者 (${pluginsRoot(process.env, home)}), 跟部署時相同`))
+  }
 
   // the locator the plugin and the hook find the router by
   const loc = readLocator(locatorPath(home))
@@ -64,9 +83,10 @@ export function doctorReport(d: DoctorDeps): string {
   else if (loc.home !== cfg.home || loc.socket !== cfg.socket) out.push(bad(`位置檔指向另一個 router (home ${loc.home}, socket ${loc.socket}); 執行 ${join(cfg.stateDir, 'cc-telegram-router')} register`))
   else out.push(ok(`位置檔 ${locatorPath(home)} 指向這個 router`))
 
-  // home trusted by Claude Code (children inherit it)
-  const projects = readProjects(join(home, '.claude.json'))
-  if (!projects) out.push(warn(`讀不到 ${join(home, '.claude.json')}: 無法確認資料夾信任 (Claude Code 還沒在這個使用者下執行過?)`))
+  // home trusted by Claude Code (children inherit it); managed mode: in the router's own config folder
+  const claudeJson = ch?.launcher.claudeJson ?? join(home, '.claude.json')
+  const projects = readProjects(claudeJson)
+  if (!projects) out.push(warn(`讀不到 ${claudeJson}: 無法確認資料夾信任 (${managed ? 'router 還沒以 managed 模式啟動過?' : 'Claude Code 還沒在這個使用者下執行過?'})`))
   else {
     const t = trustOf(projects, cfg.home, home)
     out.push(t.trusted ? ok(`home ${cfg.home} 已被 Claude Code 信任 (${t.key === cfg.home ? '它自己' : `上層 ${t.key}`})`) : bad(`home ${cfg.home} 沒有被 Claude Code 信任, worker 會 Workspace not trusted: ${trustFix(cfg.home, t)}`))
@@ -92,7 +112,12 @@ export function doctorReport(d: DoctorDeps): string {
     const blocked = d.agents.filter(a => a.name && keys.has(a.name) && a.state === 'blocked')
     if (blocked.length) out.push(warn(`這些 worker 卡住 (blocked, 等人回應): ${blocked.map(a => a.name).join(', ')}`))
   }
-  if (d.procs) {
+  if (managed && ch!.check !== undefined) {
+    const c = ch!.check
+    if (!c || !c.daemon) out.push(warn('router 的 claude daemon 沒有在跑 (router 執行中會自動帶起; 沒在執行時這是正常的)'))
+    else if (c.bad.length) out.push(bad(`這些程序看不到 managed settings, Telegram 訊息會被丟掉: ${c.bad.map(b => `${b.what} (pid ${b.pid})`).join(', ')}; router 會自動修復, 修不好看 router 的 log`))
+    else out.push(ok(`router 的 claude daemon (pid ${c.daemon}) 與 ${c.workers} 個 worker 都看得到 managed settings`))
+  } else if (d.procs && !managed) {
     const r = daemonReport(d.procs, [cfg.home, cfg.stateDir], d.claudeDir)
     const notes = reportNotices(r)
     if (notes.length) out.push(...notes.map(n => n.split('\n')[0]!))
@@ -122,20 +147,22 @@ export async function offlineDoctor(configPath: string, version?: string): Promi
       try { conversations = db.query('SELECT * FROM conversations').all() as Conversation[] } finally { db.close() }
     } catch {}
   }
+  const channel = resolveChannel(cfg, { writeManaged: writeManagedSettings })
+  const l = channel.launcher
   let agents: AgentEntry[] | null = null
   try {
-    const p = Bun.spawn([cfg.claudeBin, 'agents', '--json', '--all'], { cwd: existsSync(cfg.home) ? cfg.home : undefined, stdout: 'pipe', stderr: 'ignore', stdin: 'ignore' })
+    const p = Bun.spawn(l.argv(['agents', '--json', '--all']), { cwd: existsSync(cfg.home) ? cfg.home : undefined, env: l.env(), stdout: 'pipe', stderr: 'ignore', stdin: 'ignore' })
     const timer = setTimeout(() => p.kill(9), 15_000)
     const text = await new Response(p.stdout).text()
     clearTimeout(timer)
     if ((await p.exited) === 0) agents = JSON.parse(text)
   } catch {}
-  return doctorReport({ cfg, conversations, agents, version, ...daemonInputs(cfg.claudeBin) })
+  return doctorReport({ cfg, conversations, agents, version, ...daemonInputs(cfg.claudeBin, join(l.configDir, 'jobs')), channel: { ...channel, check: l.mode === 'managed' ? checkNamespaces(channel.paths) : null } })
 }
 
 /** The daemon's job records and processes for the doctor, as the router's job sweep reads them (router/jobs.ts). */
-export function daemonInputs(claudeBin: string, home?: string): Pick<DoctorDeps, 'jobs' | 'procs' | 'claudeDir'> {
+export function daemonInputs(claudeBin: string, jobs = jobsDir()): Pick<DoctorDeps, 'jobs' | 'procs' | 'claudeDir'> {
   let claudeDir: string | undefined
   try { claudeDir = dirOf(realpathSync(Bun.which(claudeBin) ?? claudeBin)) } catch {}
-  return { jobs: listJobs(jobsDir(process.env, home)), procs: readProcs(), ...(claudeDir ? { claudeDir } : {}) }
+  return { jobs: listJobs(jobs), procs: readProcs(), ...(claudeDir ? { claudeDir } : {}) }
 }

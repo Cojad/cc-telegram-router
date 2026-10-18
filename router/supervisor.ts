@@ -35,8 +35,13 @@ export interface SupervisorDeps {
   release?: (key: string) => void
   /** The flags a daemon job was started with (its state.json respawnFlags, router/jobs.ts); null when unreadable. */
   jobFlags?: (jobId: string) => string[] | null
+  /** --channels for workers (router/claudecmd.ts CHANNELS: the router's own plugin in managed mode); default CHANNEL. */
+  channel?: string
+  /** Before each wake: managed mode makes sure the daemon is the router's, inside bwrap (router/managed.ts). */
+  beforeWake?: () => Promise<unknown>
 }
 
+/** The legacy channel: the official plugin's cache with plugin v2 laid over it. */
 export const CHANNEL = 'plugin:telegram@claude-plugins-official'
 
 /** Running = the daemon reports a live process. `state` is not it: "done"
@@ -45,14 +50,14 @@ export function isRunning(a: AgentEntry): boolean {
   return a.pid != null && a.status != null
 }
 
-export function workerArgs(cfg: Config, c: Conversation, settings: string): string[] {
+export function workerArgs(cfg: Config, c: Conversation, settings: string, channel = CHANNEL): string[] {
   return [
     '--allow-dangerously-skip-permissions',
     '--name', `tg-${c.key}`,
     '--model', c.model ?? cfg.model,
     '--setting-sources', 'project,local',
     '--settings', settings,
-    '--channels', CHANNEL,
+    '--channels', channel,
   ]
 }
 
@@ -83,7 +88,7 @@ export function createSupervisor(deps: SupervisorDeps) {
   /** Started, or why not (what claude said). */
   async function start(c: Conversation, agents: AgentEntry[]): Promise<{ failed: boolean; out: string }> {
     const settings = settingsPath(c)
-    const wanted = workerArgs(cfg, c, settings)
+    const wanted = workerArgs(cfg, c, settings, deps.channel)
     if (c.session_id) {
       // While the daemon still has the job, resume without flags: it keeps
       // the options it was created with (--settings path included, so
@@ -143,6 +148,7 @@ export function createSupervisor(deps: SupervisorDeps) {
     // failed several times in a row: wait (messages stay queued)
     const hold = deps.holdUntil?.(c.key) ?? 0
     if (hold > Date.now()) { wakeLater(c, hold); return }
+    await deps.beforeWake?.()
     const agents = await listAgents()
     const live = agents.find(a => c.session_id && a.sessionId === c.session_id && isRunning(a))
     if (live) {

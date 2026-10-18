@@ -62,11 +62,13 @@ export function renderSettings(templatesDir: string, role: string, vars: Vars): 
   return s
 }
 
-export function writeSessionSettings(stateDir: string, templatesDir: string, key: string, role: string, vars: Vars, overrides: Override[] = []): string {
+/** top: keys that replace the rendered ones as a whole (managed mode's plugin keys, router/claudecmd.ts pluginSettings). */
+export function writeSessionSettings(stateDir: string, templatesDir: string, key: string, role: string, vars: Vars, overrides: Override[] = [], top: Record<string, unknown> | null = null): string {
   const dir = join(stateDir, 'sessions')
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   const path = join(dir, `${key}.json`)
-  writeFileSync(path, JSON.stringify(applyOverrides(renderSettings(templatesDir, role, vars), overrides), null, 2) + '\n', { mode: 0o600 })
+  const rendered = { ...(renderSettings(templatesDir, role, vars) as Record<string, Json>), ...(top as Record<string, Json> | null ?? {}) }
+  writeFileSync(path, JSON.stringify(applyOverrides(rendered, overrides), null, 2) + '\n', { mode: 0o600 })
   return path
 }
 

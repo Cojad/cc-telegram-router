@@ -281,7 +281,7 @@ test('docs/operations.md 「健康檢查端點」 says what the code does: the d
   expect(readFileSync(join(import.meta.dir, '..', 'main.ts'), 'utf8')).toContain('bot.api.getUpdates({ offset, timeout: 30,')
   // the example body has the fields a report has, bot entries and the failed wake included
   const example = JSON.parse(sec.slice(sec.indexOf('```json\n{') + 8, sec.indexOf('\n```', sec.indexOf('```json\n{'))))
-  const real = healthReport(base({ lastWakeFailure: { at: T0, bot: 'cc', failures: 1, cause: 'x' } })).body as any
+  const real = healthReport(base({ lastWakeFailure: { at: T0, bot: 'cc', failures: 1, cause: 'x' }, channel: { mode: 'managed', managedOk: true } })).body as any
   expect(Object.keys(example)).toEqual(Object.keys(real))
   expect(Object.keys(example.bots.cc)).toEqual(Object.keys(real.bots.cc))
   expect(Object.keys(example.workers)).toEqual(Object.keys(real.workers))
@@ -318,6 +318,14 @@ test('start notice: always the version; with health its URL, then a public addre
   expect(startNotice('2.30.0', h('127.0.0.1'), true)).toBe('🟢 cc-telegram-router 2.30.0 啟動\nhealth point (http://127.0.0.1:8787/healthz) 啟動\n⚠️ health point 未設 token, 連得到的都看得到狀態')
   expect(startNotice('2.30.0', h('127.0.0.1', TOKEN), false)).toBe('🟢 cc-telegram-router 2.30.0 啟動\n⚠️ health point (http://127.0.0.1:8787/healthz) 沒有啟動, 原因見 router 的 log')
   expect(startNotice('2.30.0', h('0.0.0.0', TOKEN), true)).not.toContain(TOKEN)
+  // the channel mode (router/claudecmd.ts describeMode) on its own line after the version
+  expect(startNotice('2.30.0', undefined, false, 'managed (x)')).toBe('🟢 cc-telegram-router 2.30.0 啟動\nchannel 模式: managed (x)')
+})
+
+test('the report\'s channel: the mode, why legacy, whether the daemon sees the managed settings; left out when not given', () => {
+  expect((healthReport(base({ channel: { mode: 'legacy', reason: 'r', managedOk: null } })).body as any).channel).toEqual({ mode: 'legacy', reason: 'r', managedOk: null })
+  expect('channel' in healthReport(base({})).body).toBe(false)
+  expect(healthReport(base({ channel: { mode: 'managed', managedOk: false } })).status).toBe(200)
 })
 
 test('stop notice: 重啟 or 關機, with where it came from: cli, telegram: <name>, systemd (SIGTERM) under systemd, else the signal', () => {

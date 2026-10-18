@@ -6,6 +6,23 @@
 
 ## [Unreleased]
 
+## [2.32.0] - 2026-10-18
+
+### Added
+
+- managed 模式 (預設): worker 改載入 router 自己的 telegram plugin `telegram@cc-telegram-router`, 不再依賴官方商店的快取, 官方更新不會再換掉 plugin. Claude Code 只讓 managed settings 的 `allowedChannelPlugins` 裡的 plugin 當 channel, 而那要寫在 `/etc/claude-code`; router 不用 sudo, 改用工具箱的 static bwrap 在 mount namespace 裡把 `<stateDir>/managed` 唯讀掛到 `/etc/claude-code` (`--bind / /`, `/etc` overlay, `--remount-ro /etc`), 真的 `/etc` 不動. router 下的每個 claude 指令 (worker, `agents`, `stop`, `rm`, relay 的 `attach`, 分類器, 套件審核, 原始事件的 `claude -p`) 都包在 bwrap 裡, 用 router 專屬的設定目錄 `<stateDir>/claude-config` (`CLAUDE_CONFIG_DIR`, 登入沿用使用者自己的設定目錄: `CLAUDE_SECURESTORAGE_CONFIG_DIR`), 所以 router 有自己的 daemon, jobs 與對話紀錄, 跟這台機器上的其他 session 分開. 見 [docs/managed-channel.md](docs/managed-channel.md).
+- daemon 看管 (`router/managed.ts`): router 在 bwrap 裡常駐一個 `claude daemon run` (閒置也不退出), 叫醒 worker 前與每分鐘從 `/proc/<pid>/root/etc/claude-code` 檢查 daemon 與它的 worker 是否看得到 managed settings; daemon 不在就啟動, 看不到就停掉再重啟並發重要通知, 連續 3 次修不好就停止嘗試並通知 (不自動切回 legacy).
+- 降級 (legacy 模式): 不是 Linux, 工具箱沒有 bwrap 或檔案被改過, bwrap 試跑失敗 (例如 Ubuntu 24.04 的 `apparmor_restrict_unprivileged_userns=1`), 或 config 設 `"channelMode": "legacy"` 時, 照原本的做法用官方 plugin 的快取與使用者自己的設定目錄, router 照常運作. 模式與降級原因寫在每次的啟動公告 (`channel 模式: ...`), `cli doctor` 與 `/healthz` 的 `channel` 欄位. 新的設定欄位 `channelMode` (`auto` 或 `legacy`).
+- 對話紀錄遷移: 第一次以 managed 模式啟動時, 把各對話目前 session 的紀錄 (含 tool-results) 從使用者的設定目錄複製到 router 的 (不覆蓋, 原本的留著), 照抄對話資料夾自己的信任, 移除原本 daemon 裡這些對話的 job, 記在 `migrated.json`; worker 下一次醒來接續原本的對話. 也可以先手動跑 `cc-telegram-router managed migrate [--dry-run] [--user-config <dir>] [--force]` (演練方式見文件). 降回 legacy 時, 較新的紀錄複製回使用者的設定目錄.
+- 設定目錄初始化: router 在 managed 模式啟動時接受 bypass 警告 (`skipDangerousModePermissionPrompt`) 並在 `<stateDir>/claude-config/.claude.json` 信任 home, 不用互動執行 claude. 全域 `~/.claude/CLAUDE.md` 照樣載入 (Claude Code 2.1.302 實測), 不帶個人 skills, 其他 plugin 與 MCP server.
+- 工具箱的 host 工具: bubblewrap 0.13.1 static 版 (本 repo 的 `.github/workflows/bwrap-static.yml` 建置成 release asset, 固定 sha256, 目前只有 x86_64), 裝在 `<stateDir>/toolbox/host`, 不掛進任何沙箱.
+- `deploy/install.sh plugin` 多部署 router 的本機商店 `<stateDir>/marketplace` (plugin 名稱仍是 `telegram`, 工具名稱與 channel 標籤不變) 並記指紋 `plugin-fingerprint.marketplace.json`; pluginguard 在 managed 模式改檢查它. 官方快取照舊部署, 給 legacy 模式用.
+- 測試: 新增 `router/test/managed.test.ts` (16 項) 與 `router/test/e2e-managed.test.ts` (5 項, 用系統 bwrap 做出真的 namespace); health.test 補 channel; 假 claude 多 `daemon run` 與 `daemon stop`; docs/testing.md 加「managed channel 驗收對照」與新的 `managed` 區.
+
+### Changed
+
+- managed 模式的 worker 登記在 router 的設定目錄, owner 的終端機與其他 session 用 ListAgents 看不到它們, 也不能用名稱 SendMessage; 送訊息給 worker 一律用 `cli session send` (文件寫明).
+
 ## [2.31.1] - 2026-10-18
 
 ### Changed

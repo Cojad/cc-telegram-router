@@ -501,12 +501,14 @@ export function createVault(deps: VaultDeps) {
 export type Vault = ReturnType<typeof createVault>
 
 /** claude -p with a fixed system prompt, no tools, no settings, no MCP (the package review's way). */
-export function claudeAsk(o: { claudeBin: string; model: () => string; cwd: string; timeoutMs?: number }): VaultDeps['ask'] {
+export function claudeAsk(o: { claudeBin: string; model: () => string; cwd: string; timeoutMs?: number; launch?: { argv(args: string[]): string[]; env(base?: Record<string, string | undefined>): Record<string, string | undefined> } }): VaultDeps['ask'] {
   return async (system, input) => {
     const env = { ...process.env }
     for (const k of Object.keys(env)) if (k.startsWith('TELEGRAM_')) delete env[k]
-    const proc = Bun.spawn([o.claudeBin, '-p', '--model', o.model(), '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json', '--system-prompt', system], {
-      cwd: o.cwd, env, stdin: new Blob([input]), stdout: 'pipe', stderr: 'pipe',
+    const args = ['-p', '--model', o.model(), '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json', '--system-prompt', system]
+    // launch: how the router runs claude (router/claudecmd.ts: bwrap and its config folder in managed mode)
+    const proc = Bun.spawn(o.launch ? o.launch.argv(args) : [o.claudeBin, ...args], {
+      cwd: o.cwd, env: o.launch ? o.launch.env(env) : env, stdin: new Blob([input]), stdout: 'pipe', stderr: 'pipe',
     })
     const kill = setTimeout(() => proc.kill(), o.timeoutMs ?? 90_000)
     const out = await new Response(proc.stdout).text()

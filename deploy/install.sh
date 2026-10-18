@@ -5,9 +5,11 @@
 #                              install the skills' toolbox (ffmpeg, deno, uv: <state>/toolbox, a failure only warns),
 #                              and (once config.json exists) write the locator the plugin and hook use
 #                              (~/.config/cc-telegram-router/router.json, shared/locate.ts)
-#   deploy/install.sh plugin   bundle plugin v2 into the official plugin cache path and record its
-#                              fingerprint in the state dir (<stateDir>/plugin-fingerprint.json), which
-#                              the router checks the cache against (router/pluginguard.ts)
+#   deploy/install.sh plugin   bundle plugin v2 into the router's own marketplace (<stateDir>/marketplace,
+#                              what workers load in managed mode, docs/managed-channel.md) and into the
+#                              official plugin cache path (legacy mode), recording each one's fingerprint
+#                              in the state dir (plugin-fingerprint.marketplace.json, plugin-fingerprint.json),
+#                              which the router checks them against (router/pluginguard.ts)
 #   deploy/install.sh unit     install the systemd user unit (does not start it)
 #   deploy/install.sh setup    the setup wizard (cc-telegram-router setup): make config.json and access.json,
 #                              or change them (edit mode when config.json exists), then register
@@ -105,17 +107,29 @@ install_plugin() {
   bun build "$REPO/plugin/server.ts" --target=bun --outfile "$tmp/server.js" >/dev/null
   cp -r "$REPO/plugin/.claude-plugin" "$REPO/plugin/.mcp.json" "$REPO/plugin/package.json" "$REPO/plugin/skills" "$tmp/"
   # Keep Claude Code's own marker files; replace everything else.
+  mkdir -p "$PLUGIN_CACHE"
   find "$PLUGIN_CACHE" -mindepth 1 -maxdepth 1 ! -name '.in_use' -exec rm -rf {} +
   cp -a "$tmp/." "$PLUGIN_CACHE/"
   echo v2 > "$PLUGIN_CACHE/.deployed-version"
-  rm -rf "$tmp"
   echo "plugin -> $PLUGIN_CACHE"
   # What we put there, for the router's check of the cache (router/pluginguard.ts).
   if plugin_state_dir; then
     bun "$REPO/router/pluginguard.ts" fingerprint "$PLUGIN_CACHE" "$STATE"
+    # The router's own marketplace (managed mode): the same files, replaced as a whole folder.
+    local market="$STATE/marketplace"
+    mkdir -p "$market/.claude-plugin"
+    printf '%s\n' '{"name": "cc-telegram-router", "owner": {"name": "cc-telegram-router"}, "plugins": [{"name": "telegram", "source": "./telegram", "description": "Telegram channel of cc-telegram-router"}]}' > "$market/.claude-plugin/marketplace.json"
+    rm -rf "$market/telegram.new"
+    mkdir -p "$market/telegram.new"
+    cp -a "$tmp/." "$market/telegram.new/"
+    rm -rf "$market/telegram"
+    mv "$market/telegram.new" "$market/telegram"
+    echo "plugin -> $market/telegram"
+    bun "$REPO/router/pluginguard.ts" fingerprint "$market/telegram" "$STATE" --marketplace
   else
-    echo "沒有安裝位置 (CC_ROUTER_STATE 或位置檔), 沒記下 plugin 指紋: 裝好 router 後再跑一次 $(basename "$0") plugin" >&2
+    echo "沒有安裝位置 (CC_ROUTER_STATE 或位置檔), 沒部署 router 的商店也沒記下 plugin 指紋: 裝好 router 後再跑一次 $(basename "$0") plugin" >&2
   fi
+  rm -rf "$tmp"
 }
 
 # Like state_dir, but only reports whether it is known (a plugin install may come before the router's).

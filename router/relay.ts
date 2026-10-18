@@ -201,6 +201,8 @@ export interface RelayDeps {
   exec: Exec
   stateDir: string
   claudeBin: string
+  /** The attach command as one shell line (router/claudecmd.ts shellLine: bwrap and the config folder in managed mode); default `<claudeBin> attach <id>`. */
+  attachCmd?: (workerId: string) => string
   /** The repo's scripts/ (installed to <stateDir>/scripts): tg-status-report.sh, tg-usage-report.sh, tg-context-chart.py */
   scriptsDir: string
   /** Where the /context chart is written. */
@@ -217,7 +219,7 @@ export async function relay(deps: RelayDeps, workerId: string, r: RelayCmd): Pro
   const visible = () => tmux('capture-pane', '-p', '-t', name).then(x => x.stdout)
   const withScroll = () => tmux('capture-pane', '-p', '-t', name, '-S', '-200').then(x => x.stdout)
   await tmux('kill-session', '-t', name)
-  await tmux('new-session', '-d', '-s', name, '-x', '160', '-y', '50', `${deps.claudeBin} attach ${workerId}`)
+  await tmux('new-session', '-d', '-s', name, '-x', '160', '-y', '50', deps.attachCmd ? deps.attachCmd(workerId) : `${deps.claudeBin} attach ${workerId}`)
   /** Back to the input prompt: one Esc at a time, a second apart (two quick
    *  Escs at the prompt open the rewind menu), until the prompt shows. Any
    *  screen that is not the prompt gets an Esc (a view still loading has no

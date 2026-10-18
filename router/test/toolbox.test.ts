@@ -16,7 +16,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createHash } from 'crypto'
-import { TOOLS, TOOL_NAMES, installTools, installed, missingTools, describeToolbox, toolboxCli, binDir, type Tool } from '../toolbox'
+import { TOOLS, TOOL_NAMES, ALL_TOOLS, installTools, installed, missingTools, describeToolbox, toolboxCli, binDir, type Tool } from '../toolbox'
 import { openRouterDb, type RouterDb, type Conversation } from '../db'
 import { hashSkill, loadManifest } from '../privskill'
 import { runSkill, type SkillRunDeps } from '../skillrun'
@@ -100,7 +100,8 @@ test('install: a sha256 that does not match fails that tool only (nothing of it 
 })
 
 test('toolbox status and the CLI: one line per tool, what is missing and how to install it; usage on anything else', async () => {
-  expect(describeToolbox(box)).toBe(TOOLS.map(t => `${t.name}: 沒有安裝 (cc-telegram-router toolbox install)`).join('\n'))
+  expect(describeToolbox(box)).toBe(ALL_TOOLS.map(t => `${t.name}: 沒有安裝 (cc-telegram-router toolbox install)`).join('\n'))
+  expect(ALL_TOOLS.map(t => t.name)).toEqual([...TOOL_NAMES, 'bwrap']) // the router's own static bwrap (managed.test.ts)
   const out: string[] = []
   expect(await toolboxCli(['status', '--state', join(dir, 'state')], '/nowhere', s => out.push(s))).toBe(0)
   expect(out[0]).toContain('ffmpeg: 沒有安裝')

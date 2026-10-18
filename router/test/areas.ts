@@ -56,6 +56,11 @@ export const AREAS: Area[] = [
     paths: ['router/supervisor.ts', 'router/jobs.ts', 'router/sessionsend.ts', 'router/lock.ts', 'router/conversations.ts', 'router/context.ts', 'router/progress.ts', 'router/relay.ts', 'router/freshness.ts', 'router/rotate.ts', 'router/setup.ts', 'router/cli.ts', 'router/guard.ts', 'router/settings.ts', 'plugin/server.ts', 'plugin/skills/**', 'shared/time.ts', 'templates/**'],
   },
   {
+    name: 'managed', title: '專屬設定目錄與 managed channel',
+    tests: ['managed.test.ts', 'e2e-managed.test.ts'],
+    paths: ['router/claudecmd.ts', 'router/managed.ts', 'router/toolbox.ts', 'router/pluginguard.ts', 'router/doctor.ts', 'router/supervisor.ts', 'router/jobs.ts', 'router/settings.ts', 'router/health.ts', 'deploy/**', '.github/workflows/**', 'templates/base-settings.json'],
+  },
+  {
     name: 'repo', title: '報表腳本與 repo 檢查',
     tests: ['context-chart.test.ts', 'usage-report.test.ts', 'requirements.test.ts', 'areas.test.ts', 'readme.test.ts', 'tiers.test.ts'],
     paths: ['scripts/**', 'README.md', 'docs/operations.md', 'docs/secrets.md', 'CHANGELOG.md', 'plugin/package.json', 'deploy/**', 'router/relay.ts', 'router/test/areas.ts', 'router/test/tiers.ts', 'router/test/full.ts', 'router/test/timings.json'],

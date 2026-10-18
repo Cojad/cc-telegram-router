@@ -144,8 +144,10 @@ export function exposureWarnings(h: HealthConfig): string[] {
 
 /** At every start: the version; with health, its URL (or that it did not
  *  start), a public address and a missing token each a line of their own. */
-export function startNotice(version: string, h: HealthConfig | undefined, listening: boolean): string {
+export function startNotice(version: string, h: HealthConfig | undefined, listening: boolean, channel?: string): string {
   const out = [`🟢 cc-telegram-router ${version} 啟動`]
+  // how workers get their channel (router/claudecmd.ts describeMode): managed, or legacy and why
+  if (channel) out.push(`channel 模式: ${channel}`)
   if (h && !listening) out.push(`⚠️ health point (${healthUrl(h)}) 沒有啟動, 原因見 router 的 log`)
   if (h && listening) {
     out.push(`health point (${healthUrl(h)}) 啟動`)
@@ -236,6 +238,9 @@ export type HealthInput = {
   bots: BotPoll[]
   workers: WorkerCounts
   lastWakeFailure: WakeFailure | null
+  /** How workers get their channel (docs/managed-channel.md): the mode, why legacy, and whether the
+   *  daemon and workers see the managed settings (null: not checked, legacy mode). Information only. */
+  channel?: { mode: string; reason?: string; managedOk: boolean | null }
 }
 
 /** Who is where, by the router's own definitions (/router status): standby =
@@ -279,6 +284,7 @@ export function healthReport(i: HealthInput): { status: 200 | 503; body: Record<
       bots,
       workers: i.workers,
       lastWakeFailure: f ? { at: iso8(f.at), agoS: secs(i.now - f.at), bot: f.bot, failures: f.failures, cause: f.cause } : null,
+      ...(i.channel ? { channel: i.channel } : {}),
     },
   }
 }

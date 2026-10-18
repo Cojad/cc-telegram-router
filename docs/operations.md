@@ -4,7 +4,7 @@
 
 ## 部署
 
-先裝官方 telegram plugin (`deploy/install.sh plugin` 要覆蓋它的快取路徑 `~/.claude/plugins/cache/claude-plugins-official/telegram/0.0.7/`, 所以要先有它):
+router 預設用 managed 模式 (見 [專屬設定目錄與 managed channel](managed-channel.md)): worker 在 bwrap 裡用 router 自己的設定目錄 (`<stateDir>/claude-config`), 載入 router 商店 (`<stateDir>/marketplace`) 裡的 telegram plugin, 不需要官方 plugin. 官方 telegram plugin 只在降級成 legacy 模式時用到 (工具箱的 bwrap 不能用, user namespace 被系統關閉, 或 config 設了 `"channelMode": "legacy"`). 要保留這條退路就先裝好它 (`deploy/install.sh plugin` 也會覆蓋它的快取路徑 `~/.claude/plugins/cache/claude-plugins-official/telegram/0.0.7/`):
 
 ```bash
 claude plugin marketplace list                                    # 沒有 claude-plugins-official 時先加:
@@ -12,15 +12,15 @@ claude plugin marketplace add anthropics/claude-plugins-official
 claude plugin install telegram@claude-plugins-official            # 預設裝在 user 範圍
 ```
 
-worker 的 settings 會自己啟用它 (`templates/base-settings.json` 的 `enabledPlugins`), `claude plugin list` 顯示 disabled 也沒關係; 同一份 settings 也關掉官方商店的自動更新, 見下方「官方 plugin 的自動更新與快取檢查」. 之前要先裝好 bun (`package.json` 的 `engines`, 官方安裝程式放在 `~/.bun/bin`) 與 Claude Code, 並在 repo 執行過 `bun install --frozen-lockfile`. 接著:
+legacy 模式的 worker settings 會自己啟用它 (`templates/base-settings.json` 的 `enabledPlugins`), `claude plugin list` 顯示 disabled 也沒關係; 同一份 settings 也關掉官方商店的自動更新, 見下方「官方 plugin 的自動更新與快取檢查」. 之前要先裝好 bun (`package.json` 的 `engines`, 官方安裝程式放在 `~/.bun/bin`) 與 Claude Code, 並在 repo 執行過 `bun install --frozen-lockfile`. 接著:
 
 ```bash
-CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cc-telegram-router, 複製 templates 與報表腳本; 還沒有 config.json 而且在終端機裡時接著開設定嚮導
-deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容), 並在 stateDir 記下檔案指紋
+CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cc-telegram-router, 複製 templates 與報表腳本, 裝工具箱 (含 static bwrap); 還沒有 config.json 而且在終端機裡時接著開設定嚮導
+deploy/install.sh plugin   # 打包 plugin v2 到 router 的商店 (<stateDir>/marketplace) 與官方 plugin 快取路徑 (第一次會備份原內容), 並在 stateDir 記下兩邊的檔案指紋
 deploy/install.sh unit     # 安裝 systemd user unit
 deploy/install.sh setup    # 設定嚮導 (第一次 router 已經帶起時不用再跑; 之後要改設定再跑, 見下方「設定嚮導」)
 sudo loginctl enable-linger <使用者>   # 見下方「登出後繼續執行 (linger)」
-cd <home> && claude        # 只有第一次: 接受資料夾信任後離開 (/exit), 見下方「資料夾信任」
+cd <home> && claude        # 只有第一次, legacy 模式用 (managed 模式由 router 自己寫信任): 接受資料夾信任後離開 (/exit), 見下方「資料夾信任」
 systemctl --user enable --now cc-telegram-router
 ```
 
@@ -51,7 +51,9 @@ router 是 systemd user service: 沒開 linger 時, 使用者的 systemd 只在�
 
 ### 資料夾信任
 
-router 以 `claude --bg` 在每個對話資料夾 (`<home>` 底下) 啟動 worker. Claude Code 啟動背景 session 前會檢查那個資料夾有沒有被信任 (workspace trust), 沒信任又沒辦法跳出確認框時直接失敗 (`Workspace not trusted`). 所以第一次要在 `<home>` 互動執行一次 `claude`, 在信任確認框選接受, 然後離開.
+router 以 `claude --bg` 在每個對話資料夾 (`<home>` 底下) 啟動 worker. Claude Code 啟動背景 session 前會檢查那個資料夾有沒有被信任 (workspace trust), 沒信任又沒辦法跳出確認框時直接失敗 (`Workspace not trusted`).
+
+managed 模式 (預設) 的 worker 用 router 自己的設定目錄: router 每次啟動時在 `<stateDir>/claude-config/.claude.json` 寫入 `<home>` 的信任 (其他內容保留, 已經有了就不寫), 不用互動執行 claude; 第一次以 managed 模式啟動時, 原本 `~/.claude.json` 裡有自己信任的對話資料夾 (例如本身是 git repo 的) 也照抄過去 (見 [managed-channel](managed-channel.md#對話紀錄的遷移)). 以下是 legacy 模式的做法, 建議也先做, 降級時才不會 `Workspace not trusted`: 第一次在 `<home>` 互動執行一次 `claude`, 在信任確認框選接受, 然後離開.
 
 依 Claude Code 官方文件 ([Configure permissions: Project allow rules and workspace trust](https://code.claude.com/docs/en/permissions#project-allow-rules-and-workspace-trust)): 不在 git repo 裡時, 信任記在啟動 claude 的那個資料夾, 並涵蓋它底下的所有子資料夾, 所以之後才建立的對話資料夾不用再個別信任. 例外:
 
@@ -100,22 +102,25 @@ router 以 `claude --bg` 在每個對話資料夾 (`<home>` 底下) 啟動 worke
 | `credentials` | 跨 bot 的 bot token 與 http API key, 名稱 -> `{ token, kind, methods, baseUrl, apiRoot, header, scheme, query, defaultHeaders, roles, label, addedBy }`; 由 `/router cred` 與 `cred-import` 管理, 不要手改 (例外: telegram-bot 類的 `apiRoot`, 這個憑證要走的 Bot API server, 沒寫用全域 `apiRoot`, 手改後 `/router cred reload`). 見[憑證](credentials-and-skills.md#憑證). |
 | `secretKey` | 加密對話密鑰與原始事件的 AES-256 key (base64); 沒有時 router 啟動時產生並寫回 config.json. 遺失就解不開已存的密鑰與原文, 要跟 router.db 一起備份. 見[密鑰](secrets.md). |
 | `skillRefreshAt` | 特權技能每日更新憑證的時間, GMT+8 `"HH:MM"`, `"off"` 關閉; 沒寫是 `"05:00"`, 寫錯只關閉每日更新. 見[特權技能](credentials-and-skills.md#特權技能). |
-| `pluginCheckAt` | 每天檢查官方 plugin 快取的時間, GMT+8 `"HH:MM"`, `"off"` 關閉; 沒寫是 `"09:07"`, 寫錯只關閉每日檢查 (worker 打招呼時的檢查照舊). 見[官方 plugin 的自動更新與快取檢查](#官方-plugin-的自動更新與快取檢查). |
+| `pluginCheckAt` | 每天檢查 telegram plugin (managed 模式: router 的商店; legacy: 官方 plugin 快取) 的時間, GMT+8 `"HH:MM"`, `"off"` 關閉; 沒寫是 `"09:07"`, 寫錯只關閉每日檢查 (worker 打招呼時的檢查照舊). 見[官方 plugin 的自動更新與快取檢查](#官方-plugin-的自動更新與快取檢查). |
 | `classifier` | 工具呼叫分類器 (選配, 預設關閉, 第一階段只記錄); 格式錯只關閉它. 見[工具呼叫分類器](classifier.md). |
 | `sandboxDenyRead` | 所有沙箱 (角色範本與特權動作) 額外隱藏的絕對路徑, 例如同一台機器上其他專案; 沒寫是沒有, 寫錯的項目略過. 見[安裝位置](#安裝位置). |
 | `sandboxTimezone` | 特權技能沙箱的時區 (`TZ` 與 `/etc/localtime`), `/usr/share/zoneinfo` 裡的名稱; 沒寫或寫錯是 `Asia/Taipei`. 見[執行環境規格](skill-runtime.md#時區). |
 | `sandboxExtraRo` | 特權技能的沙箱額外唯讀看得到的絕對路徑 (沙箱是白名單, 預設只有 `/usr` 與少數 `/etc` 檔), 結尾是 `/bin` 的放進 PATH; 沒寫是沒有, 寫錯的項目略過. 見[執行環境規格](skill-runtime.md#掛載路徑). |
 | `receiveReact` | 對話沒有自己設定時收哪些表情回應: `all`, `botself_only`, `disable`; 沒寫是 `botself_only`. 見[表情回應 (reaction)](#表情回應-reaction). |
 | `reactFlushMs` | 表情回應等多少毫秒沒有新訊息就單獨交給 worker; 沒寫是 60000, 測試才縮短. 見[表情回應 (reaction)](#表情回應-reaction). |
+| `channelMode` | worker 怎麼取得 Telegram channel: `"auto"` (沒寫就是它) 在 bwrap 能用時走 managed 模式 (router 自己的設定目錄, daemon 與 plugin), 不能用時降級成 legacy; `"legacy"` 一律用官方 plugin 的快取與使用者自己的設定目錄 (退回原本的做法). 寫錯視同 auto. 見[專屬設定目錄與 managed channel](managed-channel.md). |
 | `health` | 給外部監控 (例如 Gatus) 的 HTTP 健康檢查端點 (選配, 預設關閉): `{ "listen": "127.0.0.1:8787", "token": ..., "staleAfterS": 90 }`; 不是本機位址也照開, log 與啟動公告會警告; 寫錯或 port 被佔用只關閉它. 見[健康檢查端點](#健康檢查端點). |
 | `backlogSweepFirstMs` | 只給測試用, 一般使用者不用設. router 啟動後多少毫秒第一次檢查佇列裡還沒送達的訊息 (先讓已經在跑的 worker 重新連上); 沒寫是 15000. |
 | `vaultTickMs` | 只給測試用, 一般使用者不用設. 多久檢查一次到期要刪的密鑰訊息 (刪除時間本身不變, 例如群組指令仍是 10 秒後刪); 沒寫是 10000. |
 
-選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `sandboxExtraRo`, `sandboxTimezone`, `receiveReact`, `health`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
+選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `sandboxExtraRo`, `sandboxTimezone`, `receiveReact`, `health`, `channelMode`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
 
 ## 官方 plugin 的自動更新與快取檢查
 
-worker 載入的 plugin v2 是 `deploy/install.sh plugin` 蓋在官方 telegram plugin 的快取資料夾 (`~/.claude/plugins/cache/claude-plugins-official/telegram/0.0.7/`) 上的. Claude Code 對官方商店 `claude-plugins-official` 預設開啟自動更新: 互動 session (背景 worker 也算) 送出第一則訊息後, 隨機等最多十分鐘, 重新整理商店並把 plugin 更新到新的版本資料夾, 下一次啟動就載入官方版. 官方版不認識 router, worker 會收不到 Telegram 訊息. 所以:
+這一節講 legacy 模式. managed 模式 (預設) 的 worker 載入 router 商店的 `<stateDir>/marketplace/telegram`, 那是 `deploy/install.sh plugin` 部署的本機資料夾商店, 沒有自動更新, 不受官方商店影響. router 一樣在 worker 打招呼時與每天 `pluginCheckAt` 檢查它: 比對資料夾裡的檔案與部署時記下的 `plugin-fingerprint.marketplace.json` (內容改變, 多出, 少了; 指紋記的資料夾不是商店資料夾; 資料夾不見), 不符就通知 owner 重新部署, 不改任何檔 (`router/pluginguard.ts` 的 `checkMarketplace`).
+
+legacy 模式的 worker 載入的 plugin v2 是 `deploy/install.sh plugin` 蓋在官方 telegram plugin 的快取資料夾 (`~/.claude/plugins/cache/claude-plugins-official/telegram/0.0.7/`) 上的. Claude Code 對官方商店 `claude-plugins-official` 預設開啟自動更新: 互動 session (背景 worker 也算) 送出第一則訊息後, 隨機等最多十分鐘, 重新整理商店並把 plugin 更新到新的版本資料夾, 下一次啟動就載入官方版. 官方版不認識 router, worker 會收不到 Telegram 訊息. 所以:
 
 - **worker 的 settings 關掉官方商店的自動更新**: `templates/base-settings.json` 的 `extraKnownMarketplaces` 宣告 `claude-plugins-official` 的 `autoUpdate: false`. 依官方文件 ([plugins/loading 的 When auto-update runs](https://code.claude.com/docs/en/plugins/loading#when-auto-update-runs)), settings 檔裡 `extraKnownMarketplaces` 的 `autoUpdate` 優先於 `known_marketplaces.json` 與預設值. 來源必須照寫官方的 `github` `anthropics/claude-plugins-official`: `claude-plugins-official` 是保留名稱, 來源不是 `github.com/anthropics/` 時 Claude Code 會把整個商店判為不受信任的來源而停用 (連 telegram plugin 一起); 同名的項目由優先序最高的檔整筆取代, 所以角色範本不能再定義它. 建議全機的 `~/.claude/plugins/known_marketplaces.json` 也把它設成 `"autoUpdate": false` (或在 `/plugin` 的 Marketplaces 關掉 Enable auto-update), 讓終端機的 session 也不會更新它. 手動重裝 (`claude plugin install telegram@claude-plugins-official`) 或 `claude plugin update` 仍會換掉快取, 不受這個設定影響, 由下面的檢查抓出來.
 - **部署時記下指紋**: `deploy/install.sh plugin` 部署後在 stateDir 寫 `plugin-fingerprint.json`: 部署的版本資料夾與其中每個檔案的 sha256 (Claude Code 自己的 `.in_use`, `.orphaned_at` 不算). 還不知道 stateDir 時 (第一次安裝, router 還沒裝) 只部署不記, 印一行提示.
@@ -176,11 +181,11 @@ bot 可以改走自架的 [telegram-bot-api](https://github.com/tdlib/telegram-b
 
 ## cli doctor 與 worker 狀態
 
-- `cc-telegram-router cli doctor` (Telegram 裡是 `/router doctor`, owner 與 admin, 回在私訊) 經由執行中的 router 一次檢查, 每項一行 (✅ 正常, ⚠️ 要注意, ❌ 會出問題), 不含任何 token, 可以直接貼給別人: bun 與 `claudeBin` 在 systemd unit 的 PATH 下找不找得到 (還沒安裝 unit 時看預設清單); 官方 telegram plugin 是否裝在這個使用者, 跟 `deploy/install.sh plugin` 部署時相同; 位置檔 (`~/.config/cc-telegram-router/router.json`) 是否指向這個 router; home 是否被 Claude Code 信任 (另列自己是 git repo, 不吃 home 信任的對話資料夾); 預設與各對話的模型和 autoCompactWindow 是否一致; 不是對話目前 session 的殘留 job (判斷與 router 的 job 清理相同, `router/jobs.ts`; router 自己每 10 分鐘清掉, doctor 只列出) 與卡住 (`blocked`) 的 worker; claude daemon 是否由 router 帶起, 有沒有沒有 daemon 在管的暖機 spare (同「背景 session 的 job 與 daemon」的唯讀檢查); 在跑但 plugin 沒連上的 worker. router 沒在執行時用 `cc-telegram-router [--config <路徑>] doctor` (少了連線那一項); 設定嚮導結尾也會跑一次. 程式在 `router/doctor.ts`, `router/diagnose.ts`, 測試 `router/test/diagnose.test.ts`, `e2e-diagnose.test.ts`.
+- `cc-telegram-router cli doctor` (Telegram 裡是 `/router doctor`, owner 與 admin, 回在私訊) 經由執行中的 router 一次檢查, 每項一行 (✅ 正常, ⚠️ 要注意, ❌ 會出問題), 不含任何 token, 可以直接貼給別人: bun 與 `claudeBin` 在 systemd unit 的 PATH 下找不找得到 (還沒安裝 unit 時看預設清單); channel 模式 (managed, 或 legacy 與降級原因; config 設 legacy 是 ✅, 降級是 ⚠️), managed 模式時 bwrap 的路徑與設定目錄; telegram plugin 跟 `deploy/install.sh plugin` 部署時相同 (managed 模式看 router 的商店, legacy 看官方 plugin 是否裝在這個使用者); 位置檔 (`~/.config/cc-telegram-router/router.json`) 是否指向這個 router; home 是否被 Claude Code 信任 (另列自己是 git repo, 不吃 home 信任的對話資料夾); 預設與各對話的模型和 autoCompactWindow 是否一致; 不是對話目前 session 的殘留 job (判斷與 router 的 job 清理相同, `router/jobs.ts`; router 自己每 10 分鐘清掉, doctor 只列出) 與卡住 (`blocked`) 的 worker; claude daemon 是否由 router 帶起, 有沒有沒有 daemon 在管的暖機 spare (同「背景 session 的 job 與 daemon」的唯讀檢查; managed 模式改成 router 的 daemon 與它的 worker 是否都看得到 managed settings); 在跑但 plugin 沒連上的 worker. 信任與殘留 job 在 managed 模式看 router 自己的設定目錄. router 沒在執行時用 `cc-telegram-router [--config <路徑>] doctor` (少了連線那一項); 設定嚮導結尾也會跑一次. 程式在 `router/doctor.ts`, `router/diagnose.ts`, 測試 `router/test/diagnose.test.ts`, `e2e-diagnose.test.ts`.
 - `/router status` 在每個對話後面多列: worker 在 daemon 裡的狀態 (不是 done, idle, working 時才列, 例如 `worker blocked`), worker 在跑但 plugin 沒連上, 以及 24 小時內最後一次的問題與時間 (GMT+8), 例如 `⚠️ 13:05 資料夾沒有被信任 (Workspace not trusted)`. 這些只存在 router 的記憶體, 重啟後清空.
 - 叫不醒的 worker: 叫醒流程先照「背景 session 的 job 與 daemon」比對旗標 (不同就換掉 job), 再 `--resume` 或開新 session; `claude --bg` 本身拒絕 (例如 `Workspace not trusted`) 時立刻算失敗, 不等 plugin; 否則等 plugin 連線 90 秒. 原因依序取: `claude --bg` 的訊息, 那個對話的 plugin log 最新檔 (10 分鐘內寫的, 只看連線失敗與找不到執行檔這類, 不看工具錯誤), 資料夾信任. 連續失敗時下一次叫醒的間隔是 1, 2, 5, 10, 30 分鐘 (之後都是 30), 期間的訊息留在佇列, 時間到了再試; 同一個對話同一個原因只通知一次, 換了原因再通知, 恢復連線時通知一次. 修好後 `/router session restart <chat_id>` 立刻重試, 不用等.
 - 一輪以 API 錯誤結束 (worker 的 StopFailure hook 回報錯誤類型, 細節與 Claude Code 顯示的錯誤文字): 重要通知寫原因, 原始訊息 (遮蔽 token) 與修法 (1M context 額度, 登入失效, 付款, 額度用完, 模型不存在, 服務忙碌, 輸出過長, 安全機制), 同一對話同一原因 30 分鐘內只通知一次; 對話裡回一句「⚠️ 暫時無法回應: <簡短原因>. 已通知管理員.」, 同一對話 5 分鐘內只回一次.
-- router 啟動時 (第一隻 bot 取得 getMe 後) 檢查一次, 有問題就發重要通知: router 自己的 PATH (也就是 unit 的 PATH) 找不到 bun; home 沒有被 Claude Code 信任, 或讀不到 `~/.claude.json`; 預設模型需要 1M context 額度, 或 autoCompactWindow 超過模型的 context.
+- router 啟動時 (第一隻 bot 取得 getMe 後) 檢查一次, 有問題就發重要通知: router 自己的 PATH (也就是 unit 的 PATH) 找不到 bun; home 沒有被 Claude Code 信任, 或讀不到 `~/.claude.json` (managed 模式是 `<stateDir>/claude-config/.claude.json`); 預設模型需要 1M context 額度, 或 autoCompactWindow 超過模型的 context.
 
 ## 升級
 
@@ -201,7 +206,7 @@ bot 可以改走自架的 [telegram-bot-api](https://github.com/tdlib/telegram-b
    cp -a <home>/.router/router.db* <home>/.router/config.json <備份資料夾>/
    ```
 
-4. 啟動: `systemctl --user start cc-telegram-router`. 資料庫結構由 router 啟動時自動升級: 只新增資料表與欄位, 不刪除也不改名; 有些版本另外做一次性的資料調整 (記在 router.db 的 `migrations`, 會寫在 CHANGELOG 與 log).
+4. 啟動: `systemctl --user start cc-telegram-router`. 資料庫結構由 router 啟動時自動升級: 只新增資料表與欄位, 不刪除也不改名; 有些版本另外做一次性的資料調整 (記在 router.db 的 `migrations`, 會寫在 CHANGELOG 與 log). 從 managed 模式以前的版本升級時, 第一次以 managed 模式啟動會先把各對話目前 session 的紀錄複製到 router 的設定目錄, 並移除原本 daemon 裡這些對話的 job, worker 下一次醒來接續原本的對話; 想先看會做什麼, 停 router 後跑 `<home>/.router/cc-telegram-router managed migrate --dry-run` (見 [managed-channel](managed-channel.md#對話紀錄的遷移)).
 5. 讓 worker 載入新的 plugin 與設定: 在 Telegram 打 `/router session rotate all`, 或終端機 `<home>/.router/cc-telegram-router cli session rotate all`. 閒置的 worker 一分鐘內停掉, 忙碌的等它閒置, 下一則訊息用新版叫醒.
 
 要改設定 (換 token, 換成自架的 Bot API server, 加 owner 等): `deploy/install.sh setup` 的修改模式 (見上方「設定嚮導」), 再重啟 router.
@@ -246,7 +251,7 @@ router 可以裝在任何位置, 程式不假設固定路徑:
 
 ## router 重啟
 
-- **啟動與關機公告** (`router/health.ts` 的 startNotice, stopNotice): 每次啟動, 第一隻 bot 取得 getMe 後, 跟其他啟動檢查一樣發到每隻 bot 的「🔔 重要通知」(沒有審核群組時 owner 私訊), 同一個地方只發一次. 啟動公告一定有 `🟢 cc-telegram-router <版本> 啟動`; 有開[健康檢查端點](#健康檢查端點)時加一行 `health point (http://<listen 位址>/healthz) 啟動`, 位址對外開放時加 `⚠️ health point 對外開放, 請注意防範`, 在私有網段時加一行提醒, 未設 token 時加 `⚠️ health point 未設 token, ...`; 設了但沒聽起來 (例如 port 被佔用) 時寫沒有啟動. 關機或重啟時, 停下 bot 之前先發 `🔴 cc-telegram-router <版本> 重啟 (來源: ...)` 或 `... 關機 (來源: ...)`: 來源是 `cli` (`cc-telegram-router cli restart`), `telegram: <顯示名稱或 @username>` (Telegram 裡的 `/restart`), 在 systemd 下收到 SIGTERM 時, router 用 `systemctl --user list-jobs --no-legend` 查自己 unit (`cc-telegram-router.service`) 的 job 類型 (最多等 2 秒): `restart` (`systemctl --user restart`) 寫 `重啟 (來源: systemd)`, `stop` (`systemctl --user stop`) 寫 `關機 (來源: systemd)`, 查不到 (指令失敗或逾時) 寫 `關機 (來源: systemd (SIGTERM))`; 不在 systemd 下收到訊號寫 `訊號 SIGTERM` (或 SIGINT). 寫「重啟」時, 之後新的 router 再發一則啟動公告. 關機公告最多等 5 秒, 送不出去也照常停止 (log 寫 `stop notice: not confirmed within 5s`).
+- **啟動與關機公告** (`router/health.ts` 的 startNotice, stopNotice): 每次啟動, 第一隻 bot 取得 getMe 後, 跟其他啟動檢查一樣發到每隻 bot 的「🔔 重要通知」(沒有審核群組時 owner 私訊), 同一個地方只發一次. 啟動公告一定有 `🟢 cc-telegram-router <版本> 啟動` 與一行 `channel 模式: managed (...)` 或 `channel 模式: legacy (降級: <原因>; ...)` ([managed-channel](managed-channel.md#兩種模式)); 有開[健康檢查端點](#健康檢查端點)時加一行 `health point (http://<listen 位址>/healthz) 啟動`, 位址對外開放時加 `⚠️ health point 對外開放, 請注意防範`, 在私有網段時加一行提醒, 未設 token 時加 `⚠️ health point 未設 token, ...`; 設了但沒聽起來 (例如 port 被佔用) 時寫沒有啟動. 關機或重啟時, 停下 bot 之前先發 `🔴 cc-telegram-router <版本> 重啟 (來源: ...)` 或 `... 關機 (來源: ...)`: 來源是 `cli` (`cc-telegram-router cli restart`), `telegram: <顯示名稱或 @username>` (Telegram 裡的 `/restart`), 在 systemd 下收到 SIGTERM 時, router 用 `systemctl --user list-jobs --no-legend` 查自己 unit (`cc-telegram-router.service`) 的 job 類型 (最多等 2 秒): `restart` (`systemctl --user restart`) 寫 `重啟 (來源: systemd)`, `stop` (`systemctl --user stop`) 寫 `關機 (來源: systemd)`, 查不到 (指令失敗或逾時) 寫 `關機 (來源: systemd (SIGTERM))`; 不在 systemd 下收到訊號寫 `訊號 SIGTERM` (或 SIGINT). 寫「重啟」時, 之後新的 router 再發一則啟動公告. 關機公告最多等 5 秒, 送不出去也照常停止 (log 寫 `stop notice: not confirmed within 5s`).
 
 router 重啟 (`systemctl restart`, `/router restart`, 部署) 時 worker 不跟著重啟, 但有一段空窗. 2026-10-17 實測 (3 個 worker 在線): 收到 SIGTERM 後約 0.69 秒 worker 斷線, 0.85 秒新 router 起來, 1.19 秒所有 worker 的 plugin 都重新連上.
 
@@ -256,7 +261,7 @@ router 重啟 (`systemctl restart`, `/router restart`, 部署) 時 worker 不跟
 
 ## 背景 session 的 job 與 daemon
 
-每個 worker 是 `claude --bg` 開的背景 session, 由 Claude Code 的 daemon (`claude daemon run`) 管理. daemon 把每個 session 記成一個 job: `~/.claude/jobs/<短 id>/state.json` (有 `CLAUDE_CONFIG_DIR` 時在它底下), 其中 `respawnFlags` 是 job 啟動時的旗標, 也就是 router 給的整組參數 (`--allow-dangerously-skip-permissions`, `--name tg-<對話>`, `--setting-sources`, `--settings <stateDir>/sessions/<對話>.json`, `--channels`, `--model`; daemon 依自己的順序存). 不帶旗標的 `claude --bg --resume <session>` 會沿用這組舊旗標, 所以 router 的處理是 (`router/jobs.ts`, `router/supervisor.ts`):
+每個 worker 是 `claude --bg` 開的背景 session, 由 Claude Code 的 daemon (`claude daemon run`) 管理. managed 模式 (預設) 的 daemon 是 router 自己在 bwrap 裡帶起並看管的, 用 router 的設定目錄, 跟這台機器上的其他 session 分開 (見 [managed-channel](managed-channel.md#daemon-的看管)); 本節以下講的 job 規則兩種模式相同, 「daemon 由誰帶起」與「暖機 spare」兩項只適用 legacy 模式. daemon 把每個 session 記成一個 job: `~/.claude/jobs/<短 id>/state.json` (有 `CLAUDE_CONFIG_DIR` 時在它底下, managed 模式是 `<stateDir>/claude-config/jobs/`), 其中 `respawnFlags` 是 job 啟動時的旗標, 也就是 router 給的整組參數 (`--allow-dangerously-skip-permissions`, `--name tg-<對話>`, `--setting-sources`, `--settings <stateDir>/sessions/<對話>.json`, `--channels`, `--model`; daemon 依自己的順序存). 不帶旗標的 `claude --bg --resume <session>` 會沿用這組舊旗標, 所以 router 的處理是 (`router/jobs.ts`, `router/supervisor.ts`):
 
 - **叫醒時比對旗標**: 對話還有 job 時, 拿 job 的 `respawnFlags` 跟這次要給的旗標比 (不看順序). 讀不到 state.json 時, 改用 router 上次啟動時記在 router.db `conversations.worker_flags` 的旗標. 不同就先 `claude stop` (還在跑時) 再 `claude rm` 那個 job, 然後帶新旗標 `--resume` 同一個 session, log 寫一行哪些旗標變了 (例如 `--model claude-old → claude-new`). 兩邊都讀不到時照舊不帶旗標 resume; `claude rm` 失敗時也照舊 resume, 沿用存下的旗標並寫 log. 所以改 config 的 `model`, plugin 的 channel 名稱, stateDir 位置等等, 都會在下一次叫醒時生效, 不用另外處理.
 - **`/router config set model`**: 用預設模型 (沒有自己 `/router chat model`) 而且已有 session 的對話標記待輪替, 閒置時停掉, 下一則訊息叫醒時套用新模型. 對話自己的 `/router chat model` 照舊立刻重啟並換掉 job.
@@ -303,7 +308,8 @@ router 重啟 (`systemctl restart`, `/router restart`, 部署) 時 worker 不跟
     "cc": { "ok": true, "state": "ok", "lastOkAt": "2026-10-18T15:15:53.598+08:00", "lastOkAgoS": 0 }
   },
   "workers": { "total": 1, "standby": 0, "asleep": 1, "backoff": 1, "pluginDisconnected": 0 },
-  "lastWakeFailure": { "at": "2026-10-18T15:15:53.518+08:00", "agoS": 0, "bot": "cc", "failures": 1, "cause": "claude --bg 失敗: Error: cannot start the session in <隱藏>" }
+  "lastWakeFailure": { "at": "2026-10-18T15:15:53.518+08:00", "agoS": 0, "bot": "cc", "failures": 1, "cause": "claude --bg 失敗: Error: cannot start the session in <隱藏>" },
+  "channel": { "mode": "managed", "managedOk": true }
 }
 ```
 
@@ -311,6 +317,7 @@ router 重啟 (`systemctl restart`, `/router restart`, 部署) 時 worker 不跟
 - `bots`: 以 config.json 的 bot 名稱為鍵. `ok` 是否在門檻內; `state` 是輪詢狀態 (`starting`, `ok`, `retrying`, `unauthorized`, `stopped`); `lastOkAt` 與 `lastOkAgoS` 是最近一次成功的時間與距今秒數, 還沒成功過時是 `null`, 另有 `waitingS` (從開始輪詢起算).
 - `workers`: 對話數, 定義同 `/router status`: `standby` 是 plugin 連著的 (🛜待命中), `asleep` 是沒連著的 (💤已休眠), 兩者相加是 `total`; `asleep` 裡面, `backoff` 是連續叫不醒, 下次叫醒還在等待間隔的 (見「cli doctor 與 worker 狀態」), `pluginDisconnected` 是 daemon 有在跑但 plugin 沒連上的 (由 `claude agents` 得知, 最多每 30 秒問一次, 問不到時是 `null`).
 - `lastWakeFailure`: 最近一次叫不醒 (任何對話) 的時間, bot 名稱, 連續失敗次數與原因 (2.27.0 的診斷), 沒有時是 `null`. 只存在記憶體, 重啟後清空.
+- `channel`: worker 怎麼取得 channel ([managed-channel](managed-channel.md)). `mode` 是 `managed` 或 `legacy`; legacy 時多一個 `reason` (降級原因, 或 config 設了 legacy); `managedOk` 是 router 的 daemon 與它的 worker 是否都看得到 managed settings (daemon 沒在跑也是 `false`), legacy 時是 `null`. 只是資訊, 不影響 200 或 503.
 - 不含任何隱私: 沒有 token, chat 名稱, chat_id, 使用者 id 或 username, 對話 key (含 chat id) 與訊息內容. 叫不醒的原因裡, 那個對話的資料夾, key, chat id, 標題與 bot 的 username 換成 `<隱藏>`, 6 位數以上的數字換成 `<id>`, token 換成 `<token>`. 要知道是哪個對話, 看 router 的 log 或 `/router status`.
 
 Gatus 設定範例 (`config.yaml`; token 用環境變數帶入, 不寫死在檔案裡):
@@ -402,7 +409,7 @@ cc-telegram-router cli skill refresh web-instagram
 
 ## 從外部送訊息給 worker
 
-主機終端機, 或同一台機器上的其他 Claude Code session (例如 v1), 要把訊息送進某個對話的 worker 時用 `cli session send`. 它經過 router, 所以 worker 輪替或閒置停掉 (它的 SendMessage 位址跟著消失) 時一樣送得到: router 會叫醒它.
+主機終端機, 或同一台機器上的其他 Claude Code session (例如 v1), 要把訊息送進某個對話的 worker 時用 `cli session send`. 它經過 router, 所以 worker 輪替或閒置停掉 (它的 SendMessage 位址跟著消失) 時一樣送得到: router 會叫醒它. managed 模式 (預設) 的 worker 登記在 router 自己的設定目錄, 其他 session 的 ListAgents 看不到它們, 也不能用名稱 SendMessage 給它們, 所以一律用這個指令 (見 [managed-channel](managed-channel.md#其他會改的地方)).
 
 ```bash
 cc-telegram-router cli session send <chat_id|對話key> [--bot <名稱>] [--from <發送者>] [--wait <秒>] [<文字> | -]

@@ -451,7 +451,8 @@ export function apiJudge(o: { cfg: () => ApiConfig; cred: (name: string) => Cred
 }
 
 /** claude -p with no tools, settings or MCP, in a scratch folder (as pkgreview). */
-export function claudeJudge(o: { claudeBin: string; model: () => string; cwd: string }): Judge {
+/** launch: how the router runs claude (router/claudecmd.ts Launcher: bwrap and its config folder in managed mode). */
+export function claudeJudge(o: { claudeBin: string; model: () => string; cwd: string; launch?: { argv(args: string[]): string[]; env(base?: Record<string, string | undefined>): Record<string, string | undefined> } }): Judge {
   return {
     // a haiku model is never used; a claude CLI that is not there is skipped like a missing key
     ready: () => (/haiku/i.test(o.model()) ? 'model' : Bun.which(o.claudeBin) ? null : 'no-cli'),
@@ -459,8 +460,9 @@ export function claudeJudge(o: { claudeBin: string; model: () => string; cwd: st
       const env = { ...process.env }
       for (const k of Object.keys(env)) if (k.startsWith('TELEGRAM_')) delete env[k]
       const model = o.model()
-      const proc = Bun.spawn([o.claudeBin, '-p', '--model', model, '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json', '--system-prompt', claudeSystem(questionsFor(sent))], {
-        cwd: o.cwd, env, stdin: new Blob([JSON.stringify(sent, null, 1)]), stdout: 'pipe', stderr: 'pipe',
+      const args = ['-p', '--model', model, '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json', '--system-prompt', claudeSystem(questionsFor(sent))]
+      const proc = Bun.spawn(o.launch ? o.launch.argv(args) : [o.claudeBin, ...args], {
+        cwd: o.cwd, env: o.launch ? o.launch.env(env) : env, stdin: new Blob([JSON.stringify(sent, null, 1)]), stdout: 'pipe', stderr: 'pipe',
       })
       const onAbort = () => proc.kill()
       signal.addEventListener('abort', onAbort)

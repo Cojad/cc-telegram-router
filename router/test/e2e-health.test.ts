@@ -70,7 +70,7 @@ function startRouter(name: string, health: unknown) {
   const fakeClaude = join(dir, 'fake-claude')
   writeFileSync(fakeClaude, `#!/bin/bash\ncase "$*" in *agents*) echo '[]' ;; *--bg*) echo "Error: cannot start the session in $PWD" >&2; exit 1 ;; esac\n`)
   chmodSync(fakeClaude, 0o755)
-  writeFileSync(join(state, 'config.json'), JSON.stringify({ bots: [{ name: 'cc', token: BOT_TOKEN }], home: dir, stateDir: state, owners: [String(OWNER_ID)], claudeBin: fakeClaude, apiRoot: `http://127.0.0.1:${api.port}`, health }))
+  writeFileSync(join(state, 'config.json'), JSON.stringify({ bots: [{ name: 'cc', token: BOT_TOKEN }], home: dir, stateDir: state, owners: [String(OWNER_ID)], claudeBin: fakeClaude, apiRoot: `http://127.0.0.1:${api.port}`, health, channelMode: 'legacy' }))
   writeFileSync(join(state, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: [String(OWNER_ID)], groups: {}, pending: {} }))
   // INVOCATION_ID: as under systemd, so /restart only exits (no detached copy left behind)
   const env = { HOME: userHome, PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, INVOCATION_ID: 'e2e' }
@@ -97,6 +97,8 @@ const url = `http://127.0.0.1:${port}/healthz`
 const get = (init: RequestInit = {}) => fetch(url, init)
 const auth = { authorization: `Bearer ${HEALTH_TOKEN}` }
 const VERSION = (await import('../../package.json')).default.version
+// these routers run with channelMode legacy (docs/managed-channel.md): the start notice's second line
+const CHANNEL_LINE = 'channel 模式: legacy (config 的 channelMode 是 legacy; worker 用官方 plugin 的快取)'
 const dm = (r: ReturnType<typeof startRouter>, id: number, text: string) => r.updates.push({ update_id: id, message: { message_id: id, date: now, chat: { id: OWNER_ID, type: 'private' }, from: OWNER, text } })
 /** Nothing private anywhere in a body. */
 function noPrivate(text: string): void {
@@ -126,7 +128,7 @@ test('with a token: 401 without it or wrong, 200 with it (HEAD too), other paths
   expect(body.lastWakeFailure).toBeNull()
   noPrivate(JSON.stringify(body))
   // the start notice: version and URL; loopback with a token adds nothing
-  expect(await until(() => A.sent.find(t => t.startsWith('🟢')), () => A.stderr)).toBe(`🟢 cc-telegram-router ${VERSION} 啟動\nhealth point (http://127.0.0.1:${port}/healthz) 啟動`)
+  expect(await until(() => A.sent.find(t => t.startsWith('🟢')), () => A.stderr)).toBe(`🟢 cc-telegram-router ${VERSION} 啟動\n${CHANNEL_LINE}\nhealth point (http://127.0.0.1:${port}/healthz) 啟動`)
   expect(A.stderr).not.toContain('health: ⚠️')
 }, 30000)
 
@@ -176,7 +178,7 @@ test('without a token: 200 with no header, the start notice says no token, cli r
   expect(b.bots.cc.ok).toBe(true)
   expect(B.stderr).toContain(`health: listening on localhost:${p2}/healthz (未設 token), 門檻 30 秒`)
   expect(B.stderr).toContain(`health: ⚠️ 未設 token: 連得到 localhost:${p2} 的這台機器上的程式都看得到狀態`)
-  expect(await until(() => B.sent.find(t => t.startsWith('🟢')), () => B.stderr)).toBe(`🟢 cc-telegram-router ${VERSION} 啟動\nhealth point (http://localhost:${p2}/healthz) 啟動\n⚠️ health point 未設 token, 連得到的都看得到狀態`)
+  expect(await until(() => B.sent.find(t => t.startsWith('🟢')), () => B.stderr)).toBe(`🟢 cc-telegram-router ${VERSION} 啟動\n${CHANNEL_LINE}\nhealth point (http://localhost:${p2}/healthz) 啟動\n⚠️ health point 未設 token, 連得到的都看得到狀態`)
   expect(await B.cli('restart')).toBe(0)
   expect(await until(() => B.sent.find(t => t.startsWith('🔴')), () => B.stderr)).toBe(`🔴 cc-telegram-router ${VERSION} 重啟 (來源: cli)`)
   expect(await Promise.race([B.router.exited, sleep(10000).then(() => 'still running')])).toBe(0)
@@ -186,7 +188,7 @@ test('without a token: 200 with no header, the start notice says no token, cli r
   expect(c.bots.cc.ok).toBe(true)
   expect((await fetch(`http://127.0.0.1:${p3}/healthz`)).status).toBe(401)
   expect(C.stderr).toContain(`health: ⚠️ 聽在 0.0.0.0:${p3}, 不是本機也不是私有網段: health point 對外開放, 請注意防範`)
-  expect(await until(() => C.sent.find(t => t.startsWith('🟢')), () => C.stderr)).toBe(`🟢 cc-telegram-router ${VERSION} 啟動\nhealth point (http://0.0.0.0:${p3}/healthz) 啟動\n⚠️ health point 對外開放, 請注意防範`)
+  expect(await until(() => C.sent.find(t => t.startsWith('🟢')), () => C.stderr)).toBe(`🟢 cc-telegram-router ${VERSION} 啟動\n${CHANNEL_LINE}\nhealth point (http://0.0.0.0:${p3}/healthz) 啟動\n⚠️ health point 對外開放, 請注意防範`)
   // the Bot API stops answering sendMessage: the stop still ends, after 5 seconds
   C.holdSends()
   const t0 = Date.now()

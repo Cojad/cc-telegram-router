@@ -26,7 +26,7 @@ import { openRouterDb, type Conversation, type ConvSecret } from './db'
 import { ensureConversation, ensureBotDir, botDir, convFolder, migrateConversation, findByFolder, projectStore } from './conversations'
 import { writeSessionSettings, renderSettings, applyOverrides } from './settings'
 import { createSupervisor, bunRunner, isRunning } from './supervisor'
-import { jobsDir, readJob, listJobs, strayJobs, readProcs, daemonReport, reportNotices } from './jobs'
+import { readJob, listJobs, strayJobs, readProcs, daemonReport, reportNotices } from './jobs'
 import { createIpc, type Peer } from './ipc'
 import { makeAssertAllowedChat, makeAssertSendable } from './guard'
 import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens, gmt8 } from './context'
@@ -64,6 +64,8 @@ import { rotateTick } from './rotate'
 import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants'
 import { postNotice, noticePlace, requestOriginNoter, type ApprovalDeps } from './approvals'
 import { createPluginGuard, scheduleDaily } from './pluginguard'
+import { resolveChannel, describeMode, launcherRunner, shellLine, pluginSettings, claudeJsonOf } from './claudecmd'
+import { writeManagedSettings, initConfigDir, createDaemonKeeper, migrated, migrateTranscripts, describeMigration, syncBack, migrateCli } from './managed'
 import { createPkgGate, claudeReviewer } from './pkgreview'
 import { createClassifier, openClassifyStore, apiJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER, API_PROVIDERS } from './classifier'
 import { escHtml, htmlToText } from './setup'
@@ -163,6 +165,27 @@ if (importAt > 0) {
   process.exit(0)
 }
 
+// `cc-telegram-router [--config x] managed migrate [--dry-run] [--user-config <dir>] [--force]`: copy the
+// conversations' transcripts into the router's own config folder (docs/managed-channel.md 「對話紀錄的遷移」);
+// the router does it by itself at its first managed start, this is for a planned switch and rehearsals.
+const managedAt = process.argv.indexOf('managed')
+if (managedAt > 0 && process.argv[managedAt + 1] === 'migrate') {
+  const { managedPaths } = await import('./claudecmd')
+  const { Database } = await import('bun:sqlite')
+  process.exit(await migrateCli(process.argv.slice(managedAt + 2), {
+    cfg, paths: managedPaths(cfg.stateDir),
+    convs: () => {
+      const d = new Database(join(cfg.stateDir, 'router.db'), { readonly: true })
+      try { return d.query('SELECT * FROM conversations').all() as Conversation[] } finally { d.close() }
+    },
+    lock: () => acquireLock(configPath + '.lock'),
+    removeJob: async id => {
+      await bunRunner([cfg.claudeBin, 'stop', id], cfg.home)
+      return (await bunRunner([cfg.claudeBin, 'rm', id], cfg.home)).code === 0
+    },
+  }))
+}
+
 // `cc-telegram-router [--config x] register`: write the locator file the
 // plugin and the worker hook find this router by (shared/locate.ts);
 // deploy/install.sh router runs it.
@@ -182,9 +205,18 @@ const release = acquireLock(configPath + '.lock')
 mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 })
 mkdirSync(cfg.home, { recursive: true })
 
+// How workers get their channel (router/claudecmd.ts, docs/managed-channel.md): managed (every claude
+// in bwrap with the router's own config folder and plugin) or legacy, decided once here.
+const channel = resolveChannel(cfg, { writeManaged: writeManagedSettings })
+const launcher = channel.launcher
+const managedMode = launcher.mode === 'managed'
+log(`channel mode: ${describeMode(channel.decision)}`)
+/** Every claude the router runs goes through this (the launcher: bwrap and the config folder in managed mode). */
+const claudeRun = launcherRunner(launcher)
+
 // Templates ship next to the source in dev and next to the binary when deployed.
-// Where workers load the plugin from (deploy/install.sh plugin puts it there)
-const PLUGIN_DIR = join(homedir(), '.claude', 'plugins', 'cache', 'claude-plugins-official', 'telegram', '0.0.7')
+// Where workers load the plugin from (deploy/install.sh plugin puts it there): the router's marketplace in managed mode
+const PLUGIN_DIR = managedMode ? channel.paths.pluginDir : join(homedir(), '.claude', 'plugins', 'cache', 'claude-plugins-official', 'telegram', '0.0.7')
 const TEMPLATES = [join(import.meta.dir, '..', 'templates'), join(cfg.stateDir, 'templates')].find(d => existsSync(join(d, 'base-settings.json')))
 if (!TEMPLATES) throw new Error('templates/base-settings.json not found')
 const HOOKS_DIR = join(cfg.stateDir, 'hooks')
@@ -249,12 +281,12 @@ let claimCode: string | null = cfg.owners.length ? null : newClaimCode()
 
 // home and botDir: skills shared by all bots / by this bot are readable (templates/roles);
 // hidden: what the sandbox hides besides ~ (home, stateDir, config sandboxDenyRead)
-const settingsVars = (c: Conversation) => ({ folder: c.folder, home: cfg.home, hidden: hiddenPaths(cfg), botDir: botDir(cfg, c.bot), autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR, transcripts: projectStore(c.folder) })
+const settingsVars = (c: Conversation) => ({ folder: c.folder, home: cfg.home, hidden: hiddenPaths(cfg), botDir: botDir(cfg, c.bot), autoCompactWindow: c.compact ?? cfg.autoCompactWindow, hooksDir: HOOKS_DIR, transcripts: projectStore(c.folder, join(launcher.configDir, 'projects')) })
 /** A conversation's /router perm overrides; a DM's user's own (/router perm user) go first (docs/permissions.md 使用者覆寫). */
 const userOverridesOf = (c: Conversation) => c.type === 'dm' ? db.listUserOverrides(c.chat_id) : []
 const overridesOf = (c: Conversation) => [...userOverridesOf(c), ...db.listOverrides(c.key)]
 const settingsFor = (c: Conversation) =>
-  writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, settingsVars(c), overridesOf(c))
+  writeSessionSettings(cfg.stateDir, TEMPLATES, c.key, c.role, settingsVars(c), overridesOf(c), pluginSettings(launcher.mode, channel.paths))
 
 // A DM's stored role from before it followed its user's role (or from before
 // config owners changed): align it, and rotate the worker so it picks up the
@@ -345,7 +377,7 @@ function ipcOnProgress(peer: Peer, ev: Record<string, unknown>): void {
 
 // The official plugin's cache against what deploy/install.sh plugin recorded
 // (router/pluginguard.ts): at every worker's hello and daily at pluginCheckAt.
-const pluginGuard = createPluginGuard({ stateDir: cfg.stateDir, notify: noticeEveryBot, log })
+const pluginGuard = createPluginGuard({ stateDir: cfg.stateDir, notify: noticeEveryBot, log, ...(managedMode ? { marketplacePluginDir: channel.paths.pluginDir } : {}) })
 
 /** One machine-wide notice to each bot's notices place (重要通知), once per place. */
 async function noticeEveryBot(text: string): Promise<void> {
@@ -637,8 +669,40 @@ const progress = createProgress({
   untrack: (key, id) => db.untrackProgress(key, id),
 })
 
+// Managed mode: the router's own claude daemon, inside bwrap, checked before every wake and every
+// minute, started or put right when needed (router/managed.ts, docs/managed-channel.md 「daemon 的看管」).
+const daemonKeeper = managedMode ? createDaemonKeeper({
+  launcher, paths: channel.paths, logFile: join(cfg.stateDir, 'logs', 'daemon-run.log'), log,
+  notify: text => noticeEveryBot(text),
+}) : null
+if (daemonKeeper) setInterval(() => void daemonKeeper.ensure().catch(e => log(`daemon keeper: ${e}`)), 60_000).unref()
+if (managedMode) {
+  // the config folder ready for background sessions (bypass warning accepted, home trusted)
+  const init = initConfigDir(channel.paths, [cfg.home])
+  if (init.changed.length) log(`managed: ${channel.paths.configDir}: wrote ${init.changed.join(', ')}`)
+  // the first managed start: the conversations' sessions copied over, their jobs in the user's daemon removed
+  if (!migrated(channel.paths.configDir)) {
+    const r = await migrateTranscripts({
+      convs: db.listConversations(), from: channel.paths.userConfigDir, to: channel.paths.configDir,
+      fromClaudeJson: claudeJsonOf(channel.paths.userConfigDir), home: cfg.home,
+      removeJob: async id => {
+        await bunRunner([cfg.claudeBin, 'stop', id], cfg.home)
+        return (await bunRunner([cfg.claudeBin, 'rm', id], cfg.home)).code === 0
+      },
+    })
+    log(`managed: transcripts migrated: ${describeMigration(r, false).split('\n').join(' / ')}`)
+  }
+  void daemonKeeper!.ensure().catch(e => log(`daemon keeper: ${e}`))
+} else if (migrated(channel.paths.configDir)) {
+  // back in legacy after managed: the newer sessions copied back to the user's config folder
+  const back = syncBack({ convs: db.listConversations(), from: channel.paths.configDir, to: channel.paths.userConfigDir })
+  if (back.length) log(`legacy: copied ${back.length} newer session(s) back to ${channel.paths.userConfigDir}: ${back.map(b => b.key).join(', ')}`)
+}
+
 const supervisor = createSupervisor({
-  cfg, db, log, run: bunRunner,
+  cfg, db, log, run: claudeRun,
+  channel: launcher.channel,
+  ...(daemonKeeper ? { beforeWake: () => daemonKeeper.ensure() } : {}),
   isConnected: ipc.isConnected,
   waitConnected: ipc.waitConnected,
   settingsPath: settingsFor,
@@ -659,16 +723,18 @@ const supervisor = createSupervisor({
 // Daemon jobs and processes (router/jobs.ts): jobs of our conversations that
 // are not their current session are removed; a daemon started elsewhere and
 // spares without a daemon are told to the owner (once each). At startup and every 10 minutes.
-const JOBS_DIR = jobsDir()
+const JOBS_DIR = join(launcher.configDir, 'jobs')
 const toldDaemon = new Set<string>()
 async function jobSweep(): Promise<void> {
   const agents = await supervisor.listAgents()
   for (const s of strayJobs({ agents, jobs: listJobs(JOBS_DIR), convs: db.listConversations() })) {
     log(`job ${s.id} of ${s.key} is not its current session (${s.sessionId ?? '?'}${s.running ? ', running' : ''}), removing it`)
-    if (s.running) await bunRunner([cfg.claudeBin, 'stop', s.id], cfg.home)
-    const r = await bunRunner([cfg.claudeBin, 'rm', s.id], cfg.home)
+    if (s.running) await claudeRun([cfg.claudeBin, 'stop', s.id], cfg.home)
+    const r = await claudeRun([cfg.claudeBin, 'rm', s.id], cfg.home)
     if (r.code !== 0) log(`claude rm ${s.id}: ${(r.stderr || r.stdout).trim()}`)
   }
+  // managed mode: the daemon is the router's own (the keeper checks it); the user's daemon is none of our business
+  if (managedMode) return
   let claudeDir: string | undefined
   try { claudeDir = dirname(realpathSync(Bun.which(cfg.claudeBin) ?? cfg.claudeBin)) } catch { return }
   for (const t of reportNotices(daemonReport(readProcs(), [cfg.home, cfg.stateDir], claudeDir))) {
@@ -682,7 +748,7 @@ setTimeout(() => void jobSweep().catch(e => log(`job sweep: ${e}`)), 5_000).unre
 setInterval(() => void jobSweep().catch(e => log(`job sweep: ${e}`)), 600_000).unref()
 
 // --- why workers fail (router/diagnose.ts): told to the owner once per cause, kept for /router status ---
-const CLAUDE_JSON = join(homedir(), '.claude.json')
+const CLAUDE_JSON = launcher.claudeJson
 const wakes = createWakeTracker()
 /** The last trouble of each conversation (memory only), for /router status. */
 const lastTrouble = new Map<string, { at: number; text: string }>()
@@ -894,7 +960,7 @@ const elevation = createElevation({
 
 const pkgGate = createPkgGate({
   db, approvals: approvalDeps, notify: notifyConversation, label, log, authz,
-  review: claudeReviewer({ claudeBin: cfg.claudeBin, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
+  review: claudeReviewer({ claudeBin: cfg.claudeBin, launch: launcher, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
 })
 
 /** Tool call classifier, stage 1: record only (router/classifier.ts). */
@@ -912,7 +978,7 @@ const classifier = createClassifier({
     typesafe: apiJudge({ cfg: () => classifierCfg().typesafe, cred: n => cfg.credentials[n] }),
     clef: apiJudge({ cfg: () => classifierCfg().clef, cred: n => cfg.credentials[n] }),
     clefflash: apiJudge({ cfg: () => classifierCfg().clefflash, cred: n => cfg.credentials[n] }),
-    claude: claudeJudge({ claudeBin: cfg.claudeBin, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
+    claude: claudeJudge({ claudeBin: cfg.claudeBin, launch: launcher, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
   },
   // the same held values 10e matches exactly, plus every chat id the router knows
   maskEnv: c => ({
@@ -1001,7 +1067,7 @@ const vault = createVault({
     }
   },
   verifyBot: t => commandDeps.verifyBot(t),
-  ask: claudeAsk({ claudeBin: cfg.claudeBin, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
+  ask: claudeAsk({ claudeBin: cfg.claudeBin, launch: launcher, model: () => cfg.model, cwd: (mkdirSync(join(cfg.stateDir, 'review'), { recursive: true }), join(cfg.stateDir, 'review')) }),
   model: () => cfg.model,
   secretDeps: { cfg, db, loadAccess, verifyBot: t => commandDeps.verifyBot(t) },
   rawDir: join(cfg.stateDir, 'raw'),
@@ -1237,7 +1303,7 @@ const commandDeps: CommandDeps = {
       }
       return out
     },
-    doctor: async () => doctorReport({ cfg, conversations: db.listConversations(), agents: await supervisor.listAgents().catch(() => null), isConnected: ipc.isConnected, version: pkg.version, ...daemonInputs(cfg.claudeBin) }),
+    doctor: async () => doctorReport({ cfg, conversations: db.listConversations(), agents: await supervisor.listAgents().catch(() => null), isConnected: ipc.isConnected, version: pkg.version, ...daemonInputs(cfg.claudeBin, JOBS_DIR), channel: { ...channel, check: daemonKeeper ? daemonKeeper.check() : null } }),
   },
   async applySettings(c, opts) {
     settingsFor(c)
@@ -1444,7 +1510,7 @@ async function handleRelay(botName: string, chatId: string, chatType: string, se
     const job = await supervisor.liveJob(db.getConversation(conv.key)!)
     if (!job) { await reply('叫不醒這個對話的 worker'); return }
     if (!rel.raw && job.status === 'busy') { await reply(`這個對話的分身正在處理中, 等這一輪結束再試 (要看當下的畫面可以用 cc /${rel.cmd})`); return }
-    const out = await callConv.run(conv.key, () => relay({ exec, stateDir: cfg.stateDir, claudeBin: cfg.claudeBin, scriptsDir: SCRIPTS_DIR, now: () => gmt8(new Date()) }, job.id, rel))
+    const out = await callConv.run(conv.key, () => relay({ exec, stateDir: cfg.stateDir, claudeBin: cfg.claudeBin, attachCmd: id => shellLine(launcher, ['attach', id]), scriptsDir: SCRIPTS_DIR, now: () => gmt8(new Date()) }, job.id, rel))
     db.addLog(conv.key, `${who} 代打 ${shown}`)
     if (out.kind === 'text') { await reply(codeBlock(out.text), true); return }
     if (out.kind === 'photo') {
@@ -1690,7 +1756,7 @@ function startBot(bc: BotConfig): BotHandle {
 for (const c of db.listConversations()) {
   if (c.folder === convFolder(cfg, c.bot, c.chat_id, c.type)) continue
   await supervisor.stop(c, { dropJob: true }).catch(e => log(`stop ${c.key} before move: ${e}`))
-  const moved = migrateConversation(cfg, db, c)
+  const moved = migrateConversation(cfg, db, c, join(launcher.configDir, 'projects'))
   if (moved) { settingsFor(moved); ctxFile(moved); log(`moved ${c.key}: ${c.folder} -> ${moved.folder}`) }
 }
 
@@ -1716,6 +1782,7 @@ const health = cfg.health ? startHealthServer(cfg.health, async () => {
     bots: [...bots.values()].map(h => ({ name: h.cfg.name, state: h.poller.state().kind, lastOk: h.poller.lastOk(), since: h.poller.createdAt() })),
     workers: countWorkers(db.listConversations().map(c => c.key), { isConnected: ipc.isConnected, heldUntil: wakes.until, running: await runningKeys(), now }),
     lastWakeFailure,
+    channel: { mode: launcher.mode, ...(channel.decision.reason ? { reason: channel.decision.reason } : {}), managedOk: daemonKeeper ? (c => !!c.daemon && !c.bad.length)(daemonKeeper.check()) : null },
   })
 }, log) : null
 
@@ -1816,7 +1883,7 @@ setInterval(pruneSkillEnvs, 86_400_000).unref()
 let startupChecked = false
 async function startupChecks(): Promise<void> {
   // every start is announced: the version, and the health endpoint with how far it reaches (router/health.ts)
-  const hello = startNotice(pkg.version, cfg.health, !!health)
+  const hello = startNotice(pkg.version, cfg.health, !!health, describeMode(channel.decision))
   log(`start notice: ${hello.split('\n').join(' / ')}`)
   await noticeEveryBot(hello).catch(e => log(`start notice: ${e}`))
   const notes: string[] = []

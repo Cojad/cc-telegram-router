@@ -3,6 +3,10 @@
 // `--resume`, `agents --json --all`, `stop` and `rm` for the router's
 // supervisor. A "worker" is fake-worker.ts, a real process that connects to
 // the router socket the way the plugin would. State lives in FAKE_STATE.
+// Managed mode (e2e-managed.test.ts): `daemon run` stays up as the daemon of
+// CLAUDE_CONFIG_DIR (daemon.status.json, daemon/roster.json with the workers
+// --bg starts), `daemon stop` ends it; FAKE_ENV_LOG gets one JSON line per call
+// with the config folders and whether /etc/claude-code had the managed settings.
 
 import { readFileSync, writeFileSync, appendFileSync, readdirSync, rmSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
@@ -21,9 +25,22 @@ const save = (j: Record<string, Job>) => {
 const alive = (pid: number | null) => { if (!pid) return false; try { process.kill(pid, 0); return true } catch { return false } }
 const args = process.argv.slice(2)
 appendFileSync(STATE + '.log', args.join(' ') + '\n')
+if (process.env.FAKE_ENV_LOG) appendFileSync(process.env.FAKE_ENV_LOG, JSON.stringify({ args, config: process.env.CLAUDE_CONFIG_DIR ?? null, secure: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? null, managed: existsSync('/etc/claude-code/managed-settings.json'), telegram: Object.keys(process.env).filter(k => k.startsWith('TELEGRAM_')) }) + '\n')
 const jobs = load()
+const CFG = process.env.CLAUDE_CONFIG_DIR
+const statusFile = CFG ? join(CFG, 'daemon.status.json') : ''
+const rosterFile = CFG ? join(CFG, 'daemon', 'roster.json') : ''
 
-if (args[0] === 'agents') {
+if (args[0] === 'daemon' && args[1] === 'run' && CFG) {
+  mkdirSync(join(CFG, 'daemon'), { recursive: true })
+  writeFileSync(statusFile, JSON.stringify({ supervisorPid: process.pid, workers: {} }))
+  writeFileSync(rosterFile, JSON.stringify({ proto: 1, supervisorPid: process.pid, workers: {} }))
+  process.on('SIGTERM', () => { try { if (JSON.parse(readFileSync(statusFile, 'utf8')).supervisorPid === process.pid) rmSync(statusFile) } catch {} process.exit(0) })
+  setInterval(() => {}, 1 << 30)
+} else if (args[0] === 'daemon' && args[1] === 'stop' && CFG) {
+  try { process.kill(JSON.parse(readFileSync(statusFile, 'utf8')).supervisorPid, 'SIGTERM') } catch {}
+  rmSync(statusFile, { force: true })
+} else if (args[0] === 'agents') {
   console.log(JSON.stringify(Object.values(jobs).map(j => ({ id: j.id, sessionId: j.sessionId, name: j.name, cwd: j.cwd, ...(alive(j.pid) ? { pid: j.pid, status: 'idle', state: 'done' } : { state: 'stopped' }) }))))
 } else if (args[0] === 'stop' || args[0] === 'rm') {
   const j = jobs[args[1]!]
@@ -42,5 +59,11 @@ if (args[0] === 'agents') {
   p.unref()
   jobs[id] = { id, sessionId, name: n >= 0 ? args[n + 1]! : jobs[id]?.name ?? '', cwd: process.cwd(), pid: p.pid }
   writeFileSync(join(JOBS, id), JSON.stringify(jobs[id]))
+  // a daemon of this config folder: the worker in its roster (what the router's namespace check reads)
+  try {
+    const r = JSON.parse(readFileSync(rosterFile, 'utf8'))
+    r.workers[id] = { pid: p.pid }
+    writeFileSync(rosterFile, JSON.stringify(r))
+  } catch {}
   console.log(`backgrounded · ${id} · ${jobs[id].name}`)
 }

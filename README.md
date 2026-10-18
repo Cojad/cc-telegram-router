@@ -37,7 +37,8 @@
 - **Telegram 裡管理**: `/router` 指令管 bot, 角色, 權限, 憑證與 session; `cc /status` 這類指令由 router 開 tmux 代打給背景 worker.
 - **每隻 bot 的資料庫**: 特權動作可以宣告 `store`, user 與 power 對話不用提權就能累積資料 (append 只能新增, 要刪改用 full 且限 owner 與 admin 的動作), 檢查通過才寫回.
 - **特權動作的 bot 憑證**: 動作用 `bots` 拿到另一隻 bot 的 Bot API 網址, token 不進對話, 出現在輸出或檔案就遮蔽並通知 owner.
-- **從外部送訊息給 worker**: 主機終端機或其他 Claude Code session 用 `cli session send <對話> --from <名稱> <文字>` (或從 stdin) 把訊息送進某個對話的 worker; 經 router 的佇列, worker 睡著就叫醒, router 重啟也不會掉, 收到才印「已送達」. 回覆給 Telegram 或用 SendMessage 回給發送者由 worker 判斷, 見[部署與維運](docs/operations.md#從外部送訊息給-worker).
+- **自己的 plugin, 不怕官方更新**: worker 載入 router 自己商店的 telegram plugin, 在 bwrap 的 mount namespace 裡用 router 專屬的 Claude Code 設定目錄與 daemon, 不用 sudo, 跟這台機器上的其他 session 分開; router 看管 daemon, 不對就自動修復並通知. bwrap 或 user namespace 不能用時降級回官方 plugin 的做法, 照常運作. 見 [專屬設定目錄與 managed channel](docs/managed-channel.md).
+- **從外部送訊息給 worker**: 主機終端機或其他 Claude Code session 用 `cli session send <對話> --from <名稱> <文字>` (或從 stdin) 把訊息送進某個對話的 worker; 經 router 的佇列, worker 睡著就叫醒, router 重啟也不會掉, 收到才印「已送達」. 回覆給 Telegram 或用 SendMessage 回給發送者由 worker 判斷, 見[部署與維運](docs/operations.md#從外部送訊息給-worker). managed 模式的 worker 在 router 自己的設定目錄, 其他 session 的 ListAgents 看不到它們, 要送訊息就用這個指令.
 - **終端機執行與試跑**: owner 在終端機以某個對話與角色的身分跑特權動作 (`cli skill run`, 可用拋棄式資料庫與本機假 Bot API), 或立刻更新某個技能的憑證 (`cli skill refresh`).
 - **skill_check 與 skill_try**: worker 不用讀 router 原始碼就能寫特權技能; `skill_check` 檢查草稿並列出核准時會看到的內容, user 以上用 `skill_try` 以假憑證與試跑資料庫不經核准跑一次 (白名單沙箱, 外網只開 80, 443, 53, 22).
 - **試跑沙箱的網路隔離**: 試跑連得到外網, 連不到主機本機, 內網, 雲端 metadata 與主機上的 unix socket (例如 docker.sock, 其他 session 的 socket).
@@ -56,7 +57,8 @@
 | 作業系統 | Linux, systemd user service (`systemctl --user`) | router 以 user unit 常駐 (`deploy/cc-telegram-router.service`) |
 | [Bun](https://bun.sh) | 1.4.3 以上 (`package.json` 的 `engines`; 之後的排程要用 `Bun.cron.parse`; 1.4.2 的 `Bun.spawnSync` 可能空轉卡死, 見 CHANGELOG 2.31.0); 開發與測試用 1.4.3 | 編譯 router 與 hook (`bun build --compile`), 打包 plugin, `bun:sqlite`, 測試 |
 | Claude Code CLI | 支援 `--bg`, `--resume`, `attach`, `--channels` 的版本; 開發與測試用 2.1.302 | worker (`claude --bg`), 套件審核與 event_raw 的 `claude -p`, `cc /` 代打 |
-| 官方 telegram plugin | 先裝好 `telegram@claude-plugins-official` (0.0.7) | `deploy/install.sh plugin` 把 plugin v2 放進它的快取路徑 (第一次會備份原內容) |
+| 官方 telegram plugin | 建議先裝好 `telegram@claude-plugins-official` (0.0.7) | 只有降級成 legacy 模式時用到: `deploy/install.sh plugin` 也把 plugin v2 放進它的快取路徑 (第一次會備份原內容). 預設的 managed 模式用 router 自己商店裡的 plugin, 見 [專屬設定目錄與 managed channel](docs/managed-channel.md) |
+| unprivileged user namespace | 一般使用者能建立 user namespace (多數發行版預設可以; Ubuntu 24.04 以後的 `kernel.apparmor_restrict_unprivileged_userns=1` 會擋工具箱的 static bwrap) | managed 模式: router 用工具箱的 static bwrap (`deploy/install.sh router` 下載, sha256 核對, 不用 sudo) 在 mount namespace 裡給 worker 掛上 managed settings. 不能用時 router 自動降級成 legacy 模式並在啟動公告與 `cli doctor` 說明原因, 照常運作 |
 | bubblewrap (`bwrap`) 與 socat | 發行版套件: `sudo apt-get install bubblewrap socat` (或 dnf) | owner 以外的角色範本都開啟 Claude Code 的 sandbox, Linux 上要靠這兩個 ([官方文件](https://code.claude.com/docs/en/sandboxing)); 特權技能的專屬沙箱 (`bwrap`). Ubuntu 24.04 以後預設的 AppArmor 會阻止 bubblewrap 建立 user namespace (`sysctl kernel.apparmor_restrict_unprivileged_userns` 是 1 就會擋), 要照官方文件加 AppArmor profile. Claude Code 的 `/sandbox` 面板 Dependencies 分頁會列出缺少的 ripgrep, bubblewrap, socat, seccomp filter |
 | python3 | 3.7 以上 (開發與測試用 3.10.12); 必須是 python3, 腳本不相容 python2 | `cc /status`, `cc /usage`, `cc /context` 的報表腳本 (本 repo 的 `scripts/`, `deploy/install.sh router` 裝到 stateDir 的 `scripts/`, 見 [部署與維運](docs/operations.md#cc--報表腳本)) |
 
@@ -93,13 +95,13 @@
    bun install --frozen-lockfile
    ```
 
-3. 安裝官方 telegram plugin (`deploy/install.sh plugin` 要覆蓋它的快取路徑, 所以要先裝), 再部署本專案:
+3. 安裝官方 telegram plugin (預設的 managed 模式用不到, 但降級成 legacy 模式時要用; `deploy/install.sh plugin` 會覆蓋它的快取路徑, 所以要先裝), 再部署本專案:
 
    ```bash
    claude plugin marketplace list    # 沒有 claude-plugins-official 時: claude plugin marketplace add anthropics/claude-plugins-official
    claude plugin install telegram@claude-plugins-official
-   CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cc-telegram-router, 複製 templates 與報表腳本; 還沒有 config.json 時接著開設定嚮導
-   deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容)
+   CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cc-telegram-router, 複製 templates 與報表腳本, 下載工具箱 (含 static bwrap); 還沒有 config.json 時接著開設定嚮導
+   deploy/install.sh plugin   # 打包 plugin v2 到 router 的商店 (<home>/.router/marketplace) 與官方 plugin 快取路徑 (第一次會備份原內容)
    deploy/install.sh unit     # 安裝 systemd user unit
    ```
 
@@ -119,7 +121,7 @@
 
    用自架的 Bot API server 時: server 以 `--local` 啟動, router 要跟它在同一台而且讀得到它 `--dir` 底下的檔案 (例如把 router 的使用者加進 server 使用者的群組, 給群組讀取權限), `--dir` 不要放在 `<home>` 裡; 上傳上限從 50 MB 變成 2000 MB. bot 原本在官方 server 時, 搬過去前先對官方呼叫一次 `logOut`. 見 [部署與維運: 自架 Bot API server](docs/operations.md#自架-bot-api-server).
 5. 共用規則從範例開始: `cp templates/CLAUDE.md.example <home>/CLAUDE.md`.
-6. 第一次要在 `<home>` 互動執行一次 `claude` (`cd <home> && claude`), 在資料夾信任確認框選接受後離開. router 以 `claude --bg` 在每個對話資料夾啟動 worker, 背景 session 要求資料夾已被信任; 依 Claude Code 官方文件, 不在 git repo 裡時信任涵蓋 `<home>` 底下所有子資料夾, 之後的對話資料夾都繼承, 不用個別信任. `<home>` 不要是使用者的家目錄 (那裡的信任不會存下來). 細節與例外見 [部署與維運: 資料夾信任](docs/operations.md#資料夾信任).
+6. 第一次要在 `<home>` 互動執行一次 `claude` (`cd <home> && claude`), 在資料夾信任確認框選接受後離開 (這是 legacy 模式要的; 預設的 managed 模式由 router 在自己的設定目錄寫入 `<home>` 的信任, 但先做好, 降級時才不會叫不醒 worker). router 以 `claude --bg` 在每個對話資料夾啟動 worker, 背景 session 要求資料夾已被信任; 依 Claude Code 官方文件, 不在 git repo 裡時信任涵蓋 `<home>` 底下所有子資料夾, 之後的對話資料夾都繼承, 不用個別信任. `<home>` 不要是使用者的家目錄 (那裡的信任不會存下來). 細節與例外見 [部署與維運: 資料夾信任](docs/operations.md#資料夾信任).
 7. 開 linger, 讓 router 在登出後繼續執行, 開機自動啟動: `sudo loginctl enable-linger <使用者>`, 用 `loginctl show-user <使用者> -p Linger` 確認是 `Linger=yes` (見 [部署與維運](docs/operations.md#登出後繼續執行-linger)). 然後啟動: `systemctl --user enable --now cc-telegram-router`.
 8. 認領 owner: `owners` 留空時, router log 會印出一次性認領碼, 私訊 bot `/start <碼>` 的人成為 owner (並加進 `allowFrom`). 接著 bot 會訪談人設, 並引導設定審核群組 (可以略過).
 
@@ -149,7 +151,7 @@
 1. 取得新版 (`git pull`), 看 [CHANGELOG](CHANGELOG.md) 有沒有要另外做的事.
 2. `deploy/install.sh router` 與 `deploy/install.sh plugin` (unit 有改時再加 `deploy/install.sh unit`).
 3. `systemctl --user stop cc-telegram-router`, 備份 `<home>/.router/router.db*` (WAL 模式, 連同 `-wal`, `-shm`) 與 `config.json`.
-4. `systemctl --user start cc-telegram-router`: 資料庫結構由 router 啟動時自動升級 (只新增資料表與欄位, 退回舊版通常能直接用).
+4. `systemctl --user start cc-telegram-router`: 資料庫結構由 router 啟動時自動升級 (只新增資料表與欄位, 退回舊版通常能直接用). 從 managed 模式以前的版本升級時, router 第一次以 managed 模式啟動會把各對話的紀錄複製到它自己的設定目錄, worker 醒來接續原本的對話 (見 [managed-channel](docs/managed-channel.md#對話紀錄的遷移)).
 5. `/router session rotate all` (或終端機 `<home>/.router/cc-telegram-router cli session rotate all`), 讓 worker 載入新的 plugin 與設定.
 
 要改設定 (例如換 token, 換成自架的 Bot API server, 加 owner) 用 `deploy/install.sh setup` 的修改模式, 再重啟 router.
@@ -166,6 +168,7 @@
 | [docs/skill-runtime.md](docs/skill-runtime.md) | 特權技能的執行環境規格: 掛載路徑, 環境變數, 工具箱, Python 套件 (uv), 工作目錄, 網路, 主機存取, 對外 port, 核准, exit code 與輸出 |
 | [docs/secrets.md](docs/secrets.md) | 對話專屬密鑰 (10b), 原始事件與密鑰保護 (10e) |
 | [docs/classifier.md](docs/classifier.md) | 工具呼叫分類器 (第一階段, 只記錄) |
+| [docs/managed-channel.md](docs/managed-channel.md) | 專屬設定目錄與 managed channel: worker 在 bwrap 裡用 router 自己的設定目錄, daemon 與 plugin, 降級, daemon 的看管, 對話紀錄的遷移 |
 | [docs/operations.md](docs/operations.md) | 部署, 設定嚮導, linger, 資料夾信任, config.json 設定欄位, 自架 Bot API server, 私訊與群組的存取, 升級, 表情回應, 安裝位置, 新 bot 初次設定與審核群組, bot 設定提醒, router 重啟, 輪詢與重試, 健康檢查端點, 工具呼叫紀錄, CLI, 時間, 報表腳本 |
 | [docs/testing.md](docs/testing.md) | 執行測試, 測試分區 (std, 依改動跑), 測試檔對照, 各階段驗收對照表 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本變更紀錄 |

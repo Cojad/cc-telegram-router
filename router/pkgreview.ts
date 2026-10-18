@@ -257,13 +257,15 @@ export function parseVerdicts(text: string): Verdict[] {
 }
 
 /** claude -p with no tools, no settings and no MCP, in a scratch folder. */
-export function claudeReviewer(o: { claudeBin: string; model: () => string; cwd: string; facts?: (p: Pkg) => Promise<Record<string, unknown>> }): Reviewer {
+export function claudeReviewer(o: { claudeBin: string; model: () => string; cwd: string; facts?: (p: Pkg) => Promise<Record<string, unknown>>; launch?: { argv(args: string[]): string[]; env(base?: Record<string, string | undefined>): Record<string, string | undefined> } }): Reviewer {
   return async pkgs => {
     const items = await Promise.all(pkgs.map(async p => ({ ...p, facts: await (o.facts ?? registryFacts)(p) })))
     const env = { ...process.env }
     for (const k of Object.keys(env)) if (k.startsWith('TELEGRAM_')) delete env[k]
-    const proc = Bun.spawn([o.claudeBin, '-p', '--model', o.model(), '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json'], {
-      cwd: o.cwd, env, stdin: new Blob([reviewPrompt(items)]), stdout: 'pipe', stderr: 'pipe',
+    const args = ['-p', '--model', o.model(), '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json']
+    // launch: how the router runs claude (router/claudecmd.ts: bwrap and its config folder in managed mode)
+    const proc = Bun.spawn(o.launch ? o.launch.argv(args) : [o.claudeBin, ...args], {
+      cwd: o.cwd, env: o.launch ? o.launch.env(env) : env, stdin: new Blob([reviewPrompt(items)]), stdout: 'pipe', stderr: 'pipe',
     })
     const kill = setTimeout(() => proc.kill(), 90_000)
     const out = await new Response(proc.stdout).text()
