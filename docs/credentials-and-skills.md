@@ -74,7 +74,7 @@
 
 ### bot 憑證 bots
 
-- 動作寫 `"bots": {"STICKER_BOT": "baldeagle"}` (環境變數名稱 -> 憑證名稱), 腳本拿到 `$STICKER_BOT_API` = `<apiRoot>/bot<token>` (config `apiRoot`, 預設 `https://api.telegram.org`), 例如 `curl "$STICKER_BOT_API/getMe"`. 只接受 telegram-bot 類憑證 (沒寫 kind 的就是), http 類或不存在時拒絕執行並說明. 跟 `http` 一樣, 憑證本身的 roles 與 methods 不套用在特權動作上 (由技能的核准與動作的 roles 把關); token 不進對話, 出現在回傳文字就遮蔽, 出現在對話資料夾寫出的檔案就刪除, 都會通知 owner; 寫進資料庫的內容含 token 時整次作廢.
+- 動作寫 `"bots": {"STICKER_BOT": "baldeagle"}` (環境變數名稱 -> 憑證名稱), 腳本拿到 `$STICKER_BOT_API` = `<apiRoot>/bot<token>` (憑證自己的 `apiRoot`, 沒有就用 config 的 `apiRoot`, 預設 `https://api.telegram.org`; 見[自架 Bot API server](operations.md#自架-bot-api-server)), 例如 `curl "$STICKER_BOT_API/getMe"`. 只接受 telegram-bot 類憑證 (沒寫 kind 的就是), http 類或不存在時拒絕執行並說明. 跟 `http` 一樣, 憑證本身的 roles 與 methods 不套用在特權動作上 (由技能的核准與動作的 roles 把關); token 不進對話, 出現在回傳文字就遮蔽, 出現在對話資料夾寫出的檔案就刪除, 都會通知 owner; 寫進資料庫的內容含 token 時整次作廢.
 
 ### 終端機執行特權動作
 

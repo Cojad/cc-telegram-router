@@ -32,8 +32,10 @@ export interface SkillRunDeps {
   httpCred?(name: string): Credential | undefined
   /** A bot token credential by name (router config), for actions that declare bots. */
   botCred?(name: string): Credential | undefined
-  /** Bot API base URL (config apiRoot); default https://api.telegram.org. */
+  /** Bot API base URL (config apiRoot) for bot credentials without their own apiRoot; default https://api.telegram.org. */
   apiRoot?: string
+  /** Trial runs (skill_try, skill run --api): every bot credential goes to this server instead, even one with its own apiRoot. */
+  apiRootFixed?: string
   /** Databases of actions that declare store: <stateDir>/skill-store (router/skillstore.ts). */
   storeRoot?: string
   /** Run argv with env, killed after timeoutMs. */
@@ -80,7 +82,7 @@ export async function runAction(deps: Omit<SkillRunDeps, 'notifyOwner'>, dir: st
     [`${env}_URL`, cred!.baseUrl!.replace(/\/+$/, '')],
     [`${env}_HEADER`, `${cred!.header ?? 'Authorization'}: ${`${cred!.scheme ?? 'Bearer'} ${cred!.token}`.trim()}`],
   ]))
-  const botEnv = Object.fromEntries(botCreds(deps, a).map(({ env, cred }) => [`${env}_API`, `${(deps.apiRoot ?? 'https://api.telegram.org').replace(/\/+$/, '')}/bot${cred!.token}`]))
+  const botEnv = Object.fromEntries(botCreds(deps, a).map(({ env, cred }) => [`${env}_API`, `${(deps.apiRootFixed ?? cred!.apiRoot ?? deps.apiRoot ?? 'https://api.telegram.org').replace(/\/+$/, '')}/bot${cred!.token}`]))
   const mounts = a.internal ? (a.mounts ?? []).map(m => m.startsWith('~/') ? join(deps.userHome, m.slice(2)) : m) : []
   const sb = sandboxArgv({ argv, skillDir: dir, convFolder: folder, creds: credEnv(deps, a), home: deps.userHome, hidden: deps.hidden, extraRo: [...deps.extraRo, ...mounts], credsWritable: !!a.internal, writable: Object.values(stores), env: { ...(a.internal ? a.env : {}), ...httpEnv, ...botEnv, ...stores } })
   return deps.exec(sb.argv, sb.env, (a.timeout ?? 600) * 1000)

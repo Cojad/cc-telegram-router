@@ -14,7 +14,8 @@ import { randomBytes } from 'crypto'
 import { spawn } from 'child_process'
 import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFileSync, realpathSync, readdirSync } from 'fs'
 import { basename, dirname, join } from 'path'
-import { defaultConfigPath, loadConfig, hiddenPaths, type BotConfig } from './config'
+import { defaultConfigPath, loadConfig, hiddenPaths, botApiRoot, credApiRoot, OFFICIAL_API_ROOT, type BotConfig } from './config'
+import { fetchBotFile } from './telegram/files'
 import { locatorPath, syncLocator, writeLocator } from '../shared/locate'
 import { acquireLock } from './lock'
 import { openRouterDb, type Conversation, type ConvSecret } from './db'
@@ -114,7 +115,7 @@ if (credAt > 0) {
     console.error(`${varName} 看起來不是 Telegram bot token${ex.what ? ` (像是 ${ex.what})` : ''}, 沒有存入. API key 要加 --http <網址>, 例如:\ncc-telegram-router cred-import ${name} ${file} ${varName} ${ex.flags} (沒寫路徑就是全部)`)
     process.exit(1)
   } else {
-    const me = await new Bot(token, cfg.apiRoot ? { client: { apiRoot: cfg.apiRoot } } : undefined).api.getMe().catch(e => { console.error(`token 驗證失敗: ${e}`); process.exit(1) })
+    const me = await new Bot(token, apiOpts(credApiRoot(cfg, cfg.credentials[name]))).api.getMe().catch(e => { console.error(`token 驗證失敗: ${e}`); process.exit(1) })
     label = `@${me.username} (${me.id})`
   }
   const raw = JSON.parse(readFileSync(configPath, 'utf8'))
@@ -354,7 +355,7 @@ const ipc = createIpc({
       const files = Object.fromEntries(Object.entries((args.files ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
       try { for (const p of Object.values(files)) makeAssertSendable(live, cfg.stateDir)(p) } catch (e) { return { content: [{ type: 'text', text: String(e instanceof Error ? e.message : e) }], isError: true } }
       const params = (args.params ?? {}) as Record<string, unknown>
-      const res = await botApiCall({ apiRoot: cfg.apiRoot, token: cred!.token, method, params, files }).catch(e => ({ ok: false, description: String(e) }))
+      const res = await botApiCall({ apiRoot: own ? botApiRoot(cfg, conv.bot) : credApiRoot(cfg, cred), token: cred!.token, method, params, files }).catch(e => ({ ok: false, description: String(e) }))
       db.logApiCall(own ? conv.bot : `cred:${name}`, method, { params, files }, res, res.ok ? null : `${res.error_code ?? ''}: ${res.description}`, conv.key)
       if (own) noteSent(conv.bot, method, params, res)
       // an API may echo what it was sent: the token never goes back to the worker
@@ -503,7 +504,9 @@ const ipc = createIpc({
       }
     }
     return callConv.run(conv?.key ?? 'terminal', () => callTool(tool, args, {
-      bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store: store.forBot(botName), apiRoot: cfg.apiRoot,
+      bot: h.bot, token: h.cfg.token, inboxDir, loadAccess, store: store.forBot(botName),
+      // this bot's Bot API server; a --local one's attachments come from disk (router/telegram/files.ts)
+      apiRoot: botApiRoot(cfg, h.cfg), localFilesDir: h.cfg.localFilesDir, forbidden: [cfg.stateDir, cfg.home],
       // plan 10e: secrets in a downloaded text file become markers
       scanDownload: (buf, file) => vault.attachment(botName, file, buf),
       cachedDownload: fileId => vault.cached(botName, fileId),
@@ -861,11 +864,7 @@ const vault = createVault({
   async fetchFile(name, fileId) {
     const h = bots.get(name)
     if (!h) throw new Error(`bot ${name} is not running`)
-    const f = await h.bot.api.getFile(fileId)
-    if (!f.file_path) throw new Error('Telegram returned no file_path')
-    const res = await fetch(`${cfg.apiRoot ?? 'https://api.telegram.org'}/file/bot${h.cfg.token}/${f.file_path}`)
-    if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
-    return { buf: Buffer.from(await res.arrayBuffer()), file_path: f.file_path, file_unique_id: f.file_unique_id }
+    return fetchBotFile(botFiles(h), fileId)
   },
   cacheDir: join(cfg.stateDir, 'attachments'),
   log,
@@ -989,8 +988,14 @@ function onReaction(botName: string, u: import('grammy/types').MessageReactionUp
   reactions.add(conv.key, { messageId: u.message_id, actorId: who.id, actorName: who.name, reactions: u.new_reaction.map(reactionLabel) })
 }
 
-function apiOpts() {
-  return cfg.apiRoot ? { client: { apiRoot: cfg.apiRoot } } : undefined
+/** grammY's options for a Bot API server (default: the official one). */
+function apiOpts(root: string = cfg.apiRoot ?? OFFICIAL_API_ROOT) {
+  return root !== OFFICIAL_API_ROOT ? { client: { apiRoot: root } } : undefined
+}
+
+/** How a bot's attachments are fetched: its own Bot API server, from disk in --local mode (router/telegram/files.ts). */
+function botFiles(h: BotHandle) {
+  return { getFile: (id: string) => h.bot.api.getFile(id), token: h.cfg.token, apiRoot: botApiRoot(cfg, h.cfg), localFilesDir: h.cfg.localFilesDir, forbidden: [cfg.stateDir, cfg.home] }
 }
 
 // /router cred add for a name that exists: the new value waits here for 覆蓋 or 取消 (router memory only)
@@ -1025,12 +1030,13 @@ const commandDeps: CommandDeps = {
     async rotate(name, token) {
       const old = bots.get(name)
       if (!old) throw new Error(`沒有名為 ${name} 的 bot`)
-      const me = await new Bot(token, apiOpts()).api.getMe()
+      const me = await new Bot(token, apiOpts(botApiRoot(cfg, old.cfg))).api.getMe()
       // the same bot: its id from getMe, or from the old token when getMe is not in yet
       const oldId = old.info ? String(old.info.id) : tokenBotId(old.cfg.token)
       if (oldId && String(me.id) !== oldId) throw new Error(`新 token 屬於另一隻 bot (@${me.username}), rotate 只能換同一隻 bot 的 token`)
-      const bc = { name, token }
-      writeConfig(r => { r.bots = (r.bots as BotConfig[]).map(b => b.name === name ? bc : b) })
+      // only the token changes: its apiRoot and localFilesDir stay
+      const bc = { ...old.cfg, token }
+      writeConfig(r => { r.bots = (r.bots as BotConfig[]).map(b => b.name === name ? { ...b, token } : b) })
       cfg.bots.splice(cfg.bots.findIndex(b => b.name === name), 1, bc)
       // Old poller stops first: Telegram allows one getUpdates consumer per bot.
       await old.stop().catch(() => {})
@@ -1088,7 +1094,7 @@ const commandDeps: CommandDeps = {
       if (!old) throw new Error(`沒有名為 ${name} 的憑證`)
       // a bot token is checked with getMe before anything changes
       let label = old.label
-      if (old.kind !== 'http') { const me = await new Bot(token, apiOpts()).api.getMe(); label = `@${me.username} (${me.id})` }
+      if (old.kind !== 'http') { const me = await new Bot(token, apiOpts(credApiRoot(cfg, old))).api.getMe(); label = `@${me.username} (${me.id})` }
       const change = (c: Record<string, any>) => {
         c.token = token
         if (label) c.label = label
@@ -1112,9 +1118,10 @@ const commandDeps: CommandDeps = {
       return Object.keys(cfg.credentials).length
     },
     async call(name, method, params, files) {
-      const token = cfg.credentials[name]?.token ?? cfg.bots.find(b => b.name === name)?.token
+      const cred = cfg.credentials[name]
+      const token = cred?.token ?? cfg.bots.find(b => b.name === name)?.token
       if (!token) throw new Error(`沒有名為 ${name} 的憑證或 bot`)
-      const res = await botApiCall({ apiRoot: cfg.apiRoot, token, method, params, files })
+      const res = await botApiCall({ apiRoot: cred ? credApiRoot(cfg, cred) : botApiRoot(cfg, name), token, method, params, files })
       db.logApiCall(`cred:${name}`, method, { params, files }, res, res.ok ? null : `${res.error_code ?? ''}: ${res.description}`, 'terminal')
       return res
     },
@@ -1311,7 +1318,7 @@ function pollNotice(name: string, e: PollEvent): void {
 }
 
 function startBot(bc: BotConfig): BotHandle {
-  const bot = new Bot(bc.token, apiOpts())
+  const bot = new Bot(bc.token, apiOpts(botApiRoot(cfg, bc)))
   const h = { cfg: bc, bot, info: null } as BotHandle
   bots.set(bc.name, h)
 
@@ -1457,7 +1464,7 @@ function startBot(bc: BotConfig): BotHandle {
   const gate = (ctx: InboundContext) => policyGate(ctx, loadAccess(), h.info?.username ?? '', saveAccess, () => randomBytes(3).toString('hex'))
   const dmCommandGate = (ctx: InboundContext) => policyDmCommandGate(ctx, loadAccess(), saveAccess)
   const handleInbound = createHandleInbound({ gate, bot, mcp: fakeMcp as never, store: store.forBot(bc.name), log: m => log(`${bc.name}: ${m}`) })
-  registerTransport({ bot, mcp: fakeMcp as never, dmCommandGate, loadAccess, handleInbound, token: bc.token, inboxDir: INBOX })
+  registerTransport({ bot, mcp: fakeMcp as never, dmCommandGate, loadAccess, handleInbound, fetchFile: id => fetchBotFile(botFiles(h), id), inboxDir: INBOX })
   bot.on('message_reaction', ctx => onReaction(bc.name, ctx.messageReaction))
   bot.catch(err => log(`${bc.name}: handler error: ${err.error}`))
 

@@ -33,7 +33,7 @@ export function refuseUse(cred: Credential | undefined, name: string, role: stri
   return null
 }
 
-/** Call the Bot API with a credential's token. files: field -> local path, sent as multipart. */
+/** Call the Bot API with a credential's token, on apiRoot (the bot's or the credential's server). files: field -> local path, sent as multipart. */
 export async function botApiCall(o: { apiRoot?: string; token: string; method: string; params: Record<string, unknown>; files?: Record<string, string> }): Promise<any> {
   const url = `${o.apiRoot ?? 'https://api.telegram.org'}/bot${o.token}/${o.method}`
   let init: RequestInit
@@ -231,7 +231,7 @@ export function describeCreds(cfg: Pick<Config, 'credentials'>): string {
   if (!all.length) return '沒有任何憑證. owner 或 admin 可以在私訊用 /router cred add <名稱> <token> [方法...] 加入'
   // "*" is every path or method; an empty list blocks every call, no roles means no conversation may use it
   const list = (xs: string[], none: string) => xs.length === 1 && xs[0] === '*' ? '全部' : xs.join(', ') || none
-  return all.map(([n, c]) => `${n}: ${c.kind === 'http' ? `http ${c.baseUrl}${placementText(c)}${defaultHeadersText(c.defaultHeaders)}` : (c.label ?? '(未驗證)')}, ${c.kind === 'http' ? '路徑' : '方法'} ${list(c.methods, '(無, 全部擋下)')}, 角色 ${list(c.roles ?? DEFAULT_CRED_ROLES, '(無, 沒有對話能用)')}${c.addedBy ? `, 加入者 ${c.addedBy}` : ''}`).join('\n')
+  return all.map(([n, c]) => `${n}: ${c.kind === 'http' ? `http ${c.baseUrl}${placementText(c)}${defaultHeadersText(c.defaultHeaders)}` : `${c.label ?? '(未驗證)'}${c.apiRoot ? `, Bot API ${c.apiRoot}` : ''}`}, ${c.kind === 'http' ? '路徑' : '方法'} ${list(c.methods, '(無, 全部擋下)')}, 角色 ${list(c.roles ?? DEFAULT_CRED_ROLES, '(無, 沒有對話能用)')}${c.addedBy ? `, 加入者 ${c.addedBy}` : ''}`).join('\n')
 }
 
 /** Call an HTTP API with a credential's key (kind http). json (or jsonText,
@@ -363,5 +363,5 @@ export function credSummary(name: string, c: Credential): string {
   const list = (xs: string[], none: string) => xs.length === 1 && xs[0] === '*' ? '全部' : xs.join(', ') || none
   return c.kind === 'http'
     ? `${name}: http ${c.baseUrl}${placementText(c)}${defaultHeadersText(c.defaultHeaders)}, 路徑 ${list(c.methods, '(無, 全部擋下)')}, 角色 ${list(roles, '(無, 沒有對話能用)')}${c.addedBy ? `, 加入者 ${c.addedBy}` : ''}`
-    : `${name}: Telegram bot token ${c.label ?? '(未驗證)'}, 方法 ${list(c.methods, '(無, 全部擋下)')}, 角色 ${list(roles, '(無, 沒有對話能用)')}${c.addedBy ? `, 加入者 ${c.addedBy}` : ''}`
+    : `${name}: Telegram bot token ${c.label ?? '(未驗證)'}${c.apiRoot ? `, Bot API ${c.apiRoot}` : ''}, 方法 ${list(c.methods, '(無, 全部擋下)')}, 角色 ${list(roles, '(無, 沒有對話能用)')}${c.addedBy ? `, 加入者 ${c.addedBy}` : ''}`
 }

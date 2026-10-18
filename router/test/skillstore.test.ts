@@ -240,6 +240,11 @@ test('bots: the script gets <apiRoot>/bot<token>; the token never comes back (ou
   expect(r.text).not.toContain(TOKEN)
   expect(existsSync(join(conv.folder, 'out.txt'))).toBe(false)
   expect(told.some(t => t.includes('含有憑證內容'))).toBe(true)
+  // a credential with its own apiRoot (a self-hosted Bot API server) gets that one; a trial run's fixed server wins over it
+  deps.botCred = name => name === 'baldeagle' ? { token: TOKEN, methods: ['addStickerToSet'], apiRoot: 'http://127.0.0.1:8081' } : undefined
+  expect((await runSkill(deps, conv, 'user', 'sticker', 'send', {})).text).toContain('api=http://127.0.0.1:8081')
+  expect((await runSkill({ ...deps, apiRootFixed: 'http://127.0.0.1:7' }, conv, 'user', 'sticker', 'send', {})).text).toContain('api=http://127.0.0.1:7\n')
+  deps.botCred = name => name === 'baldeagle' ? { token: TOKEN, methods: ['addStickerToSet'] } : undefined
   told = []
   seed()
   const before = snapshot()

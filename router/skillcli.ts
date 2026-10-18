@@ -149,7 +149,7 @@ export async function terminalRun(deps: SkillRunDeps, conv: Conversation, o: Ski
   const d: SkillRunDeps = {
     ...deps,
     ...(trialRoot ? { storeRoot: trialRoot } : {}),
-    ...(o.api ? { apiRoot: o.api } : {}),
+    ...(o.api ? { apiRoot: o.api, apiRootFixed: o.api } : {}),
     notifyOwner: (_c, text) => notices.push(text),
   }
   try {

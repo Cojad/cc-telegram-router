@@ -47,12 +47,13 @@ export interface TransportDeps {
     downloadImage: (() => Promise<string | undefined>) | undefined,
     attachment?: AttachmentMeta,
   ) => Promise<void>
-  token: string
+  /** getFile and the bytes, through this bot's Bot API server (router/telegram/files.ts). */
+  fetchFile: (fileId: string) => Promise<{ buf: Buffer; file_path: string; file_unique_id: string }>
   inboxDir: string
 }
 
 export function registerTransport(deps: TransportDeps): void {
-  const { bot, mcp, dmCommandGate, loadAccess, handleInbound, token, inboxDir } = deps
+  const { bot, mcp, dmCommandGate, loadAccess, handleInbound, fetchFile, inboxDir } = deps
 
   // Commands are DM-only. Responding in groups would: (1) leak pairing codes
   // via /status to other group members, (2) confirm bot presence in
@@ -212,12 +213,9 @@ export function registerTransport(deps: TransportDeps): void {
     // later via download_attachment once the moment passed.
     await handleInbound(ctx, caption, async () => {
       try {
-        const file = await ctx.api.getFile(best.file_id)
-        if (!file.file_path) return undefined
-        const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`
-        const res = await fetch(url)
-        const buf = Buffer.from(await res.arrayBuffer())
-        const ext = file.file_path.split('.').pop() ?? 'jpg'
+        const file = await fetchFile(best.file_id)
+        const buf = file.buf
+        const ext = (file.file_path.includes('.') ? file.file_path.split('.').pop()! : 'jpg').replace(/[^a-zA-Z0-9]/g, '') || 'jpg'
         const path = join(inboxDir, `${Date.now()}-${best.file_unique_id}.${ext}`)
         mkdirSync(inboxDir, { recursive: true })
         writeFileSync(path, buf)

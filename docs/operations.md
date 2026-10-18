@@ -19,12 +19,23 @@ CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.ro
 deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容)
 deploy/install.sh unit     # 安裝 systemd user unit
 sudo loginctl enable-linger <使用者>   # 見下方「登出後繼續執行 (linger)」
+cd <home> && claude        # 只有第一次: 接受資料夾信任後離開 (/exit), 見下方「資料夾信任」
 systemctl --user enable --now cc-telegram-router
 ```
 
 ### 登出後繼續執行 (linger)
 
 router 是 systemd user service: 沒開 linger 時, 使用者的 systemd 只在他登入期間存在, 最後一個 session 登出 (例如 ssh 斷線) router 就跟著停, 開機後也要等他登入才會啟動. 開一次就好: `sudo loginctl enable-linger <使用者>` (有些系統允許使用者自己打 `loginctl enable-linger` 不用 sudo). 確認: `loginctl show-user <使用者> -p Linger` 要印出 `Linger=yes`. 關閉是 `loginctl disable-linger <使用者>`.
+
+### 資料夾信任
+
+router 以 `claude --bg` 在每個對話資料夾 (`<home>` 底下) 啟動 worker. Claude Code 啟動背景 session 前會檢查那個資料夾有沒有被信任 (workspace trust), 沒信任又沒辦法跳出確認框時直接失敗 (`Workspace not trusted`). 所以第一次要在 `<home>` 互動執行一次 `claude`, 在信任確認框選接受, 然後離開.
+
+依 Claude Code 官方文件 ([Configure permissions: Project allow rules and workspace trust](https://code.claude.com/docs/en/permissions#project-allow-rules-and-workspace-trust)): 不在 git repo 裡時, 信任記在啟動 claude 的那個資料夾, 並涵蓋它底下的所有子資料夾, 所以之後才建立的對話資料夾不用再個別信任. 例外:
+
+- `<home>` 本身在某個 git repo 裡時, 信任記在那個 repo 的根目錄 (同樣涵蓋整個 repo).
+- 子資料夾裡巢狀的 git repo 不在涵蓋範圍: 對話資料夾本身被 `git init` 成 repo 時, 它的 worker 要另外信任 (在那個資料夾互動執行一次 `claude`).
+- `<home>` 不要是使用者的家目錄 (`~`): 在家目錄接受的信任只在當次 session 有效, 不會寫到磁碟.
 
 `<home>` 是 router 的家目錄, 位置可自選 (見下方「安裝位置」). 共用的 `<home>/CLAUDE.md` 可以從範例開始: `cp templates/CLAUDE.md.example <home>/CLAUDE.md`. worker 端的使用說明在 plugin 的 `/telegram:doc` skill (`plugin/skills/doc/SKILL.md`).
 
@@ -55,7 +66,7 @@ router 是 systemd user service: 沒開 linger 時, 使用者的 systemd 只在�
 
 | 欄位 | 說明 |
 |---|---|
-| `bots` | bot 清單, 每隻 `{ "name": ..., "token": ... }`, 至少一隻 (必填); 之後用 `/router bot add` / `rotate` 管理. |
+| `bots` | bot 清單, 每隻 `{ "name": ..., "token": ... }`, 至少一隻 (必填); 之後用 `/router bot add` / `rotate` 管理. 選填 `apiRoot` (這隻 bot 的 Bot API server, 優先於全域 `apiRoot`) 與 `localFilesDir` (自架 server 在 `--local` 模式時, 附件只從這個絕對路徑底下讀). 見[自架 Bot API server](#自架-bot-api-server). |
 | `home` | router 的家目錄, 每個對話一個資料夾; 沒寫是 config.json 所在資料夾的上一層. 見[安裝位置](#安裝位置). |
 | `stateDir` | 狀態目錄 (router.db, access.json, 技能的資料庫與憑證資料夾, 執行檔); 沒寫是 config.json 所在的資料夾. 見[安裝位置](#安裝位置). |
 | `socket` | router 的 unix socket (plugin, hook 與 `cli` 連它); 沒寫是 `<stateDir>/router.sock`, 放在 home 與 stateDir 以外時沙箱另外隱藏它. 見[安裝位置](#安裝位置). |
@@ -63,8 +74,8 @@ router 是 systemd user service: 沒開 linger 時, 使用者的 systemd 只在�
 | `model` | worker 與套件審核用的模型 (`--model`); 沒寫是 `claude-opus-5-5`. |
 | `autoCompactWindow` | 新對話的 autoCompactWindow; 沒寫是 750000. |
 | `claudeBin` | 啟動 worker, 套件審核與 `cc /` 代打用的 claude 執行檔; 沒寫是 `claude` (照 PATH 找). 只有 owner 能用 `/router config set` 改. |
-| `apiRoot` | Bot API 的網址, 特權動作 `bots` 的 `$<ENV>_API` 也用它; 沒寫是 `https://api.telegram.org`, 測試才指到本機假 API. 見 [bot 憑證 bots](credentials-and-skills.md#bot-憑證-bots). |
-| `credentials` | 跨 bot 的 bot token 與 http API key, 名稱 -> `{ token, kind, methods, baseUrl, header, scheme, query, defaultHeaders, roles, label, addedBy }`; 由 `/router cred` 與 `cred-import` 管理, 不要手改. 見[憑證](credentials-and-skills.md#憑證). |
+| `apiRoot` | 沒有自己 `apiRoot` 的 bot 與 bot 憑證用的 Bot API 網址, 例如自架的 `http://127.0.0.1:8081`; 沒寫 (或不是 http(s) 網址) 是 `https://api.telegram.org`. 特權動作 `bots` 的 `$<ENV>_API` 也照它 (憑證有自己的 `apiRoot` 時用憑證的). 見[自架 Bot API server](#自架-bot-api-server), [bot 憑證 bots](credentials-and-skills.md#bot-憑證-bots). |
+| `credentials` | 跨 bot 的 bot token 與 http API key, 名稱 -> `{ token, kind, methods, baseUrl, apiRoot, header, scheme, query, defaultHeaders, roles, label, addedBy }`; 由 `/router cred` 與 `cred-import` 管理, 不要手改 (例外: telegram-bot 類的 `apiRoot`, 這個憑證要走的 Bot API server, 沒寫用全域 `apiRoot`, 手改後 `/router cred reload`). 見[憑證](credentials-and-skills.md#憑證). |
 | `secretKey` | 加密對話密鑰與原始事件的 AES-256 key (base64); 沒有時 router 啟動時產生並寫回 config.json. 遺失就解不開已存的密鑰與原文, 要跟 router.db 一起備份. 見[密鑰](secrets.md). |
 | `skillRefreshAt` | 特權技能每日更新憑證的時間, GMT+8 `"HH:MM"`, `"off"` 關閉; 沒寫是 `"05:00"`, 寫錯只關閉每日更新. 見[特權技能](credentials-and-skills.md#特權技能). |
 | `classifier` | 工具呼叫分類器 (選配, 預設關閉, 第一階段只記錄); 格式錯只關閉它. 見[工具呼叫分類器](classifier.md). |
@@ -72,7 +83,32 @@ router 是 systemd user service: 沒開 linger 時, 使用者的 systemd 只在�
 | `receiveReact` | 對話沒有自己設定時收哪些表情回應: `all`, `botself_only`, `disable`; 沒寫是 `botself_only`. 見[表情回應 (reaction)](#表情回應-reaction). |
 | `reactFlushMs` | 表情回應等多少毫秒沒有新訊息就單獨交給 worker; 沒寫是 60000, 測試才縮短. 見[表情回應 (reaction)](#表情回應-reaction). |
 
-選配欄位 (`skillRefreshAt`, `classifier`, `sandboxDenyRead`, `receiveReact`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
+選配欄位 (`skillRefreshAt`, `classifier`, `sandboxDenyRead`, `receiveReact`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
+
+## 自架 Bot API server
+
+bot 可以改走自架的 [telegram-bot-api](https://github.com/tdlib/telegram-bot-api) (例如要收發超過 50 MB 的檔案), 不用改程式, 只改 config.json 後重啟 router.
+
+設定 (程式在 `router/config.ts`, `router/telegram/files.ts`):
+
+- 每隻 bot 用哪個 server: `bots[]` 那一項的 `apiRoot`, 沒寫就用全域 `apiRoot`, 再沒有就是官方 `https://api.telegram.org`. 網址結尾的 `/` 可有可無; 不是 http(s) 網址時 log 寫一行 `config.json: ...` 並改用上一層. 例如全部 bot 都走同一台: `"apiRoot": "http://127.0.0.1:8081"`; 只有一隻: `{ "name": "cc", "token": "<bot token>", "apiRoot": "http://127.0.0.1:8081", "localFilesDir": "<server 的 --dir>" }`.
+- 這隻 bot 的每個 Bot API 呼叫都走它的 server: 收訊 (getUpdates), 發訊與上傳, 啟動與 `/router bot rotate` 的 getMe, worker 的 `bot_api` (`self`), 附件下載 (`download_attachment`, 照片與文字附件收到時的下載). `/router bot add` 新增的 bot 沒有自己的 `apiRoot`, 走全域的; 要個別設定就改 config.json 後重啟. `/router bot rotate` 只換 token, `apiRoot` 與 `localFilesDir` 保留.
+- 其他 bot 的憑證 (`credentials` 的 telegram-bot 類) 可以加 `apiRoot`, 沒寫用全域的; `bot_api`, `cli cred call`, 特權動作的 `$<ENV>_API`, `/router cred rotate` 的 getMe 都照它. 新增憑證 (`/router cred add`, `cred-import`) 時用全域的, 要個別設定就手改 config.json 後 `/router cred reload`. 試跑 (`skill_try`, `skill run --trial --api`) 一律走假服務; 對話密鑰 (`/secret set` 的 telegram-bot 類) 走全域 `apiRoot`.
+- 從官方 server 搬過去之前, Telegram 要求 bot 先在官方 server 呼叫一次 `logOut`, 否則不保證收得到 update (之後 10 分鐘內不能再登入官方 server). worker 不能呼叫這個方法, 由 owner 在終端機自己做: `curl https://api.telegram.org/bot<bot token>/logOut`.
+
+本機模式 (`--local`):
+
+- server 以 `--local` 啟動時, `getFile` 回的是 server 主機上的絕對路徑, 而且沒有 `/file` 下載端點. router 看到絕對路徑就自己從磁碟讀, 所以 router 要跟 server 在同一台 (server 在 docker 裡時, 把它的 `--dir` 以相同路徑掛到主機上). 回相對路徑時 (沒開 `--local`, 或官方 server) 照舊從 `<apiRoot>/file/bot<token>/<路徑>` 下載.
+- 檔案權限: 執行 router 的使用者要能讀 server `--dir` 底下的檔案, server 通常以自己的使用者寫檔. 做法例如把 router 的使用者加進 server 使用者的群組, `--dir` 底下的資料夾給群組讀取與進入 (`r-x`), 檔案給群組讀取, 並讓 server 的 umask 建出群組可讀的檔案. 讀不到時 `download_attachment` 回「router 沒有讀取權限」; 找不到檔案時回「不存在」(提示要在同一台, 同一路徑).
+- 檢查: 路徑解開符號連結後要是一般檔案, 最大 2000 MB; 不能落在 router 的 `stateDir` 或 `home` 底下 (server 的 `--dir` 不要放在 router 的 home 裡), 避免 server 出問題時被拿來讀 config.json; 有設 `localFilesDir` 時還要在它底下 (建議設成 server 的 `--dir`). 路徑只來自 server 的 `getFile` 回應, worker 只能給 file_id.
+- `--local` 的路徑裡有 bot token (server 每隻 bot 一個資料夾): 錯誤訊息裡的 token 換成 `<token>`, 交給下游 (router.db 的 `attachment_cache`, 密鑰偵測, 存下來的檔名) 的路徑只留最後兩段 (例如 `documents/file_3.txt`).
+
+大小上限:
+
+- 上傳 (`reply` 的 `files`, `send_sticker` 的 `file`): 這隻 bot 的 `apiRoot` 不是官方 (主機不是 `api.telegram.org`) 時 2000 MB, 官方 50 MB, 超過時送出前就拒絕. 自架但沒開 `--local` 的 server 實際上限仍是 50 MB, 超過時由 server 回錯誤. `bot_api` 工具上傳的檔案不另外檢查, 由 server 決定.
+- 下載: 官方 server 只能下載 20 MB 以內的檔案 (Telegram 的限制); `--local` 從磁碟讀, 上限 2000 MB.
+
+測試: `router/test/local-bot-api.test.ts` (模組), `router/test/e2e-localapi.test.ts` (從原始碼跑的 router, 兩隻 bot 各接一台假 server), `router/test/e2e-compiled.test.ts` (編譯版).
 
 ## 升級
 

@@ -10,7 +10,16 @@ import { outermost } from './settings'
 import { parseClassifier, type ClassifierConfig } from './classifier'
 import { parseReactMode, type ReactMode } from './reactions'
 
-export type BotConfig = { name: string; token: string }
+export type BotConfig = {
+  name: string
+  token: string
+  /** This bot's Bot API server (e.g. a self-hosted telegram-bot-api); default the config's apiRoot, then the official one. */
+  apiRoot?: string
+  /** Self-hosted server in --local mode: attachments are read from disk only under this folder (its --dir); optional. */
+  localFilesDir?: string
+}
+
+export const OFFICIAL_API_ROOT = 'https://api.telegram.org'
 
 /** A token for cross-bot skills (router/credentials.ts); never shown to workers. */
 export type Credential = {
@@ -23,6 +32,8 @@ export type Credential = {
   methods: string[]
   /** http: e.g. https://api.openai.com */
   baseUrl?: string
+  /** telegram-bot: the Bot API server to use it with; default the config's apiRoot. */
+  apiRoot?: string
   /** http: header carrying the key (default Authorization) and its scheme (default Bearer; "" for the bare key). */
   header?: string
   scheme?: string
@@ -55,7 +66,8 @@ export type Config = {
   autoCompactWindow: number
   /** claude CLI to spawn workers with. */
   claudeBin: string
-  /** Bot API base URL; only tests point this elsewhere. */
+  /** Bot API server for every bot and credential without their own (a
+   *  self-hosted telegram-bot-api, or tests); default https://api.telegram.org. */
   apiRoot?: string
   credentials: Record<string, Credential>
   /** base64 AES-256 key for conversation secrets (router/secrets.ts); generated at startup when missing. */
@@ -122,6 +134,25 @@ export function hiddenPaths(cfg: Pick<Config, 'home' | 'stateDir' | 'sandboxDeny
   return outermost([cfg.home, cfg.stateDir, ...(cfg.sandboxDenyRead ?? []), ...(showSock ? [] : [sock!])])
 }
 
+/** An apiRoot as config takes it: an http(s) URL without the trailing /; anything else is left out with a warning (the next level applies). */
+export function parseApiRoot(v: unknown, where: string, warnings: string[]): string | undefined {
+  if (v === undefined || v === null || v === '') return undefined
+  if (typeof v === 'string' && /^https?:\/\/[^/\s]+/.test(v.trim())) return v.trim().replace(/\/+$/, '')
+  warnings.push(`${where} 要是 http(s) 網址, 收到 ${JSON.stringify(v)}; 改用${where === 'apiRoot' ? '官方 Bot API' : '上一層的 apiRoot'}`)
+  return undefined
+}
+
+/** The Bot API server of one of the router's bots: its own apiRoot, else the config's, else the official one. */
+export function botApiRoot(cfg: Pick<Config, 'apiRoot' | 'bots'>, bot: string | Pick<BotConfig, 'apiRoot'> | undefined): string {
+  const b = typeof bot === 'string' ? cfg.bots.find(x => x.name === bot) : bot
+  return b?.apiRoot ?? cfg.apiRoot ?? OFFICIAL_API_ROOT
+}
+
+/** The Bot API server a telegram-bot credential is used with: its own apiRoot, else the config's, else the official one. */
+export function credApiRoot(cfg: Pick<Config, 'apiRoot'>, cred: Pick<Credential, 'apiRoot'> | undefined): string {
+  return (cred?.apiRoot ? cred.apiRoot.replace(/\/+$/, '') : undefined) ?? cfg.apiRoot ?? OFFICIAL_API_ROOT
+}
+
 export function defaultConfigPath(argv: string[], execPath: string): string {
   const i = argv.indexOf('--config')
   if (i >= 0 && argv[i + 1]) return resolve(argv[i + 1])
@@ -138,9 +169,19 @@ export function loadConfig(path: string): Config {
   }
   const stateDir = abs(raw.stateDir, '.')
   const warnings: string[] = []
+  const bots: BotConfig[] = raw.bots.map((b: Record<string, unknown>) => {
+    const { apiRoot: _a, localFilesDir: _l, ...rest } = b
+    const apiRoot = parseApiRoot(b.apiRoot, `bots[${b.name}].apiRoot`, warnings)
+    let localFilesDir: string | undefined
+    if (b.localFilesDir !== undefined && b.localFilesDir !== null && b.localFilesDir !== '') {
+      if (typeof b.localFilesDir === 'string' && isAbsolute(b.localFilesDir) && resolve(b.localFilesDir) !== '/') localFilesDir = resolve(b.localFilesDir)
+      else warnings.push(`bots[${b.name}].localFilesDir 要是絕對路徑 (不能是 /), 收到 ${JSON.stringify(b.localFilesDir)}; 不限制附件的資料夾`)
+    }
+    return { ...rest, ...(apiRoot ? { apiRoot } : {}), ...(localFilesDir ? { localFilesDir } : {}) } as BotConfig
+  })
   return {
     path,
-    bots: raw.bots,
+    bots,
     home: abs(raw.home, '..'),
     stateDir,
     socket: abs(raw.socket, join(stateDir, 'router.sock')),
@@ -148,7 +189,7 @@ export function loadConfig(path: string): Config {
     model: raw.model ?? 'claude-opus-5-5',
     autoCompactWindow: raw.autoCompactWindow ?? 750000,
     claudeBin: raw.claudeBin ?? 'claude',
-    apiRoot: raw.apiRoot,
+    apiRoot: parseApiRoot(raw.apiRoot, 'apiRoot', warnings),
     credentials: raw.credentials ?? {},
     secretKey: raw.secretKey,
     skillRefreshAt: refreshAtOrOff(raw.skillRefreshAt, warnings),

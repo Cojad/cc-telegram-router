@@ -6,6 +6,20 @@
 
 ## [Unreleased]
 
+## [2.18.0] - 2026-10-18
+
+### Added
+
+- 自架的 Bot API server (telegram-bot-api): `bots[]` 每隻 bot 可以設自己的 `apiRoot`, 沒設用全域 `apiRoot`, 再沒有就是官方 `https://api.telegram.org` (結尾的 `/` 去掉; 不是 http(s) 網址時 log 寫一行並改用上一層). 這隻 bot 的收訊, 發訊與上傳, 啟動與 `/router bot rotate` 的 getMe, `bot_api` 的 `self`, 附件下載都走它的 server; `/router bot rotate` 只換 token, 保留 `apiRoot` 與 `localFilesDir`. telegram-bot 類憑證可以設自己的 `apiRoot` (沒設用全域), `bot_api`, `cli cred call`, `/router cred rotate` 的 getMe 與特權動作的 `$<ENV>_API` 都照它, `/router cred list` 會顯示; 試跑 (`skill_try`, `skill run --api`) 仍固定走假服務. 見 [docs/operations.md](docs/operations.md#自架-bot-api-server).
+- `--local` 模式的附件: `getFile` 回絕對路徑時 router 直接從磁碟讀 (`router/telegram/files.ts`; `download_attachment`, 照片與文字附件收到時的下載三處共用). 解開符號連結後要是一般檔案, 最大 2000 MB, 不能在 router 的 `stateDir` 或 `home` 底下, 有設 `bots[].localFilesDir` 時要在它底下; 權限不足, 不存在等情況回清楚的錯誤 (含權限提示). 路徑裡的 bot token 不會出現在錯誤訊息, router.db 與存下的檔名 (只留最後兩段).
+- 上傳上限依 bot 的 server: 不是官方 server 時 2000 MB, 官方 50 MB (`reply` 的 `files`, `send_sticker` 的 `file`), 錯誤訊息寫實際上限.
+- README 安裝步驟與 operations.md 新增「資料夾信任」: 第一次要在 `<home>` 互動執行一次 `claude` 並接受資料夾信任; 依 Claude Code 官方文件, 不在 git repo 裡時信任涵蓋底下所有子資料夾 (巢狀 git repo 與家目錄例外), 之後的對話資料夾都繼承.
+
+### Fixed
+
+- 收到照片時的下載原本寫死官方網址 (`router/telegram/transport.ts`), 設了 `apiRoot` 也照樣連官方; 現在走那隻 bot 的 server.
+- 測試: 新增 `router/test/local-bot-api.test.ts` (設定層級與警告, `--local` 從磁碟讀, 各種讀不到的錯誤與 token 遮蔽, 上傳上限以 sparse 檔模擬, 官方模式照舊) 與 `router/test/e2e-localapi.test.ts` (從原始碼跑的 router, 兩隻 bot 各接一台假 server, 附件, 上傳, bot_api, 憑證與 rotate); `router/test/e2e-compiled.test.ts` 的 bot 改用自己的 `--local` 假 server 並驗證 download_attachment; `router/test/skillstore.test.ts` 加上憑證自己的 `apiRoot` 與試跑固定 server.
+
 ## [2.17.2] - 2026-10-18
 
 ### Changed

@@ -5,7 +5,10 @@
 // upgrade」 and operations.md 「升級」 give the steps; the feature highlights
 // cover what came after 2.11; docs/secrets.md explains secretKey; every
 // relative link in README, operations.md and secrets.md reaches a file and a
-// heading that exist. Keep in sync with those sections.
+// heading that exist; operations.md 「自架 Bot API server」 states what
+// local-bot-api.test.ts and e2e-localapi.test.ts check, and the first
+// interactive claude in <home> (資料夾信任) comes before the router starts.
+// Keep in sync with those sections.
 
 import { test, expect } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
@@ -98,4 +101,15 @@ test('every relative link in README and operations.md reaches a file and a headi
   expect(anchored).toBeGreaterThan(15)
   expect(slug('登出後繼續執行 (linger)')).toBe('登出後繼續執行-linger')
   expect(slug('新 bot 初次設定與審核群組')).toBe('新-bot-初次設定與審核群組')
+})
+
+test('operations.md 「自架 Bot API server」 gives the levels, --local from disk, the checks and the limits; 資料夾信任 comes before the router starts', () => {
+  const s = section(OPS, '## 自架 Bot API server')
+  for (const t of ['`bots[]` 那一項的 `apiRoot`, 沒寫就用全域 `apiRoot`, 再沒有就是官方 `https://api.telegram.org`', '`localFilesDir`', '`/router bot rotate` 只換 token', '`logOut`', '絕對路徑', '一般檔案, 最大 2000 MB', '`stateDir` 或 `home`', '`<token>`', '2000 MB, 官方 50 MB', 'local-bot-api.test.ts', 'e2e-localapi.test.ts']) expect(s).toContain(t)
+  for (const md of [README, OPS]) expect(md).toContain('cd <home> && claude')
+  const install = section(README, '## How to install')
+  expect(install.indexOf('cd <home> && claude')).toBeLessThan(install.indexOf('systemctl --user enable --now'))
+  const deploy = section(OPS, '## 部署')
+  expect(deploy.indexOf('cd <home> && claude')).toBeLessThan(deploy.indexOf('systemctl --user enable --now'))
+  expect(section(OPS, '### 資料夾信任')).toContain('https://code.claude.com/docs/en/permissions#project-allow-rules-and-workspace-trust')
 })

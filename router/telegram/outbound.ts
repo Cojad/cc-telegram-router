@@ -11,6 +11,7 @@ import { extname, join } from 'path'
 import { CAPTION_LIMIT, captionLength, chunk, formatMessageRow, formatMessageRows } from './format'
 import type { Access } from './policy'
 import type { Store } from './store'
+import { fetchBotFile, mb, uploadLimit } from './files'
 
 export { TOOL_DEFINITIONS } from '../../shared/tools'
 
@@ -18,7 +19,6 @@ export { TOOL_DEFINITIONS } from '../../shared/tools'
 // everything else goes as documents (raw file, no compression).
 const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
 const MAX_CHUNK_LIMIT = 4096
-const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 /** sendMediaGroup: 2-10 items. */
 const MAX_ALBUM = 10
 
@@ -34,8 +34,14 @@ export interface OutboundDeps {
   /** Throws if a file path being sent as an attachment reaches into plugin state. */
   assertSendable: (path: string) => void
   store: Pick<Store, 'record' | 'lookup' | 'recent'>
-  /** Bot API server (tests); default https://api.telegram.org. */
+  /** This bot's Bot API server; default https://api.telegram.org. A
+   *  self-hosted one allows 2000 MB uploads, and in --local mode its
+   *  attachments are read from disk (router/telegram/files.ts). */
   apiRoot?: string
+  /** bots[].localFilesDir: where a --local server's attachments must be. */
+  localFilesDir?: string
+  /** Folders a --local server's attachment is never read from (the router's state dir and home). */
+  forbidden?: string[]
   /** A downloaded file before it is written (plan 10e: secrets in text files
    *  become markers); returns the bytes to write. */
   scanDownload?: (buf: Buffer, file: { file_id: string; file_path: string }) => Promise<Buffer>
@@ -87,8 +93,8 @@ export async function callTool(name: string, args: Record<string, unknown>, deps
         for (const f of files) {
           assertSendable(f)
           const st = statSync(f)
-          if (st.size > MAX_ATTACHMENT_BYTES) {
-            throw new Error(`file too large: ${f} (${(st.size / 1024 / 1024).toFixed(1)}MB, max 50MB)`)
+          if (st.size > uploadLimit(deps.apiRoot)) {
+            throw new Error(`file too large: ${f} (${(st.size / 1024 / 1024).toFixed(1)}MB, max ${mb(uploadLimit(deps.apiRoot))})`)
           }
         }
 
@@ -228,8 +234,8 @@ export async function callTool(name: string, args: Record<string, unknown>, deps
         if (filePath) {
           assertSendable(filePath)
           const st = statSync(filePath)
-          if (st.size > MAX_ATTACHMENT_BYTES) {
-            throw new Error(`file too large: ${filePath} (${(st.size / 1024 / 1024).toFixed(1)}MB, max 50MB)`)
+          if (st.size > uploadLimit(deps.apiRoot)) {
+            throw new Error(`file too large: ${filePath} (${(st.size / 1024 / 1024).toFixed(1)}MB, max ${mb(uploadLimit(deps.apiRoot))})`)
           }
           sticker = new InputFile(filePath)
         } else {
@@ -270,13 +276,9 @@ export async function callTool(name: string, args: Record<string, unknown>, deps
           buf = cached.buf
           file = cached
         } else {
-          const got = await bot.api.getFile(file_id)
-          if (!got.file_path) throw new Error('Telegram returned no file_path — file may have expired')
+          const got = await fetchBotFile({ getFile: id => bot.api.getFile(id), token, apiRoot: deps.apiRoot, localFilesDir: deps.localFilesDir, forbidden: deps.forbidden }, file_id)
           file = { file_path: got.file_path, file_unique_id: got.file_unique_id }
-          const url = `${deps.apiRoot ?? 'https://api.telegram.org'}/file/bot${token}/${file.file_path}`
-          const res = await fetch(url)
-          if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
-          buf = Buffer.from(await res.arrayBuffer())
+          buf = got.buf
           if (deps.scanDownload) buf = await deps.scanDownload(buf, { file_id, file_path: file.file_path })
         }
         // file_path is from Telegram (trusted), but strip to safe chars anyway

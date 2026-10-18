@@ -167,7 +167,7 @@ export async function trySkill(deps: SkillTryDeps, conv: Conversation, role: str
     ...deps,
     credsRoot: join(root, 'creds'),
     storeRoot: join(root, 'store'),
-    apiRoot: FAKE,
+    apiRoot: FAKE, apiRootFixed: FAKE,
     httpCred: n => fakeOf(n, 'http', httpEnv.get(n) ?? n.toUpperCase().replace(/\W/g, '_')),
     botCred: n => fakeOf(n, 'telegram-bot', botEnv.get(n) ?? n),
     notifyOwner: (_c, text) => notices.push(text),

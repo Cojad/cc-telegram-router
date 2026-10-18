@@ -9,6 +9,10 @@
 // own source files are not on disk (/$bunfs/root); the action runs, the fake
 // service gets its calls, the run is recorded. 2.17.0 failed exactly here in
 // production while the tests run from source passed. Also router/selfpath.ts.
+// The bot has its own apiRoot, a fake self-hosted server in --local mode
+// (docs/operations.md 「自架 Bot API server」): the config's apiRoot is never
+// reached, and download_attachment reads the absolute path getFile gives
+// from disk (from source in e2e-localapi.test.ts).
 
 import { test, expect, beforeAll, afterAll } from 'bun:test'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'fs'
@@ -26,17 +30,28 @@ const dir = mkdtempSync(join(tmpdir(), 'cctr-compiled-'))
 const state = join(dir, '.router')
 const now = Math.floor(Date.now() / 1000)
 const updates: unknown[] = []
+// the server's --dir, outside the router's home
+const serverDir = mkdtempSync(join(tmpdir(), 'cctr-compiled-tgserver-'))
+mkdirSync(join(serverDir, '123:test', 'documents'), { recursive: true })
+writeFileSync(join(serverDir, '123:test', 'documents', 'file_7.pdf'), '%PDF compiled')
+const fileHits: string[] = []
 const api = Bun.serve({
   port: 0,
   async fetch(req) {
-    const method = new URL(req.url).pathname.split('/').pop()!
+    const url = new URL(req.url)
+    if (url.pathname.startsWith('/file/')) { fileHits.push(url.pathname); return new Response('Not Found', { status: 404 }) }
+    const method = url.pathname.split('/').pop()!
     const ok = (result: unknown) => Response.json({ ok: true, result })
+    if (method === 'getFile') return ok({ file_id: 'PDF', file_unique_id: 'uPDF', file_path: join(serverDir, '123:test', 'documents', 'file_7.pdf') })
     if (method === 'getMe') return ok({ id: 123, is_bot: true, first_name: 'cc', username: 'cc_bot' })
     if (method === 'getUpdates') { await sleep(100); return ok(updates.splice(0)) }
     if (method === 'sendMessage') return ok({ message_id: 900, date: now, chat: { id: 555 }, text: '' })
     return ok(true)
   },
 })
+// the config's apiRoot: a bot with its own never goes here
+const unused: string[] = []
+const globalApi = Bun.serve({ port: 0, fetch(req) { unused.push(new URL(req.url).pathname); return Response.json({ ok: false, error_code: 404, description: 'Not Found' }) } })
 let router: ReturnType<typeof Bun.spawn> | null = null
 let stderr = ''
 
@@ -55,7 +70,7 @@ beforeAll(async () => {
   const fakeClaude = join(dir, 'fake-claude')
   writeFileSync(fakeClaude, `#!/bin/bash\ncase "$*" in *agents*) echo '[]' ;; *--bg*) echo "backgrounded · abcd1234 · tg-x (idle)" ;; esac\n`)
   chmodSync(fakeClaude, 0o755)
-  writeFileSync(join(state, 'config.json'), JSON.stringify({ bots: [{ name: 'cc', token: '123:test' }], home: dir, stateDir: state, owners: ['555'], claudeBin: fakeClaude, apiRoot: `http://127.0.0.1:${api.port}` }), { mode: 0o600 })
+  writeFileSync(join(state, 'config.json'), JSON.stringify({ bots: [{ name: 'cc', token: '123:test', apiRoot: `http://127.0.0.1:${api.port}`, localFilesDir: serverDir }], home: dir, stateDir: state, owners: ['555'], claudeBin: fakeClaude, apiRoot: `http://127.0.0.1:${globalApi.port}` }), { mode: 0o600 })
   writeFileSync(join(state, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: ['555'], groups: {}, pending: {} }))
   // as deploy/cc-telegram-router.service starts it
   const home = process.env.HOME!
@@ -67,7 +82,9 @@ afterAll(async () => {
   router?.kill('SIGTERM')
   await router?.exited
   api.stop(true)
+  globalApi.stop(true)
   rmSync(dir, { recursive: true, force: true })
+  rmSync(serverDir, { recursive: true, force: true })
 })
 
 test('router/selfpath.ts: compiled, the fake service is the router itself with a subcommand; from source, bun and the script; arguments past the virtual entry point', () => {
@@ -78,7 +95,7 @@ test('router/selfpath.ts: compiled, the fake service is the router itself with a
   expect(ownArgs(['bun', '/$bunfs/root/cc-telegram-router', 'skilltry-fake', 'log'])).toEqual(['skilltry-fake', 'log'])
 })
 
-test('the compiled router, started as the systemd unit starts it, runs skill_try on the guide\'s example for an owner conversation', async () => {
+test('the compiled router, started as the systemd unit starts it, runs skill_try on the guide\'s example for an owner conversation; the bot\'s own --local Bot API server: download_attachment from disk', async () => {
   updates.push({ update_id: 1, message: { message_id: 1, date: now, chat: { id: 555, type: 'private' }, from: { id: 555, is_bot: false, first_name: 'Boss' }, text: '嗨' } })
   await until(() => q("SELECT key FROM conversations WHERE key = 'dm-555'")[0])
   const folder = join(dir, 'bot123', 'dm-555')
@@ -93,5 +110,11 @@ test('the compiled router, started as the systemd unit starts it, runs skill_try
   expect(text).toMatch(/- POST \/bot<已遮蔽>\/sendMessage/)
   expect(text).not.toContain('讀不到')
   expect(q("SELECT status FROM skill_runs WHERE conv = 'try:dm-555'").map(x => x.status)).toEqual(['ok'])
+  // --local: the attachment comes from the server's disk, not over /file
+  const dl = await plugin.call('download_attachment', { file_id: 'PDF' })
+  expect(dl.isError, dl.content[0]!.text).toBeFalsy()
+  expect(readFileSync(dl.content[0]!.text, 'utf8')).toBe('%PDF compiled')
+  expect(fileHits).toEqual([])
+  expect(unused).toEqual([])
   plugin.close()
 }, 120_000)

@@ -41,6 +41,7 @@
 - **skill_check 與 skill_try**: worker 不用讀 router 原始碼就能寫特權技能; `skill_check` 檢查草稿並列出核准時會看到的內容, power 以上用 `skill_try` 以假憑證與試跑資料庫不經核准跑一次.
 - **試跑沙箱的網路隔離**: 試跑連得到外網, 連不到主機本機, 內網, 雲端 metadata 與主機上的 unix socket (例如 docker.sock, 其他 session 的 socket).
 - **附件用 caption 與相簿**: reply 帶檔案時文字成為第一個檔的 caption, 多個檔送成相簿, 文字超過 caption 上限才先送完整文字.
+- **自架 Bot API server**: 每隻 bot 可以各自設 `apiRoot` 走自架的 telegram-bot-api; `--local` 模式的附件由 router 從磁碟讀, 上傳上限 2000 MB.
 - **時間一律 GMT+8**: log, 通知, 報表與 worker 收到的訊息時間都是 GMT+8.
 
 ## Requirements
@@ -112,11 +113,14 @@
    { "dmPolicy": "pairing", "allowFrom": [], "groups": {}, "pending": {} }
    ```
 
+   bot 走自架的 Bot API server (telegram-bot-api) 時, 在那隻 bot 加上 `"apiRoot": "http://127.0.0.1:8081"` (換成 server 的網址; 全部 bot 都走它時改寫在最外層的 `apiRoot`), server 以 `--local` 啟動時可再加 `"localFilesDir": "<server 的 --dir>"`; router 要跟 `--local` 的 server 在同一台, 而且讀得到它的檔案, 上傳上限變成 2000 MB. 見 [部署與維運: 自架 Bot API server](docs/operations.md#自架-bot-api-server).
+
    `sandboxDenyRead` 是 sandbox 額外要隱藏的路徑, 例如同一台機器上其他專案所在的目錄. 完整欄位 (含沒寫在範例裡的 `apiRoot`, `secretKey`, `classifier`, `receiveReact`, `reactFlushMs` 等) 見 [部署與維運: 設定欄位](docs/operations.md#設定欄位).
 3. 寫入位置檔, 讓 worker 的 plugin 與 hook 找得到 router: `<home>/.router/cc-telegram-router register` (寫 `~/.config/cc-telegram-router/router.json`; 有 config.json 時 `deploy/install.sh router` 也會做, 之後再跑 `deploy/install.sh` 就不必指定 `CC_ROUTER_STATE`).
 4. 共用規則從範例開始: `cp templates/CLAUDE.md.example <home>/CLAUDE.md`.
-5. 開 linger, 讓 router 在登出後繼續執行, 開機自動啟動: `sudo loginctl enable-linger <使用者>`, 用 `loginctl show-user <使用者> -p Linger` 確認是 `Linger=yes` (見 [部署與維運](docs/operations.md#登出後繼續執行-linger)). 然後啟動: `systemctl --user enable --now cc-telegram-router`.
-6. 認領 owner: `owners` 留空時, router log 會印出一次性認領碼, 私訊 bot `/start <碼>` 的人成為 owner. 接著 bot 會訪談人設, 並引導設定審核群組 (可以略過).
+5. 第一次要在 `<home>` 互動執行一次 `claude` (`cd <home> && claude`), 在資料夾信任確認框選接受後離開. router 以 `claude --bg` 在每個對話資料夾啟動 worker, 背景 session 要求資料夾已被信任; 依 Claude Code 官方文件, 不在 git repo 裡時信任涵蓋 `<home>` 底下所有子資料夾, 之後的對話資料夾都繼承, 不用個別信任. `<home>` 不要是使用者的家目錄 (那裡的信任不會存下來). 細節與例外見 [部署與維運: 資料夾信任](docs/operations.md#資料夾信任).
+6. 開 linger, 讓 router 在登出後繼續執行, 開機自動啟動: `sudo loginctl enable-linger <使用者>`, 用 `loginctl show-user <使用者> -p Linger` 確認是 `Linger=yes` (見 [部署與維運](docs/operations.md#登出後繼續執行-linger)). 然後啟動: `systemctl --user enable --now cc-telegram-router`.
+7. 認領 owner: `owners` 留空時, router log 會印出一次性認領碼, 私訊 bot `/start <碼>` 的人成為 owner. 接著 bot 會訪談人設, 並引導設定審核群組 (可以略過).
 
 各欄位與初次設定的細節見 [部署與維運](docs/operations.md).
 
