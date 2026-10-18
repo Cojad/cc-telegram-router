@@ -6,6 +6,7 @@
 
 import type { Config } from './config'
 import type { Conversation, RouterDb } from './db'
+import { sameFlags, flagDiff, recordedFlags } from './jobs'
 
 export type RunResult = { code: number; stdout: string; stderr: string }
 export type Runner = (args: string[], cwd: string) => Promise<RunResult>
@@ -26,6 +27,8 @@ export interface SupervisorDeps {
   connectTimeoutMs?: number
   /** The worker did not connect in time (an important notice for the owner). */
   onWakeFail?: (c: Conversation) => void
+  /** The flags a daemon job was started with (its state.json respawnFlags, router/jobs.ts); null when unreadable. */
+  jobFlags?: (jobId: string) => string[] | null
 }
 
 export const CHANNEL = 'plugin:telegram@claude-plugins-official'
@@ -73,28 +76,43 @@ export function createSupervisor(deps: SupervisorDeps) {
 
   async function start(c: Conversation, agents: AgentEntry[]): Promise<void> {
     const settings = settingsPath(c)
+    const wanted = workerArgs(cfg, c, settings)
     if (c.session_id) {
       // While the daemon still has the job, resume without flags: it keeps
       // the options it was created with (--settings path included, so
       // regenerated settings apply), and passing flags would start a copy
       // under a new session id. Once the job is gone (claude rm, pruned),
       // nothing is saved any more and the flags must be given again.
-      const hasJob = agents.some(a => a.sessionId === c.session_id)
+      let job = agents.find(a => a.sessionId === c.session_id)
+      // Saved flags that are not what the router gives now (config model,
+      // channel, settings path...): remove the job so the new ones apply.
+      const saved = job ? (deps.jobFlags?.(job.id) ?? recordedFlags(c)) : null
+      if (job && saved && !sameFlags(saved, wanted)) {
+        log(`${c.key}: job ${job.id} was started with other flags (${flagDiff(saved, wanted)}); removing it to resume with the new ones`)
+        if (isRunning(job)) await run([cfg.claudeBin, 'stop', job.id], cfg.home)
+        const rm = await run([cfg.claudeBin, 'rm', job.id], cfg.home)
+        if (rm.code === 0) job = undefined
+        else log(`${c.key}: claude rm ${job.id} failed, resuming with its saved flags: ${rm.stderr || rm.stdout}`)
+      }
+      const hasJob = !!job
       log(`resume ${c.key} ${c.session_id}${hasJob ? '' : ' (job gone, with flags)'}`)
       deps.onStart?.(c, true)
-      const args = [cfg.claudeBin, '--bg', '--resume', c.session_id, ...(hasJob ? [] : workerArgs(cfg, c, settings))]
+      const args = [cfg.claudeBin, '--bg', '--resume', c.session_id, ...(hasJob ? [] : wanted)]
       const r = await run(args, c.folder)
       if (r.code !== 0) log(`resume ${c.key} failed: ${r.stderr || r.stdout}`)
+      else if (!hasJob) db.setWorkerFlags(c.key, wanted)
+      else if (saved) db.setWorkerFlags(c.key, saved)
       return
     }
     log(`spawn ${c.key}`)
     deps.onStart?.(c, false)
-    const r = await run([cfg.claudeBin, '--bg', ...workerArgs(cfg, c, settings), '--', initPrompt(c)], c.folder)
+    const r = await run([cfg.claudeBin, '--bg', ...wanted, '--', initPrompt(c)], c.folder)
     const short = parseShortId(r.stdout)
     if (!short) { log(`spawn ${c.key} failed: ${r.stderr || r.stdout}`); return }
     const entry = (await listAgents()).find(a => a.id === short)
     if (entry?.sessionId) {
       db.setSession(c.key, entry.sessionId)
+      db.setWorkerFlags(c.key, wanted)
       c.session_id = entry.sessionId
     }
   }

@@ -808,7 +808,12 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       // an owner is owner in their DMs: the DMs of those added or removed change role
       const dms = key === 'owners' ? dmsFollow(db.syncDmRoles().map(x => x.conv)) : ''
       const allowed = key === 'owners' ? ownersAllowed(value as string[]) : ''
-      return done(`${key}: ${JSON.stringify(cur)} → ${JSON.stringify(value)}${allowed}${dms}`)
+      // a worker keeps the model its daemon job was started with: those on the default model
+      // rotate once idle, and the next wake removes the job and starts it with the new flags (router/jobs.ts)
+      const onDefault = key === 'model' && value !== cur ? db.listConversations().filter(c => !c.model && c.session_id) : []
+      for (const c of onDefault) db.setRotate(c.key, true)
+      const moved = onDefault.length ? `; 用預設模型的 ${onDefault.length} 個對話閒置時換成新模型 (${onDefault.map(c => c.key).join(', ')})` : ''
+      return done(`${key}: ${JSON.stringify(cur)} → ${JSON.stringify(value)}${allowed}${dms}${moved}`, onDefault.length ? { after: () => deps.sessions.rotateNow() } : {})
     }
 
     case 'log': {

@@ -31,6 +31,8 @@ export type Conversation = {
   rotate_pending?: number
   /** Which message reactions reach the worker (router/reactions.ts); null = config receiveReact. */
   react?: string | null
+  /** JSON of the flags the worker's daemon job was last started with (router/jobs.ts): what to compare with when its state.json cannot be read. */
+  worker_flags?: string | null
 }
 
 /** Everyone the bot has seen (plan 03 資料表 people). */
@@ -194,6 +196,8 @@ export interface RouterDb {
   findConversation(bot: string, chat_id: string): Conversation | null
   insertConversation(c: Conversation): void
   setSession(key: string, session_id: string | null): void
+  /** The flags the worker's job was started with (router/jobs.ts); null forgets them. */
+  setWorkerFlags(key: string, flags: string[] | null): void
   /** The conversation moved to another folder (bot folders); bumps ctx_v. */
   setFolder(key: string, folder: string): Conversation
   /** Update some conversation fields; bumps ctx_v. Returns the new row.
@@ -492,7 +496,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   if (!evCols.has('masked')) db.exec('ALTER TABLE events ADD COLUMN masked INTEGER NOT NULL DEFAULT 0')
   const useCols = new Set((db.query('PRAGMA table_info(auth_uses)').all() as Array<{ name: string }>).map(c => c.name))
   for (const [n, t] of [['bot', 'TEXT'], ['chat_id', 'TEXT'], ['message_id', 'INTEGER']]) if (!useCols.has(n!)) db.exec(`ALTER TABLE auth_uses ADD COLUMN ${n} ${t}`)
-  for (const [name, type] of [['title', 'TEXT'], ['compact', 'INTEGER'], ['model', 'TEXT'], ['ctx_v', 'INTEGER NOT NULL DEFAULT 1'], ['last_seen', 'TEXT'], ['rotate_pending', 'INTEGER NOT NULL DEFAULT 0'], ['react', 'TEXT']]) {
+  for (const [name, type] of [['title', 'TEXT'], ['compact', 'INTEGER'], ['model', 'TEXT'], ['ctx_v', 'INTEGER NOT NULL DEFAULT 1'], ['last_seen', 'TEXT'], ['rotate_pending', 'INTEGER NOT NULL DEFAULT 0'], ['react', 'TEXT'], ['worker_flags', 'TEXT']]) {
     if (!cols.has(name)) db.exec(`ALTER TABLE conversations ADD COLUMN ${name} ${type}`)
   }
 
@@ -642,6 +646,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
     findConversation: (bot, chat_id) => conv((qFind.get(bot, chat_id) as Conversation | null) ?? null),
     insertConversation: c => { qIns.run(c.key, c.bot, c.chat_id, c.type, c.folder, c.type === 'dm' ? userRole(c.chat_id) : c.role, c.session_id, c.created_at, c.title ?? null) },
     setSession: (key, sid) => { qSess.run(sid, key) },
+    setWorkerFlags: (key, flags) => { db.prepare('UPDATE conversations SET worker_flags = ? WHERE key = ?').run(flags ? JSON.stringify(flags) : null, key) },
     setFolder: (key, folder) => { db.prepare('UPDATE conversations SET folder = ?, ctx_v = ctx_v + 1 WHERE key = ?').run(folder, key); return get(key)! },
     updateConversation(key, fields) {
       if ('role' in fields && get(key)?.type === 'dm') throw new Error(`${key}: a DM's role is its user's role (setUserRole)`)

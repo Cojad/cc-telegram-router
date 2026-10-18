@@ -8,7 +8,7 @@ Telegram 對話分流: 一隻 router 接 bot 的所有訊息, 每個 Telegram �
 
 | 目錄 | 內容 |
 |---|---|
-| `router/` | router 本體. `main.ts` 組裝; `config.ts` `lock.ts` `db.ts` `conversations.ts` `settings.ts` `supervisor.ts` `ipc.ts` `guard.ts` `commands.ts` `context.ts` `progress.ts` `relay.ts` `rotate.ts`; `reactions.ts` 表情回應的篩選與累積; `detect.ts` `rawvault.ts` 原始事件與密鑰保護; `pluginguard.ts` 檢查官方 plugin 快取是否還是部署的 plugin v2 (見[部署與維運](operations.md#官方-plugin-的自動更新與快取檢查)) |
+| `router/` | router 本體. `main.ts` 組裝; `config.ts` `lock.ts` `db.ts` `conversations.ts` `settings.ts` `supervisor.ts` `ipc.ts` `guard.ts` `commands.ts` `context.ts` `progress.ts` `relay.ts` `rotate.ts`; `reactions.ts` 表情回應的篩選與累積; `detect.ts` `rawvault.ts` 原始事件與密鑰保護; `pluginguard.ts` 檢查官方 plugin 快取是否還是部署的 plugin v2 (見[部署與維運](operations.md#官方-plugin-的自動更新與快取檢查)); `jobs.ts` worker 的 daemon job (旗標比對, 清理多餘的 job) 與 daemon 程序檢查 (見[部署與維運](operations.md#背景-session-的-job-與-daemon)) |
 | `router/` (權限) | `permcheck.ts` 依角色檢查工具呼叫; `elevation.ts` 擋下, 提權詢問, 提權紀錄; `grants.ts` 跨對話傳訊申請; `pkgreview.ts` `packages.ts` 套件安裝審核; `classifier.ts` 工具呼叫分類器 (第一階段, 只記錄); `approvals.ts` 審核群組與通知, 三選一按鈕; `authz.ts` 已核准授權的撤銷與使用紀錄; `credentials.ts` 跨 bot 技能的憑證; `skills.ts` 技能安裝範圍; `setup.ts` 新 bot 初次設定 |
 | `router/telegram/` | 收發 Telegram 的模組 (沿用 v1 plugin): `transport.ts` `inbound.ts` `policy.ts` `outbound.ts` `store.ts` `format.ts` `rich.ts` |
 | `plugin/` | worker 載入的 Telegram plugin v2 (消費者模式): 不持有 token, 透過 unix socket 跟 router 收發. `skills/doc` (/telegram:doc 使用說明), `skills/format` (/telegram:format 排版規則), `skills/bot-skill` (/telegram:bot-skill 建立技能與憑證的 SOP) |

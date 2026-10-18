@@ -23,6 +23,7 @@ import { openRouterDb, type Conversation, type ConvSecret } from './db'
 import { ensureConversation, ensureBotDir, botDir, convFolder, migrateConversation, findByFolder, projectStore } from './conversations'
 import { writeSessionSettings, renderSettings, applyOverrides } from './settings'
 import { createSupervisor, bunRunner } from './supervisor'
+import { jobsDir, readJob, listJobs, strayJobs, readProcs, daemonReport, reportNotices } from './jobs'
 import { createIpc, type Peer } from './ipc'
 import { makeAssertAllowedChat, makeAssertSendable } from './guard'
 import { buildContext, renderContext, renderLogs, writeContextFile, maskTokens, gmt8 } from './context'
@@ -641,7 +642,34 @@ const supervisor = createSupervisor({
     } catch (e) { log(`${c.key}: freshness check failed: ${e}`) }
   },
   onWakeFail: c => void postNotice(approvalDeps, c.bot, `⚠️ ${c.key}${c.title ? ` (${c.title})` : ''} 的 worker 叫不醒, 訊息還在佇列裡. 可試 /router session restart ${c.chat_id}`),
+  // the flags the daemon saved for the job: when they are not the router's now, the job is removed first
+  jobFlags: id => readJob(JOBS_DIR, id)?.respawnFlags ?? null,
 })
+
+// Daemon jobs and processes (router/jobs.ts): jobs of our conversations that
+// are not their current session are removed; a daemon started elsewhere and
+// spares without a daemon are told to the owner (once each). At startup and every 10 minutes.
+const JOBS_DIR = jobsDir()
+const toldDaemon = new Set<string>()
+async function jobSweep(): Promise<void> {
+  const agents = await supervisor.listAgents()
+  for (const s of strayJobs({ agents, jobs: listJobs(JOBS_DIR), convs: db.listConversations() })) {
+    log(`job ${s.id} of ${s.key} is not its current session (${s.sessionId ?? '?'}${s.running ? ', running' : ''}), removing it`)
+    if (s.running) await bunRunner([cfg.claudeBin, 'stop', s.id], cfg.home)
+    const r = await bunRunner([cfg.claudeBin, 'rm', s.id], cfg.home)
+    if (r.code !== 0) log(`claude rm ${s.id}: ${(r.stderr || r.stdout).trim()}`)
+  }
+  let claudeDir: string | undefined
+  try { claudeDir = dirname(realpathSync(Bun.which(cfg.claudeBin) ?? cfg.claudeBin)) } catch { return }
+  for (const t of reportNotices(daemonReport(readProcs(), [cfg.home, cfg.stateDir], claudeDir))) {
+    if (toldDaemon.has(t)) continue
+    toldDaemon.add(t)
+    log(t.split('\n')[0]!)
+    void noticeEveryBot(t).catch(e => log(`daemon notice: ${e}`))
+  }
+}
+setTimeout(() => void jobSweep().catch(e => log(`job sweep: ${e}`)), 5_000).unref()
+setInterval(() => void jobSweep().catch(e => log(`job sweep: ${e}`)), 600_000).unref()
 
 /** Put a router-originated message in front of a conversation's worker. */
 /** The Telegram message each conversation is handling (set as messages are delivered). */

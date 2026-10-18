@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+## [2.26.0] - 2026-10-18
+
+### Fixed
+
+- 改了 config 的 `model` (或其他會改變 worker 啟動旗標的設定) 後, 被叫醒的 worker 仍用舊模型: daemon 把 job 啟動時的旗標存在 `~/.claude/jobs/<id>/state.json` 的 `respawnFlags`, 不帶旗標的 resume 會沿用它. 現在叫醒時拿它 (讀不到時用 router.db 新欄位 `conversations.worker_flags` 的紀錄) 跟這次要給的旗標比對 (不看順序), 不同就先 stop (還在跑時) 再 `claude rm`, 然後帶新旗標 resume 同一個 session (`router/jobs.ts`, `router/supervisor.ts`). `/router config set model` 會把用預設模型的對話標記待輪替. 見 [docs/operations.md](docs/operations.md#背景-session-的-job-與-daemon).
+
+### Added
+
+- 清理多餘的 job: 啟動後 5 秒與每 10 分鐘, router 自己對話 (`tg-<對話>`, 工作目錄是那個對話的資料夾) 但不是目前 session 的 job, 在跑的先 stop, 再 `claude rm`; 其他 job 不碰.
+- daemon 程序的唯讀檢查: daemon 不是由 router 帶起 (GitHub #98872, worker 的環境來自 daemon) 或有沒有 daemon 在管的暖機 spare 時, 通知 owner 一次 (不自動重啟或結束任何程序). operations.md 說明 spare 的行為與累積原因, 以及評估過但不採用的「router 先帶起 daemon」.
+- 測試: 新增 `router/test/jobs.test.ts` (含上一版結構且有資料的 router.db 升級) 與 `router/test/e2e-jobs.test.ts` (假 claude 與假 jobs 資料夾, 用上一版的 router.db 啟動真的 router).
+
 ## [2.25.0] - 2026-10-18
 
 ### Changed
