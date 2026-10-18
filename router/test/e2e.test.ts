@@ -35,7 +35,11 @@ const api = Bun.serve({
     const parts = new URL(req.url).pathname.split('/')
     const method = parts.pop()!
     const token = parts.pop()!.replace(/^bot/, '')
-    const body = req.headers.get('content-type')?.includes('json') ? await req.json() : {}
+    const type = req.headers.get('content-type') ?? ''
+    // multipart (a file upload): the form fields, an uploaded part as { file, size }, media parsed
+    const body = type.includes('json') ? await req.json()
+      : type.includes('multipart') ? Object.fromEntries([...(await req.formData()).entries()].map(([k, v]) => [k, typeof v === 'string' ? (k === 'media' ? JSON.parse(v) : v) : { file: v.name, size: v.size }]))
+      : {}
     calls.push({ method, body, token })
     const ok = (result: unknown) => Response.json({ ok: true, result })
     // a bot whose token dies right after bot add checked it: its poller gets 401
@@ -62,6 +66,8 @@ const api = Bun.serve({
         // the first reply to /router help hits a Telegram 502 (the router tries again)
         if (String(body.text).startsWith('/router status\n') && !helpFailed) { helpFailed = true; return Response.json({ ok: false, error_code: 502, description: 'Bad Gateway' }) }
         return ok({ message_id: 900 + calls.length, date: now, chat: { id: Number(body.chat_id) }, text: body.text })
+      case 'sendPhoto': case 'sendDocument': return ok({ message_id: 900 + calls.length, date: now, chat: { id: Number(body.chat_id) }, caption: body.caption })
+      case 'sendMediaGroup': return ok((body.media as unknown[]).map((_, i) => ({ message_id: 1900 + calls.length * 10 + i, date: now, chat: { id: Number(body.chat_id) } })))
       case 'deleteMessage':
         // like Telegram: the bot is not an admin in groups, so it cannot delete others' messages there
         if (String(body.chat_id).startsWith('-')) return Response.json({ ok: false, error_code: 400, description: "Bad Request: message can't be deleted" })
@@ -184,6 +190,36 @@ test('a plugin for the conversation gets the queued message, and its reply goes 
   await until(() => q("SELECT count(*) n FROM queue WHERE status != 'acked'")[0].n === 0)
   client.close(); g.close()
   expect(q("SELECT count(*) n FROM outbound WHERE method = 'getUpdates'")[0].n).toBe(0)
+}, 15000)
+
+test('a reply with files goes through the router as one message: the text as the caption, several photos as one album, logged', async () => {
+  const folder = join(dir, 'bot123', 'dm-111')
+  for (const n of ['shot1.png', 'shot2.jpg']) writeFileSync(join(folder, n), `image ${n}`)
+  const client = connectRouter({
+    socketPath: join(state, 'router.sock'),
+    hello: { t: 'hello', project_dir: folder, pid: 1 },
+    onMessage(m) { if (m.t === 'deliver') client.send({ t: 'ack', qid: m.qid }) },
+  })
+  await until(() => client.state().kind === 'ready')
+  const one = await client.call('reply', { chat_id: '111', text: '單張截圖', files: [join(folder, 'shot1.png')] })
+  expect(one.isError).toBeFalsy()
+  expect(one.content[0].text).toMatch(/^sent 1 message \(id: \d+\): 1 photo with the text as the caption$/)
+  const photo = calls.filter(c => c.method === 'sendPhoto').at(-1)!
+  expect(photo.body).toMatchObject({ chat_id: '111', caption: '單張截圖' })
+  expect(calls.some(c => c.method === 'sendMessage' && c.body.text === '單張截圖')).toBe(false)
+  const two = await client.call('reply', { chat_id: '111', text: '*兩張*', format: 'markdownv2', files: [join(folder, 'shot1.png'), join(folder, 'shot2.jpg')] })
+  expect(two.isError).toBeFalsy()
+  expect(two.content[0].text).toContain('sent 2 messages')
+  const album = calls.filter(c => c.method === 'sendMediaGroup').at(-1)!
+  expect(album.body.media.map((m: any) => [m.type, m.caption, m.parse_mode])).toEqual([['photo', '*兩張*', 'MarkdownV2'], ['photo', undefined, undefined]])
+  expect(album.body.media.map((m: any) => album.body[String(m.media).replace('attach://', '')]?.file)).toEqual(['shot1.png', 'shot2.jpg'])
+  // the outbound log has the album call, the message record has each message
+  const out = await until(() => q("SELECT conv, error FROM outbound WHERE method = 'sendMediaGroup'")[0])
+  expect(out).toEqual({ conv: 'dm-111', error: null })
+  const ids = two.content[0].text.match(/ids: ([\d, ]+)\)/)![1].split(', ')
+  expect(q(`SELECT content FROM messages WHERE chat_id = '111' AND message_id IN (${ids.map((i: string) => `'${i}'`).join(',')}) ORDER BY message_id`).map(r => r.content))
+    .toEqual([`(photo: ${join(folder, 'shot1.png')})\n*兩張*`, `(photo: ${join(folder, 'shot2.jpg')})`])
+  client.close()
 }, 15000)
 
 test('a group worker answers the asker in their DM (reply on_behalf_of their group message): no grant, the DM says which group; anyone else is refused', async () => {

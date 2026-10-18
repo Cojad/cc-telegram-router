@@ -57,7 +57,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `skills` | 憑證與特權技能 | phase3-cred, phase3-privskill, skillstore, skillcli, skillcheck, cred-http, cred-flows, e2e-creds | `router/` 的 credentials, skills, privskill, skillstore, skillrefresh, skillrun, skillcli, skillcheck, rawvault; `plugin/skills/bot-skill/**` |
 | `sandbox` | 沙箱與安裝位置 | portability | `shared/locate.ts`, `deploy/**`, `router/` 的 settings, privskill, cli; `plugin/server.ts`, `templates/roles/**` |
 | `secrets` | 密鑰保護 | secrets, e2e-secrets, rawvault, e2e-rawvault | `router/` 的 secrets, rawvault, detect, rotate, credentials, setup; `shared/tools.ts` |
-| `telegram` | Telegram 收發與訊息紀錄 | format, inbound, outbound, policy, rich, store, poller, phase4, channel, e2e-channel | `router/telegram/**`, `router/` 的 poller, pollnotice, sendretry, importv1, setup; `plugin/skills/doc/**`, `plugin/skills/format/**`, `templates/CLAUDE.md.example`, `shared/tools.ts` |
+| `telegram` | Telegram 收發與訊息紀錄 | format, inbound, outbound, reply-files, policy, rich, store, poller, phase4, channel, e2e-channel | `router/telegram/**`, `router/` 的 poller, pollnotice, sendretry, importv1, setup; `plugin/skills/doc/**`, `plugin/skills/format/**`, `templates/CLAUDE.md.example`, `shared/tools.ts` |
 | `reactions` | 表情回應 | reactions, e2e-reactions | `router/reactions.ts`, `router/telegram/transport.ts`, `router/telegram/inbound.ts` |
 | `classifier` | 工具呼叫分類器 | classifier, e2e-classifier, e2e-classifier-off | `router/classifier.ts` |
 | `core` | 對話生命週期與指令 | phase1, phase2, e2e, e2e-wake, e2e-setup | `router/` 的 supervisor, lock, conversations, context, progress, relay, freshness, rotate, setup, cli, guard, settings; `plugin/server.ts`, `plugin/skills/**`, `shared/time.ts`, `templates/**` |
@@ -86,7 +86,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/areas.test.ts` | [測試分區](#測試分區)的對照檔 `router/test/areas.ts`: 每支測試檔至少屬於一區, 列出的測試檔都存在, 區名不重複, 路徑 glob 都對得到檔, 「各區」與「std 套組」兩張表與對照檔一致; 本表有每支測試檔的一列 |
 | `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor (含 resume 後的說明更新提醒 freshness), plugin MCP, router 離線告知 |
 | `router/test/phase2.test.ts` | 規劃 03 的 /router 指令表與拒絕訊息 (含 chat_id 跨 bot 指定, --bot, 對話 key), 06 chat_context, router_log, hook, 「cc /」代打, 即時進度訊息, bot list 與 status 對資訊還沒取得的 bot 顯示讀取中, GMT+8 時間格式 (`iso8`, log 行) |
-| `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, 群組回到提問者的私訊 (on_behalf_of), /router 指令不轉給 worker, CLI, bot add 後立刻 bot list 就有新 bot 的資訊, log 行與 worker 收到的訊息時間是 GMT+8 |
+| `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, 帶附件的回覆 (文字當 caption 只送一則, 多張照片成一個相簿, outbound 與訊息紀錄), 群組回到提問者的私訊 (on_behalf_of), /router 指令不轉給 worker, CLI, bot add 後立刻 bot list 就有新 bot 的資訊, log 行與 worker 收到的訊息時間是 GMT+8 |
 | `router/test/phase3.test.ts` | 規劃 03, 07: 角色範本, /router perm, 權限檢查, 跨對話傳訊申請, 審核頻道, 提權 (詢問, 核准, 逾時, 主動申請, 紀錄), hook, bot 資料夾與搬遷 |
 | `router/test/phase3-cred.test.ts` | 憑證的角色與方法限制, Bot API 呼叫 (含上傳), install_skill 的來源, 範圍與檢查, /router cred 與 botapi |
 | `router/test/cred-http.test.ts` | [http 憑證的 key 放哪裡](credentials-and-skills.md#http-憑證的-key-放哪裡)與 [/router help 主題](operations.md#router-help-主題): help 主題的內容, 沒帶 --http 又不像 bot token 時不呼叫 getMe 並提示 (`/router cred add` 與 `/secret set`), `--header` `--scheme` `--query` 在 `/router cred add`, `cred-import`, `/secret set` 三處一致, 沒寫路徑就是全部, 清單顯示 (全部, 空路徑, 空角色), http_api 額外標頭的放行與擋下, 本機假 HTTP 伺服器確認 key 只出現在指定位置 |
@@ -110,6 +110,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/store.test.ts`, `router/test/inbound.test.ts` | [訊息紀錄](architecture.md#訊息紀錄): 每隻 bot 各自一份 (私訊撞號, 同群組同一則), 舊紀錄分配 bot 一次 (對話, events, outbound, 時間, legacy), legacy 列用時間重新判斷一次, 重複丟掉時寫 log, 引用不跨 bot |
 | `router/test/policy.test.ts` | [運作方式](architecture.md#運作方式)的 gate: mention 判斷 (中文觸發詞不用 `\b` 的回歸測試, ASCII 的 `\b` 邊界, rich_message 裡的觸發詞, 回覆 bot 算 mention), 私訊的允許清單與配對碼 (同一個配對碼最多回兩次), 群組的設定, 成員清單與 requireMention |
 | `router/test/outbound.test.ts` | [訊息紀錄](architecture.md#訊息紀錄)的送出端: reply 與 send_sticker 以 Telegram 回傳的 id 記錄 (含 reply_to), edit_message 取代原本那筆, `lookup_message` 查單筆, 查無資料, 列最近訊息 (新的在前), 時間是 GMT+8; 不在允許清單的 chat 與 send_sticker 參數錯誤時拒絕 |
+| `router/test/reply-files.test.ts` | [回覆與附件](architecture.md#回覆與附件) (真的 grammY Bot + 本機假 Bot API, 檢查實際送出的方法與 multipart 欄位): 1 個檔時文字當 caption 只送一則 (sendPhoto, sendDocument), markdownv2 帶 parse_mode, reply_to 與 replyToMode off; caption 上限 1024 (剛好 1024, 1025, emoji 以 UTF-16 計, markdownv2 跳脫與標記不算, `markdownV2Visible`); 超過上限先送完整文字 (含超過 4096 切段) 再送不帶 caption 的檔案; Telegram 仍說 caption 太長時改用拆開的方式; markdownv2 被拒時回錯誤且沒送出任何訊息; 空文字只送檔案; 多個檔用 sendMediaGroup (caption 與 parse_mode 只在第一項, attach:// 對到檔案, 每則都記錄), 照片與文件分組, 各類依第一個檔的順序, 同類 1 個單獨送, 超過 10 個再分組; 沒有檔案時照舊; 工具說明與文件 |
 | `router/test/format.test.ts` | 長訊息切段 (`chunk`: 不超過上限, 優先在段落, 空白切開, 硬切不拆開 emoji 的 surrogate pair) 與訊息紀錄的單筆格式 (GMT+8, 固定兩行, 附件 file_id 不截斷, 沒送進 Claude 的標記, reply_to, rich_message 標記, 沒有訊息時的文字) |
 | `router/test/rich.test.ts` | Bot API Rich Message 區塊轉成文字: 段落與行內標記轉 Markdown, 編號清單, 核取方塊, 表格 (跳脫 `|`), 程式碼語言, 引言出處, details, 只有圖片或媒體時留下佔位文字 (保留說明文字), 不認得的區塊照樣顯示 |
 | `router/test/role-live.test.ts` | `LIVE=1` 才跑: 真的 claude 依各角色範本執行 (router 家目錄與 stateDir 都是臨時位置), 驗證 Claude Code 實際放行與擋下的事; 最後三條帶 user 對話的 hook, 驗證高風險工具真的觸發 PreToolUse 並被 router 擋下, owner 的一輪 ListAgents 自動提權放行, 傳給自己命名的 subagent 則放行; power 的 sandbox 看不到放在 home 與 stateDir 以外的 router socket |
@@ -375,3 +376,15 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | 訊息紀錄每隻 bot 各一份: 私訊撞號與同群組同一則都送進各自的對話, lookup 與引用不跨 bot, 舊紀錄分配一次, 重複丟掉有 log | store「two bots, same chat and message id…」「old rows get their bot once…」; inbound「two bots, one store…」; e2e「two bots in the same group…」 |
 | 舊對話資料夾與對話紀錄搬進 bot 資料夾, 之後從新位置 resume | phase3「bot folders…」 |
 | 一週內沒有掉訊息, 回錯對話或權限誤放 | 上線觀察: router.db 的 queue (未 ack), outbound 錯誤, elev_log |
+
+## 回覆與附件驗收對照
+
+| 驗收項目 | 測試 |
+|---|---|
+| 1 個附件且文字不超過 caption 上限: 一則訊息, 文字當 caption; 結果寫明送了幾則, 用了 caption | reply-files「one photo and a short text…」「one document with format markdownv2…」; e2e「a reply with files goes through the router…」 |
+| caption 上限依 Telegram 的算法: 1024, 以 UTF-16 計, markdownv2 以顯示的文字計 (跳脫與標記不算); 估算不準被 Telegram 拒時改用拆開的方式 | reply-files「the limit is 1024 as Telegram counts…」「markdownv2: escapes and markup do not count…」「markdownV2Visible: …」「Telegram finds the caption too long anyway…」 |
+| 文字超過上限: 先送完整文字 (原本的切段, format, reply_to), 再送不帶 caption 的檔案, 結果寫明原因 | reply-files「a text over the limit goes first…」「a text over 4096 is still split…」 |
+| 多個附件: sendMediaGroup, caption 放第一個; 照片與文件分組, 每組最多 10 個, 落單的單獨送 | reply-files「several photos: one sendMediaGroup…」「photos and documents never share an album…」「one of a kind is sent on its own…」; e2e「a reply with files goes through the router…」 |
+| markdownv2 的 caption 帶 parse_mode; 被拒時錯誤回 worker, 沒有送出半則 | reply-files「one document with format markdownv2…」「Telegram refuses the caption's MarkdownV2…」 |
+| reply_to, replyToMode, 長訊息切段, 沒有附件的回覆, 訊息紀錄照舊 | reply-files「the caption threads under reply_to…」「no files: the text goes as before…」; outbound 全部; e2e「a plugin for the conversation gets the queued message…」 |
+| 工具說明與文件描述相同的規則 | reply-files「the reply tool description and docs/architecture.md…」 |

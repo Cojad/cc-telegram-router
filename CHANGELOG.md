@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.16.0] - 2026-10-18
+
+### Changed
+
+- reply 帶附件時文字當成 caption 一起送, 不再拆成「一則文字 + 一則檔案」: 1 個檔且文字不超過 Telegram 的 caption 上限 (1024, 以 UTF-16 計, `markdownv2` 以顯示的文字計, 跳脫與標記不算) 時只送一則; 超過上限先送完整的文字 (照原本的切段與 `reply_to`) 再送不帶 caption 的檔案, Telegram 仍說 caption 太長時也改用這個方式. 多個檔用 sendMediaGroup 送成相簿, caption 放第一個: 照片與照片, 文件與文件各一組 (文件只能與文件同組), 各類依第一個檔的順序, 每組最多 10 個, 落單的單獨送. `markdownv2` 的 caption 帶 `parse_mode`. 空文字只送檔案. 回給 worker 的結果寫明送了幾則, 有沒有用 caption, 文字為什麼另外送. 見 [docs/architecture.md](docs/architecture.md#回覆與附件).
+
 ## [2.14.0] - 2026-10-18
 
 ### Added

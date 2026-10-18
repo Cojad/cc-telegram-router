@@ -43,6 +43,63 @@ export function chunk(text: string, limit: number, mode: 'length' | 'newline'): 
   return out
 }
 
+// Telegram's caption limit: "0-1024 characters after entities parsing"
+// (sendPhoto, sendDocument, InputMediaPhoto, InputMediaDocument), counted
+// like MessageEntity offsets, in UTF-16 code units (a JS string's length).
+export const CAPTION_LIMIT = 1024
+
+/** The text a MarkdownV2 string shows once Telegram parses it: escapes
+ *  undone, entity markers (* _ __ ~ || ` ```), link and custom-emoji URLs
+ *  and a quote's leading > dropped. An estimate for the caption limit (a
+ *  caption Telegram still finds too long is sent the long way, see the
+ *  reply tool); it does not check the markup is valid. */
+export function markdownV2Visible(s: string): string {
+  let out = ''
+  let lineStart = true
+  let i = 0
+  // `code` / ```pre```: only ` and \ are escaped inside
+  const readCode = (from: number, fence: string): number => {
+    let j = from
+    while (j < s.length && !s.startsWith(fence, j)) {
+      if (s[j] === '\\' && j + 1 < s.length) { out += s[j + 1]; j += 2; continue }
+      out += s[j++]
+    }
+    return j + fence.length
+  }
+  while (i < s.length) {
+    const c = s[i]!
+    if (c === '\\' && i + 1 < s.length && s.charCodeAt(i + 1) >= 1 && s.charCodeAt(i + 1) <= 126) {
+      out += s[i + 1]; i += 2; lineStart = false; continue
+    }
+    if (s.startsWith('```', i)) {
+      // the first line after ``` is the language (empty for none)
+      const nl = s.indexOf('\n', i + 3)
+      const close = s.indexOf('```', i + 3)
+      i = readCode(nl !== -1 && (close === -1 || nl < close) ? nl + 1 : i + 3, '```')
+      lineStart = false; continue
+    }
+    if (c === '`') { i = readCode(i + 1, '`'); lineStart = false; continue }
+    if (c === ']' && s[i + 1] === '(') {
+      // a link's or custom emoji's URL: only ) and \ are escaped inside
+      let j = i + 2
+      while (j < s.length && s[j] !== ')') j += s[j] === '\\' ? 2 : 1
+      i = j + 1; continue
+    }
+    if (c === '!' && s[i + 1] === '[') { i++; continue }
+    if (c === '[' || c === ']' || c === '*' || c === '_' || c === '~' || c === '|') { i++; continue }
+    if (c === '>' && lineStart) { i++; continue }
+    out += c
+    lineStart = c === '\n'
+    i++
+  }
+  return out
+}
+
+/** How long Telegram counts text as a caption in this reply format. */
+export function captionLength(text: string, format: string): number {
+  return (format === 'markdownv2' ? markdownV2Visible(text) : text).length
+}
+
 // GMT+8 (Asia/Taipei has no DST, so this is a fixed +8 year-round) —
 // lookup_message results go straight to a person eventually (relayed to
 // Telegram), and this plugin's ts is stored as UTC; showing raw UTC to a

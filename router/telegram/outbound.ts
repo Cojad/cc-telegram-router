@@ -8,7 +8,7 @@ import { InputFile, type Bot } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import { mkdirSync, statSync, writeFileSync } from 'fs'
 import { extname, join } from 'path'
-import { chunk, formatMessageRow, formatMessageRows } from './format'
+import { CAPTION_LIMIT, captionLength, chunk, formatMessageRow, formatMessageRows } from './format'
 import type { Access } from './policy'
 import type { Store } from './store'
 
@@ -19,6 +19,8 @@ export { TOOL_DEFINITIONS } from '../../shared/tools'
 const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
 const MAX_CHUNK_LIMIT = 4096
 const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+/** sendMediaGroup: 2-10 items. */
+const MAX_ALBUM = 10
 
 export type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean }
 
@@ -39,6 +41,30 @@ export interface OutboundDeps {
   scanDownload?: (buf: Buffer, file: { file_id: string; file_path: string }) => Promise<Buffer>
   /** A text attachment the router already downloaded (and checked) when it came in; null: download it now. */
   cachedDownload?: (file_id: string) => Promise<{ buf: Buffer; file_path: string; file_unique_id: string } | null>
+}
+
+type FileGroup = { kind: 'photo' | 'document'; files: string[] }
+
+/** reply's files as Telegram messages: photos together and documents
+ *  together (sendMediaGroup takes 2-10 items, and documents only group
+ *  with documents), each kind in the order of its first file, at most 10
+ *  per album; a group of one is sent on its own (sendPhoto / sendDocument). */
+export function groupFiles(files: string[]): FileGroup[] {
+  const byKind = new Map<FileGroup['kind'], string[]>()
+  for (const f of files) {
+    const kind = PHOTO_EXTS.has(extname(f).toLowerCase()) ? 'photo' : 'document'
+    if (!byKind.has(kind)) byKind.set(kind, [])
+    byKind.get(kind)!.push(f)
+  }
+  const out: FileGroup[] = []
+  for (const [kind, fs] of byKind) for (let i = 0; i < fs.length; i += MAX_ALBUM) out.push({ kind, files: fs.slice(i, i + MAX_ALBUM) })
+  return out
+}
+
+/** Telegram refused a caption as too long (400 "message caption is too long"). */
+function isCaptionTooLong(e: unknown): boolean {
+  const err = e as { error_code?: number; description?: string; message?: string }
+  return /caption is too long/i.test(String(err?.description ?? err?.message ?? ''))
 }
 
 const DEFAULT_LOOKUP_LIMIT = 10
@@ -84,49 +110,106 @@ export async function callTool(name: string, args: Record<string, unknown>, deps
           }
         }
 
-        try {
-          for (let i = 0; i < chunks.length; i++) {
-            const shouldReplyTo =
-              reply_to != null &&
-              replyMode !== 'off' &&
-              (replyMode === 'all' || i === 0)
-            const sent = await bot.api.sendMessage(chat_id, chunks[i], {
-              ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),
-              ...(parseMode ? { parse_mode: parseMode } : {}),
-            })
-            sentIds.push(sent.message_id)
-            recordSent(sent.message_id, chunks[i])
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          throw new Error(
-            `reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`,
-          )
-        }
+        // The text: as the caption of the first file when there are files and
+        // it fits (one message instead of two); otherwise its own message(s)
+        // first, whole, then the files without a caption (docs/architecture.md
+        // 回覆與附件). An empty text with files sends only the files.
+        const hasText = text.trim() !== ''
+        const groups = groupFiles(files)
+        let captioned = groups.length > 0 && hasText && captionLength(text, format) <= CAPTION_LIMIT
+        let captionRefused = false
+        let textParts = 0
+        const total = (): number => sentIds.length
 
-        // Files go as separate messages (Telegram doesn't mix text+file in one
-        // sendMessage call). Thread under reply_to if present.
-        for (const f of files) {
-          const ext = extname(f).toLowerCase()
-          const input = new InputFile(f)
-          const opts = reply_to != null && replyMode !== 'off'
-            ? { reply_parameters: { message_id: reply_to } }
-            : undefined
-          if (PHOTO_EXTS.has(ext)) {
-            const sent = await bot.api.sendPhoto(chat_id, input, opts)
-            sentIds.push(sent.message_id)
-            recordSent(sent.message_id, `(photo: ${f})`)
-          } else {
-            const sent = await bot.api.sendDocument(chat_id, input, opts)
-            sentIds.push(sent.message_id)
-            recordSent(sent.message_id, `(document: ${f})`)
+        const sendText = async (): Promise<void> => {
+          const before = sentIds.length
+          try {
+            for (let i = 0; i < chunks.length; i++) {
+              const shouldReplyTo =
+                reply_to != null &&
+                replyMode !== 'off' &&
+                (replyMode === 'all' || i === 0)
+              const sent = await bot.api.sendMessage(chat_id, chunks[i], {
+                ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),
+                ...(parseMode ? { parse_mode: parseMode } : {}),
+              })
+              sentIds.push(sent.message_id)
+              recordSent(sent.message_id, chunks[i])
+            }
+            textParts = chunks.length
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            throw new Error(
+              `reply failed after ${sentIds.length - before} of ${chunks.length} chunk(s) sent: ${msg}`,
+            )
           }
         }
 
-        const result =
-          sentIds.length === 1
-            ? `sent (id: ${sentIds[0]})`
-            : `sent ${sentIds.length} parts (ids: ${sentIds.join(', ')})`
+        // Files thread under reply_to unless replyToMode is off (as before).
+        const fileReply = reply_to != null && replyMode !== 'off'
+          ? { reply_parameters: { message_id: reply_to } }
+          : {}
+        const sendGroup = async (g: FileGroup, caption: string | null): Promise<void> => {
+          const cap = caption != null ? { caption, ...(parseMode ? { parse_mode: parseMode } : {}) } : {}
+          const label = (f: string, i: number) => `(${g.kind}: ${f})${caption != null && i === 0 ? `\n${caption}` : ''}`
+          if (g.files.length === 1) {
+            const f = g.files[0]!
+            const opts = { ...fileReply, ...cap }
+            const sent = g.kind === 'photo'
+              ? await bot.api.sendPhoto(chat_id, new InputFile(f), opts)
+              : await bot.api.sendDocument(chat_id, new InputFile(f), opts)
+            sentIds.push(sent.message_id)
+            recordSent(sent.message_id, label(f, 0))
+            return
+          }
+          const media = g.files.map((f, i) => ({ type: g.kind, media: new InputFile(f), ...(i === 0 ? cap : {}) }))
+          const sent = await bot.api.sendMediaGroup(chat_id, media as Parameters<Bot['api']['sendMediaGroup']>[1], fileReply)
+          sent.forEach((m, i) => { sentIds.push(m.message_id); recordSent(m.message_id, label(g.files[i] ?? '', i)) })
+        }
+
+        if (!captioned && (groups.length === 0 || hasText)) await sendText()
+        for (let gi = 0; gi < groups.length; gi++) {
+          const g = groups[gi]!
+          try {
+            try {
+              await sendGroup(g, gi === 0 && captioned ? text : null)
+            } catch (err) {
+              // our length estimate let through a caption Telegram finds too
+              // long: nothing is sent yet, so send it the long way instead
+              if (!(gi === 0 && captioned && isCaptionTooLong(err))) throw err
+              captioned = false
+              captionRefused = true
+              await sendText()
+              await sendGroup(g, null)
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            if (msg.startsWith('reply failed')) throw err
+            throw new Error(`reply failed after ${total()} message(s) sent: ${msg}`)
+          }
+        }
+
+        if (groups.length === 0) {
+          const result =
+            sentIds.length === 1
+              ? `sent (id: ${sentIds[0]})`
+              : `sent ${sentIds.length} parts (ids: ${sentIds.join(', ')})`
+          return { content: [{ type: 'text', text: result }] }
+        }
+        const what: string[] = []
+        if (textParts) what.push(textParts === 1 ? 'the text' : `the text in ${textParts} parts`)
+        groups.forEach((g, gi) => {
+          const n = g.files.length
+          const name = n === 1 ? `1 ${g.kind}` : `an album of ${n} ${g.kind}s`
+          what.push(gi === 0 && captioned ? `${name} with the text as the caption${n > 1 ? ` of the first ${g.kind}` : ''}` : name)
+        })
+        const why = captionRefused
+          ? ' (Telegram said the text is too long for a caption, so it went as its own message first)'
+          : textParts
+            ? ` (the text is over the ${CAPTION_LIMIT}-character caption limit, so it went as its own message first)`
+            : !hasText ? ' (no text)' : ''
+        const n = sentIds.length
+        const result = `sent ${n} message${n === 1 ? '' : 's'} (id${n === 1 ? '' : 's'}: ${sentIds.join(', ')}): ${what.join(', then ')}${why}`
         return { content: [{ type: 'text', text: result }] }
       }
       case 'send_sticker': {

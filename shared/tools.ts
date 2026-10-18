@@ -6,7 +6,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'reply',
     description:
-      'Reply on Telegram. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, and files (absolute paths) to attach images or documents.',
+      'Reply on Telegram. Pass chat_id from the inbound message. Optionally pass reply_to (message_id) for threading, and files (absolute paths) to attach images or documents. The result says how many messages were sent and whether the text went as a caption.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -23,7 +23,7 @@ export const TOOL_DEFINITIONS = [
         files: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Absolute file paths to attach. Images send as photos (inline preview); other types as documents. Max 50MB each.',
+          description: 'Absolute file paths to attach. Images (.jpg .jpeg .png .gif .webp) send as photos (inline preview); other types as documents. Max 50MB each. The text goes as the caption of the first file when it fits Telegram\'s caption limit (1024 characters as shown, i.e. MarkdownV2 escapes and markup not counted): one message, not two. A longer text goes first, whole, as its own message(s), then the files without a caption. Several files go as albums: photos together, documents together (documents only group with documents), at most 10 per album, each kind in the order of its first file; a lone file of its kind goes on its own. An empty text sends only the files.',
         },
         format: {
           type: 'string',
