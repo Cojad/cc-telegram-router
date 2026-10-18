@@ -230,7 +230,7 @@ const HELP = [
   '/router role <uid|@username> <角色|none> (回覆某人的訊息時可省略對象) | role list',
   '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off> | react <all|botself_only|disable|default>',
   '/router access show | pair <code> | deny <code> | allow <uid> | remove <uid> | group add <chat_id> [--no-mention] | group rm <chat_id> | policy <pairing|allowlist|disabled>',
-  '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒) | send <chat_id|對話key> [--from <發送者>] [--wait <秒>] [<文字> | -] (只在主機終端機: cc-telegram-router cli session send, 把訊息送進 worker, 睡著就叫醒; 沒給文字時讀 stdin)',
+  '/router session restart|stop [chat_id] | rotate [chat_id|all] (閒置時停掉, 下一則訊息用新設定叫醒) | send <chat_id|對話key> [--from <發送者>] [--wait <秒>] [<文字> | -] (只在主機終端機: cctr cli session send, 把訊息送進 worker, 睡著就叫醒; 沒給文字時讀 stdin)',
   '/router perm [chat_id] show | role <角色> (私訊等同 /router role) | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
   '/router perm user <uid|@username> show | tool|path|net|mcp ... | reset (掛在使用者身上的覆寫: 他發起的一輪重算高風險工具, 他的私訊也套用)',
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
@@ -287,7 +287,7 @@ export const HELP_TOPICS: Record<string, string> = {
     '管理: /router cred list (不顯示值, 顯示預設標頭) | allow|disallow <名稱> <方法或路徑...> | roles <名稱> <角色,...> (預設 owner, admin) | rm <名稱> | reload',
     'rotate, header, allow, disallow, roles, rm: owner, 或加入它的 admin.',
     '同名再 add 一次不會直接取代: router 回覆現有設定 (不含值) 與「覆蓋 / 取消」按鈕, 新的值只暫存在 router 記憶體 2 分鐘, 逾時或取消就丟棄; 按覆蓋才用這次 add 的設定整個取代. 別人 (admin) 加入的同名憑證只有 owner 能取代.',
-    '終端機: cc-telegram-router cred-import <名稱> <env 檔> <變數> [方法或路徑,...] [--http <網址> --header ... --scheme ... --query ... --default-header <名稱>:<值>] (值從檔案讀, 不印出)',
+    '終端機: cctr cred-import <名稱> <env 檔> <變數> [方法或路徑,...] [--http <網址> --header ... --scheme ... --query ... --default-header <名稱>:<值>] (值從檔案讀, 不印出)',
     '',
     '跟 /secret 的差別: /router help secret',
   ].join('\n'),
@@ -774,7 +774,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       const op = args[1]
       if (op === 'send') {
         // from outside the router into a worker (router/sessionsend.ts): the host's terminal only
-        if (!input.terminal) return deny(`/router session send 只在主機終端機執行 (cc-telegram-router cli session send ...), Telegram 裡不提供`)
+        if (!input.terminal) return deny(`/router session send 只在主機終端機執行 (cctr cli session send ...), Telegram 裡不提供`)
         const a = parseSendArgs(args.slice(2))
         if ('error' in a) return done(a.error)
         const body = input.body
@@ -880,9 +880,9 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       if (op === 'list') return done(deps.skills.list(input.bot))
       if (op === 'run' || op === 'refresh') {
         // acceptance runs: owner only, only in the terminal (the reply may hold anything the action printed)
-        if (!input.terminal || role !== 'owner') return deny(`/router skill ${op} 只在 owner 的終端機執行 (cc-telegram-router cli skill ${op} ...)`)
+        if (!input.terminal || role !== 'owner') return deny(`/router skill ${op} 只在 owner 的終端機執行 (cctr cli skill ${op} ...)`)
         if (op === 'refresh') {
-          if (!name || args.length !== 3) return done('用法: cc-telegram-router cli skill refresh <技能>')
+          if (!name || args.length !== 3) return done('用法: cctr cli skill refresh <技能>')
           return deps.skills.refresh ? done(await deps.skills.refresh(name)) : done('這個 router 沒有 skill refresh')
         }
         const o = parseSkillRun(cmdText.replace(/^\/router(?:@\w+)?\s+skill\s+run\s*/, ''))
@@ -1055,8 +1055,8 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
 
     case 'event': {
       // plan 10e: plaintext only for the owner, only in the terminal, only into a 600 file
-      if (args[1] !== 'raw' || !/^\d+$/.test(args[2] ?? '')) return done('用法: cc-telegram-router cli event raw <event id>')
-      if (!input.terminal || role !== 'owner') return deny('event raw 只在 owner 的終端機執行 (cc-telegram-router cli event raw <id>), 不提供 Telegram 裡的明文')
+      if (args[1] !== 'raw' || !/^\d+$/.test(args[2] ?? '')) return done('用法: cctr cli event raw <event id>')
+      if (!input.terminal || role !== 'owner') return deny('event raw 只在 owner 的終端機執行 (cctr cli event raw <id>), 不提供 Telegram 裡的明文')
       if (!deps.events) return done('這個 router 沒有 event_raw')
       return done(await deps.events.rawToFile(Number(args[2])))
     }

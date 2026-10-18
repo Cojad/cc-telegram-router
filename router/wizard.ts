@@ -1,4 +1,4 @@
-// `cc-telegram-router [--config x] setup`: the setup wizard (docs/operations.md
+// `cctr [--config x] setup`: the setup wizard (docs/operations.md
 // 「設定嚮導」, README How to install). Without config.json it makes one; with
 // one it is the edit mode: every answer defaults to the current value, Enter
 // keeps it, and only what was changed is written (fields the wizard does not
@@ -342,7 +342,7 @@ export async function runWizard(o: WizardOpts): Promise<WizardResult> {
   io.print(`已寫入 ${o.configPath} (權限 600)${access ? ` 與 ${accessPath}` : ''}.\n`)
   const socket = resolve(base, raw.socket ?? join(stateDir, 'router.sock'))
   if (existsSync(socket)) io.print('router 正在執行: 要重啟才會套用 (systemctl --user restart cc-telegram-router).\n')
-  else if (!exists) io.print(`\n下一步:\n  1. ${join(stateDir, 'cc-telegram-router')} register (deploy/install.sh setup 會自動做)\n  2. 第一次: cd ${raw.home} && claude, 接受資料夾信任後離開\n  3. sudo loginctl enable-linger <使用者>, 然後 systemctl --user enable --now cc-telegram-router\n`)
+  else if (!exists) io.print(`\n下一步:\n  1. ${join(stateDir, 'cctr')} register (deploy/install.sh setup 會自動做)\n  2. 第一次: cd ${raw.home} && claude, 接受資料夾信任後離開\n  3. sudo loginctl enable-linger <使用者>, 然後 systemctl --user enable --now cc-telegram-router\n`)
   return await finish('written')
 }
 
@@ -362,7 +362,7 @@ export const liveGetMe: GetMe = async (apiRoot, token) => {
 /** The setup subcommand: a terminal only; returns the exit code (0 written or unchanged, 2 no terminal, 130 cancelled). */
 export async function runSetupCli(configPath: string): Promise<number> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write('cc-telegram-router setup 是互動式嚮導, 要在終端機執行 (這裡沒有 TTY); 不能互動時請照 docs/operations.md 「設定欄位」手寫 config.json.\n')
+    process.stderr.write('cctr setup 是互動式嚮導, 要在終端機執行 (這裡沒有 TTY); 不能互動時請照 docs/operations.md 「設定欄位」手寫 config.json.\n')
     return 2
   }
   const keys = new KeyQueue()

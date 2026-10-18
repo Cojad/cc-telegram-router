@@ -49,7 +49,7 @@ import { interfaceAddrs, cloudPublicAddrs } from './sandboxnet'
 import { writeSandboxEtc } from './sandboxfs'
 import { toolboxCli, toolboxDir, describeToolbox } from './toolbox'
 import { limitMode, primeLimitMode, describeLimitMode } from './sandboxlimits'
-import { relaunchArgs, ownArgs, fakeService, FAKE_SUBCOMMAND } from './selfpath'
+import { relaunchArgs, ownArgs, fakeService, FAKE_SUBCOMMAND, entryAction, USAGE } from './selfpath'
 import { runFakeService } from './skilltry-fake'
 import { scheduleRefresh, type RefreshDeps } from './skillrefresh'
 import { terminalRun, terminalRefresh } from './skillcli'
@@ -88,32 +88,41 @@ import { iso8, logLine } from '../shared/time'
 const log = (msg: string) => process.stderr.write(logLine(msg))
 const startedAt = new Date()
 
-// `cc-telegram-router skilltry-fake <log> -- <command...>`: skill_try's fake service, inside its
+// `cctr help`, `--help`, `-h`: the usage; an unknown first word: the usage on stderr, exit 2. Before
+// anything else, so neither starts the router (no lock, no polling). No words at all, or only
+// --config <path>, start the router (the systemd unit's ExecStart has none).
+{
+  const entry = entryAction(ownArgs())
+  if (entry.run === 'help') { console.log(USAGE); process.exit(0) }
+  if (entry.run === 'unknown') { console.error(`不認得的子指令或參數: ${entry.word}\n\n${USAGE}`); process.exit(2) }
+}
+
+// `cctr skilltry-fake <log> -- <command...>`: skill_try's fake service, inside its
 // sandbox (router/selfpath.ts, router/skilltry-fake.ts): before anything reads config.json, which
 // the sandbox hides.
 if (ownArgs()[0] === FAKE_SUBCOMMAND) await runFakeService(ownArgs().slice(1))
 
-// `cc-telegram-router toolbox install|status [--state <stateDir>] [--mirror <x>]`: the shared toolbox
+// `cctr toolbox install|status [--state <stateDir>] [--mirror <x>]`: the shared toolbox
 // (router/toolbox.ts; deploy/install.sh router runs install), without config.json.
 if (ownArgs()[0] === 'toolbox') process.exit(await toolboxCli(ownArgs().slice(1), dirname(process.execPath)))
 
 const configPath = defaultConfigPath(process.argv, process.execPath)
-// `cc-telegram-router [--config x] setup`: the setup wizard (router/wizard.ts), before config.json is read (it may not exist yet)
+// `cctr [--config x] setup`: the setup wizard (router/wizard.ts), before config.json is read (it may not exist yet)
 if (isSetup(ownArgs())) process.exit(await runSetupCli(configPath))
-// `cc-telegram-router [--config x] doctor`: router/doctor.ts without the running router
+// `cctr [--config x] doctor`: router/doctor.ts without the running router
 if (ownArgs().filter((a, i, all) => a !== '--config' && all[i - 1] !== '--config')[0] === 'doctor') { console.log(await offlineDoctor(configPath, pkg.version)); process.exit(0) }
 const cfg = loadConfig(configPath)
 
-// `cc-telegram-router [--config x] cli <子指令...>`: talk to the running router.
+// `cctr [--config x] cli <子指令...>`: talk to the running router.
 const cliAt = process.argv.indexOf('cli')
 if (cliAt > 0) process.exit(await runCli(cfg.socket, process.argv.slice(cliAt + 1)))
 
-// `cc-telegram-router [--config x] cred-import <名稱> <env 檔> <變數> [方法,...]`:
+// `cctr [--config x] cred-import <名稱> <env 檔> <變數> [方法,...]`:
 // move a token from a file into config.json credentials without it ever
 // being printed (router/credentials.ts). Tells a running router to reload.
 const credAt = process.argv.indexOf('cred-import')
 if (credAt > 0) {
-  const usage = '用法: cc-telegram-router cred-import <名稱> <env 檔> <變數> [方法或路徑,...] [--http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]...]'
+  const usage = '用法: cctr cred-import <名稱> <env 檔> <變數> [方法或路徑,...] [--http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]...]'
   const rest = process.argv.slice(credAt + 1)
   const [name, file, varName] = rest
   if (!name || !file || !varName || [name, file, varName].some(a => a.startsWith('--'))) { console.error(usage); process.exit(2) }
@@ -135,7 +144,7 @@ if (credAt > 0) {
   else if (!BOT_TOKEN_FULL.test(token)) {
     // not a bot token: never sent to getMe
     const ex = httpExample(token)
-    console.error(`${varName} 看起來不是 Telegram bot token${ex.what ? ` (像是 ${ex.what})` : ''}, 沒有存入. API key 要加 --http <網址>, 例如:\ncc-telegram-router cred-import ${name} ${file} ${varName} ${ex.flags} (沒寫路徑就是全部)`)
+    console.error(`${varName} 看起來不是 Telegram bot token${ex.what ? ` (像是 ${ex.what})` : ''}, 沒有存入. API key 要加 --http <網址>, 例如:\nrouter cred-import ${name} ${file} ${varName} ${ex.flags} (沒寫路徑就是全部)`)
     process.exit(1)
   } else {
     const me = await new Bot(token, apiOpts(credApiRoot(cfg, cfg.credentials[name]))).api.getMe().catch(e => { console.error(`token 驗證失敗: ${e}`); process.exit(1) })
@@ -152,23 +161,23 @@ if (credAt > 0) {
   process.exit(0)
 }
 
-// `cc-telegram-router [--config x] import-v1 <messages.db>`: copy the v1 message log in.
+// `cctr [--config x] import-v1 <messages.db>`: copy the v1 message log in.
 const importAt = process.argv.indexOf('import-v1')
 if (importAt > 0) {
   const src = process.argv[importAt + 1]
   const botAt = process.argv.indexOf('--bot')
   const bot = botAt > 0 ? process.argv[botAt + 1] : cfg.bots[0]!.name
-  if (!src || src === '--bot' || !bot || !cfg.bots.some(b => b.name === bot)) { console.error('用法: cc-telegram-router import-v1 <messages.db> [--bot <名稱>] (預設第一隻 bot)'); process.exit(2) }
+  if (!src || src === '--bot' || !bot || !cfg.bots.some(b => b.name === bot)) { console.error('用法: cctr import-v1 <messages.db> [--bot <名稱>] (預設第一隻 bot)'); process.exit(2) }
   openStore(join(cfg.stateDir, 'router.db'), { legacyBot: cfg.bots[0]!.name }).close() // make sure the messages table exists, keyed by bot
   const r = importV1Messages(join(cfg.stateDir, 'router.db'), src, bot)
   console.log(`匯入 ${r.imported} 則, 略過已存在的 ${r.skipped} 則`)
   process.exit(0)
 }
 
-// `cc-telegram-router [--config x] managed migrate [--dry-run] [--user-config <dir>] [--force]`: copy the
+// `cctr [--config x] managed migrate [--dry-run] [--user-config <dir>] [--force]`: copy the
 // conversations' transcripts into the router's own config folder (docs/managed-channel.md 「對話紀錄的遷移」);
 // the router does it by itself at its first managed start, this is for a planned switch and rehearsals.
-// `cc-telegram-router [--config x] managed agents|attach ...`: claude agents and claude attach in the router's
+// `cctr [--config x] managed agents|attach ...`: claude agents and claude attach in the router's
 // environment (bwrap and its config folder in managed mode), so the owner's terminal needs no CLAUDE_CONFIG_DIR;
 // attach also takes a conversation key or chat_id. `managed` alone or `managed help`: the list.
 const managedAt = process.argv.indexOf('managed')
@@ -209,7 +218,7 @@ if (managedAt > 0) {
   process.exit(sub === undefined || sub === 'help' ? 0 : 2)
 }
 
-// `cc-telegram-router [--config x] register`: write the locator file the
+// `cctr [--config x] register`: write the locator file the
 // plugin and the worker hook find this router by (shared/locate.ts);
 // deploy/install.sh router runs it.
 if (process.argv.indexOf('register') > 0) {
@@ -223,7 +232,7 @@ const release = acquireLock(configPath + '.lock')
   // The plugin and the hook find this router through the locator file.
   const loc = syncLocator({ home: cfg.home, stateDir: cfg.stateDir, socket: cfg.socket })
   if (loc === 'updated') log(`locator ${locatorPath()} 已更新為目前的 home 與 socket`)
-  else if (loc !== 'ok') log(`locator ${locatorPath()} ${loc === 'missing' ? '不存在' : '指向另一個 router'}: worker 的 plugin 與 hook 找不到這個 router, 要用時執行 cc-telegram-router register`)
+  else if (loc !== 'ok') log(`locator ${locatorPath()} ${loc === 'missing' ? '不存在' : '指向另一個 router'}: worker 的 plugin 與 hook 找不到這個 router, 要用時執行 cctr register`)
 }
 mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 })
 mkdirSync(cfg.home, { recursive: true })
@@ -440,7 +449,7 @@ const ipc = createIpc({
       return { content: [{ type: 'text', text }] }
     }
     if (tool === 'bot_api') {
-      if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cc-telegram-router cli botapi' }], isError: true }
+      if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cctr cli botapi' }], isError: true }
       const name = String(args.credential ?? ''), method = String(args.method ?? '')
       const secret = db.getConvSecret(conv.bot, conv.chat_id, name)
       if (secret) return convSecretCall(live, conv, secret, 'bot_api', args)
@@ -495,7 +504,7 @@ const ipc = createIpc({
     }
     // plan 10e: the original of a masked event, through the fixed agent (owner or admin turns)
     if (tool === 'event_raw') {
-      if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cc-telegram-router cli event raw <id>' }], isError: true }
+      if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cctr cli event raw <id>' }], isError: true }
       const r = await callConv.run(conv.key, () => vault.requestRaw(conv, elevation.senderOf(conv), args))
       return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
     }
@@ -521,7 +530,7 @@ const ipc = createIpc({
       return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
     }
     if (tool === 'skill_try') {
-      if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cc-telegram-router cli skill run --trial' }], isError: true }
+      if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cctr cli skill run --trial' }], isError: true }
       const r = await callConv.run(conv.key, () => trySkill(tryDeps, conv, role, args))
       return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
     }

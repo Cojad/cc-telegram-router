@@ -9,7 +9,7 @@
 // reads afterwards. Imports nothing but node built-ins: the compiled router
 // runs it as a subcommand inside the sandbox (router/selfpath.ts), before it
 // reads any config.
-//   compiled:     cc-telegram-router skilltry-fake <log file> -- <command...>
+//   compiled:     cctr skilltry-fake <log file> -- <command...>
 //   from source:  bun router/skilltry-fake.ts <log file> -- <command...>
 
 import { appendFileSync } from 'fs'

@@ -108,7 +108,7 @@ export type EnvResult = { ok: true; dir: string } | { ok: false; why: string }
 
 /** The built environment of these files (building it when missing, once at a time per key). prefix: try- for drafts. */
 export function ensureEnv(deps: EnvDeps, f: LockFiles, prefix = ''): Promise<EnvResult> {
-  if (!installed(deps.toolbox).uv) return Promise.resolve({ ok: false, why: '工具箱沒有 uv (cc-telegram-router toolbox install), 建不了 Python 環境' })
+  if (!installed(deps.toolbox).uv) return Promise.resolve({ ok: false, why: '工具箱沒有 uv (cctr toolbox install), 建不了 Python 環境' })
   const key = `${prefix}${envKey(f, deps.toolbox)}`
   const dir = join(deps.envRoot, key)
   if (existsSync(join(dir, '.ok'))) { touch(dir); return Promise.resolve({ ok: true, dir }) }

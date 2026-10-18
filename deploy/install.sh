@@ -11,7 +11,7 @@
 #                              in the state dir (plugin-fingerprint.marketplace.json, plugin-fingerprint.json),
 #                              which the router checks them against (router/pluginguard.ts)
 #   deploy/install.sh unit     install the systemd user unit (does not start it)
-#   deploy/install.sh setup    the setup wizard (cc-telegram-router setup): make config.json and access.json,
+#   deploy/install.sh setup    the setup wizard (cctr setup): make config.json and access.json,
 #                              or change them (edit mode when config.json exists), then register
 #   deploy/install.sh all
 #
@@ -54,12 +54,23 @@ state_dir() {
   exit 1
 }
 
+# 2.33.0 renamed the executable from cc-telegram-router to cctr: an old one left in
+# the state dir (a regular file) becomes a link to cctr, so scripts and a unit that
+# still name the old path start the new build. Not there, or already a link: untouched.
+link_old_name() {
+  if [ -f "$STATE/cc-telegram-router" ] && [ ! -L "$STATE/cc-telegram-router" ]; then
+    ln -sfn cctr "$STATE/cc-telegram-router"
+    echo "舊的執行檔 $STATE/cc-telegram-router 換成指向 cctr 的連結 (2.33.0 改名為 cctr)"
+  fi
+}
+
 install_router() {
   state_dir router
   mkdir -p "$STATE"
   chmod 700 "$STATE"
-  bun build --compile "$REPO/router/main.ts" --outfile "$STATE/cc-telegram-router.new"
-  mv -f "$STATE/cc-telegram-router.new" "$STATE/cc-telegram-router"
+  bun build --compile "$REPO/router/main.ts" --outfile "$STATE/cctr.new"
+  mv -f "$STATE/cctr.new" "$STATE/cctr"
+  link_old_name
   rm -rf "$STATE/templates"
   cp -r "$REPO/templates" "$STATE/templates"
   rm -rf "$STATE/scripts"
@@ -68,31 +79,31 @@ install_router() {
   mkdir -p "$STATE/hooks"
   bun build --compile "$REPO/hooks/hook.ts" --outfile "$STATE/hooks/cc-hook.new"
   mv -f "$STATE/hooks/cc-hook.new" "$STATE/hooks/cc-hook"
-  echo "router -> $STATE/cc-telegram-router, hook -> $STATE/hooks/cc-hook, report scripts -> $STATE/scripts"
+  echo "router -> $STATE/cctr, hook -> $STATE/hooks/cc-hook, report scripts -> $STATE/scripts"
   # the shared toolbox (ffmpeg, deno, uv; fixed versions, sha256 checked): a tool that fails only fails
   # the skills that need it, so the install goes on (docs/skill-runtime.md 「工具箱」)
-  if ! "$STATE/cc-telegram-router" toolbox install --state "$STATE"; then
-    echo "警告: 工具箱有工具沒有裝好 (見上面), 需要它的特權技能會拒絕執行; 之後可以再跑 $STATE/cc-telegram-router toolbox install --state $STATE" >&2
+  if ! "$STATE/cctr" toolbox install --state "$STATE"; then
+    echo "警告: 工具箱有工具沒有裝好 (見上面), 需要它的特權技能會拒絕執行; 之後可以再跑 $STATE/cctr toolbox install --state $STATE" >&2
   fi
   if [ ! -f "$STATE/config.json" ] && [ -t 0 ] && [ -t 1 ]; then
     echo "還沒有 $STATE/config.json: 開始設定嚮導 (Ctrl-C 取消, 之後可以用 $(basename "$0") setup 再跑)"
-    "$STATE/cc-telegram-router" --config "$STATE/config.json" setup || true
+    "$STATE/cctr" --config "$STATE/config.json" setup || true
   fi
   if [ -f "$STATE/config.json" ]; then
-    "$STATE/cc-telegram-router" register
+    "$STATE/cctr" register
   else
-    echo "還沒有 $STATE/config.json: 在終端機執行 $(basename "$0") setup 用嚮導建立 (或照 docs/operations.md 手寫後執行 $STATE/cc-telegram-router register)"
+    echo "還沒有 $STATE/config.json: 在終端機執行 $(basename "$0") setup 用嚮導建立 (或照 docs/operations.md 手寫後執行 $STATE/cctr register)"
   fi
 }
 
 install_setup() {
   state_dir setup
-  if [ ! -x "$STATE/cc-telegram-router" ]; then
-    echo "$STATE/cc-telegram-router 不存在: 先執行 CC_ROUTER_STATE=$STATE $(basename "$0") router" >&2
+  if [ ! -x "$STATE/cctr" ]; then
+    echo "$STATE/cctr 不存在: 先執行 CC_ROUTER_STATE=$STATE $(basename "$0") router" >&2
     exit 1
   fi
-  "$STATE/cc-telegram-router" --config "$STATE/config.json" setup
-  "$STATE/cc-telegram-router" register
+  "$STATE/cctr" --config "$STATE/config.json" setup
+  "$STATE/cctr" register
 }
 
 install_plugin() {

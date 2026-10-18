@@ -100,13 +100,13 @@ test('install: a sha256 that does not match fails that tool only (nothing of it 
 })
 
 test('toolbox status and the CLI: one line per tool, what is missing and how to install it; usage on anything else', async () => {
-  expect(describeToolbox(box)).toBe(ALL_TOOLS.map(t => `${t.name}: 沒有安裝 (cc-telegram-router toolbox install)`).join('\n'))
+  expect(describeToolbox(box)).toBe(ALL_TOOLS.map(t => `${t.name}: 沒有安裝 (cctr toolbox install)`).join('\n'))
   expect(ALL_TOOLS.map(t => t.name)).toEqual([...TOOL_NAMES, 'bwrap']) // the router's own static bwrap (managed.test.ts)
   const out: string[] = []
   expect(await toolboxCli(['status', '--state', join(dir, 'state')], '/nowhere', s => out.push(s))).toBe(0)
   expect(out[0]).toContain('ffmpeg: 沒有安裝')
   expect(await toolboxCli(['nope'], '/nowhere', s => out.push(s))).toBe(2)
-  expect(out.at(-1)).toStartWith('用法: cc-telegram-router toolbox install|status')
+  expect(out.at(-1)).toStartWith('用法: cctr toolbox install|status')
 })
 
 test('the real table: ffmpeg, deno and uv for x64 and arm64, GitHub release assets of fixed tags, each with its sha256; install.sh runs the install and only warns', () => {
@@ -121,7 +121,7 @@ test('the real table: ffmpeg, deno and uv for x64 and arm64, GitHub release asse
     }
   }
   const sh = readFileSync(join(ROOT, 'deploy', 'install.sh'), 'utf8')
-  expect(sh).toContain('if ! "$STATE/cc-telegram-router" toolbox install --state "$STATE"; then')
+  expect(sh).toContain('if ! "$STATE/cctr" toolbox install --state "$STATE"; then')
 })
 
 // --- in the sandbox -----------------------------------------------------------
@@ -157,7 +157,7 @@ test('in the sandbox: the toolbox at /cctr/tools/bin, first on PATH (before the 
     expect(r.text).toContain('/cctr/tools/bin/ffmpeg\nfake ffmpeg -i x\nfake ffprobe y')
     const js = await runSkill(deps, conv, 'user', 'media', 'js', {})
     expect(js.ok).toBe(false)
-    expect(js.text).toContain('工具箱缺少這個動作需要的 deno, 沒有執行 (安裝時下載失敗或還沒裝: owner 在主機上執行 cc-telegram-router toolbox install)')
+    expect(js.text).toContain('工具箱缺少這個動作需要的 deno, 沒有執行 (安裝時下載失敗或還沒裝: owner 在主機上執行 cctr toolbox install)')
     writeFileSync(join(skill, 'privileged.json'), JSON.stringify({ actions: { a: { run: ['true'], tools: ['ffmpeg', 'yt-dlp'] } } }))
     expect(() => loadManifest(skill)).toThrow('動作 a 的 tools 裡的 yt-dlp 不在工具箱裡 (有: ffmpeg, deno, uv)')
   } finally { db.close() }

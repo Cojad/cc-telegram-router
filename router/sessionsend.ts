@@ -1,11 +1,11 @@
 // Messages from outside the router into a conversation's worker
-// (docs/operations.md 「從外部送訊息給 worker」): `cc-telegram-router cli
+// (docs/operations.md 「從外部送訊息給 worker」): `cctr cli
 // session send`. The terminal side parses the arguments and reads stdin
 // (router/cli.ts); the router side queues the text like its own notices
 // (main.ts notifyConversation), so a sleeping worker is woken and a router
 // restart loses nothing. Only from the host's terminal, never from Telegram.
 
-export const SEND_USAGE = '用法: cc-telegram-router cli session send <chat_id|對話key> [--bot <名稱>] [--from <發送者>] [--wait <秒>] [<文字> | -] (沒給文字或文字是 - 時從 stdin 讀)'
+export const SEND_USAGE = '用法: cctr cli session send <chat_id|對話key> [--bot <名稱>] [--from <發送者>] [--wait <秒>] [<文字> | -] (沒給文字或文字是 - 時從 stdin 讀)'
 /** Who the message is from when --from is not given. */
 export const DEFAULT_FROM = '終端機'
 /** How long the terminal waits for the worker to receive it, by default. */
@@ -65,7 +65,7 @@ export function hostMessage(from: string, text: string): string {
     : `要回覆發送者時, 用 SendMessage 傳給「${from}」這個 session`
   return [
     `<host_message from="${from}" via="cli">`,
-    `這則訊息從主機終端機送進來 (cc-telegram-router cli session send), 不是 Telegram 上的人說的, 發送者是「${from}」. 回應去向由你判斷: 內容要你轉告這個對話時, 才用 reply 發到 Telegram; ${back}. 不要把回應自動貼到對話裡.`,
+    `這則訊息從主機終端機送進來 (cctr cli session send), 不是 Telegram 上的人說的, 發送者是「${from}」. 回應去向由你判斷: 內容要你轉告這個對話時, 才用 reply 發到 Telegram; ${back}. 不要把回應自動貼到對話裡.`,
     '---',
     text,
     '</host_message>',

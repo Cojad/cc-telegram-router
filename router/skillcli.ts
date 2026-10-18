@@ -1,7 +1,7 @@
 // Privileged skill actions run from the owner's terminal (acceptance runs,
 // docs/credentials-and-skills.md 「終端機執行特權動作」):
-//   cc-telegram-router cli skill run <對話> <技能> <動作> --out <資料夾> [--role <角色>] [--trial | --trial-store <資料夾>] [--api <本機網址>] [JSON 參數]
-//   cc-telegram-router cli skill refresh <技能>
+//   cctr cli skill run <對話> <技能> <動作> --out <資料夾> [--role <角色>] [--trial | --trial-store <資料夾>] [--api <本機網址>] [JSON 參數]
+//   cctr cli skill refresh <技能>
 // A run goes through runSkill (router/skillrun.ts) exactly like run_skill:
 // the conversation's bot and skills, approval hash, role (the conversation's
 // own, or --role), argument patterns, sandbox, creds, http, bots, store, the
@@ -26,7 +26,7 @@ import { refreshAll, type RefreshDeps, type RefreshResult } from './skillrefresh
 
 export const TERMINAL_PREFIX = 'terminal:'
 export const TERMINAL_REFRESH = 'terminal:refresh'
-export const SKILL_RUN_USAGE = '用法: cc-telegram-router cli skill run <對話 key 或 chat_id> <技能> <動作> --out <資料夾> [--role <角色>] [--trial | --trial-store <資料夾>] [--api <http://127.0.0.1:埠>] [JSON 參數]'
+export const SKILL_RUN_USAGE = '用法: cctr cli skill run <對話 key 或 chat_id> <技能> <動作> --out <資料夾> [--role <角色>] [--trial | --trial-store <資料夾>] [--api <http://127.0.0.1:埠>] [JSON 參數]'
 
 export type SkillRunOpts = {
   conv: string; skill: string; action: string; out: string

@@ -1,5 +1,5 @@
 // The setup wizard as a user runs it (docs/operations.md 「設定嚮導」, README
-// How to install): `cc-telegram-router --config <path> setup` from source,
+// How to install): `cctr --config <path> setup` from source,
 // in a real pseudo terminal (util-linux script; skipped without it), answering
 // each prompt as it appears. The token typed with a slip, Backspace and
 // Ctrl-U, then pasted: only * on the screen, never the token; the bot on a
@@ -53,7 +53,7 @@ test('no terminal: refused, with how to do it instead; nothing written', async (
   const p = Bun.spawn(['bun', MAIN, '--config', configPath, 'setup'], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' })
   p.stdin.end()
   expect(await p.exited).toBe(2)
-  expect(await new Response(p.stderr).text()).toContain('cc-telegram-router setup 是互動式嚮導, 要在終端機執行 (這裡沒有 TTY)')
+  expect(await new Response(p.stderr).text()).toContain('cctr setup 是互動式嚮導, 要在終端機執行 (這裡沒有 TTY)')
   expect(existsSync(configPath)).toBe(false)
 })
 

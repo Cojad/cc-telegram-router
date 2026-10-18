@@ -143,7 +143,7 @@ test('install.sh unit: bun\'s and claude\'s folders go in front of the unit\'s P
   const first = await sh(join(REPO, 'deploy', 'install.sh'), 'unit', env(`${bin}:${bunDir}:/usr/bin:/bin`, { CC_ROUTER_STATE: state }))
   expect(first.code, first.err).toBe(0)
   expect(readFileSync(unit, 'utf8')).toContain(`Environment=PATH=${bunDir}:${cbin}:${base}\n`)
-  expect(readFileSync(unit, 'utf8')).toContain(`ExecStart=${state}/cc-telegram-router\n`)
+  expect(readFileSync(unit, 'utf8')).toContain(`ExecStart=${state}/cctr\n`)
   expect(readFileSync(join(dir, 'systemctl.log'), 'utf8')).toContain('--user daemon-reload')
   // claudeBin by name: the claude on PATH; already in the list: not added twice
   writeFileSync(join(state, 'config.json'), JSON.stringify({ bots: [{ name: 'cc', token: 'x' }], claudeBin: 'claude' }))

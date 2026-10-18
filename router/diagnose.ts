@@ -135,8 +135,8 @@ export function wakeCause(o: { spawnOut?: string; pluginLog?: string | null; hom
   const log = o.pluginLog ?? null
   if (log && /bun/i.test(log) && /not found|ENOENT|No such file/i.test(log)) return { cause: `plugin 起不來: ${log}`, fix: 'worker 的 telegram plugin 要用 bun 執行, 但 router (systemd unit) 的 PATH 找不到它: 執行 deploy/install.sh unit (會把 bun 的資料夾加進 unit 的 PATH), 再 systemctl --user restart cc-telegram-router' }
   if (log) return { cause: `plugin 沒有連上: ${log}`, fix: `看 plugin 的 log${o.logFile ? `: ${o.logFile}` : ''}; 可試 /router session restart` }
-  if (out.trim() && !/backgrounded/.test(out)) return { cause: `claude --bg 失敗: ${maskTokens(out.replace(/\s+/g, ' ').trim()).slice(0, 300)}`, fix: '照上面 claude 的訊息處理; cc-telegram-router cli doctor 會一併檢查環境' }
-  return { cause: 'plugin 沒有在時限內連上 router, plugin 的 log 也沒有寫原因', fix: `看 plugin 的 log (${pluginLogDir(o.folder, '~')}), 或跑 cc-telegram-router cli doctor` }
+  if (out.trim() && !/backgrounded/.test(out)) return { cause: `claude --bg 失敗: ${maskTokens(out.replace(/\s+/g, ' ').trim()).slice(0, 300)}`, fix: '照上面 claude 的訊息處理; cctr cli doctor 會一併檢查環境' }
+  return { cause: 'plugin 沒有在時限內連上 router, plugin 的 log 也沒有寫原因', fix: `看 plugin 的 log (${pluginLogDir(o.folder, '~')}), 或跑 cctr cli doctor` }
 }
 
 /** Minutes to wait before waking again after n failures in a row. */
@@ -200,7 +200,7 @@ export function apiAdvice(f: ApiFailure, model: string): { reason: string; fix: 
       return { reason: '回覆超過輸出上限', fix: '請對方把要求拆小一點', short: '回覆太長被截斷' }
   }
   if (/safeguards flagged/i.test(text)) return { reason: '這一輪被 Anthropic 的安全分類器擋下', fix: '換個方式提問; 誤判時可回報 Anthropic', short: '這個要求被安全機制擋下' }
-  return { reason: `API 錯誤${f.error ? ` (${f.error})` : ''}`, fix: '看下面的原始訊息; 持續發生再跑 cc-telegram-router cli doctor', short: '服務暫時出錯' }
+  return { reason: `API 錯誤${f.error ? ` (${f.error})` : ''}`, fix: '看下面的原始訊息; 持續發生再跑 cctr cli doctor', short: '服務暫時出錯' }
 }
 
 // --- the model against autoCompactWindow ----------------------------------------------

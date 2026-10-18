@@ -374,7 +374,7 @@ test('/secret handles | revoke in the conversation; /router secret handles | rev
   expect(list!.reply).toContain(`h1 (dm-555): OpenAI API key, 末 4 碼 oooo, event #${rec.id}, 已撤銷 (${OWNER})`)
   expect(list!.reply).toContain('h2 (dm-555): OpenAI API key')
   expect((await runCommand(dm(ADMIN, '/router secret revoke h2'), cdeps))!.reply).toBe('已撤銷 dm-555 的代號 h2')
-  expect((await runCommand(dm(OWNER, `/router event raw ${rec.id}`), cdeps))!.reply).toBe('⛔ event raw 只在 owner 的終端機執行 (cc-telegram-router cli event raw <id>), 不提供 Telegram 裡的明文')
+  expect((await runCommand(dm(OWNER, `/router event raw ${rec.id}`), cdeps))!.reply).toBe('⛔ event raw 只在 owner 的終端機執行 (cctr cli event raw <id>), 不提供 Telegram 裡的明文')
   expect((await runCommand({ ...dm(ADMIN, `/router event raw ${rec.id}`), terminal: true }, cdeps))!.reply).toStartWith('⛔')
   expect((await runCommand({ ...dm(OWNER, `/router event raw ${rec.id}`), terminal: true }, cdeps))!.reply).toBe('已寫入 /x (權限 600)')
   expect(files).toEqual([rec.id])

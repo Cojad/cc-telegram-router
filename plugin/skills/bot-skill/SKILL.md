@@ -33,7 +33,7 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能裝在哪�
 
 1. 請 owner (或 admin) 登記憑證, 二擇一:
    - 在**自己和 bot 的私訊**傳 `/router cred add <名稱> <token> [方法...]`. router 會驗證 token, 60 秒後刪掉那則訊息 (他, owner, admin 可以按「取消刪除」保留), token 只存在 router 設定檔, 不會進到任何對話. 之後換 token 用 `/router cred rotate <名稱> <新 token>`, 方法與角色不變.
-   - token 已經在某個檔案裡: 在終端機執行 `cc-telegram-router cred-import <名稱> <檔案> <變數名> [方法,...]`, 值不會印出來.
+   - token 已經在某個檔案裡: 在終端機執行 `cctr cred-import <名稱> <檔案> <變數名> [方法,...]`, 值不會印出來.
    - **不要叫使用者把 token 貼在對話裡**; 對方貼了就提醒他換一把新的, 並改走上面的方式.
 2. 只開放技能需要的 Bot API 方法 (`/router cred allow <名稱> <方法...>`), 預設只有 owner 與 admin 角色的對話能用 (`/router cred roles <名稱> <角色,...>` 可調整). 角色不夠的對話呼叫時跟其他越權動作一樣被擋並走提權: 發話者角色較高就在對話裡詢問, 否則可以 request_elevation 向 owner 申請; 只能允許一次, 要長期開放請 owner 調整憑證的角色.
 3. 技能裡用 `bot_api` (credential, method, params, files) 呼叫. 要上傳檔案時, 檔案放在自己資料夾, `files` 寫 `{ "欄位": "/絕對路徑" }`, params 裡用 `attach://欄位` 指到它.
@@ -59,7 +59,7 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 
 不是 Telegram bot 的 key 也一樣存成 router 的憑證, 種類是 http: owner 或 admin 在自己和 bot 的私訊
 `/router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...]`
-(訊息 60 秒後刪除), 或 owner 在終端機 `cc-telegram-router cred-import <名稱> <檔案> <變數名> [路徑,...] --http <網址> [同樣的選項]`.
+(訊息 60 秒後刪除), 或 owner 在終端機 `cctr cred-import <名稱> <檔案> <變數名> [路徑,...] --http <網址> [同樣的選項]`.
 沒寫路徑就是那個網址底下全部路徑, 要收窄就列出路徑 (結尾 `*` 代表前綴). 範例 (Anthropic):
 `/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key --default-header anthropic-version:2023-06-01`. 換 key 用 `/router cred rotate <名稱> <新 key>`, 不用重貼 key 改預設標頭用 `/router cred header <名稱> set <標頭>:<值>` (同名就更新), 移除用 `rm <標頭>`, 不帶參數就列出. 完整說明: 使用者打 `/router help cred`.
 技能裡用 `http_api` (credential, path, json 或 json_file 或 form + files, 可選 headers) 呼叫. key 放哪裡由憑證決定, 你不用也不能自己放:
@@ -298,7 +298,7 @@ else:
 
 - **一般技能** (沒有 privileged.json, 腳本在你自己的沙箱跑): 腳本負責產生檔案 (產圖, 轉檔, 整理資料), 輸出檔案路徑; 需要 Telegram 或憑證的步驟由你呼叫工具: 送訊息用 `reply`, 送貼圖用 `send_sticker`, bot token 的操作用 `bot_api`, 一般 API 用 `http_api`. 需要的 Python 套件裝在自己資料夾 (例如 `pip install --target ./.pylib <套件>` 再設 `PYTHONPATH=./.pylib`, power 以上的對話, 安裝會經過套件審核). 放在「這隻 bot」或「全部 bot」範圍的技能, 腳本對所有角色的對話都是唯讀可執行.
 - **特權動作** (privileged.json): 腳本由 router 在專屬沙箱執行, 自己用 `$<ENV>_HEADER`, `$<ENV>_API` 呼叫 API, 自己讀寫 `$<ENV>` 的資料庫; 不用 `bot_api` 與 `http_api`, 也不用 `.pylib` (見[執行時的環境](#執行時的環境)). 送訊息與送檔仍由你在 `run_skill` 回來之後用 `reply`.
-- 終端機的 session 沒有這些工具: owner 在終端機用 `cc-telegram-router cli botapi <憑證> <方法> '<JSON>' [--file 欄位=/路徑]`, 特權動作用 `cc-telegram-router cli skill run` (見 docs/credentials-and-skills.md).
+- 終端機的 session 沒有這些工具: owner 在終端機用 `cctr cli botapi <憑證> <方法> '<JSON>' [--file 欄位=/路徑]`, 特權動作用 `cctr cli skill run` (見 docs/credentials-and-skills.md).
 
 ## 檢查清單
 

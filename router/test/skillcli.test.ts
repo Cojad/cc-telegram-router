@@ -109,7 +109,7 @@ test('parseSkillRun: positions, options, JSON arguments with spaces; --out requi
   expect(parseSkillRun('k s a --out /o --trial-store /t --api http://127.0.0.1:8081')).toMatchObject({ trial: true, trialStore: '/t', api: 'http://127.0.0.1:8081', args: {} })
   expect(parseSkillRun('k s a --out /o --trial --bot cc')).toMatchObject({ trial: true })
   expect(parseSkillRun('k s a')).toEqual({ error: expect.stringContaining('要用 --out 指定輸出資料夾') })
-  expect(parseSkillRun('k s --out /o')).toEqual({ error: expect.stringContaining('用法: cc-telegram-router cli skill run') })
+  expect(parseSkillRun('k s --out /o')).toEqual({ error: expect.stringContaining('用法: cctr cli skill run') })
   expect(parseSkillRun('k s a --out /o --api http://127.0.0.1:1')).toEqual({ error: expect.stringContaining('--api 只能跟 --trial 或 --trial-store 一起用') })
   expect(parseSkillRun('k s a --out /o --trial --api https://api.telegram.org')).toEqual({ error: expect.stringContaining('--api 只接受本機網址') })
   expect(parseSkillRun('k s a --out /o {"x":')).toEqual({ error: expect.stringContaining('參數要是 JSON 物件') })
@@ -259,7 +259,7 @@ test('/router skill run|refresh: only the owner\'s terminal; the conversation fo
   const cfg = { path: join(dir, 'state', 'config.json'), bots: [{ name: 'cc', token: '1:x' }], home: join(dir, 'home'), stateDir: join(dir, 'state'), socket: join(dir, 's'), owners: [OWNER], model: 'm', autoCompactWindow: 750000, claudeBin: 'claude' } as Config
   const cdeps = { cfg, db, skills: { list: () => '', approve: () => '', revoke: () => '', run: async (c: Conversation, o: SkillRunOpts) => { calls.push({ conv: c.key, o }); return 'skill run: ok' }, refresh: async (s: string) => { calls.push(s); return 'skill refresh: ok' } } } as unknown as CommandDeps
   const run = (text: string, terminal: boolean) => runCommand({ bot: 'cc', text, senderId: OWNER, senderName: 'n', chatId: OWNER, chatType: 'private', terminal }, cdeps)
-  expect((await run('/router skill run group-100 sticker list --out /tmp/o', false))!.reply).toBe('⛔ /router skill run 只在 owner 的終端機執行 (cc-telegram-router cli skill run ...)')
+  expect((await run('/router skill run group-100 sticker list --out /tmp/o', false))!.reply).toBe('⛔ /router skill run 只在 owner 的終端機執行 (cctr cli skill run ...)')
   expect((await run('/router skill refresh sticker', false))!.reply).toStartWith('⛔ /router skill refresh 只在 owner 的終端機執行')
   expect(calls).toEqual([])
   expect((await run('/router skill run group-100 sticker generate --out /tmp/o --role user {"prompt": "a  whale"}', true))!.reply).toBe('skill run: ok')
@@ -288,8 +288,8 @@ test('/router skill run|refresh from Telegram: owner in a group, admin in a DM a
   ]
   for (const p of places) {
     const run = (text: string) => runCommand({ bot: 'cc', text, senderId: p.senderId, senderName: 'n', chatId: p.chatId, chatType: p.chatType }, cdeps)
-    expect([p.who, (await run('/router skill run group-100 sticker list --out /tmp/o --role user'))!.reply]).toEqual([p.who, '⛔ /router skill run 只在 owner 的終端機執行 (cc-telegram-router cli skill run ...)'])
-    expect([p.who, (await run('/router skill refresh sticker'))!.reply]).toEqual([p.who, '⛔ /router skill refresh 只在 owner 的終端機執行 (cc-telegram-router cli skill refresh ...)'])
+    expect([p.who, (await run('/router skill run group-100 sticker list --out /tmp/o --role user'))!.reply]).toEqual([p.who, '⛔ /router skill run 只在 owner 的終端機執行 (cctr cli skill run ...)'])
+    expect([p.who, (await run('/router skill refresh sticker'))!.reply]).toEqual([p.who, '⛔ /router skill refresh 只在 owner 的終端機執行 (cctr cli skill refresh ...)'])
   }
   expect(calls).toEqual([])
   expect(db.skillRunsSince('terminal:group-100', '2000-01-01')).toBe(0)

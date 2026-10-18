@@ -361,7 +361,7 @@ test('managed migrate: usage; dry run without the lock; refused once migrated un
   const deps = { cfg: { home, stateDir: join(dir, 's'), claudeBin: 'claude' }, convs: () => [a], paths, lock: () => { locks++; return () => { locks-- } }, removeJob: async (id: string) => { removed.push(id); return true }, print: (s: string) => { out.push(s) } }
   expect(await migrateCli(['--nope'], deps)).toBe(2)
   expect(await migrateCli(['--user-config'], deps)).toBe(2)
-  expect(out.at(-1)).toStartWith('用法: cc-telegram-router [--config <路徑>] managed migrate')
+  expect(out.at(-1)).toStartWith('用法: cctr [--config <路徑>] managed migrate')
   expect(await migrateCli(['--dry-run'], deps)).toBe(0)
   expect(out.at(-1)).toContain('(--dry-run, 沒有改任何東西)')
   expect(out.at(-1)).toContain('aaaa1111 (dm-1) 會 stop 加 rm')
@@ -401,7 +401,7 @@ test('host tools: a raw file checked by sha256 into toolbox/host (not bin), reco
   expect((await installTools(box, { mirror, arch: 'arm64', tools: [tool] }))[0]!.status).toBe('unsupported')
   writeFileSync(join(hostDir(box), 'bwrap'), 'changed')
   expect('why' in hostTool(box, 'bwrap')).toBe(true)
-  expect(hostTool(box, 'nope')).toEqual({ why: '工具箱沒有 nope (cc-telegram-router toolbox install)' })
+  expect(hostTool(box, 'nope')).toEqual({ why: '工具箱沒有 nope (cctr toolbox install)' })
   expect(HOST_TOOLS.map(t => [t.name, t.version, t.host, Object.keys(t.files)])).toEqual([['bwrap', '0.13.1', true, ['x64']]])
   const f = HOST_TOOLS[0]!.files.x64![0]!
   expect(f.url).toBe('https://github.com/Cojad/cc-telegram-router/releases/download/bwrap-0.13.1/bwrap-0.13.1-x86_64')
@@ -469,7 +469,7 @@ test('managed attach target: a conversation key or chat_id becomes its current s
   expect(resolveAttachTarget('1', undefined, convs, agents)).toEqual({ error: 'chat_id 1 在好幾隻 bot 都有對話 (cc, two), 加 --bot <名稱>' })
   expect(resolveAttachTarget('1', 'two', convs, agents)).toEqual({ id: 'bbbb2222' })
   expect(resolveAttachTarget('dm-2', undefined, convs, agents)).toEqual({ error: '對話 dm-2 還沒有 session (還沒叫醒過)' })
-  expect(resolveAttachTarget('dm-3', undefined, convs, agents)).toEqual({ error: '對話 dm-3 目前沒有 job (worker 睡著或被移除): 先用 cc-telegram-router cli session send 叫醒它' })
+  expect(resolveAttachTarget('dm-3', undefined, convs, agents)).toEqual({ error: '對話 dm-3 目前沒有 job (worker 睡著或被移除): 先用 cctr cli session send 叫醒它' })
   expect(resolveAttachTarget('cccc3333', undefined, convs, agents)).toEqual({ id: 'cccc3333' })
   expect(resolveAttachTarget('x', 'two', convs, agents)).toEqual({ error: 'bot two 沒有對話 x' })
 })

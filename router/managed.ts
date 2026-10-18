@@ -184,7 +184,7 @@ export function createDaemonKeeper(d: KeeperDeps) {
     if (failures >= 3) tell([
       `❌ router 連續 ${failures} 次無法讓 claude daemon 在 bwrap 裡正常運作: ${why}.`,
       'worker 可能叫不醒, 或收不到 Telegram 訊息. router 不再自動重試, 也不會自己切回 legacy 模式.',
-      '請跑 cc-telegram-router cli doctor 看原因. 修好後重啟 router; 要暫時退回原本的做法, 在 config.json 設 "channelMode": "legacy" 再重啟.',
+      '請跑 cctr cli doctor 看原因. 修好後重啟 router; 要暫時退回原本的做法, 在 config.json 設 "channelMode": "legacy" 再重啟.',
     ].join('\n'))
     return 'failed'
   }
@@ -301,7 +301,7 @@ export function describeMigration(r: MigrateResult, dryRun: boolean): string {
   ].join('\n')
 }
 
-// --- cc-telegram-router managed migrate ----------------------------------------
+// --- cctr managed migrate ----------------------------------------
 
 export interface MigrateCliDeps {
   cfg: { home: string; stateDir: string; claudeBin: string }
@@ -324,7 +324,7 @@ export async function migrateCli(args: string[], d: MigrateCliDeps): Promise<num
   const bad = args.find((a, i) => a.startsWith('--') ? !known.has(a) : args[i - 1] !== '--user-config')
   const at = args.indexOf('--user-config')
   const userConfig = at >= 0 ? args[at + 1] : undefined
-  if (bad !== undefined || (at >= 0 && (!userConfig || userConfig.startsWith('--')))) { print('用法: cc-telegram-router [--config <路徑>] managed migrate [--dry-run] [--user-config <原本的設定目錄>] [--force]'); return 2 }
+  if (bad !== undefined || (at >= 0 && (!userConfig || userConfig.startsWith('--')))) { print('用法: cctr [--config <路徑>] managed migrate [--dry-run] [--user-config <原本的設定目錄>] [--force]'); return 2 }
   const dryRun = args.includes('--dry-run')
   const from = resolve(userConfig ?? d.paths.userConfigDir)
   if (!dryRun && migrated(d.paths.configDir) && !args.includes('--force')) {
@@ -347,11 +347,11 @@ export async function migrateCli(args: string[], d: MigrateCliDeps): Promise<num
   } finally { release?.() }
 }
 
-// --- cc-telegram-router managed agents | attach ---------------------------------
+// --- cctr managed agents | attach ---------------------------------
 
 /** The managed subcommands, for help and wrong use. */
 export const MANAGED_USAGE = [
-  '用法: cc-telegram-router [--config <路徑>] managed <子指令>',
+  '用法: cctr [--config <路徑>] managed <子指令>',
   '  migrate [--dry-run] [--user-config <原本的設定目錄>] [--force]  把各對話的紀錄複製到 router 的設定目錄 (router 停著時)',
   '  agents [claude agents 的參數...]  在 router 的環境執行 claude agents, 列出 worker',
   '  attach <job id | 對話 key | chat_id> [--bot <名稱>] [claude attach 的其他參數...]  在 router 的環境執行 claude attach, 接上 worker',
@@ -373,7 +373,7 @@ export function resolveAttachTarget(target: string, bot: string | undefined, con
   if (!c) return bot ? { error: `bot ${bot} 沒有對話 ${target}` } : { id: target }
   if (!c.session_id) return { error: `對話 ${c.key} 還沒有 session (還沒叫醒過)` }
   const job = agents.find(a => a.sessionId === c!.session_id && a.id)
-  if (!job) return { error: `對話 ${c.key} 目前沒有 job (worker 睡著或被移除): 先用 cc-telegram-router cli session send 叫醒它` }
+  if (!job) return { error: `對話 ${c.key} 目前沒有 job (worker 睡著或被移除): 先用 cctr cli session send 叫醒它` }
   return { id: job.id }
 }
 

@@ -156,7 +156,7 @@ export async function runAction(deps: Omit<SkillRunDeps, 'notifyOwner'>, dir: st
   const tools = (deps.netMissing ?? netMissing)()
   if (tools) return { code: -1, out: `這台主機缺少沙箱網路隔離需要的工具 (${tools}), 沒有執行 (不會改成不隔離)` }
   const lack = missingTools(deps.toolbox, a.tools)
-  if (lack.length) return { code: -1, out: `工具箱缺少這個動作需要的 ${lack.join(', ')}, 沒有執行 (安裝時下載失敗或還沒裝: owner 在主機上執行 cc-telegram-router toolbox install)` }
+  if (lack.length) return { code: -1, out: `工具箱缺少這個動作需要的 ${lack.join(', ')}, 沒有執行 (安裝時下載失敗或還沒裝: owner 在主機上執行 cctr toolbox install)` }
   const py = await pyEnvOf(deps, dir)
   if ('error' in py) return { code: -1, out: py.error }
   const httpEnv: Record<string, string> = Object.fromEntries(http.flatMap(({ env, cred }) => [

@@ -9,7 +9,7 @@
 
 ## 憑證
 
-- 跨 bot 技能需要的 token 存在 `config.json` 的 `credentials` (token, 允許的方法, 允許的角色), 由 owner 或 admin 在私訊用 `/router cred add <名稱> <token> [方法...]` 登記 (那則訊息 60 秒後刪除, 見 [登記訊息的延遲刪除](#登記訊息的延遲刪除)), 或在終端機用 `cc-telegram-router cred-import <名稱> <檔案> <變數> [方法,...]` 從檔案搬進來. 只有像 bot token 的值 (數字, `:`, 35 字元) 才用 getMe 驗證; 沒帶 `--http` 又不像 bot token 時兩處都不呼叫 getMe (不把 API key 送去 Telegram), 回覆它像哪種 key (Anthropic `sk-ant-`, OpenAI `sk-`, Google `AIza`) 與加上 `--http` 的打法, `/router cred add` 那則訊息照樣在 60 秒後刪除. 沒寫方法就是還沒開放任何方法. worker 用 `bot_api` 工具使用, 看不到 token; owner 在終端機可用 `cc-telegram-router cli botapi`. 對話角色不在憑證允許的角色 (含 `self`) 時跟其他越權動作一樣擋下並走提權 (發話者角色較高就在對話裡詢問, 只能允許一次); 憑證不存在或方法, 路徑沒開放則直接拒絕.
+- 跨 bot 技能需要的 token 存在 `config.json` 的 `credentials` (token, 允許的方法, 允許的角色), 由 owner 或 admin 在私訊用 `/router cred add <名稱> <token> [方法...]` 登記 (那則訊息 60 秒後刪除, 見 [登記訊息的延遲刪除](#登記訊息的延遲刪除)), 或在終端機用 `cctr cred-import <名稱> <檔案> <變數> [方法,...]` 從檔案搬進來. 只有像 bot token 的值 (數字, `:`, 35 字元) 才用 getMe 驗證; 沒帶 `--http` 又不像 bot token 時兩處都不呼叫 getMe (不把 API key 送去 Telegram), 回覆它像哪種 key (Anthropic `sk-ant-`, OpenAI `sk-`, Google `AIza`) 與加上 `--http` 的打法, `/router cred add` 那則訊息照樣在 60 秒後刪除. 沒寫方法就是還沒開放任何方法. worker 用 `bot_api` 工具使用, 看不到 token; owner 在終端機可用 `cctr cli botapi`. 對話角色不在憑證允許的角色 (含 `self`) 時跟其他越權動作一樣擋下並走提權 (發話者角色較高就在對話裡詢問, 只能允許一次); 憑證不存在或方法, 路徑沒開放則直接拒絕.
 - 一般 API key (例如 OpenAI, Anthropic) 也存成憑證, 種類 http: 私訊 `/router cred add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...]` 或終端機 `cred-import <名稱> <檔案> <變數> [路徑,...] --http <網址> [同樣的選項]`, worker 用 `http_api`. 只能打那個網址 (同一個 host); 沒寫路徑就是網址底下全部路徑 (存成 `*`), 寫了就只開放那些 (結尾 `*` 代表前綴). `/router cred list` 的路徑 `全部` 是 `*`, `(無, 全部擋下)` 是空清單, 每次呼叫都會被拒; 角色 `(無, 沒有對話能用)` 是空的角色清單. 回應裡的 base64 可直接存成對話資料夾裡的檔案. 路徑先擋掉 `..`, `.`, `%2e`, 編碼過的 `/` 與 `\`, `#` 再比對前綴 (fetch 會把 `/v1/images/../files` 解析成 `/v1/files`), 對話密鑰也一樣. `bot_api` 與 `http_api` 的回應若回顯了 token 或 key (例如回聲 API), router 先遮蔽成 `<密鑰>` 才交給 worker.
 - owner 與 admin 的對話用 `bot_api` 的 credential `self` 以這隻 bot 自己的身分呼叫任何 Bot API (getUpdates, setWebhook, deleteWebhook, logOut, close 除外).
 
@@ -21,7 +21,7 @@
 - 群組裡合法的 `/secret set` (router 服務的群組, 登記失敗的也算): 10 秒後刪除, 提示「⏳ 這則訊息含有 key, 10 秒後 (HH:MM) 刪除.」不附取消按鈕 (群組其他人看得到). bot 在群組沒有刪除權限時不排程, 回覆提醒發訊者自己刪.
 - 立刻刪除, 不給取消: 被拒的 (`/router cred` 與 `/router bot` 在群組打, 角色不夠, admin 動別人加入的憑證), router 沒有服務的對話. bot 沒有刪除權限時回覆提醒自己刪.
 - 排程跟 10e 密鑰偵測共用 router.db 的 `secret_deletions` (`kind` 欄: `detect` 是偵測, `command` 是登記訊息), router 重啟後照常執行, 停機期間到期的在啟動時刪 (每 10 秒檢查一次). 取消與刪除結果也記在「🔑 密鑰偵測」紀錄 (`secret_log`). 偵測紀錄的處理欄寫「登記或 router 指令: router 處理 (登記指令的訊息在私訊 60 秒後刪除, 發送者, owner, admin 可取消; 群組 10 秒後刪除; 被拒的立刻刪除)」.
-- 在終端機打的指令 (`cc-telegram-router cli`) 沒有訊息要刪.
+- 在終端機打的指令 (`cctr cli`) 沒有訊息要刪.
 
 ## 同名憑證: 覆蓋或取消
 
@@ -78,11 +78,11 @@
 
 ### 終端機執行特權動作
 
-驗收用: owner 在終端機以「某個對話, 某個角色」的身分跑一次特權動作, 或立刻跑一次某技能的憑證更新. 只有 owner 的終端機能用 (`cc-telegram-router cli`, 經 router socket), 在 Telegram 下 `/router skill run` 或 `refresh` 一律拒絕.
+驗收用: owner 在終端機以「某個對話, 某個角色」的身分跑一次特權動作, 或立刻跑一次某技能的憑證更新. 只有 owner 的終端機能用 (`cctr cli`, 經 router socket), 在 Telegram 下 `/router skill run` 或 `refresh` 一律拒絕.
 
 ```bash
-cc-telegram-router cli skill run <對話 key 或 chat_id> <技能> <動作> --out <資料夾> [--role <角色>] [--trial | --trial-store <資料夾>] [--api <http://127.0.0.1:埠>] ['<JSON 參數>']
-cc-telegram-router cli skill refresh <技能>
+cctr cli skill run <對話 key 或 chat_id> <技能> <動作> --out <資料夾> [--role <角色>] [--trial | --trial-store <資料夾>] [--api <http://127.0.0.1:埠>] ['<JSON 參數>']
+cctr cli skill refresh <技能>
 ```
 
 - `skill run` 跟對話的 `run_skill` 走同一條路 (`runSkill`): 從那個對話的 bot 找技能 (這隻 bot 或全部 bot 範圍), 核准雜湊, 動作與參數的角色檢查, 參數格式, 沙箱, `creds`, `http`, `bots`, `store`, 輸出掃描與遮蔽都一樣. 角色預設是對話自己的角色, `--role` 改成扮演的角色 (例如對 owner 群組測 user 能不能跑, remove 會不會被擋). 參數限較高角色時一樣拒絕 (終端機不送提權申請).
@@ -106,7 +106,7 @@ worker 寫特權技能不用讀 router 原始碼: `/telegram:bot-skill` 寫明 p
 `skill_try` (path, action, args, 選填 role, session, store_seed) 讓 user 以上的對話不用核准就跑一次草稿 (對話資料夾裡的技能, 同 `skill_check` 的 path) 的動作 (`router/skilltry.ts`). **guest 對話一律拒絕** (不能寫檔, 沒有草稿). 試跑的是還沒核准的程式, 所以在[白名單沙箱](skill-runtime.md)裡跑: 看不到主機, 外網只開 80, 443, 53, 22 與宣告的 `outbound_ports`, 資源上限用預設值, 不給主機存取; 2.25.0 以前只開放 power 以上. 不走提權.
 
 - 跟 `run_skill` 與終端機試跑走同一段 (`runPrepared`: 憑證檢查, 資料庫的鎖, 複本與寫回檢查, `buildArgv`, `sandboxArgv`, 輸出掃描與遮蔽), 不同的是: 沒有核准與雜湊檢查, 技能資料夾是草稿本身 (沙箱裡唯讀, 所以草稿裡的 venv 也用得到; 回傳提醒 install_skill 不複製 venv); internal 動作也能試, 但主機存取 (`host` 的 ports, mounts, env) 一律不給; timeout 最多 600 秒; 網路照正式執行的規則 (下一節).
-- 憑證全是假的: http 憑證的 `$<ENV>_URL` 與 bot 憑證的 `$<ENV>_API` 指到沙箱裡 127.0.0.1 上的假服務 (`router/skilltry-fake.ts`, 先在沙箱裡啟動再執行動作; 編譯版 router 用自己的執行檔 `cc-telegram-router skilltry-fake <log> -- <指令>` 啟動它, 因為編譯版的原始檔只在執行檔內的虛擬路徑 `/$bunfs/root`, 不在磁碟上; 從原始碼跑時是 bun 加 `router/skilltry-fake.ts`, 見 `router/selfpath.ts`; Bot API 一律回 `{"ok":true,"result":true}`, http 一律回 `{"fake":true}`, 每個請求記下方法, 路徑, 標頭名稱, 大小與開頭 200 字), key 與 token 是每次隨機的假值 (標頭名稱與 scheme 照真的憑證), 從輸出遮蔽的方式跟真的一樣; creds 資料夾從空的開始. 真的 key, token, cookie 完全不進沙箱. 憑證在 config 裡不存在或類型不對時照樣給假值, 回傳註明核准後正式執行會拒絕.
+- 憑證全是假的: http 憑證的 `$<ENV>_URL` 與 bot 憑證的 `$<ENV>_API` 指到沙箱裡 127.0.0.1 上的假服務 (`router/skilltry-fake.ts`, 先在沙箱裡啟動再執行動作; 編譯版 router 用自己的執行檔 `cctr skilltry-fake <log> -- <指令>` 啟動它, 因為編譯版的原始檔只在執行檔內的虛擬路徑 `/$bunfs/root`, 不在磁碟上; 從原始碼跑時是 bun 加 `router/skilltry-fake.ts`, 見 `router/selfpath.ts`; Bot API 一律回 `{"ok":true,"result":true}`, http 一律回 `{"fake":true}`, 每個請求記下方法, 路徑, 標頭名稱, 大小與開頭 200 字), key 與 token 是每次隨機的假值 (標頭名稱與 scheme 照真的憑證), 從輸出遮蔽的方式跟真的一樣; creds 資料夾從空的開始. 真的 key, token, cookie 完全不進沙箱. 憑證在 config 裡不存在或類型不對時照樣給假值, 回傳註明核准後正式執行會拒絕.
 - 資料庫從空的開始, 不從正式資料庫複製 (草稿可以宣告任何資料庫名稱, 複製等於讓 power 讀到這隻 bot 的共用資料). `store_seed`: 對話資料夾裡的資料夾, 每個子資料夾是一個資料庫, 只能有一般檔案 (符號連結, fifo 拒絕), 合計 20 MB 以內, 第一次建立試跑資料庫時複製進去. `session` (小寫英數與 `-`, 最多 32 字): 試跑資料庫與 creds 資料夾留在 `<stateDir>/skill-try/<對話 key>/s-<名稱>/`, 給之後同名的試跑共用, 最後一次使用後 24 小時清掉; 沒給 session 時用完即刪. 寫回檢查照 append 或 full 套在試跑資料庫上, 正式資料庫完全不動.
 - 工作目錄 (唯一可寫的地方) 是 `<對話資料夾>/skill-try/<GMT+8 時間>-<動作>/`.
 - `role`: 扮演的角色, 只能等於或低於這個對話 (或提權後) 的角色; 動作的 `roles` 與參數的 `args.roles` 照 run_skill 的規則拒絕, 試跑不送提權申請.

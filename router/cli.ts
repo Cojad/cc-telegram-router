@@ -1,4 +1,4 @@
-// Terminal side of the /router commands (plan 03 CLI): `cc-telegram-router cli
+// Terminal side of the /router commands (plan 03 CLI): `cctr cli
 // <子指令...>` hands the command to the running router over its socket and
 // prints the reply. The socket is reachable only from outside the worker
 // sandbox, i.e. the owner's own terminal (TUI = owner).

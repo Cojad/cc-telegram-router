@@ -56,8 +56,8 @@
 - **專屬設定目錄與常駐 daemon.** router 下的每個 `claude` 指令都在 bwrap 裡執行, 用 router 自己的設定目錄 (`<stateDir>/claude-config`). 所以 router 有自己的 daemon, 跟你終端機的 session 分開; router 一直讓它在 bwrap 裡跑著, 每分鐘與每次叫醒前檢查, 不對就自動修好並通知. 登入沿用你自己的 (`~/.claude`), 不用另外登入.
 - **worker 的資料換了位置.** 對話紀錄 (`projects/`), daemon 的 job, 資料夾信任 (`.claude.json`) 都在 `<stateDir>/claude-config`. 第一次啟動時 router 會把各對話目前的紀錄複製過去 (原本的留在 `~/.claude` 當備份), worker 醒來接續原本的對話. worker 的自動記憶一直在對話資料夾的 `memory/` (不在設定目錄), 不用搬, 兩種模式都讀得到. worker 一直都帶 `--setting-sources project,local`, 你使用者層的 `settings.json` 與 `~/.claude/CLAUDE.md` 本來就不載入, 這點沒變 (managed 模式的使用者層在 `<stateDir>/claude-config`, 同樣不載入); 要給所有 worker 的規則寫在 `<home>/CLAUDE.md`.
 - **session 名冊預設共用.** config.json 的 `"managed": { "shareSessions": true }` (沒寫就是開): worker 跟你終端機的 Claude Code session 用同一份名冊, ListAgents 互相看得到, 也能用名稱互相 SendMessage. 設成 `false` 時名冊分開, 互相看不到, 也不能用名稱傳訊. 不論開關, power 以下角色的 worker 都不能用 ListAgents 或傳訊給其他 session (router 會擋, 可提權), admin 與 owner 的 worker 開著共用時看得到你所有的 session.
-- **在終端機看 worker 要用 router 的指令.** 直接跑 `claude agents` 或 `claude attach` 看到的是你自己的 daemon, 找不到 worker; 要帶 `CLAUDE_CONFIG_DIR=<stateDir>/claude-config`, 或改用 `cc-telegram-router managed agents` 與 `cc-telegram-router managed attach <job id | 對話 key | chat_id>` (用法相同, router 代你帶好環境, 也在 bwrap 裡).
-- **睡著的 worker 不在名冊.** 名冊只有正在跑的 session; 要確定送到某個對話 (必要時叫醒它), 用 `cc-telegram-router cli session send`.
+- **在終端機看 worker 要用 router 的指令.** 直接跑 `claude agents` 或 `claude attach` 看到的是你自己的 daemon, 找不到 worker; 要帶 `CLAUDE_CONFIG_DIR=<stateDir>/claude-config`, 或改用 `cctr managed agents` 與 `cctr managed attach <job id | 對話 key | chat_id>` (用法相同, router 代你帶好環境, 也在 bwrap 裡).
+- **睡著的 worker 不在名冊.** 名冊只有正在跑的 session; 要確定送到某個對話 (必要時叫醒它), 用 `cctr cli session send`.
 - **worker 的環境多了兩件事.** 有 managed settings 時, Claude Code 會在每個 session 掛上內建的 `cc-plugin-sec-default` (依它的說明不加任何政策); worker 看到的 `/etc` 是唯讀的 (不能自己加 managed settings).
 - **static bwrap 與降級.** router 用工具箱的 bubblewrap 0.13.1 static 版 (本 repo 的 GitHub Actions 建置, release 固定 sha256, `deploy/install.sh router` 下載, 目前只有 x86_64), 跟系統的 bwrap 分開. 不是 Linux, 工具箱沒有它或檔案被改過, 或系統不讓一般使用者建 user namespace (例如 Ubuntu 24.04 的 `kernel.apparmor_restrict_unprivileged_userns=1`) 時, router 自動降級成 legacy 模式照常運作, 原因寫在啟動公告與 `cli doctor`.
 - **風險.** managed settings 對個人帳號 (Pro, Max) 有效是實測結果 (Claude Code 2.1.302), 官方文件沒有保證; 之後的版本若不再採用, channel 事件會被靜默丟掉. router 檢查得到檔案有沒有掛上, 檢查不到 Claude Code 有沒有採用.
@@ -115,20 +115,20 @@
    ```bash
    claude plugin marketplace list    # 沒有 claude-plugins-official 時: claude plugin marketplace add anthropics/claude-plugins-official
    claude plugin install telegram@claude-plugins-official
-   CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cc-telegram-router, 複製 templates 與報表腳本, 下載工具箱 (含 static bwrap); 還沒有 config.json 時接著開設定嚮導
+   CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cctr, 複製 templates 與報表腳本, 下載工具箱 (含 static bwrap); 還沒有 config.json 時接著開設定嚮導
    deploy/install.sh plugin   # 打包 plugin v2 到 router 的商店 (<home>/.router/marketplace) 與官方 plugin 快取路徑 (第一次會備份原內容)
    deploy/install.sh unit     # 安裝 systemd user unit
    ```
 
    `deploy/install.sh` 的每個子指令開頭都先檢查: bun 找得到 (印出路徑) 而且版本符合 `package.json` 的 `engines`; repo 的相依套件跟 `bun.lock` 一致, 沒裝或過期時自動執行 `bun install --frozen-lockfile` (印出正在做; 失敗就停, 不會改用沒鎖版本的 `bun install`); claude 找得到並印出版本 (比開發與測試用的版本舊時只警告). 缺了什麼就停下並說明怎麼補. `deploy/install.sh unit` 產生 systemd unit 時, 會把 bun 與 claude 所在的資料夾加進 unit 的 PATH (unit 原本只有 `~/.local/bin`, `~/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`; bun 的官方安裝位置 `~/.bun/bin` 不在裡面), 之後換了位置重跑 `deploy/install.sh unit` 會更新.
-4. 設定嚮導 (`deploy/install.sh router` 第一次會自己帶起; 之後隨時用 `deploy/install.sh setup` 再跑, 它執行 `<home>/.router/cc-telegram-router setup` 再 `register`). 要在終端機裡執行, 沒有終端機 (例如腳本, 管線) 時嚮導拒絕執行, 改照 [部署與維運: 設定欄位](docs/operations.md#設定欄位) 手寫 config.json. 嚮導依序問:
+4. 設定嚮導 (`deploy/install.sh router` 第一次會自己帶起; 之後隨時用 `deploy/install.sh setup` 再跑, 它執行 `<home>/.router/cctr setup` 再 `register`). 要在終端機裡執行, 沒有終端機 (例如腳本, 管線) 時嚮導拒絕執行, 改照 [部署與維運: 設定欄位](docs/operations.md#設定欄位) 手寫 config.json. 嚮導依序問:
    - home, owner 的 Telegram uid (可以不填, 啟動後用認領碼認領, 見第 8 步), worker 用的模型, claude 執行檔 (預設是 PATH 找到的那個).
    - 每隻 bot 的名稱與 token. token 輸入時每打一個字 (或貼上的每一個字) 顯示一個 `*`, 看得出有沒有打進去與長度, 但畫面上永遠不出現 token 本身; Backspace 刪最後一個字, Ctrl-U 清掉重打, Enter 結束.
    - 這隻 bot 用官方 Bot API (`api.telegram.org`) 還是自架的本機 Bot API server ([telegram-bot-api](https://github.com/tdlib/telegram-bot-api)). 選自架就再問網址 (預設 `http://127.0.0.1:8081`) 與 server 的 `--dir` (可不填). 接著用那個 server 呼叫 getMe 驗證 token, 成功顯示 `@username (id)`; 失敗時可以重打 token, 重選 server, 或放棄. 驗證沒過不會寫入任何東西.
    - 最後列出要寫入的內容, 確認後寫入 `config.json` 與 `access.json` (權限 600, 先寫暫存檔再改名). 任何時候按 Ctrl-C 都是取消, 不寫入.
    - 選模型時說明 `[1m]`: Opus 4.7 以上, Sonnet 5 以上本身就是 1M context; 名稱加 `[1m]` 的版本要帳號有 1M context 額度 (Sonnet 4.6 的 1M 在所有方案都要 usage credits), 沒有就每一輪 API 錯誤. 選了 200K 的模型而 autoCompactWindow 比較大時會提醒.
    - 資料夾信任: `<home>` 還沒被 Claude Code 信任時, 先說明官方的互動做法 (第 6 步), 再問要不要由嚮導代寫 `~/.claude.json`; 只有輸入 `y` 才寫, 會先備份, 只改那一個設定, 寫完再確認沒被其他 Claude Code 蓋掉. router 正在執行時會先提醒.
-   - 結尾自動跑一次 `cc-telegram-router doctor` (bun 與 claude 在 unit 的 PATH, plugin, 位置檔, 信任, 模型), 有問題就說明怎麼補.
+   - 結尾自動跑一次 `cctr doctor` (bun 與 claude 在 unit 的 PATH, plugin, 位置檔, 信任, 模型), 有問題就說明怎麼補.
 
    第一次跑時 `access.json` 不存在, 嚮導建立預設的一份 (私訊用配對碼 `pairing`, 沒有允許清單, 沒有群組); 已經存在的 `access.json` 不會被換掉, 嚮導只會把 owner 加進它的 `allowFrom` (owner 私訊 bot 不用配對, 見下方「私訊與群組的存取」).
 
@@ -145,7 +145,7 @@
 ## 疑難排解
 
 - router log 一直出現 `plugin did not connect`: worker 的 telegram plugin 沒連上 router. 最常見是 systemd unit 的 PATH 裡沒有 bun (plugin 由 `.mcp.json` 直接執行 `bun`, 而 bun 的官方安裝位置 `~/.bun/bin` 不在 unit 預設的 PATH). 先看 `systemctl --user cat cc-telegram-router` 的 `Environment=PATH=` 有沒有 `command -v bun` 所在的資料夾; 沒有就重跑 `deploy/install.sh unit` (會自動加進去), 再 `systemctl --user restart cc-telegram-router`. 還是不行就看 plugin 自己的 log: `~/.cache/claude-cli-nodejs/<對話資料夾路徑, 斜線換成 ->/mcp-logs-plugin-telegram-telegram/`, 例如對話資料夾 `/srv/cc/bot123/dm-555` 的在 `~/.cache/claude-cli-nodejs/-srv-cc-bot123-dm-555/mcp-logs-plugin-telegram-telegram/`.
-- 先跑 `<home>/.router/cc-telegram-router cli doctor` (Telegram 裡 `/router doctor`): 一次檢查 bun 與 claude 在 unit 的 PATH, plugin, 位置檔, 資料夾信任, 模型與 autoCompactWindow, daemon 裡殘留的 job, 輸出不含 token, 可以直接貼給別人. `/router status` 也會在每個對話後面列出 worker 的狀態與最後一次的問題. router 叫不醒 worker 或某一輪因 API 錯誤結束時, 會在「🔔 重要通知」寫原因與修法 (同一原因只通知一次).
+- 先跑 `<home>/.router/cctr cli doctor` (Telegram 裡 `/router doctor`): 一次檢查 bun 與 claude 在 unit 的 PATH, plugin, 位置檔, 資料夾信任, 模型與 autoCompactWindow, daemon 裡殘留的 job, 輸出不含 token, 可以直接貼給別人. `/router status` 也會在每個對話後面列出 worker 的狀態與最後一次的問題. router 叫不醒 worker 或某一輪因 API 錯誤結束時, 會在「🔔 重要通知」寫原因與修法 (同一原因只通知一次).
 - 每一輪都沒有回覆, 出現「⚠️ 暫時無法回應」: 最常見是模型名稱帶 `[1m]` (例如 `claude-sonnet-4-6[1m]`) 而帳號沒有 1M context 的額度 (`Usage credits required for 1M context`). 改用沒有 `[1m]` 的模型 (`/router config set model claude-sonnet-4-6`), 或在 router 的使用者下開 `claude` 執行 `/usage-credits`. Opus 4.7 以上, Sonnet 5 以上本身就是 1M context, 不用 `[1m]`.
 - 改了模型卻沒生效 (舊參數殘留): router 叫醒 worker 時會比對 daemon job 存的旗標, 不同就換掉 job (用預設模型的對話閒置時輪替); 還是不行就看 log 與 cli doctor 列出的殘留 job, 見 [部署與維運: 疑難排解](docs/operations.md#疑難排解).
 - journal 在 router 停止或重啟時寫 `left-over process` 或 `remains running after unit stopped`: 正常. unit 用 `KillMode=process`, 停 router 時刻意不停 worker.
@@ -167,7 +167,9 @@
 2. `deploy/install.sh router` 與 `deploy/install.sh plugin` (unit 有改時再加 `deploy/install.sh unit`).
 3. `systemctl --user stop cc-telegram-router`, 備份 `<home>/.router/router.db*` (WAL 模式, 連同 `-wal`, `-shm`) 與 `config.json`.
 4. `systemctl --user start cc-telegram-router`: 資料庫結構由 router 啟動時自動升級 (只新增資料表與欄位, 退回舊版通常能直接用). 從 managed 模式以前的版本升級時, router 第一次以 managed 模式啟動會把各對話的紀錄複製到它自己的設定目錄, worker 醒來接續原本的對話; worker 的自動記憶在對話資料夾的 `memory/`, 不用搬 (見 [managed-channel](docs/managed-channel.md#對話紀錄的遷移)).
-5. `/router session rotate all` (或終端機 `<home>/.router/cc-telegram-router cli session rotate all`), 讓 worker 載入新的 plugin 與設定.
+5. `/router session rotate all` (或終端機 `<home>/.router/cctr cli session rotate all`), 讓 worker 載入新的 plugin 與設定.
+
+從 2.33.0 以前的版本升級: 執行檔從 `<home>/.router/cc-telegram-router` 改名為 `<home>/.router/cctr` (指令與子指令不變, 例如 `cctr cli doctor`). `deploy/install.sh router` 會把舊檔換成指向 `cctr` 的連結, 舊的 unit 與腳本照樣啟動新版; 再跑一次 `deploy/install.sh unit` 讓 unit 直接指 `cctr`. systemd unit 名稱仍是 `cc-telegram-router`.
 
 要改設定 (例如換 token, 換成自架的 Bot API server, 加 owner) 用 `deploy/install.sh setup` 的修改模式, 再重啟 router.
 

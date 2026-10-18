@@ -123,7 +123,7 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
 
 函式 `migrateTranscripts` (`router/managed.ts`), 有兩個入口:
 - **自動:** router 在 managed 模式啟動時, 沒有 `migrated.json` 就先遷移, 再看管 daemon. 公開 repo 的使用者升級後不用多做事.
-- **手動:** `cc-telegram-router [--config <路徑>] managed migrate [--dry-run] [--user-config <原本的設定目錄>] [--force]`. 計畫切換時, 先停 router 再執行 (不帶 `--dry-run` 時會拿 router 的鎖, router 在跑就拒絕). 已經遷移過 (`migrated.json` 存在) 時不再做, 要再做一次加 `--force` (已存在的 session 一樣不覆蓋).
+- **手動:** `cctr [--config <路徑>] managed migrate [--dry-run] [--user-config <原本的設定目錄>] [--force]`. 計畫切換時, 先停 router 再執行 (不帶 `--dry-run` 時會拿 router 的鎖, router 在跑就拒絕). 已經遷移過 (`migrated.json` 存在) 時不再做, 要再做一次加 `--force` (已存在的 session 一樣不覆蓋).
 
 **自動記憶不用遷移:** worker 的自動記憶 (Claude Code 的 auto memory) 一直存在對話資料夾的 `memory/` (`<home>/bot<id>/<對話>/memory/`), 因為 `templates/base-settings.json` 從第一版起就設了 `"autoMemoryDirectory": "{{folder}}/memory"`. 對話資料夾不在設定目錄底下, 換設定目錄不會動到它, managed 與 legacy 兩種模式的 worker 都讀同一份, 所以遷移不處理它. 設定目錄裡的 `projects/<資料夾代號>/memory/` 只有沒設 `autoMemoryDirectory` 的 session 才會用 (例如 owner 自己在那個資料夾開的互動 claude), worker 不讀, 也不複製. 這個設定由 `router/test/managed.test.ts` 鎖住; 改了它就要回頭處理遷移.
 
@@ -138,7 +138,7 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
 **演練** (不碰正式的 `~/.claude`, daemon 與 router):
 1. 建一個暫存資料夾, 複製 `config.json` 進去, 把它的 `stateDir` 改成暫存資料夾裡的 `state`, 再把 `router.db` 複製到那個 `state` (`home` 不改, 對話資料夾路徑要對得上).
 2. 建一份原本設定目錄的複製品: 把要演練的對話在 `~/.claude/projects/` 底下的資料夾, `~/.claude/jobs/`, 以及 `~/.claude.json` (放成複製品裡的 `.claude.json`) 複製過去.
-3. `cc-telegram-router --config <暫存>/config.json managed migrate --user-config <複製品> --dry-run`, 再不帶 `--dry-run` 跑一次.
+3. `cctr --config <暫存>/config.json managed migrate --user-config <複製品> --dry-run`, 再不帶 `--dry-run` 跑一次.
 4. 檢查 `<暫存>/state/claude-config/projects/` 的內容與 `migrated.json`; 原本的檔案都沒動.
 
 **降回 legacy:** router 在 legacy 模式啟動時, 若專屬設定目錄有 `migrated.json` (曾經用過 managed), 會把各對話目前 session 在專屬設定目錄裡比較新的紀錄 (含 tool-results) 複製回原本的設定目錄 (只複製較新的, 不刪任何東西), 讓 worker 接續到最新內容 (`syncBack`).
@@ -154,7 +154,7 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
   - bwrap 版本與 sha256 是否相符.
   - daemon 與 worker 是否看得到 managed settings (pid 與檢查結果).
 - **`/healthz`:** JSON 多一個 `channel` 欄位, 例如 `{"mode": "managed", "managedOk": true}` 或 `{"mode": "legacy", "reason": "..."}`. 只是資訊, 不影響 200 或 503 的判斷 (那仍只看 polling 是否新鮮).
-- **其他 session 與 worker 互相看得到:** 見下方「共用 session 名冊」. 要送訊息給睡著或輪替中的 worker, 仍用 `cc-telegram-router cli session send` (經 router 的佇列, 會叫醒它); 用名稱 SendMessage 只送得到正在跑的 worker.
+- **其他 session 與 worker 互相看得到:** 見下方「共用 session 名冊」. 要送訊息給睡著或輪替中的 worker, 仍用 `cctr cli session send` (經 router 的佇列, 會叫醒它); 用名稱 SendMessage 只送得到正在跑的 worker.
 
 ## 共用 session 名冊
 
@@ -186,9 +186,9 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
 worker 用 router 的設定目錄, 在終端機直接跑 `claude agents` 或 `claude attach <id>` 找不到它們 (那是使用者自己的 daemon); 要自己帶 `CLAUDE_CONFIG_DIR=<stateDir>/claude-config` 與 `CLAUDE_SECURESTORAGE_CONFIG_DIR=~/.claude`, 而且最好也在 bwrap 裡, 否則可能在 bwrap 外帶起 daemon (見「daemon 的看管」). router 提供兩個指令代勞, 用法跟 `claude agents` 與 `claude attach` 相同:
 
 ```bash
-cc-telegram-router [--config <路徑>] managed agents [claude agents 的參數...]
-cc-telegram-router [--config <路徑>] managed attach <job id | 對話 key | chat_id> [--bot <名稱>] [claude attach 的其他參數...]
-cc-telegram-router [--config <路徑>] managed help
+cctr [--config <路徑>] managed agents [claude agents 的參數...]
+cctr [--config <路徑>] managed attach <job id | 對話 key | chat_id> [--bot <名稱>] [claude attach 的其他參數...]
+cctr [--config <路徑>] managed help
 ```
 
 - managed 模式經 launcher 執行 (bwrap 加 router 的設定目錄); legacy 模式直接執行 `claudeBin`. 參數原樣轉給 claude.
@@ -242,7 +242,7 @@ cc-telegram-router [--config <路徑>] managed help
 
 1. 合併並建置新版, `deploy/install.sh router` (工具箱會裝 bwrap) 與 `deploy/install.sh plugin` (多部署商店資料夾).
 2. `systemctl --user stop cc-telegram-router`.
-3. `<stateDir>/cc-telegram-router --config <stateDir>/config.json managed migrate --dry-run`, 確認清單. 再不帶 `--dry-run` 執行 (不先手動做也可以, router 第一次以 managed 模式啟動時會自己做).
+3. `<stateDir>/cctr --config <stateDir>/config.json managed migrate --dry-run`, 確認清單. 再不帶 `--dry-run` 執行 (不先手動做也可以, router 第一次以 managed 模式啟動時會自己做).
 4. `systemctl --user start cc-telegram-router`. 看啟動通知的「channel 模式: managed」, 以及 `cli doctor` 的三行.
 5. 在一個對話發訊息, 確認 worker 醒來並接續之前的內容.
 6. 回退: config 設 `"channelMode": "legacy"` 後重啟. worker 回到官方 plugin 與 `~/.claude`.

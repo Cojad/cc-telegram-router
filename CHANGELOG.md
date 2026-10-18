@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [2.33.0] - 2026-10-18
+
+### Changed
+
+- router 執行檔改名: `<stateDir>/cc-telegram-router` 改成 `<stateDir>/cctr` (編譯暫存檔 `cctr.new`). 子指令不變, 例如 `cctr cli doctor`, `cctr managed agents`, `cctr cred-import ...`, `cctr toolbox install`. `deploy/install.sh` 編譯與安裝 `cctr`, systemd unit 的 `ExecStart` 指 `@STATE@/cctr`. 程式印出的指令範例 (用法, doctor, diagnose, toolbox, 嚮導, `/router` 指令的說明), README, docs 與 plugin 的說明書跟著改. 不變的: repo 與 GitHub 網址, package.json 的 name, unit 名稱 `cc-telegram-router.service`, 位置檔 `~/.config/cc-telegram-router/`, 暫存的 `cc-telegram-router/reach-*.json`, plugin `telegram@cc-telegram-router` 與它的商店, 啟動與關機公告和 doctor 標題裡的產品名稱.
+- 升級: `deploy/install.sh router` 裝好 `cctr` 後, 若舊的 `<stateDir>/cc-telegram-router` 存在且是一般檔案, 換成指向 `cctr` 的相對連結 (正在跑的舊程序不受影響), 舊的 unit 與腳本照樣啟動新版; 沒有舊檔不建立, 已經是連結不動. 再跑 `deploy/install.sh unit` 讓 unit 直接指 `cctr`, 然後照常重啟.
+- 單一實例的鎖 (`router/lock.ts`) 改成精確比對持有者的執行檔. 原本看 `/proc/<pid>/cmdline` 是否含 `cc-telegram-router`, 改名後的 `<stateDir>/cctr` 不含這個字串, 第二個 router 會把活著的持有者當成重用 pid 的別的程序而搶走鎖. 現在把 cmdline 依 `\0` 切開, `argv[0]` 的檔名是 `cctr` 或 `cc-telegram-router` (舊名, 也是經舊名連結啟動時的 `argv[0]`) 才算 router; 從原始碼跑則是 `bun` 加上一個以 `router/main.ts` 結尾的參數 (`isRouterCmdline`). 檔名是 `router` 的程序, 以及只是路徑或參數裡有 `.router` 的程序 (bwrap, claude daemon, worker) 都不算; router 當掉後鎖裡的 pid 被它們重用時, 鎖照樣被接手.
+
+### Fixed
+
+- 執行檔帶不認得的參數 (例如 `--help`) 時不再直接啟動 router. `cctr help`, `--help`, `-h` 印出子指令清單 (cli, managed, cred-import, toolbox, setup, doctor, register, import-v1), 結束碼 0; 第一個字是不認得的子指令或參數時, 清單印到 stderr, 結束碼 2. 兩者都在讀 config.json 之前結束, 不拿鎖也不 poll. 不帶任何子指令 (或只帶 `--config <路徑>`) 照舊啟動 router: systemd unit 的 `ExecStart`, 以及升級時經舊名連結啟動的舊 unit, 都不帶參數. 判斷在 `router/selfpath.ts` 的 `entryAction`, 清單是 `USAGE`. docs/operations.md 「終端機 CLI」加上說明.
+- 測試: portability 加兩項. 第一項: install.sh 編到 `<state>/cctr` (經 `cctr.new`), unit 的 `ExecStart`, 並從 install.sh 切出 `link_old_name` 在暫存資料夾實跑 (舊檔換成連結並讀到新版, 第二次不動, 新安裝不建立舊名). 第二項: `entryAction` 的各種參數; 從原始碼帶 `--help`, `-h`, `help` 時印出用法, 結束碼 0, 帶 `--bogus`, `start` 時用法印到 stderr, 結束碼 2, 兩者都沒有建鎖也沒有寫位置檔 (拿掉判斷時這項失敗). e2e-compiled 加一項: 編譯版程序的 `argv[0]` 是 `<state>/cctr` 且 cmdline 不含 `cc-telegram-router`; 第二個 router (直接執行與經舊名連結) 拿不到鎖; 編譯版與舊名連結的 `--help` 都印用法; 舊名連結的 `toolbox status` 可用. phase1 加兩項: `isRouterCmdline` 的新名, 舊名, 原始碼執行與不相干的程序 (`argv[0]` 檔名是 `router`, `/x/y/.router/toolbox/host/bwrap` 帶 `.router` 參數, claude daemon, plugin 的 bun, 名字只是含 router 的工具); 以及從 `/proc` 實測: `argv[0]` 是新名或舊名的活程序擋住鎖, 帶 `.router` 參數的 bwrap 替身與 `argv[0]` 是 `.../router` 的程序活著也被接手. 原本的單一實例測試改用自己的判斷函式. 其他測試裡的執行檔路徑與用法字串跟著改; docs/testing.md 的對照表與安裝位置驗收對照加上這些項目.
+
 ## [2.32.7] - 2026-10-18
 
 ### Added

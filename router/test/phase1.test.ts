@@ -15,7 +15,7 @@ import { openClassifyStore } from '../classifier'
 import { convKey, convType, ensureConversation, findByFolder } from '../conversations'
 import { renderSettings } from '../settings'
 import { makeAssertAllowedChat, makeAssertSendable } from '../guard'
-import { acquireLock } from '../lock'
+import { acquireLock, isRouterCmdline } from '../lock'
 import { createIpc } from '../ipc'
 import { createSupervisor, initPrompt, parseShortId, type Runner } from '../supervisor'
 import { fingerprint, noteStart } from '../freshness'
@@ -166,14 +166,61 @@ test('files: user only from own folder, nobody from router state', () => {
 
 test('single instance per config: a live holder blocks, a dead one is taken over', async () => {
   const lock = join(dir, 'config.json.lock')
-  const holder = Bun.spawn(['bun', '-e', `require('${join(import.meta.dir, '..', 'lock.ts')}').acquireLock('${lock}', 'locktest-marker'); setTimeout(()=>{}, 60000) // locktest-marker`])
+  const marker = (c: string) => c.includes('locktest-marker')
+  const holder = Bun.spawn(['bun', '-e', `require('${join(import.meta.dir, '..', 'lock.ts')}').acquireLock('${lock}', c => c.includes('locktest-marker')); setTimeout(()=>{}, 60000) // locktest-marker`])
   for (let i = 0; i < 50 && !existsSync(lock); i++) await sleep(50)
-  expect(() => acquireLock(lock, 'locktest-marker')).toThrow(/already holds/)
+  expect(() => acquireLock(lock, marker)).toThrow(/already holds/)
   holder.kill(); await holder.exited
-  const release = acquireLock(lock, 'locktest-marker')
+  const release = acquireLock(lock, marker)
   expect(readFileSync(lock, 'utf8')).toBe(String(process.pid))
   release()
   expect(existsSync(lock)).toBe(false)
+})
+
+test('a router\'s command line: argv[0] named cctr or cc-telegram-router (the old name\'s link), or bun running router/main.ts; argv[0] named router, or .router in a path or an argument, is not enough', () => {
+  const c = (...argv: string[]) => argv.join('\0') + '\0'
+  expect(isRouterCmdline(c('/x/cc/.router/cctr'))).toBe(true)
+  expect(isRouterCmdline(c('/x/cc/.router/cctr', '--config', '/x/cc/.router/config.json'))).toBe(true)
+  expect(isRouterCmdline(c('/x/cc/.router/cc-telegram-router'))).toBe(true)
+  expect(isRouterCmdline(c('cctr'))).toBe(true)
+  expect(isRouterCmdline(c('router'))).toBe(false)
+  expect(isRouterCmdline(c('/x/cc/.router/router', '--config', '/x/cc/.router/config.json'))).toBe(false)
+  expect(isRouterCmdline(c('bun', '/repo/router/main.ts', '--config', 'x'))).toBe(true)
+  expect(isRouterCmdline(c('/home/u/.bun/bin/bun', 'run', 'router/main.ts'))).toBe(true)
+  expect(isRouterCmdline(c('/x/y/.router/toolbox/host/bwrap', '--bind', '/x/y/.router/state', '/x/y/.router/state'))).toBe(false)
+  expect(isRouterCmdline(c('/home/u/.local/bin/claude', 'daemon', '--config-dir', '/x/cc/.router/claude-config'))).toBe(false)
+  expect(isRouterCmdline(c('bun', '/x/cc/.router/marketplace/telegram/server.js'))).toBe(false)
+  expect(isRouterCmdline(c('/usr/bin/router-tool', 'cc-telegram-router'))).toBe(false)
+  expect(isRouterCmdline(c('/usr/bin/python3', '/x/cc/.router/cctr'))).toBe(false)
+  expect(isRouterCmdline('')).toBe(false)
+})
+
+test('the router\'s lock, from /proc: a live router by its new name or the old one holds it; a process with .router only in its paths and arguments (bwrap that took the pid again) or argv[0] named router does not, the lock is taken over', async () => {
+  const lock = join(dir, 'router.lock')
+  const as = async (argv0: string, ...args: string[]) => {
+    // exec -a: the process's argv[0] is argv0, the program a python that sleeps (and ignores the arguments)
+    const p = Bun.spawn(['bash', '-c', `exec -a "$0" python3 -c 'import time; time.sleep(60)' "$@"`, argv0, ...args], { stdout: 'ignore', stderr: 'ignore' })
+    for (let i = 0; i < 50; i++) { try { if (readFileSync(`/proc/${p.pid}/cmdline`, 'utf8').startsWith(`${argv0}\0`)) break } catch {} await sleep(20) }
+    writeFileSync(lock, String(p.pid))
+    return p
+  }
+  for (const name of ['/tmp/z/.router/cctr', '/tmp/z/.router/cc-telegram-router']) {
+    const p = await as(name)
+    expect(p.exitCode).toBeNull()
+    expect(() => acquireLock(lock), name).toThrow(`another router (pid ${p.pid}) already holds ${lock}`)
+    p.kill(); await p.exited
+  }
+  // not a router: bwrap with .router in its arguments, and argv[0] named router (never a released name)
+  for (const [argv0, ...args] of [['/x/y/.router/toolbox/host/bwrap', '--bind', '/x/y/.router/state', '/x/y/.router/cctr'], ['/tmp/z/.router/router', '--config', '/tmp/z/.router/config.json']] as string[][]) {
+    const p = await as(argv0!, ...args)
+    expect(readFileSync(`/proc/${p.pid}/cmdline`, 'utf8')).toContain('.router')
+    const release = acquireLock(lock)
+    expect(readFileSync(lock, 'utf8'), argv0).toBe(String(process.pid))
+    // taken over from a live process, not a dead one
+    expect(p.exitCode).toBeNull()
+    release()
+    p.kill(); await p.exited
+  }
 })
 
 // --- 03 IPC + 04 plugin client ------------------------------------------------

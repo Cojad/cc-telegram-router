@@ -246,12 +246,12 @@ test('findRouter: the locator in the user home; the test-only env override; none
   expect(findRouter({ HOME: userHome })).toEqual({ socket: cfg.socket, home: cfg.home })
   expect(findRouter({ HOME: userHome, CC_TELEGRAM_ROUTER_SOCKET: '/a/.router/s' })).toEqual({ socket: '/a/.router/s', home: '/a' })
   expect(findRouter({ HOME: userHome, CC_TELEGRAM_ROUTER_SOCKET: '/a/s', CC_TELEGRAM_ROUTER_HOME: '/b' })).toEqual({ socket: '/a/s', home: '/b' })
-  expect(findRouter({ HOME: join(dir, 'nobody') })).toEqual({ error: `找不到 ${locatorPath(join(dir, 'nobody'))} (deploy/install.sh router 或 cc-telegram-router register 會寫入)` })
+  expect(findRouter({ HOME: join(dir, 'nobody') })).toEqual({ error: `找不到 ${locatorPath(join(dir, 'nobody'))} (deploy/install.sh router 或 cctr register 會寫入)` })
   writeFileSync(locatorPath(userHome), '{')
   expect(findRouter({ HOME: userHome })).toEqual({ error: `${locatorPath(userHome)} 格式不對` })
 })
 
-test('cc-telegram-router register writes the locator from config.json (relative paths resolved)', async () => {
+test('cctr register writes the locator from config.json (relative paths resolved)', async () => {
   writeFileSync(cfg.path, JSON.stringify({ bots: [{ name: 'main', token: '1:x' }], home: '../../srv/tg', socket: 'r.sock' }))
   const p = Bun.spawn(['bun', join(REPO, 'router', 'main.ts'), '--config', cfg.path, 'register'], { env: envAt({}), stdout: 'pipe', stderr: 'pipe' })
   const out = await new Response(p.stdout).text()
@@ -259,6 +259,40 @@ test('cc-telegram-router register writes the locator from config.json (relative 
   expect(readLocator(locatorPath(userHome))).toEqual({ home: cfg.home, stateDir: cfg.stateDir, socket: cfg.socket })
   expect(out.trim()).toBe(`已寫入 ${locatorPath(userHome)}: home ${cfg.home}, socket ${cfg.socket}`)
 }, 20000)
+
+test('cctr help, --help, -h: the usage, exit 0; an unknown first word or flag: the usage on stderr, exit 2; neither starts the router (no lock, no locator); entryAction', async () => {
+  const { entryAction, USAGE, SUBCOMMANDS } = await import('../selfpath')
+  expect(entryAction([])).toEqual({ run: 'router' })
+  expect(entryAction(['--config', '/s/config.json'])).toEqual({ run: 'router' })
+  for (const w of ['help', '--help', '-h']) expect(entryAction(['--config', '/s/config.json', w])).toEqual({ run: 'help' })
+  for (const w of SUBCOMMANDS) expect(entryAction([w, 'x'])).toEqual({ run: 'sub', name: w })
+  expect(entryAction(['--config', '/s/config.json', 'cli', 'doctor'])).toEqual({ run: 'sub', name: 'cli' })
+  for (const w of ['--bogus', 'start', 'status', '--version']) expect(entryAction([w])).toEqual({ run: 'unknown', word: w })
+  for (const w of ['cli', 'managed', 'cred-import', 'toolbox', 'setup', 'doctor', 'register', 'import-v1', 'help, --help, -h']) expect(USAGE).toContain(`  ${w}`)
+  // a config the router would start with (its Bot API a closed port): only the words decide
+  writeFileSync(cfg.path, JSON.stringify({ bots: [{ name: 'main', token: '1:x' }], home: cfg.home, stateDir: cfg.stateDir, socket: cfg.socket, apiRoot: 'http://127.0.0.1:9' }))
+  const run = async (words: string[]) => {
+    const p = Bun.spawn(['bun', join(REPO, 'router', 'main.ts'), '--config', cfg.path, ...words], { env: envAt({}), stdout: 'pipe', stderr: 'pipe' })
+    const killer = setTimeout(() => p.kill(), 15000)
+    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited])
+    clearTimeout(killer)
+    return { out, err, code }
+  }
+  for (const w of ['--help', '-h', 'help']) {
+    const r = await run([w])
+    expect([w, r.code]).toEqual([w, 0])
+    expect(r.out.trim()).toBe(USAGE)
+    expect(existsSync(cfg.path + '.lock'), w).toBe(false)
+  }
+  for (const w of ['--bogus', 'start']) {
+    const r = await run([w])
+    expect([w, r.code]).toEqual([w, 2])
+    expect(r.out).toBe('')
+    expect(r.err).toBe(`不認得的子指令或參數: ${w}\n\n${USAGE}\n`)
+    expect(existsSync(cfg.path + '.lock'), w).toBe(false)
+  }
+  expect(existsSync(locatorPath(userHome))).toBe(false)
+}, 60000)
 
 function startIpc(got: unknown[]) {
   return createIpc({
@@ -285,7 +319,7 @@ test('plugin finds the router through the locator, wherever it is installed; no 
     // no locator yet
     const none = await plugin(envAt({ CLAUDE_PROJECT_DIR: conv.folder }))
     const r: any = await none.callTool({ name: 'reply', arguments: { chat_id: '-100555', text: 'x' } })
-    expect(r.content[0].text).toBe(`not a Telegram worker: 找不到 ${locatorPath(userHome)} (deploy/install.sh router 或 cc-telegram-router register 會寫入)`)
+    expect(r.content[0].text).toBe(`not a Telegram worker: 找不到 ${locatorPath(userHome)} (deploy/install.sh router 或 cctr register 會寫入)`)
     await none.close()
     writeLocator({ home: cfg.home, stateDir: cfg.stateDir, socket: cfg.socket }, locatorPath(userHome))
     const worker = await plugin(envAt({ CLAUDE_PROJECT_DIR: conv.folder, CC_TELEGRAM_CHANNEL_GRACE_MS: '50' }))
@@ -349,14 +383,45 @@ test('the plugin, hook and shared code name no install path', () => {
     expect(readFileSync(join(REPO, f), 'utf8')).not.toMatch(/['"`]\/x[/'"`]/)
 })
 
+test('install.sh router: compiles to <state>/cctr (via cctr.new); an old <state>/cc-telegram-router (a regular file) becomes a link to cctr, a missing one is not made, a link is left alone', async () => {
+  const sh = readFileSync(join(REPO, 'deploy', 'install.sh'), 'utf8')
+  expect(sh).toContain('--outfile "$STATE/cctr.new"\n  mv -f "$STATE/cctr.new" "$STATE/cctr"\n  link_old_name\n')
+  expect(readFileSync(join(REPO, 'deploy', 'cc-telegram-router.service'), 'utf8')).toContain('ExecStart=@STATE@/cctr\n')
+  // the function itself, cut out of install.sh and run on temporary state dirs
+  const fn = sh.match(/^link_old_name\(\) \{\n[\s\S]*?\n\}\n/m)![0]
+  const link = async (state: string) => {
+    const p = Bun.spawn(['bash', '-c', `set -euo pipefail\n${fn}STATE="$1"; link_old_name`, 'x', state], { stdout: 'pipe', stderr: 'pipe' })
+    const out = await new Response(p.stdout).text()
+    expect(await p.exited).toBe(0)
+    return out
+  }
+  const { lstatSync, readlinkSync } = await import('fs')
+  const old = join(dir, 'old-state')
+  mkdirSync(old)
+  writeFileSync(join(old, 'cctr'), 'new build'); writeFileSync(join(old, 'cc-telegram-router'), 'old build')
+  expect(await link(old)).toBe(`舊的執行檔 ${old}/cc-telegram-router 換成指向 cctr 的連結 (2.33.0 改名為 cctr)\n`)
+  expect(lstatSync(join(old, 'cc-telegram-router')).isSymbolicLink()).toBe(true)
+  expect(readlinkSync(join(old, 'cc-telegram-router'))).toBe('cctr')
+  expect(readFileSync(join(old, 'cc-telegram-router'), 'utf8')).toBe('new build')
+  // a second install: already a link, nothing said or changed
+  expect(await link(old)).toBe('')
+  expect(readlinkSync(join(old, 'cc-telegram-router'))).toBe('cctr')
+  // a fresh install: no old name made
+  const fresh = join(dir, 'fresh-state')
+  mkdirSync(fresh)
+  writeFileSync(join(fresh, 'cctr'), 'new build')
+  expect(await link(fresh)).toBe('')
+  expect(existsSync(join(fresh, 'cc-telegram-router'))).toBe(false)
+})
+
 test('install.sh setup: runs the router\'s wizard on the state dir\'s config.json, then register; router starts it itself only without config.json and in a terminal', async () => {
   const sh = readFileSync(join(REPO, 'deploy', 'install.sh'), 'utf8')
   expect(sh).toContain('setup) install_setup ;;')
-  expect(sh).toContain('"$STATE/cc-telegram-router" --config "$STATE/config.json" setup\n  "$STATE/cc-telegram-router" register')
+  expect(sh).toContain('"$STATE/cctr" --config "$STATE/config.json" setup\n  "$STATE/cctr" register')
   expect(sh).toContain('if [ ! -f "$STATE/config.json" ] && [ -t 0 ] && [ -t 1 ]; then')
   // no router built in that state dir yet: says how
   const state = join(dir, 'setup-state')
   const p = Bun.spawn(['bash', join(REPO, 'deploy', 'install.sh'), 'setup'], { env: envAt({ CC_ROUTER_STATE: state }), stdout: 'pipe', stderr: 'pipe' })
   expect(await p.exited).toBe(1)
-  expect((await new Response(p.stderr).text()).trim()).toBe(`${state}/cc-telegram-router 不存在: 先執行 CC_ROUTER_STATE=${state} install.sh router`)
+  expect((await new Response(p.stderr).text()).trim()).toBe(`${state}/cctr 不存在: 先執行 CC_ROUTER_STATE=${state} install.sh router`)
 })

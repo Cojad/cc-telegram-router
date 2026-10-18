@@ -83,9 +83,9 @@ session 的資料由 Claude Code 存在它的設定目錄, 位置隨 channel 模
 
 ### 從終端機看 session
 
-- `cc-telegram-router managed agents` / `managed attach <對話 key | chat_id | job id>`: 等同 `claude agents` / `claude attach`, 自動帶 router 的設定目錄.
+- `cctr managed agents` / `managed attach <對話 key | chat_id | job id>`: 等同 `claude agents` / `claude attach`, 自動帶 router 的設定目錄.
 - 直接用 `claude agents` 時, managed 模式要加 `CLAUDE_CONFIG_DIR=<stateDir>/claude-config`.
-- 送訊息給分身: `cc-telegram-router cli session send <對話> --from <名稱>`, 分身睡著也會叫醒 ([部署與維運](operations.md#從外部送訊息給-worker)). 名冊共用時, 醒著的分身也能用 ListAgents 與 SendMessage 找到.
+- 送訊息給分身: `cctr cli session send <對話> --from <名稱>`, 分身睡著也會叫醒 ([部署與維運](operations.md#從外部送訊息給-worker)). 名冊共用時, 醒著的分身也能用 ListAgents 與 SendMessage 找到.
 
 ## managed 模式的自動遷移
 
@@ -99,7 +99,7 @@ session 的資料由 Claude Code 存在它的設定目錄, 位置隨 channel 模
 
 `<home>` 的信任與第 3 項每次以 managed 模式啟動都會檢查並補上 (冪等); 對話資料夾個別的信任只在遷移時照抄一次. 不用搬的: 所有 `CLAUDE.md` 與記憶 (都在 `<home>`), router.db, config, 技能. 不會搬的: 已經輪替掉的舊 session 紀錄, 仍留在 `~/.claude/projects`.
 
-想先確認再遷移: 停 router, 跑 `cc-telegram-router managed migrate --dry-run` 看清單, 再不帶 `--dry-run` 執行, 然後啟動 router ([managed-channel](managed-channel.md#對話紀錄的遷移)). 退回 legacy (config 設 `"channelMode": "legacy"`) 時, 專屬設定目錄裡較新的 session 紀錄會複製回 `~/.claude/projects`, 只複製, 不刪.
+想先確認再遷移: 停 router, 跑 `cctr managed migrate --dry-run` 看清單, 再不帶 `--dry-run` 執行, 然後啟動 router ([managed-channel](managed-channel.md#對話紀錄的遷移)). 退回 legacy (config 設 `"channelMode": "legacy"`) 時, 專屬設定目錄裡較新的 session 紀錄會複製回 `~/.claude/projects`, 只複製, 不刪.
 
 ## 從 OpenClaw 轉過來
 

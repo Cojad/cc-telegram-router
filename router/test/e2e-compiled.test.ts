@@ -5,7 +5,7 @@
 // dir; the unit's PATH, without /usr/sbin where nft lives), against a fake Bot
 // API. An owner conversation's worker plugin calls skill_try on the guide's
 // example: the sandbox starts the fake service with the router's own
-// executable (`cc-telegram-router skilltry-fake`), since a compiled program's
+// executable (`cctr skilltry-fake`), since a compiled program's
 // own source files are not on disk (/$bunfs/root); the action runs, the fake
 // service gets its calls, the run is recorded. 2.17.0 failed exactly here in
 // production while the tests run from source passed. Also router/selfpath.ts.
@@ -13,7 +13,7 @@
 // (docs/operations.md 「自架 Bot API server」): the config's apiRoot is never
 // reached, and download_attachment reads the absolute path getFile gives
 // from disk (from source in e2e-localapi.test.ts). The setup wizard
-// (`cc-telegram-router --config <path> setup`) in the compiled router: no
+// (`cctr --config <path> setup`) in the compiled router: no
 // terminal, refused; in a pseudo terminal, a new config with the token as *
 // only (from source in e2e-wizard.test.ts).
 // And run_skill of an approved skill (docs/skill-runtime.md): the whitelisted
@@ -22,9 +22,12 @@
 // apiRoot on the host's 127.0.0.1 is reached at 10.0.2.2 on that port. The toolbox (docs/skill-runtime.md
 // 「工具箱」): the toolbox subcommand without config.json, the toolbox mounted
 // for run_skill, a missing tool refused.
+// The executable's name (2.33.0, README 「升級」): <state>/cctr as deploy/install.sh
+// builds it; the one-router lock (router/lock.ts) still holds with that command
+// line, also when started through the old name's link.
 
 import { test, expect, beforeAll, afterAll } from 'bun:test'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, chmodSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Database } from 'bun:sqlite'
@@ -75,7 +78,7 @@ const q = (sql: string) => { const db = new Database(join(state, 'router.db'), {
 beforeAll(async () => {
   mkdirSync(state, { recursive: true, mode: 0o700 })
   // what deploy/install.sh router does: the executable and the templates in the state dir
-  const build = Bun.spawnSync(['bun', 'build', '--compile', join(ROOT, 'router', 'main.ts'), '--outfile', join(state, 'cc-telegram-router')], { stderr: 'pipe' })
+  const build = Bun.spawnSync(['bun', 'build', '--compile', join(ROOT, 'router', 'main.ts'), '--outfile', join(state, 'cctr')], { stderr: 'pipe' })
   if (build.exitCode !== 0) throw new Error(build.stderr.toString())
   cpSync(join(ROOT, 'templates'), join(state, 'templates'), { recursive: true })
   const fakeClaude = join(dir, 'fake-claude')
@@ -85,7 +88,7 @@ beforeAll(async () => {
   writeFileSync(join(state, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: ['555'], groups: {}, pending: {} }))
   // as deploy/cc-telegram-router.service starts it
   const home = process.env.HOME!
-  router = Bun.spawn([join(state, 'cc-telegram-router')], { cwd: state, env: { HOME: home, PATH: `${home}/.local/bin:${home}/bin:/usr/local/bin:/usr/bin:/bin` }, stdout: 'ignore', stderr: 'pipe' })
+  router = Bun.spawn([join(state, 'cctr')], { cwd: state, env: { HOME: home, PATH: `${home}/.local/bin:${home}/bin:/usr/local/bin:/usr/bin:/bin` }, stdout: 'ignore', stderr: 'pipe' })
   void (async () => { for await (const c of router!.stderr as ReadableStream<Uint8Array>) stderr += new TextDecoder().decode(c) })()
 }, 120_000)
 
@@ -99,11 +102,11 @@ afterAll(async () => {
 })
 
 test('router/selfpath.ts: compiled, the fake service is the router itself with a subcommand; from source, bun and the script; arguments past the virtual entry point', () => {
-  expect(fakeService(true, '/srv/r/cc-telegram-router', '/$bunfs/root')).toEqual({ cmd: ['/srv/r/cc-telegram-router', FAKE_SUBCOMMAND], ro: ['/srv/r/cc-telegram-router'] })
+  expect(fakeService(true, '/srv/r/cctr', '/$bunfs/root')).toEqual({ cmd: ['/srv/r/cctr', FAKE_SUBCOMMAND], ro: ['/srv/r/cctr'] })
   expect(fakeService(false, '/usr/bin/bun', '/repo/router')).toEqual({ cmd: ['/usr/bin/bun', '/repo/router/skilltry-fake.ts'], ro: ['/usr/bin/bun', '/repo/router/skilltry-fake.ts'] })
-  expect(relaunchArgs(['bun', '/$bunfs/root/cc-telegram-router', '--config', 'x'])).toEqual(['--config', 'x'])
+  expect(relaunchArgs(['bun', '/$bunfs/root/cctr', '--config', 'x'])).toEqual(['--config', 'x'])
   expect(relaunchArgs(['/usr/bin/bun', '/repo/router/main.ts', '--config', 'x'])).toEqual(['/repo/router/main.ts', '--config', 'x'])
-  expect(ownArgs(['bun', '/$bunfs/root/cc-telegram-router', 'skilltry-fake', 'log'])).toEqual(['skilltry-fake', 'log'])
+  expect(ownArgs(['bun', '/$bunfs/root/cctr', 'skilltry-fake', 'log'])).toEqual(['skilltry-fake', 'log'])
 })
 
 test('the compiled router, started as the systemd unit starts it, runs skill_try on the guide\'s example for an owner conversation; the bot\'s own --local Bot API server: download_attachment from disk', async () => {
@@ -130,8 +133,37 @@ test('the compiled router, started as the systemd unit starts it, runs skill_try
   plugin.close()
 }, 120_000)
 
+test('the compiled router is <state>/cctr, as deploy/install.sh names it; a second one on the same config.json, by that name or by the old name\'s link (install.sh link_old_name), finds the lock held: its argv[0] is cctr, not cc-telegram-router', async () => {
+  const sh = readFileSync(join(ROOT, 'deploy', 'install.sh'), 'utf8')
+  expect(sh).toContain('bun build --compile "$REPO/router/main.ts" --outfile "$STATE/cctr.new"')
+  await until(() => existsSync(join(state, 'router.sock')))
+  const cmdline = readFileSync(`/proc/${router!.pid}/cmdline`, 'utf8')
+  expect(cmdline.split('\0')[0]).toBe(join(state, 'cctr'))
+  expect(cmdline).not.toContain('cc-telegram-router')
+  symlinkSync('cctr', join(state, 'cc-telegram-router'))
+  const home = process.env.HOME!
+  for (const exe of ['cctr', 'cc-telegram-router']) {
+    const second = Bun.spawn([join(state, exe)], { cwd: state, env: { HOME: home, PATH: `${home}/.local/bin:${home}/bin:/usr/local/bin:/usr/bin:/bin` }, stdout: 'ignore', stderr: 'pipe' })
+    const err = await new Response(second.stderr).text()
+    expect(await second.exited, exe).not.toBe(0)
+    expect(err, exe).toContain(`another router (pid ${router!.pid}) already holds ${join(state, 'config.json.lock')}`)
+  }
+  expect(readFileSync(join(state, 'config.json.lock'), 'utf8')).toBe(String(router!.pid))
+  // --help on the compiled executable (and through the link): the usage, the running router untouched
+  for (const exe of ['cctr', 'cc-telegram-router']) {
+    const h = Bun.spawnSync([join(state, exe), '--help'], { cwd: dir, env: { PATH: '/usr/bin:/bin', HOME: home } })
+    expect(h.exitCode, exe).toBe(0)
+    expect(h.stdout.toString()).toStartWith('用法: cctr [--config <config.json>] [<子指令> ...]\n')
+  }
+  expect(readFileSync(join(state, 'config.json.lock'), 'utf8')).toBe(String(router!.pid))
+  // the old name runs the same build: its subcommands work through the link
+  const st = Bun.spawnSync([join(state, 'cc-telegram-router'), 'toolbox', 'status', '--state', join(dir, 'link-state')], { cwd: dir, env: { PATH: '/usr/bin:/bin', HOME: home } })
+  expect(st.exitCode).toBe(0)
+  expect(st.stdout.toString()).toContain('ffmpeg: 沒有安裝 (cctr toolbox install)')
+}, 60_000)
+
 test.skipIf(!Bun.which('script'))('the compiled router\'s setup wizard: no terminal, refused; in a terminal, a new config whose token shows as * only, checked on the self-hosted server', async () => {
-  const exe = join(state, 'cc-telegram-router')
+  const exe = join(state, 'cctr')
   const other = join(dir, 'wizard', '.router', 'config.json')
   const no = Bun.spawn([exe, '--config', other, 'setup'], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' })
   no.stdin.end()
@@ -198,12 +230,12 @@ PY
 }, 120_000)
 
 test('the compiled router\'s toolbox: `toolbox status` and `toolbox install` work without config.json (a failed download only fails that tool, exit 1); run_skill finds the toolbox at /cctr/tools/bin and refuses an action whose tool is missing', async () => {
-  const exe = join(state, 'cc-telegram-router')
+  const exe = join(state, 'cctr')
   const empty = join(dir, 'empty-mirror'); mkdirSync(empty, { recursive: true })
   const other = join(dir, 'other-state')
   const st = Bun.spawnSync([exe, 'toolbox', 'status', '--state', other], { cwd: dir, env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME! } })
   expect(st.exitCode).toBe(0)
-  expect(st.stdout.toString()).toContain('ffmpeg: 沒有安裝 (cc-telegram-router toolbox install)')
+  expect(st.stdout.toString()).toContain('ffmpeg: 沒有安裝 (cctr toolbox install)')
   const ins = Bun.spawnSync([exe, 'toolbox', 'install', '--state', other, '--mirror', empty], { cwd: dir, env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME! } })
   expect(ins.exitCode).toBe(1)
   expect(ins.stdout.toString()).toContain('ffmpeg 7.0.2: 失敗')

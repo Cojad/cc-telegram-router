@@ -5,7 +5,7 @@
 // message id and direction) are skipped, so running it twice is harmless.
 // Opens the router db while the router runs (WAL).
 //
-//   cc-telegram-router [--config x] import-v1 <messages.db> [--bot <名稱>]
+//   cctr [--config x] import-v1 <messages.db> [--bot <名稱>]
 
 import { Database } from 'bun:sqlite'
 

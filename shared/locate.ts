@@ -1,5 +1,5 @@
 // Where the plugin and the worker hook find the router. The router may be
-// installed anywhere, so nothing here assumes a fixed path: `cc-telegram-router
+// installed anywhere, so nothing here assumes a fixed path: `router
 // register` (run by deploy/install.sh router) writes a small locator file in
 // the user's home, ~/.config/cc-telegram-router/router.json, holding the
 // router's home, state dir and socket. It holds no secrets.
@@ -56,5 +56,5 @@ export function findRouter(env: Record<string, string | undefined> = process.env
   const file = path ?? locatorPath(env.HOME || homedir())
   const loc = readLocator(file)
   if (loc) return { socket: loc.socket, home: loc.home }
-  return { error: existsSync(file) ? `${file} 格式不對` : `找不到 ${file} (deploy/install.sh router 或 cc-telegram-router register 會寫入)` }
+  return { error: existsSync(file) ? `${file} 格式不對` : `找不到 ${file} (deploy/install.sh router 或 cctr register 會寫入)` }
 }

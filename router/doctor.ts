@@ -1,5 +1,5 @@
-// `cc-telegram-router cli doctor` (through the running router) and
-// `cc-telegram-router [--config x] doctor` (without it, e.g. at the end of the
+// `cctr cli doctor` (through the running router) and
+// `cctr [--config x] doctor` (without it, e.g. at the end of the
 // setup wizard): one pass over what a router needs, as plain text to paste to
 // someone else (docs/operations.md 「cli doctor」). Never a token: every line
 // goes through maskTokens. Tests: router/test/diagnose.test.ts.
@@ -79,8 +79,8 @@ export function doctorReport(d: DoctorDeps): string {
 
   // the locator the plugin and the hook find the router by
   const loc = readLocator(locatorPath(home))
-  if (!loc) out.push(bad(`位置檔 ${locatorPath(home)} 不存在: worker 的 plugin 與 hook 找不到 router; 執行 ${join(cfg.stateDir, 'cc-telegram-router')} register`))
-  else if (loc.home !== cfg.home || loc.socket !== cfg.socket) out.push(bad(`位置檔指向另一個 router (home ${loc.home}, socket ${loc.socket}); 執行 ${join(cfg.stateDir, 'cc-telegram-router')} register`))
+  if (!loc) out.push(bad(`位置檔 ${locatorPath(home)} 不存在: worker 的 plugin 與 hook 找不到 router; 執行 ${join(cfg.stateDir, 'cctr')} register`))
+  else if (loc.home !== cfg.home || loc.socket !== cfg.socket) out.push(bad(`位置檔指向另一個 router (home ${loc.home}, socket ${loc.socket}); 執行 ${join(cfg.stateDir, 'cctr')} register`))
   else out.push(ok(`位置檔 ${locatorPath(home)} 指向這個 router`))
 
   // home trusted by Claude Code (children inherit it); managed mode: in the router's own config folder
@@ -138,7 +138,7 @@ export function doctorReport(d: DoctorDeps): string {
 }
 
 
-/** Without the router (cc-telegram-router doctor, the end of the setup
+/** Without the router (cctr doctor, the end of the setup
  *  wizard): conversations read from router.db read-only, the daemon's jobs
  *  from claude agents. */
 export async function offlineDoctor(configPath: string, version?: string): Promise<string> {

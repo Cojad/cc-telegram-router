@@ -1,5 +1,5 @@
 // The shared toolbox (docs/skill-runtime.md 「工具箱」, 柯姊 2026-10-18): fixed
-// versions of ffmpeg (static), deno and uv, downloaded by `cc-telegram-router
+// versions of ffmpeg (static), deno and uv, downloaded by `router
 // toolbox install` (deploy/install.sh router runs it), each file checked
 // against its sha256 before it is unpacked, kept in <stateDir>/toolbox/bin and
 // mounted read-only at /cctr/tools/bin in every sandbox, first on PATH. A tool
@@ -82,11 +82,11 @@ export function installed(toolbox: string): Installed {
 /** A host tool's path when installed.json has it and the file's sha256 is still the recorded one; else why not. */
 export function hostTool(toolbox: string, name: string, bin = name): { path: string } | { why: string } {
   const t = installed(toolbox)[name]
-  if (!t?.host || !t.bins[bin]) return { why: `工具箱沒有 ${name} (cc-telegram-router toolbox install)` }
+  if (!t?.host || !t.bins[bin]) return { why: `工具箱沒有 ${name} (cctr toolbox install)` }
   const path = join(hostDir(toolbox), bin)
   let got = ''
   try { got = sha256(readFileSync(path)) } catch (e) { return { why: `讀不到 ${path}: ${e instanceof Error ? e.message : e}` } }
-  if (got !== t.bins[bin]) return { why: `${path} 的 sha256 跟安裝時不同 (重跑 cc-telegram-router toolbox install)` }
+  if (got !== t.bins[bin]) return { why: `${path} 的 sha256 跟安裝時不同 (重跑 cctr toolbox install)` }
   return { path }
 }
 
@@ -166,13 +166,13 @@ export async function installTools(toolbox: string, o: { mirror?: string; arch?:
   return out
 }
 
-/** The toolbox's state, one line per tool (cc-telegram-router toolbox status, /router status). */
+/** The toolbox's state, one line per tool (cctr toolbox status, /router status). */
 export function describeToolbox(toolbox: string): string {
   const have = installed(toolbox)
-  return ALL_TOOLS.map(t => have[t.name] ? `${t.name} ${have[t.name]!.version}${have[t.name]!.version === t.version ? '' : ` (這版 router 用 ${t.version}, 重跑 toolbox install)`}` : `${t.name}: 沒有安裝 (cc-telegram-router toolbox install)`).join('\n')
+  return ALL_TOOLS.map(t => have[t.name] ? `${t.name} ${have[t.name]!.version}${have[t.name]!.version === t.version ? '' : ` (這版 router 用 ${t.version}, 重跑 toolbox install)`}` : `${t.name}: 沒有安裝 (cctr toolbox install)`).join('\n')
 }
 
-/** `cc-telegram-router toolbox install [--state <stateDir>] [--mirror <folder or URL>]` and
+/** `cctr toolbox install [--state <stateDir>] [--mirror <folder or URL>]` and
  *  `toolbox status [--state <stateDir>]`: stateDir defaults to the executable's folder (the compiled
  *  router lives there). Exit 1 when a tool failed (the others are installed anyway). */
 export async function toolboxCli(args: string[], defaultState: string, print: (s: string) => void = s => console.log(s)): Promise<number> {
@@ -180,7 +180,7 @@ export async function toolboxCli(args: string[], defaultState: string, print: (s
   const state = opt('--state') ?? defaultState
   const box = toolboxDir(state)
   if (args[0] === 'status') { print(describeToolbox(box)); return 0 }
-  if (args[0] !== 'install') { print('用法: cc-telegram-router toolbox install|status [--state <stateDir>] [--mirror <資料夾或網址>]'); return 2 }
+  if (args[0] !== 'install') { print('用法: cctr toolbox install|status [--state <stateDir>] [--mirror <資料夾或網址>]'); return 2 }
   const rs = await installTools(box, { mirror: opt('--mirror') })
   for (const r of rs) print(`${r.name} ${r.version}: ${{ installed: '已安裝', kept: '已是這個版本', failed: '失敗', unsupported: '不支援' }[r.status]}${r.why ? ` (${r.why})` : ''}`)
   print(`工具箱: ${box}/bin`)

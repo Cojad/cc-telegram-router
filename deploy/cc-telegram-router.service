@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=@STATE@/cc-telegram-router
+ExecStart=@STATE@/cctr
 WorkingDirectory=@STATE@
 # deploy/install.sh unit: ~/.local/bin, ~/bin, /usr/local/bin, /usr/bin, /bin, with the folders of
 # bun (the worker's telegram plugin runs it, plugin/.mcp.json) and claude in front when elsewhere

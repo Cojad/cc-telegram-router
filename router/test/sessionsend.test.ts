@@ -196,7 +196,7 @@ test('/router session send: a missing conversation, no text, and Telegram are re
   expect((await fromTerminal('/router session send dm-111 --from v1 --wait 5', ' \n', deps))!.reply).toStartWith('沒有要送的文字')
   // the owner in Telegram: terminal only
   const tg = (await runCommand({ bot: 'cc', text: '/router session send dm-111 hi', senderId: '111', senderName: 'o', chatId: '111', chatType: 'private' }, deps))!
-  expect(tg.reply).toBe('⛔ /router session send 只在主機終端機執行 (cc-telegram-router cli session send ...), Telegram 裡不提供')
+  expect(tg.reply).toBe('⛔ /router session send 只在主機終端機執行 (cctr cli session send ...), Telegram 裡不提供')
   expect(sent).toEqual([])
   expect(db.undelivered('dm-111')).toEqual([])
 })
@@ -204,5 +204,5 @@ test('/router session send: a missing conversation, no text, and Telegram are re
 test('/router help lists session send on the session line', async () => {
   const out = (await fromTerminal('/router help', undefined, sendDeps().deps))!
   const line = out.reply.split('\n').find(l => l.startsWith('/router session '))!
-  expect(line).toContain('| send <chat_id|對話key> [--from <發送者>] [--wait <秒>] [<文字> | -] (只在主機終端機: cc-telegram-router cli session send')
+  expect(line).toContain('| send <chat_id|對話key> [--from <發送者>] [--wait <秒>] [<文字> | -] (只在主機終端機: cctr cli session send')
 })

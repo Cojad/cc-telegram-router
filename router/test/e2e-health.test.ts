@@ -78,7 +78,7 @@ function startRouter(name: string, health: unknown) {
   const r = {
     dir, calls, sent, updates, router, stderr: '',
     freeze() { frozen = new Promise(res => { thaw = res }) }, thaw() { frozen = null; thaw?.() }, holdSends() { holdSends = true },
-    /** cc-telegram-router cli <words> against this router. */
+    /** cctr cli <words> against this router. */
     cli: (...words: string[]) => Bun.spawn([process.execPath, join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json'), 'cli', ...words], { env, stdout: 'pipe', stderr: 'pipe' }).exited,
   }
   void (async () => { for await (const c of router.stderr) r.stderr += new TextDecoder().decode(c) })()

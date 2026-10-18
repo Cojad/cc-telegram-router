@@ -254,7 +254,7 @@ test('managed agents and attach from the terminal: through bwrap with the router
   for (const l of newer) expect(l).not.toContain('sessions')
   const u = await cli(['managed'])
   expect(u.code).toBe(0)
-  expect(u.err).toContain('用法: cc-telegram-router [--config <路徑>] managed <子指令>')
+  expect(u.err).toContain('用法: cctr [--config <路徑>] managed <子指令>')
   expect((await cli(['managed', 'nope'])).code).toBe(2)
 }, 60000)
 

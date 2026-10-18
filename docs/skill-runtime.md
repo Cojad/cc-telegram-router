@@ -51,7 +51,7 @@
 
 ## 工具箱
 
-router 安裝時 (`deploy/install.sh router` 執行 `cc-telegram-router toolbox install --state <stateDir>`) 下載固定版本的工具, 每個檔案先核對 sha256 才解開 (只取指定的那個檔), 放在 `<stateDir>/toolbox/bin`, `installed.json` 記版本與檔案的 sha256 (`router/toolbox.ts`). 每個沙箱都唯讀掛在 `/cctr/tools/bin`, 排在 PATH 最前面 (在系統的同名程式之前):
+router 安裝時 (`deploy/install.sh router` 執行 `cctr toolbox install --state <stateDir>`) 下載固定版本的工具, 每個檔案先核對 sha256 才解開 (只取指定的那個檔), 放在 `<stateDir>/toolbox/bin`, `installed.json` 記版本與檔案的 sha256 (`router/toolbox.ts`). 每個沙箱都唯讀掛在 `/cctr/tools/bin`, 排在 PATH 最前面 (在系統的同名程式之前):
 
 | 工具 | 版本 | 來源 (GitHub release 固定 tag 的檔案) |
 |---|---|---|
@@ -60,8 +60,8 @@ router 安裝時 (`deploy/install.sh router` 執行 `cc-telegram-router toolbox 
 | uv | 0.12.22 | `astral-sh/uv` 的 `0.12.22` |
 
 - x86_64 與 aarch64 各有一份. 同版本再裝一次照舊保留 (檔案與記錄的 sha256 相同時); 有檔案不見就重裝.
-- 某個工具下載失敗或 sha256 不符: 只有它沒裝 (舊版照舊), 其他照裝, `toolbox install` 結束碼 1, `install.sh` 只印警告, router 照常運作. 之後再跑 `cc-telegram-router toolbox install --state <stateDir>` 補裝; `toolbox status` 列出現況. `--mirror <資料夾或網址>` 從鏡像拿同名的檔案 (照樣核對 sha256).
-- 動作宣告 `"tools": ["ffmpeg", "deno"]` (只能是工具箱裡的名稱, 算在核准雜湊裡): 宣告的工具沒裝時拒絕執行, 回傳 `exit -1` 與 `工具箱缺少這個動作需要的 <工具>, 沒有執行 (... cc-telegram-router toolbox install)`. 沒宣告的工具裝了也照樣在 PATH 上.
+- 某個工具下載失敗或 sha256 不符: 只有它沒裝 (舊版照舊), 其他照裝, `toolbox install` 結束碼 1, `install.sh` 只印警告, router 照常運作. 之後再跑 `cctr toolbox install --state <stateDir>` 補裝; `toolbox status` 列出現況. `--mirror <資料夾或網址>` 從鏡像拿同名的檔案 (照樣核對 sha256).
+- 動作宣告 `"tools": ["ffmpeg", "deno"]` (只能是工具箱裡的名稱, 算在核准雜湊裡): 宣告的工具沒裝時拒絕執行, 回傳 `exit -1` 與 `工具箱缺少這個動作需要的 <工具>, 沒有執行 (... cctr toolbox install)`. 沒宣告的工具裝了也照樣在 PATH 上.
 - 解開 zip 用 `python3`, tgz 用 `tar` (router 的必要條件), 主機本身不需要裝 ffmpeg, deno, uv.
 - 同一次安裝也下載 router 自己用的工具 (`HOST_TOOLS`): bubblewrap 0.13.1 的 static 版 (本 repo 的 `.github/workflows/bwrap-static.yml` 建置, release `bwrap-0.13.1` 的 `bwrap-0.13.1-x86_64`, 目前只有 x86_64), 用來在 managed 模式執行 router 的每個 claude 指令 (見 [managed-channel](managed-channel.md)). 它放在 `<stateDir>/toolbox/host`, 不在 `bin`, 所以不會掛進任何沙箱, 也不能寫在動作的 `tools` 裡. 下載失敗或 sha256 不符時 router 改用 legacy 模式, 照常運作.
 
