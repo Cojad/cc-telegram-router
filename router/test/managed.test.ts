@@ -8,7 +8,8 @@
 // `managed migrate`, the toolbox's host tools and the marketplace check.
 // config managed.shareSessions (the registry bind on or off), and `managed
 // agents|attach` (the launcher's command, arguments as they are, a conversation
-// key or chat_id turned into its job id).
+// key or chat_id turned into its job id); the workers' auto memory stays in the
+// conversation folder (autoMemoryDirectory), which the migration need not move.
 // End to end through the real router: e2e-managed.test.ts.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
@@ -502,4 +503,13 @@ test('managed agents|attach: the launcher\'s command with the arguments as they 
   expect(await agentsCli([], deps(l))).toBe(7)
   expect(runs.at(-1)).toEqual({ argv: ['/opt/claude', 'agents'], cfg: process.env.CLAUDE_CONFIG_DIR })
   for (const t of ['migrate', 'agents', 'attach', 'help']) expect(MANAGED_USAGE).toContain(`  ${t}`)
+})
+
+test('the workers\' auto memory lives in the conversation folder (base-settings autoMemoryDirectory {{folder}}/memory), outside any config folder, so the migration need not move it; the docs say so', () => {
+  const root = join(import.meta.dir, '..', '..')
+  expect(JSON.parse(readFileSync(join(root, 'templates', 'base-settings.json'), 'utf8')).autoMemoryDirectory).toBe('{{folder}}/memory')
+  const doc = readFileSync(join(root, 'docs', 'managed-channel.md'), 'utf8')
+  const sec = doc.slice(doc.indexOf('\n## 對話紀錄的遷移\n'), doc.indexOf('\n## ', doc.indexOf('\n## 對話紀錄的遷移\n') + 5))
+  for (const t of ['"autoMemoryDirectory": "{{folder}}/memory"', '自動記憶不用遷移', '`router/test/managed.test.ts` 鎖住']) expect(sec).toContain(t)
+  expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain('worker 的自動記憶在對話資料夾的 `memory/`, 不用搬')
 })

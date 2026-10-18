@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.32.3] - 2026-10-18
+
+### Changed
+
+- 文件: worker 的自動記憶一直存在對話資料夾的 `memory/` (`templates/base-settings.json` 從第一版起設了 `"autoMemoryDirectory": "{{folder}}/memory"`), 不在 Claude Code 的設定目錄, 所以切換到 managed 模式的遷移不用處理它, 兩種模式的 worker 都讀同一份. 寫進 docs/managed-channel.md 的「對話紀錄的遷移」與 README 的差異說明, 升級說明; 順便更正遷移函式所在的檔案 (`router/managed.ts`).
+- 測試: managed.test (21 項) 加一項鎖住 `autoMemoryDirectory` 是 `{{folder}}/memory` 並對照文件; 有人改了它, 就要回頭處理遷移.
+
 ## [2.32.2] - 2026-10-18
 
 ### Added

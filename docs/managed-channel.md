@@ -121,9 +121,11 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
 
 ## 對話紀錄的遷移
 
-函式 `migrateTranscripts` (`router/claudecmd.ts`), 有兩個入口:
+函式 `migrateTranscripts` (`router/managed.ts`), 有兩個入口:
 - **自動:** router 在 managed 模式啟動時, 沒有 `migrated.json` 就先遷移, 再看管 daemon. 公開 repo 的使用者升級後不用多做事.
 - **手動:** `cc-telegram-router [--config <路徑>] managed migrate [--dry-run] [--user-config <原本的設定目錄>] [--force]`. 計畫切換時, 先停 router 再執行 (不帶 `--dry-run` 時會拿 router 的鎖, router 在跑就拒絕). 已經遷移過 (`migrated.json` 存在) 時不再做, 要再做一次加 `--force` (已存在的 session 一樣不覆蓋).
+
+**自動記憶不用遷移:** worker 的自動記憶 (Claude Code 的 auto memory) 一直存在對話資料夾的 `memory/` (`<home>/bot<id>/<對話>/memory/`), 因為 `templates/base-settings.json` 從第一版起就設了 `"autoMemoryDirectory": "{{folder}}/memory"`. 對話資料夾不在設定目錄底下, 換設定目錄不會動到它, managed 與 legacy 兩種模式的 worker 都讀同一份, 所以遷移不處理它. 設定目錄裡的 `projects/<資料夾代號>/memory/` 只有沒設 `autoMemoryDirectory` 的 session 才會用 (例如 owner 自己在那個資料夾開的互動 claude), worker 不讀, 也不複製. 這個設定由 `router/test/managed.test.ts` 鎖住; 改了它就要回頭處理遷移.
 
 步驟:
 1. 對 router.db 裡每個有 session 的對話, 把 `<原本的設定目錄>/projects/<資料夾代號>/<session>.jsonl` 與同名資料夾 (tool-results, subagents) 複製到 `<專屬設定目錄>/projects/<資料夾代號>/`. 目的地已有同名檔就跳過, 不覆蓋. 原本的不刪.
@@ -207,7 +209,7 @@ cc-telegram-router [--config <路徑>] managed help
 
 ## 測試
 
-- `router/test/managed.test.ts` (20 項): 模組層級, 見下方清單.
+- `router/test/managed.test.ts` (21 項): 模組層級, 見下方清單.
 - `router/test/e2e-managed.test.ts` (6 項): 真的 router, 假 Bot API, e2e-wake 的假 claude, 以及用系統 bwrap 做出同樣 mount namespace 的 bwrap 替身.
 - `router/test/health.test.ts`: 啟動公告的 channel 一行, `/healthz` 的 `channel` 欄位, 文件範例的欄位.
 - 驗收對照表在 [testing](testing.md#managed-channel-驗收對照).
