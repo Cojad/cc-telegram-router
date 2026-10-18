@@ -61,7 +61,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `reactions` | 表情回應 | reactions, e2e-reactions | `router/reactions.ts`, `router/telegram/transport.ts`, `router/telegram/inbound.ts` |
 | `classifier` | 工具呼叫分類器 | classifier, e2e-classifier, e2e-classifier-off | `router/classifier.ts` |
 | `core` | 對話生命週期與指令 | phase1, phase2, e2e, e2e-wake, e2e-setup | `router/` 的 supervisor, lock, conversations, context, progress, relay, freshness, rotate, setup, cli, guard, settings; `plugin/server.ts`, `plugin/skills/**`, `shared/time.ts`, `templates/**` |
-| `repo` | 報表腳本與 repo 檢查 | context-chart, usage-report, requirements, areas | `scripts/**`, `README.md`, `CHANGELOG.md`, `plugin/package.json`, `deploy/**`, `router/relay.ts`, `router/test/areas.ts`, `router/test/tiers.ts` |
+| `repo` | 報表腳本與 repo 檢查 | context-chart, usage-report, requirements, areas, readme | `scripts/**`, `README.md`, `docs/operations.md`, `docs/secrets.md`, `CHANGELOG.md`, `plugin/package.json`, `deploy/**`, `router/relay.ts`, `router/test/areas.ts`, `router/test/tiers.ts` |
 
 改到某區的測試檔, 也會跑那一區. 一個路徑可以屬於多個區.
 
@@ -131,6 +131,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/e2e-retry.test.ts` | 真的 router (停下再啟動, 同一個 router.db) + 真的 hook + 真的 plugin client: hook 執行時 router 停著, 1 秒後啟動, hook 在之後的一次拿到 router 的判斷而不是落回放行, router log 記第幾次; 一直停著時重試完落回 (放行, 跳出 sandbox 拒絕), 其他事件不等; SendMessage 給自己的 subagent 時 plugin 斷線, 約 1 秒後同一個程序重連就放行, 一直不連回到期限才擋, 兩種都有 log; 斷路狀態檔標記超過 3 分鐘時只試一次立刻落回, router 回來後那一次拿到判斷並重置 |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |
 | `router/test/requirements.test.ts` | README 的 Requirements 與 package 檔: 根目錄 package.json 沒有 v1 的 `bin` 與 `start`, Bun 1.4.2 以上 (README 寫明, 兩個 package 檔的 `engines.bun` 是 `>=1.4.2`), plugin 版本與 repo 和 CHANGELOG 一致, 報表腳本一律用 python3 (shebang 與呼叫), curl, jq 與 matplotlib 列在強烈建議, 分類器的 API key 在依功能需要, repo 自己的程式與腳本不用 curl 與 jq |
+| `router/test/readme.test.ts` | README 與 [部署與維運](operations.md) 跟上現況: operations.md「設定欄位」剛好列出 `loadConfig` 讀的每個欄位 (多一個少一個都不行) 與憑證的每個欄位, README 連到它; 安裝步驟有官方 plugin 的安裝指令 (在 `deploy/install.sh plugin` 之前) 與 linger 和確認方式 (在啟動之前); README「How to upgrade」與 operations.md「升級」的備份, 安裝, 停止與啟動, 輪替, 資料庫只新增; Feature highlights 涵蓋 2.11 之後的功能; [密鑰](secrets.md#加密金鑰-secretkey)說明 secretKey (加密什麼, 遺失就解不開, 跟 router.db 一起備份, 不可外流, 錯誤訊息跟程式一致); README, operations.md 與 secrets.md 的每個相對連結都連到存在的檔案與標題 |
 | `router/test/context-chart.test.ts` | [cc / 報表腳本](operations.md#cc--報表腳本)的 `tg-context-chart.py`: 有 matplotlib 時寫 PNG, 沒有時 (PYTHONPATH 放一個 import 失敗的 matplotlib) exit 3, 文字圖 (各行接續到 100%, 有用量的類別至少八分之一格) 與安裝建議, 不寫 PNG; phase2 另測 relay 收到 exit 3 時送表格加文字圖 |
 | `router/test/usage-report.test.ts` | [cc / 報表腳本](operations.md#cc--報表腳本): `/usage` 報表的列, 倒數只顯示最大的兩個單位, 燃燒速率 (柯姊的範例, 週期剛開始, 超速中, 接近重置, 用完, 跨年, 沒有 Weekly 或重置時間), 腳本可執行, 兩支 `.sh` 以假 tmux 送指令與離開畫面, `/status` 只印白名單欄位 |
 | `router/test/channel.test.ts` | [廣播頻道](architecture.md#廣播頻道): 加入頻道的通知內容, /telegram:doc 的頻道一節 |

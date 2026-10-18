@@ -4,12 +4,27 @@
 
 ## 部署
 
+先裝官方 telegram plugin (`deploy/install.sh plugin` 要覆蓋它的快取路徑 `~/.claude/plugins/cache/claude-plugins-official/telegram/0.0.7/`, 所以要先有它):
+
+```bash
+claude plugin marketplace list                                    # 沒有 claude-plugins-official 時先加:
+claude plugin marketplace add anthropics/claude-plugins-official
+claude plugin install telegram@claude-plugins-official            # 預設裝在 user 範圍
+```
+
+worker 的 settings 會自己啟用它 (`templates/base-settings.json` 的 `enabledPlugins`), `claude plugin list` 顯示 disabled 也沒關係. 接著:
+
 ```bash
 CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cc-telegram-router, 複製 templates 與報表腳本
 deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容)
 deploy/install.sh unit     # 安裝 systemd user unit
+sudo loginctl enable-linger <使用者>   # 見下方「登出後繼續執行 (linger)」
 systemctl --user enable --now cc-telegram-router
 ```
+
+### 登出後繼續執行 (linger)
+
+router 是 systemd user service: 沒開 linger 時, 使用者的 systemd 只在他登入期間存在, 最後一個 session 登出 (例如 ssh 斷線) router 就跟著停, 開機後也要等他登入才會啟動. 開一次就好: `sudo loginctl enable-linger <使用者>` (有些系統允許使用者自己打 `loginctl enable-linger` 不用 sudo). 確認: `loginctl show-user <使用者> -p Linger` 要印出 `Linger=yes`. 關閉是 `loginctl disable-linger <使用者>`.
 
 `<home>` 是 router 的家目錄, 位置可自選 (見下方「安裝位置」). 共用的 `<home>/CLAUDE.md` 可以從範例開始: `cp templates/CLAUDE.md.example <home>/CLAUDE.md`. worker 端的使用說明在 plugin 的 `/telegram:doc` skill (`plugin/skills/doc/SKILL.md`).
 
@@ -33,6 +48,55 @@ systemctl --user enable --now cc-telegram-router
 私訊的角色就是使用者角色 (見 [權限](permissions.md#角色)). 從私訊還有自己角色的版本升級時, router 啟動會把私訊對齊使用者角色, log 裡每個有變的私訊一行 `dm role <對話>: <舊> -> <新> (the user's role)`, 並標記待輪替, 不用另外 `/router session rotate`. 升級前可以先查哪些私訊會變: `sqlite3 <home>/.router/router.db "SELECT c.key, c.role, coalesce(u.role, 'user') FROM conversations c LEFT JOIN users u ON u.uid = c.chat_id WHERE c.type = 'dm' AND c.role != coalesce(u.role, 'user')"` (config `owners` 的私訊會是 owner, 不看 `users`).
 
 `owners` 可以留空, 用 log 裡的認領碼認領 (見下方「新 bot 初次設定與審核群組」). 套件審核用的模型就是 `model`. `skillRefreshAt` 是特權技能每日更新憑證的時間 (GMT+8 `"HH:MM"`, `"off"` 關閉, 不寫就是 `"05:00"`), 改了要重啟 router; 格式寫錯只會關閉每日更新並在 log 寫一行 `config.json: ...`, router 照常啟動. 沒有特權技能, 或技能沒有 refresh 動作時, 每日更新什麼都不做. `receiveReact` 是對話沒有自己設定時收哪些表情回應 (`all`, `botself_only`, `disable`, 不寫就是 `botself_only`), 見下方「表情回應 (reaction)」.
+
+## 設定欄位
+
+`config.json` 的每個欄位 (`router/config.ts`). 手改 config.json 要重啟 router 才生效; `/router config set` 能改的 (`model`, `autoCompactWindow`, `claudeBin`, `owners`) 立刻生效並寫回. 檔案含 bot token, 憑證與 `secretKey`, 權限要是 600.
+
+| 欄位 | 說明 |
+|---|---|
+| `bots` | bot 清單, 每隻 `{ "name": ..., "token": ... }`, 至少一隻 (必填); 之後用 `/router bot add` / `rotate` 管理. |
+| `home` | router 的家目錄, 每個對話一個資料夾; 沒寫是 config.json 所在資料夾的上一層. 見[安裝位置](#安裝位置). |
+| `stateDir` | 狀態目錄 (router.db, access.json, 技能的資料庫與憑證資料夾, 執行檔); 沒寫是 config.json 所在的資料夾. 見[安裝位置](#安裝位置). |
+| `socket` | router 的 unix socket (plugin, hook 與 `cli` 連它); 沒寫是 `<stateDir>/router.sock`, 放在 home 與 stateDir 以外時沙箱另外隱藏它. 見[安裝位置](#安裝位置). |
+| `owners` | 一律是 owner 的 Telegram uid; 可以留空, 用認領碼認領. 見[新 bot 初次設定與審核群組](#新-bot-初次設定與審核群組). |
+| `model` | worker 與套件審核用的模型 (`--model`); 沒寫是 `claude-opus-5-5`. |
+| `autoCompactWindow` | 新對話的 autoCompactWindow; 沒寫是 750000. |
+| `claudeBin` | 啟動 worker, 套件審核與 `cc /` 代打用的 claude 執行檔; 沒寫是 `claude` (照 PATH 找). 只有 owner 能用 `/router config set` 改. |
+| `apiRoot` | Bot API 的網址, 特權動作 `bots` 的 `$<ENV>_API` 也用它; 沒寫是 `https://api.telegram.org`, 測試才指到本機假 API. 見 [bot 憑證 bots](credentials-and-skills.md#bot-憑證-bots). |
+| `credentials` | 跨 bot 的 bot token 與 http API key, 名稱 -> `{ token, kind, methods, baseUrl, header, scheme, query, defaultHeaders, roles, label, addedBy }`; 由 `/router cred` 與 `cred-import` 管理, 不要手改. 見[憑證](credentials-and-skills.md#憑證). |
+| `secretKey` | 加密對話密鑰與原始事件的 AES-256 key (base64); 沒有時 router 啟動時產生並寫回 config.json. 遺失就解不開已存的密鑰與原文, 要跟 router.db 一起備份. 見[密鑰](secrets.md). |
+| `skillRefreshAt` | 特權技能每日更新憑證的時間, GMT+8 `"HH:MM"`, `"off"` 關閉; 沒寫是 `"05:00"`, 寫錯只關閉每日更新. 見[特權技能](credentials-and-skills.md#特權技能). |
+| `classifier` | 工具呼叫分類器 (選配, 預設關閉, 第一階段只記錄); 格式錯只關閉它. 見[工具呼叫分類器](classifier.md). |
+| `sandboxDenyRead` | 所有沙箱 (角色範本與特權動作) 額外隱藏的絕對路徑, 例如同一台機器上其他專案; 沒寫是沒有, 寫錯的項目略過. 見[安裝位置](#安裝位置). |
+| `receiveReact` | 對話沒有自己設定時收哪些表情回應: `all`, `botself_only`, `disable`; 沒寫是 `botself_only`. 見[表情回應 (reaction)](#表情回應-reaction). |
+| `reactFlushMs` | 表情回應等多少毫秒沒有新訊息就單獨交給 worker; 沒寫是 60000, 測試才縮短. 見[表情回應 (reaction)](#表情回應-reaction). |
+
+選配欄位 (`skillRefreshAt`, `classifier`, `sandboxDenyRead`, `receiveReact`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
+
+## 升級
+
+1. 取得新版 (例如 `git pull`), 看 CHANGELOG 這幾版有沒有要另外做的事.
+2. 編譯與安裝 (router 照常執行, 執行檔是換檔不是覆寫, 不影響正在跑的程序):
+
+   ```bash
+   deploy/install.sh router
+   deploy/install.sh plugin
+   deploy/install.sh unit     # 只有 deploy/cc-telegram-router.service 改過時需要 (CHANGELOG 會寫)
+   ```
+
+3. 停 router 並備份 (worker 不受影響; 這段時間傳來的訊息留在 Telegram, router 起來後照常收): router.db 是 WAL 模式, `-wal` 與 `-shm` 檔要一起複製; config.json 含 token 與 `secretKey`, 備份資料夾權限設 700.
+
+   ```bash
+   systemctl --user stop cc-telegram-router
+   mkdir -m 700 -p <備份資料夾>
+   cp -a <home>/.router/router.db* <home>/.router/config.json <備份資料夾>/
+   ```
+
+4. 啟動: `systemctl --user start cc-telegram-router`. 資料庫結構由 router 啟動時自動升級: 只新增資料表與欄位, 不刪除也不改名; 有些版本另外做一次性的資料調整 (記在 router.db 的 `migrations`, 會寫在 CHANGELOG 與 log).
+5. 讓 worker 載入新的 plugin 與設定: 在 Telegram 打 `/router session rotate all`, 或終端機 `<home>/.router/cc-telegram-router cli session rotate all`. 閒置的 worker 一分鐘內停掉, 忙碌的等它閒置, 下一則訊息用新版叫醒.
+
+退版: 切回舊版重跑步驟 2 再重啟. 新版只新增資料表與欄位, 舊版通常能直接用同一份 router.db; 要完全回到升級前, 停 router 後把備份的 `router.db*` 與 config.json 複製回去再啟動.
 
 ## 表情回應 (reaction)
 

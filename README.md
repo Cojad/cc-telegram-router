@@ -35,6 +35,12 @@
 - **原始事件與密鑰保護**: 貼進 Telegram 的 token 在 events 與 worker 看到的都是代號, 原文加密保存; owner 或 admin 可以請固定 agent 回答原文相關的問題, 出口由程式檢查.
 - **特權技能**: 技能帶 `privileged.json` 列出動作, owner 或 admin 核准後由 router 在 bwrap 專屬沙箱執行, 檔案改了自動暫停.
 - **Telegram 裡管理**: `/router` 指令管 bot, 角色, 權限, 憑證與 session; `cc /status` 這類指令由 router 開 tmux 代打給背景 worker.
+- **每隻 bot 的資料庫**: 特權動作可以宣告 `store`, user 與 power 對話不用提權就能累積資料 (append 只能新增, 要刪改用 full 且限 owner 與 admin 的動作), 檢查通過才寫回.
+- **特權動作的 bot 憑證**: 動作用 `bots` 拿到另一隻 bot 的 Bot API 網址, token 不進對話, 出現在輸出或檔案就遮蔽並通知 owner.
+- **終端機執行與試跑**: owner 在終端機以某個對話與角色的身分跑特權動作 (`cli skill run`, 可用拋棄式資料庫與本機假 Bot API), 或立刻更新某個技能的憑證 (`cli skill refresh`).
+- **skill_check 與 skill_try**: worker 不用讀 router 原始碼就能寫特權技能; `skill_check` 檢查草稿並列出核准時會看到的內容, power 以上用 `skill_try` 以假憑證與試跑資料庫不經核准跑一次.
+- **試跑沙箱的網路隔離**: 試跑連得到外網, 連不到主機本機, 內網, 雲端 metadata 與主機上的 unix socket (例如 docker.sock, 其他 session 的 socket).
+- **附件用 caption 與相簿**: reply 帶檔案時文字成為第一個檔的 caption, 多個檔送成相簿, 文字超過 caption 上限才先送完整文字.
 - **時間一律 GMT+8**: log, 通知, 報表與 worker 收到的訊息時間都是 GMT+8.
 
 ## Requirements
@@ -74,9 +80,11 @@
 
 安裝位置可自選. 以下 `<home>` 是 router 的家目錄 (每個對話一個資料夾, 例如 `~/cc`), 狀態目錄 (執行檔, config.json, router.db) 用 `<home>/.router`.
 
-1. 安裝官方 telegram plugin, 再部署本專案:
+1. 安裝官方 telegram plugin (`deploy/install.sh plugin` 要覆蓋它的快取路徑, 所以要先裝), 再部署本專案:
 
    ```bash
+   claude plugin marketplace list    # 沒有 claude-plugins-official 時: claude plugin marketplace add anthropics/claude-plugins-official
+   claude plugin install telegram@claude-plugins-official
    CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cc-telegram-router, 複製 templates 與報表腳本
    deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容)
    deploy/install.sh unit     # 安裝 systemd user unit
@@ -104,13 +112,23 @@
    { "dmPolicy": "pairing", "allowFrom": [], "groups": {}, "pending": {} }
    ```
 
-   `sandboxDenyRead` 是 sandbox 額外要隱藏的路徑, 例如同一台機器上其他專案所在的目錄.
+   `sandboxDenyRead` 是 sandbox 額外要隱藏的路徑, 例如同一台機器上其他專案所在的目錄. 完整欄位 (含沒寫在範例裡的 `apiRoot`, `secretKey`, `classifier`, `receiveReact`, `reactFlushMs` 等) 見 [部署與維運: 設定欄位](docs/operations.md#設定欄位).
 3. 寫入位置檔, 讓 worker 的 plugin 與 hook 找得到 router: `<home>/.router/cc-telegram-router register` (寫 `~/.config/cc-telegram-router/router.json`; 有 config.json 時 `deploy/install.sh router` 也會做, 之後再跑 `deploy/install.sh` 就不必指定 `CC_ROUTER_STATE`).
 4. 共用規則從範例開始: `cp templates/CLAUDE.md.example <home>/CLAUDE.md`.
-5. 啟動: `systemctl --user enable --now cc-telegram-router`.
+5. 開 linger, 讓 router 在登出後繼續執行, 開機自動啟動: `sudo loginctl enable-linger <使用者>`, 用 `loginctl show-user <使用者> -p Linger` 確認是 `Linger=yes` (見 [部署與維運](docs/operations.md#登出後繼續執行-linger)). 然後啟動: `systemctl --user enable --now cc-telegram-router`.
 6. 認領 owner: `owners` 留空時, router log 會印出一次性認領碼, 私訊 bot `/start <碼>` 的人成為 owner. 接著 bot 會訪談人設, 並引導設定審核群組 (可以略過).
 
 各欄位與初次設定的細節見 [部署與維運](docs/operations.md).
+
+## How to upgrade
+
+1. 取得新版 (`git pull`), 看 [CHANGELOG](CHANGELOG.md) 有沒有要另外做的事.
+2. `deploy/install.sh router` 與 `deploy/install.sh plugin` (unit 有改時再加 `deploy/install.sh unit`).
+3. `systemctl --user stop cc-telegram-router`, 備份 `<home>/.router/router.db*` (WAL 模式, 連同 `-wal`, `-shm`) 與 `config.json`.
+4. `systemctl --user start cc-telegram-router`: 資料庫結構由 router 啟動時自動升級 (只新增資料表與欄位, 退回舊版通常能直接用).
+5. `/router session rotate all` (或終端機 `<home>/.router/cc-telegram-router cli session rotate all`), 讓 worker 載入新的 plugin 與設定.
+
+細節與退版見 [部署與維運: 升級](docs/operations.md#升級).
 
 ## 文件索引
 
@@ -121,7 +139,7 @@
 | [docs/credentials-and-skills.md](docs/credentials-and-skills.md) | 技能範圍, 憑證 (bot_api, http_api), 特權技能 |
 | [docs/secrets.md](docs/secrets.md) | 對話專屬密鑰 (10b), 原始事件與密鑰保護 (10e) |
 | [docs/classifier.md](docs/classifier.md) | 工具呼叫分類器 (第一階段, 只記錄) |
-| [docs/operations.md](docs/operations.md) | 部署與 config.json, 安裝位置, 新 bot 初次設定與審核群組, bot 設定提醒, 輪詢與重試, 時間 |
+| [docs/operations.md](docs/operations.md) | 部署與 config.json, linger, 設定欄位, 升級, 安裝位置, 新 bot 初次設定與審核群組, bot 設定提醒, 輪詢與重試, 時間 |
 | [docs/testing.md](docs/testing.md) | 執行測試, 測試分區 (std, 依改動跑), 測試檔對照, 各階段驗收對照表 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本變更紀錄 |
 | `/telegram:doc` (`plugin/skills/doc/SKILL.md`) | worker 端的使用說明 |

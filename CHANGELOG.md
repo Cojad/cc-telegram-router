@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.17.2] - 2026-10-18
+
+### Changed
+
+- README 與 [docs/operations.md](docs/operations.md) 跟上現況: 安裝步驟寫出官方 plugin 的安裝指令 (`claude plugin install telegram@claude-plugins-official`, 沒有 marketplace 時先 `claude plugin marketplace add anthropics/claude-plugins-official`) 與 `loginctl enable-linger` (含確認方式), 新增升級步驟 (README「How to upgrade」與 operations.md「升級」: 安裝, 停 router 備份 router.db 與 config.json, 啟動, `/router session rotate all`, 退版), operations.md 新增「設定欄位」列出 config.json 的每個欄位 (含原本沒有文件的 `reactFlushMs`, `secretKey`), Feature highlights 補上 2.12 之後的功能; docs/secrets.md 新增「加密金鑰 secretKey」(加密什麼, 遺失或換掉就解不開已存的密鑰與原文, 要跟 router.db 一起備份, 不可外流). 測試 `router/test/readme.test.ts` 鎖住欄位清單, 安裝與升級步驟, secretKey 的說明, 以及 README, operations.md 與 secrets.md 的每個相對連結.
+
 ## [2.17.1] - 2026-10-18
 
 ### Fixed

@@ -4,6 +4,13 @@
 
 [README](../README.md) 的文件索引列出所有文件.
 
+## 加密金鑰 secretKey
+
+- config.json 的 `secretKey` 是一把 AES-256 金鑰 (base64), router 用它以 AES-256-GCM 加密對話專屬密鑰 (`conv_secrets`) 與原始事件的原文 (`event_raw`), router.db 裡只有密文. 欄位清單見 [部署與維運: 設定欄位](operations.md#設定欄位).
+- 沒有這個欄位時 router 啟動時產生一把並寫回 config.json (log: `generated config.json secretKey for conversation secrets`), 之後不要改.
+- **遺失或換掉就解不開已存的密鑰與原文**: 用到時回「密鑰 <名稱> 解不開 (router 的 secretKey 換過?), 請重新 /secret set」, 原始事件也問不出原文; router 啟動時若發現沒有金鑰會產生新的, 舊資料不會因此變回可讀. 所以它**要跟 router.db 一起備份** (見[升級](operations.md#升級)的備份步驟), 兩者分開保存的備份還原不了密鑰.
+- **不可外流**: 拿到它加上 router.db 就能解出所有對話密鑰與被遮蔽的原文. config.json 權限保持 600, 備份資料夾 700; 不要貼進對話, issue 或 log, 也不要放進任何 repo.
+
 ## 對話專屬密鑰
 
 - 任何角色的對話都能有自己的 token 或 API key, 不用提權: 在那個對話傳 `/secret set <名稱> <值> [方法...]` (Telegram bot token, 沒寫方法就是全部) 或 `/secret set <名稱> <值> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...]` (一般 API key, 結尾 `*` 代表前綴, 沒寫路徑就是全部; `--default-header` 是 worker 沒帶同名標頭時 router 補上的標頭, 見 [預設標頭](credentials-and-skills.md#預設標頭)). 跟全域憑證 (`/router cred`) 的差別: 對話密鑰只屬於那個對話, 任何角色都能登記, 不用授權; 全域憑證由 owner 或 admin 在私訊登記, 預設給 owner 與 admin 角色的對話用 (`/router help secret` 有同樣的說明). 也可以用 `cc /secret ...`.
