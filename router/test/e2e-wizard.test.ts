@@ -7,7 +7,8 @@
 // 600 with the owner in allowFrom. Without a terminal it refuses and writes
 // nothing. Then an owner added to config.json by hand: the router, at start,
 // puts them into allowFrom too. Flow details in wizard.test.ts; compiled in
-// e2e-compiled.test.ts. Every token here is fake.
+// e2e-compiled.test.ts. HOME is a temporary folder throughout (the wizard
+// reads ~/.claude.json for folder trust). Every token here is fake.
 
 import { test, expect, afterAll } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
@@ -92,7 +93,7 @@ test.skipIf(!hasScript)('in a terminal: the token as * only (a slip, Backspace, 
 
 test.skipIf(!hasScript)('in a terminal again: the edit mode, Enter keeps everything; Ctrl-C at the token writes nothing', async () => {
   const before = readFileSync(configPath, 'utf8')
-  const t = inTerminal(['bun', MAIN, '--config', configPath, 'setup'])
+  const t = inTerminal(['bun', MAIN, '--config', configPath, 'setup'], { HOME: userHome })
   await t.answer('修改模式', [])
   for (const p of ['router 的家目錄 home', 'owner 的 Telegram uid', 'worker 用的模型 model', 'claude 執行檔 claudeBin', '1) 保留  2) 修改  3) 移除', '要再加一隻 bot 嗎?']) await t.answer(p, '\r')
   t.close()
@@ -100,7 +101,7 @@ test.skipIf(!hasScript)('in a terminal again: the edit mode, Enter keeps everyth
   expect(t.out).toContain('沒有任何變更, 不寫入')
   expect(t.out).toContain(`末 4 碼 ${TOKEN.slice(-4)}`)
   expect(readFileSync(configPath, 'utf8')).toBe(before)
-  const c = inTerminal(['bun', MAIN, '--config', configPath, 'setup'])
+  const c = inTerminal(['bun', MAIN, '--config', configPath, 'setup'], { HOME: userHome })
   for (const p of ['router 的家目錄 home', 'owner 的 Telegram uid', 'worker 用的模型 model', 'claude 執行檔 claudeBin']) await c.answer(p, '\r')
   await c.answer('1) 保留  2) 修改  3) 移除', '2\r')
   await c.answer('名稱', '\r')
@@ -115,7 +116,7 @@ test.skipIf(!hasScript)('an owner added to config.json by hand: the router puts 
   const cfg = JSON.parse(readFileSync(configPath, 'utf8'))
   cfg.owners = ['555', '777']
   writeFileSync(configPath, JSON.stringify(cfg, null, 2), { mode: 0o600 })
-  router = Bun.spawn(['bun', MAIN, '--config', configPath], { stdout: 'ignore', stderr: 'pipe' })
+  router = Bun.spawn(['bun', MAIN, '--config', configPath], { env: { ...process.env, HOME: userHome }, stdout: 'ignore', stderr: 'pipe' })
   let stderr = ''
   void (async () => { for await (const c of router!.stderr as ReadableStream<Uint8Array>) stderr += new TextDecoder().decode(c) })()
   const allow = () => JSON.parse(readFileSync(join(state, 'access.json'), 'utf8')).allowFrom

@@ -266,11 +266,62 @@ test('the wizard ends with the unit check, written or not', async () => {
   const seen: string[] = []
   const q = new KeyQueue()
   for (const a of NEW_LOCAL) q.push(`${a}\r`)
-  await runWizard({ configPath, io: keyIo(q, s => { out += s }), getMe, claudeDefault: '/opt/claude/bin/claude', userHome: '/home/someone', unitCheck: c => { seen.push(c); return ['⚠️ 檢查結果'] } })
+  await runWizard({ configPath, io: keyIo(q, s => { out += s }), getMe, claudeDefault: '/opt/claude/bin/claude', userHome: '/home/someone', finalCheck: c => { seen.push(c); return ['⚠️ 檢查結果'] } })
   expect(seen).toEqual(['/opt/claude/bin/claude'])
   expect(out.trimEnd()).toEndWith('⚠️ 檢查結果')
   const q2 = new KeyQueue()
   for (const a of ['', '', '', '', '', '']) q2.push(`${a}\r`)
-  expect(await runWizard({ configPath, io: keyIo(q2, s => { out += s }), getMe, claudeDefault: 'x', userHome: '/home/someone', unitCheck: () => ['⚠️ 第二次'] })).toBe('unchanged')
+  expect(await runWizard({ configPath, io: keyIo(q2, s => { out += s }), getMe, claudeDefault: 'x', userHome: '/home/someone', finalCheck: () => ['⚠️ 第二次'] })).toBe('unchanged')
   expect(out.trimEnd()).toEndWith('⚠️ 第二次')
+})
+
+test('folder trust at the end: told when trusted; when not, the official way, then written only after y (backup, that one key), not after anything else; a router running is warned about; overwritten is told', async () => {
+  const uh = mkdtempSync(join(dir, 'trust-home-'))
+  const cj = join(uh, '.claude.json')
+  const home = join(state, '..')
+  const run = (answers: string[], wait?: (ms: number) => Promise<void>) => {
+    const q = new KeyQueue()
+    for (const a of answers) q.push(`${a}\r`)
+    return runWizard({ configPath, io: keyIo(q, s => { out += s }), getMe, claudeDefault: '/opt/claude/bin/claude', userHome: uh, claudeJson: cj, wait: wait ?? (async () => {}) })
+  }
+  // no ~/.claude.json: only how to do it
+  await run(NEW_LOCAL)
+  expect(out).toContain(`讀不到 ${cj}`)
+  writeFileSync(cj, JSON.stringify({ numStartups: 1, projects: { '/other': { hasTrustDialogAccepted: true } } }))
+  const before = readFileSync(cj, 'utf8')
+  out = ''
+  // not trusted: anything but y writes nothing
+  await run(['', '', '', '', '', '', 'yes'])
+  expect(out).toContain(`資料夾信任: ${home} 還沒被 Claude Code 信任`)
+  expect(out).toContain(`官方建議的做法: 在 router 的使用者下互動執行一次: cd ${home} && claude`)
+  expect(out).toContain('沒有代寫.')
+  expect(readFileSync(cj, 'utf8')).toBe(before)
+  // a router running: warned first; y writes it
+  writeFileSync(join(state, 'router.sock'), '')
+  out = ''
+  await run(['', '', '', '', '', '', 'y'])
+  expect(out).toContain('⚠️ router 正在執行, 它的 worker 隨時會寫這個檔')
+  expect(out).toMatch(/已寫入信任 \(備份在 .*\.cc-router-backup-\d{8}-\d{6}\)/)
+  expect(JSON.parse(readFileSync(cj, 'utf8'))).toEqual({ numStartups: 1, projects: { '/other': { hasTrustDialogAccepted: true }, [home]: { hasTrustDialogAccepted: true } } })
+  rmSync(join(state, 'router.sock'))
+  out = ''
+  await run(['', '', '', '', '', ''])
+  expect(out).toContain(`資料夾信任: ${home} 已被 Claude Code 信任.`)
+  // overwritten while waiting: told, with the interactive way
+  writeFileSync(cj, before)
+  out = ''
+  await run(['', '', '', '', '', '', 'y'], async () => { writeFileSync(cj, before) })
+  expect(out).toContain('沒有寫成: 寫入後被其他 Claude Code 程序蓋掉了')
+  expect(out).toContain('請改用互動做法')
+})
+
+test('the model question explains [1m]; a 200K model with a larger autoCompactWindow offers 200000', async () => {
+  const q = new KeyQueue()
+  for (const a of ['', '', 'claude-sonnet-4-6', '', '', '', TOKEN, '1', '', '']) q.push(`${a}\r`)
+  expect(await runWizard({ configPath, io: keyIo(q, s => { out += s }), getMe, claudeDefault: '/opt/claude/bin/claude', userHome: '/home/someone' })).toBe('written')
+  expect(out).toContain('名稱後面加 [1m] (例如 claude-sonnet-4-6[1m]) 才會用 1M 的版本')
+  expect(out).toContain('Usage credits required for 1M context')
+  expect(out).toContain('⚠️ autoCompactWindow 750000 大於模型 claude-sonnet-4-6 的 200000 context')
+  expect(config().model).toBe('claude-sonnet-4-6')
+  expect(config().autoCompactWindow).toBe(200_000)
 })

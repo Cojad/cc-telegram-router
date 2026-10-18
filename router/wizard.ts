@@ -9,7 +9,7 @@
 // through a temporary file, mode 600. A terminal only: no TTY, no wizard.
 // Tests: router/test/wizard.test.ts, e2e-wizard.test.ts, e2e-compiled.test.ts.
 
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, chmodSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, chmodSync } from 'fs'
 import { homedir } from 'os'
 import { dirname, isAbsolute, join, resolve } from 'path'
 import { OFFICIAL_API_ROOT, parseApiRoot } from './config'
@@ -18,6 +18,8 @@ import { allowOwners } from './telegram/policy'
 import { BOT_TOKEN_FULL, botApiCall } from './credentials'
 import { tokenBotId } from './setup'
 import { maskTokens } from './context'
+import { grantTrust, modelWindow, modelWindowNotes, readProjects, trustFix, trustOf, unitPathCheck } from './diagnose'
+import { offlineDoctor } from './doctor'
 
 export const LOCAL_API_DEFAULT = 'http://127.0.0.1:8081'
 const DEFAULT_MODEL = 'claude-opus-5-5'
@@ -100,8 +102,13 @@ export interface WizardOpts {
   /** claudeBin's default for a new config (the claude on PATH). */
   claudeDefault: string
   userHome?: string
-  /** After the wizard (written or not): lines on whether bun and claude are on the unit's PATH (unitPathCheck). */
-  unitCheck?: (claudeBin: string) => string[]
+  /** After the wizard (written or not): the doctor's report, or without a
+   *  config yet whether bun and claude are on the unit's PATH (router/doctor.ts, unitPathCheck). */
+  finalCheck?: (claudeBin: string, written: boolean) => Promise<string[]> | string[]
+  /** ~/.claude.json (folder trust); default under userHome. */
+  claudeJson?: string
+  /** grantTrust's wait before its second check (tests: no wait). */
+  wait?: (ms: number) => Promise<void>
 }
 
 export type WizardResult = 'written' | 'unchanged' | 'declined'
@@ -173,7 +180,18 @@ export async function runWizard(o: WizardOpts): Promise<WizardResult> {
     raw.owners = list
     break
   }
+  io.print('模型: claude-opus-5-5 這類 Opus 4.7 以上, Sonnet 5 以上, Fable 與 Haiku 5.5 本身就是 1M context. 名稱後面加 [1m] (例如 claude-sonnet-4-6[1m]) 才會用 1M 的版本, 要帳號有 1M context 的額度: Sonnet 4.6 的 1M 在所有方案都要 usage credits, Opus 4.6 的 1M 在 Max, Team, Enterprise 內含. 沒有額度時每一輪都會 API 錯誤 (Usage credits required for 1M context).\n')
   await text('model', 'worker 用的模型 model', raw.model ?? DEFAULT_MODEL)
+  // autoCompactWindow against the model (router/diagnose.ts modelWindow): a 200K model compacts at 200000 whatever it says
+  {
+    const model = String(raw.model ?? DEFAULT_MODEL), win = Number(raw.autoCompactWindow ?? 750_000)
+    const notes = modelWindowNotes(model, win)
+    if (notes.length) io.print(`${notes.map(n => `  ⚠️ ${n}`).join('\n')}\n`)
+    if (modelWindow(model).window === 200_000 && win > 200_000 && yes(await io.ask(`  把 autoCompactWindow 從 ${win} 改成 200000? [Y/n]: `), true)) {
+      changes.push(`autoCompactWindow: ${win} → 200000`)
+      raw.autoCompactWindow = 200_000
+    }
+  }
   await text('claudeBin', 'claude 執行檔 claudeBin', raw.claudeBin ?? o.claudeDefault)
 
   const bots: RawBot[] = Array.isArray(raw.bots) ? raw.bots : []
@@ -291,14 +309,33 @@ export async function runWizard(o: WizardOpts): Promise<WizardResult> {
   }
   if (accessNote) changes.push(accessNote)
 
-  const finish = (r: WizardResult): WizardResult => {
-    const lines = o.unitCheck?.(String(raw.claudeBin ?? 'claude')) ?? []
+  const finish = async (r: WizardResult): Promise<WizardResult> => {
+    if (r !== 'declined') await trustStep()
+    const lines = await o.finalCheck?.(String(raw.claudeBin ?? 'claude'), r === 'written' || exists) ?? []
     if (lines.length) io.print(`\n${lines.join('\n')}\n`)
     return r
   }
-  if (exists && !changes.length) { io.print('\n沒有任何變更, 不寫入.\n'); return finish('unchanged') }
+  /** home not trusted by Claude Code: say how, and write it only when the owner types y (router/diagnose.ts grantTrust). */
+  const trustStep = async () => {
+    const home = resolve(String(raw.home ?? homeNow))
+    const claudeJson = o.claudeJson ?? join(userHome, '.claude.json')
+    const projects = readProjects(claudeJson)
+    if (!projects) { io.print(`\n讀不到 ${claudeJson}: 無法確認 ${home} 的資料夾信任. 第一次請互動執行 cd ${home} && claude, 接受信任後 /exit.\n`); return }
+    const t = trustOf(projects, home, userHome)
+    if (t.trusted) { io.print(`\n資料夾信任: ${home} 已被 Claude Code 信任${t.key !== home ? ` (上層 ${t.key})` : ''}.\n`); return }
+    io.print(`\n資料夾信任: ${home} 還沒被 Claude Code 信任, worker 會起不來 (Workspace not trusted).\n官方建議的做法: ${trustFix(home, t)}\n`)
+    if (t.why === 'home') return
+    const running = existsSync(resolve(base, raw.socket ?? join(stateDir, 'router.sock')))
+    io.print(`也可以由嚮導代寫: 在 ${claudeJson} 把 projects["${t.key}"].hasTrustDialogAccepted 設成 true (官方文件的手動做法). 會先備份, 只改這一個設定; 但每個執行中的 Claude Code 都會改寫這個檔, 寫完可能被蓋掉, 嚮導會再確認一次.\n`)
+    if (running) io.print('⚠️ router 正在執行, 它的 worker 隨時會寫這個檔: 建議先 systemctl --user stop cc-telegram-router, 或改用上面的互動做法.\n')
+    if ((await io.ask('要由嚮導代寫信任嗎? 確定請輸入 y [y/N]: ')).toLowerCase() !== 'y') { io.print('沒有代寫.\n'); return }
+    const g = await grantTrust(claudeJson, t.key, { wait: o.wait })
+    if (g.ok) io.print(`已寫入信任 (備份在 ${g.backup}), 3 秒後再讀一次仍在.\n`)
+    else io.print(`沒有寫成: ${g.why}${g.backup ? ` (備份在 ${g.backup})` : ''}. 請改用互動做法: ${trustFix(home, t)}\n`)
+  }
+  if (exists && !changes.length) { io.print('\n沒有任何變更, 不寫入.\n'); return await finish('unchanged') }
   io.print(`\n${exists ? '要寫入的變更' : '要建立的設定'}:\n${(exists ? changes : [`config.json: home ${raw.home}, owners ${owners.join(', ') || '無 (用認領碼)'}, model ${raw.model}, claudeBin ${raw.claudeBin}`, ...changes]).map(c => `  - ${c}`).join('\n')}\n`)
-  if (!yes(await io.ask(`寫入 ${o.configPath}? [Y/n]: `), true)) { io.print('沒有寫入.\n'); return finish('declined') }
+  if (!yes(await io.ask(`寫入 ${o.configPath}? [Y/n]: `), true)) { io.print('沒有寫入.\n'); return await finish('declined') }
   mkdirSync(dirname(o.configPath), { recursive: true, mode: 0o700 })
   writeSecretFile(o.configPath, JSON.stringify(raw, null, 2) + '\n')
   if (access) writeSecretFile(accessPath, JSON.stringify(access, null, 2) + '\n')
@@ -306,37 +343,10 @@ export async function runWizard(o: WizardOpts): Promise<WizardResult> {
   const socket = resolve(base, raw.socket ?? join(stateDir, 'router.sock'))
   if (existsSync(socket)) io.print('router 正在執行: 要重啟才會套用 (systemctl --user restart cc-telegram-router).\n')
   else if (!exists) io.print(`\n下一步:\n  1. ${join(stateDir, 'cc-telegram-router')} register (deploy/install.sh setup 會自動做)\n  2. 第一次: cd ${raw.home} && claude, 接受資料夾信任後離開\n  3. sudo loginctl enable-linger <使用者>, 然後 systemctl --user enable --now cc-telegram-router\n`)
-  return finish('written')
+  return await finish('written')
 }
 
-/** The systemd unit deploy/install.sh unit writes. */
-export const unitFile = (userHome: string) => join(userHome, '.config', 'systemd', 'user', 'cc-telegram-router.service')
-/** The unit's PATH before install.sh adds bun's and claude's folders (deploy/cc-telegram-router.service). */
-export const unitBasePath = (userHome: string) => [join(userHome, '.local', 'bin'), join(userHome, 'bin'), '/usr/local/bin', '/usr/bin', '/bin']
-
-/** Whether bun (the worker's telegram plugin runs it, plugin/.mcp.json) and
- *  claudeBin are found on the unit's PATH: the installed unit's, else the one
- *  install.sh unit would start from. Lines to show; none when both are found. */
-export function unitPathCheck(o: { userHome: string; claudeBin: string; bun: string | null; claude: string | null }): string[] {
-  const file = unitFile(o.userHome)
-  let dirs = unitBasePath(o.userHome), installed = false
-  if (existsSync(file)) {
-    const m = /^Environment=PATH=(.*)$/m.exec(readFileSync(file, 'utf8'))
-    if (m) { dirs = m[1]!.trim().split(':').filter(Boolean); installed = true }
-  }
-  const runnable = (p: string) => { try { accessSync(p, constants.X_OK); return statSync(p).isFile() } catch { return false } }
-  const found = (cmd: string) => isAbsolute(cmd) ? runnable(cmd) : dirs.some(d => runnable(join(d, cmd)))
-  const fix = installed ? '重跑 deploy/install.sh unit 會把它的資料夾加進 unit 的 PATH, 再 systemctl --user restart cc-telegram-router' : '還沒安裝 systemd unit: deploy/install.sh unit 會把它的資料夾加進 unit 的 PATH'
-  const out: string[] = []
-  if (!found('bun')) out.push(o.bun
-    ? `⚠️ ${installed ? 'unit 的 PATH' : 'unit 預設的 PATH'} 找不到 bun (它在 ${dirname(o.bun)}): worker 的 telegram plugin 會起不來 (router log 的 plugin did not connect). ${fix}.`
-    : '⚠️ 找不到 bun: worker 的 telegram plugin 要用 bun 執行, 先安裝 bun (https://bun.sh) 再跑 deploy/install.sh unit.')
-  const claude = isAbsolute(o.claudeBin) ? o.claudeBin : o.claude
-  if (isAbsolute(o.claudeBin) ? !runnable(o.claudeBin) : !found(o.claudeBin)) out.push(claude && runnable(claude)
-    ? `⚠️ ${installed ? 'unit 的 PATH' : 'unit 預設的 PATH'} 找不到 claude (${o.claudeBin}, 它在 ${dirname(claude)}): worker 起不來. ${fix}, 或把 claudeBin 改成絕對路徑.`
-    : `⚠️ 找不到 claude 執行檔 ${o.claudeBin}: 先安裝 Claude Code, 或用這個嚮導把 claudeBin 改成它的絕對路徑.`)
-  return out
-}
+export { unitFile, unitBasePath, unitPathCheck } from './diagnose'
 
 /** getMe on a Bot API server, with what went wrong as text (never the token). */
 export const liveGetMe: GetMe = async (apiRoot, token) => {
@@ -369,7 +379,10 @@ export async function runSetupCli(configPath: string): Promise<number> {
     const userHome = homedir()
     await runWizard({
       configPath, io: keyIo(keys, write), getMe: liveGetMe, claudeDefault: Bun.which('claude') ?? 'claude', userHome,
-      unitCheck: claudeBin => unitPathCheck({ userHome, claudeBin, bun: Bun.which('bun'), claude: Bun.which(claudeBin) }),
+      // the end: the doctor on the config as it is now (router/doctor.ts), or only the unit's PATH without one
+      finalCheck: async (claudeBin, written) => written && existsSync(configPath)
+        ? ['cc-telegram-router doctor:', ...(await offlineDoctor(configPath).catch(e => `doctor 失敗: ${e instanceof Error ? e.message : e}`)).split('\n').slice(1)]
+        : unitPathCheck({ userHome, claudeBin, bun: Bun.which('bun'), claude: Bun.which(claudeBin) }),
     })
     return 0
   } catch (e) {

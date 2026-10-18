@@ -12,7 +12,9 @@
 //   SubagentStart retry a router they cannot reach (shared/retry.ts), once
 //   only when it has been unreachable for over 3 minutes. The prompt event
 //   carries the sender fields of the prompt's <channel> tags
-//   (shared/prompttags.ts), never the text.
+//   (shared/prompttags.ts), never the text. stop-failure (StopFailure, a
+//   turn that ended on an API error) goes as stop with the error type,
+//   details and the error text Claude Code showed.
 
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -65,6 +67,8 @@ function progressEvent(event: string, input: Record<string, any>): Record<string
     case 'compact-pre':
     case 'compact-post': return { event, trigger: String(input.trigger ?? '') }
     case 'stop': return { event }
+    // StopFailure: the turn ended on an API error (docs: Hooks, StopFailure); the router tells the owner why (router/diagnose.ts)
+    case 'stop-failure': return { event: 'stop', failure: { error: String(input.error ?? ''), details: String(input.error_details ?? '').slice(0, 500), message: String(input.last_assistant_message ?? '').slice(0, 500) } }
     case 'subagent-start': return { event, ...agent, ...(input.agent_type ? { agent_type: String(input.agent_type) } : {}) }
     case 'subagent-stop': return { event, ...agent }
   }

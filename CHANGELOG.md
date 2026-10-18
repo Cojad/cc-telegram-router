@@ -6,6 +6,22 @@
 
 ## [Unreleased]
 
+## [2.27.0] - 2026-10-18
+
+### Added
+
+- `cc-telegram-router cli doctor` (`/router doctor`, owner 與 admin, 回在私訊) 與不經 router 的 `cc-telegram-router [--config x] doctor` (`router/doctor.ts`): 一次檢查 bun 與 claudeBin 在 systemd unit 的 PATH, 官方 telegram plugin 是否裝在這個使用者且跟部署時相同, 位置檔, home 的資料夾信任 (另列自己是 git repo 的對話資料夾), 預設與各對話的模型和 autoCompactWindow, 不是對話目前 session 的殘留 job 與 claude daemon 是否由 router 帶起, 沒人管的暖機 spare (判斷都用 2.26.0 的 `router/jobs.ts`, 跟 router 的 job 清理同一套), blocked 的 worker, 在跑但 plugin 沒連上的 worker; 純文字, 不含 token. 設定嚮導結尾自動跑一次.
+- `/router status` 每個對話後面列 worker 在 daemon 的狀態 (例如 blocked), 在跑但 plugin 沒連上, 以及 24 小時內最後一次問題與時間.
+- worker 叫不醒時 (`router/diagnose.ts`, 跟 2.26.0 的旗標比對在同一條叫醒流程: 先比對 job 旗標, 必要時換掉 job, 再 resume 或開新 session): `claude --bg` 拒絕 (例如 Workspace not trusted) 立刻算失敗不再等 90 秒; 原因取自 claude 的訊息, 那個對話 plugin 的 MCP log 最新檔 (例如 `Executable not found in $PATH: "bun"`), 資料夾信任, 寫進「🔔 重要通知」並附修法; 連續失敗的重試間隔 1, 2, 5, 10, 30 分鐘, 期間訊息留在佇列; 同一原因只通知一次, 恢復時通知; `/router session restart` 立刻重試.
+- 一輪以 API 錯誤結束時 (新的 StopFailure hook, `cc-hook progress stop-failure`): 重要通知寫原因, 原始訊息 (遮蔽 token) 與修法 (1M context 額度 `Usage credits required for 1M context`, 登入, 付款, 額度, 模型, 服務忙碌, 輸出過長, 安全機制), 同一原因 30 分鐘一次; 對話裡回「⚠️ 暫時無法回應」, 5 分鐘一次. 原本 router 以為這種一輪正常結束.
+- router 啟動時 (第一隻 bot 上線後) 檢查: 自己的 PATH 找不到 bun (worker 的 plugin 要用), home 沒被 Claude Code 信任或讀不到 `~/.claude.json`, 模型需要 1M 額度或 autoCompactWindow 超過模型的 context; 有問題就發重要通知. router 只讀 `~/.claude.json`, 不寫.
+- 設定嚮導: 選模型時說明 `[1m]` 與 1M context 額度 (依 Claude Code 文件: Opus 4.7 以上, Sonnet 5 以上, Fable, Haiku 5.5 本身 1M; Opus 4.6 與 Sonnet 4.6 只有 `[1m]` 才 1M, Sonnet 4.6 的 1M 都要 usage credits), 200K 的模型配上較大的 autoCompactWindow 時提醒並可改成 200000; 結尾檢查 home 的資料夾信任, 未信任時先給官方的互動做法, owner 輸入 `y` 才代寫 `~/.claude.json` 的 `projects["<home>"].hasTrustDialogAccepted` (先備份, 重讀最新內容, 只改這個鍵, 保留權限, 寫完與 3 秒後各讀一次確認沒被蓋掉), router 正在執行時先提醒.
+
+### Changed
+
+- 疑難排解文件 (README, docs/operations.md): 先跑 cli doctor; journal 的 `left-over process` 與 `remains running after unit stopped` 是 `KillMode=process` 的正常現象; 1M context 額度不足的症狀與修法; 舊參數殘留 (改模型沒生效) 的症狀, 2.26.0 起的自動處理與還沒生效時看哪裡. operations.md 新增「cli doctor 與 worker 狀態」, 設定嚮導一節補上模型與資料夾信任.
+- 測試: 新增 `router/test/diagnose.test.ts`, `e2e-diagnose.test.ts` (暫存 HOME, PATH 沒有 bun, 真的 hook 程式送 StopFailure); `wizard.test.ts` 加代寫信任與模型提醒; `e2e-compiled.test.ts` 的嚮導改用暫存 HOME; `readme.test.ts` 鎖住文件裡的規則與數字.
+
 ## [2.26.0] - 2026-10-18
 
 ### Fixed

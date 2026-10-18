@@ -40,8 +40,10 @@ systemctl --user enable --now cc-telegram-router
 - 每隻 bot: 名稱 (英數, `-`, `_`), token, Bot API. token 輸入時每個字元 (含一次貼上的每個字元) 顯示一個 `*`; Backspace (含 Ctrl-H) 刪最後一個並擦掉一個 `*`, Ctrl-U 清空, Enter 結束, Ctrl-C 取消整個嚮導; 方向鍵等控制序列與 bracketed paste 的標記忽略. 畫面上與錯誤訊息裡都不會出現 token. Bot API 選官方或自架的本機 server; 自架再問網址 (預設 `http://127.0.0.1:8081`) 與 `localFilesDir` (server 的 `--dir`, 可不填), 寫進那隻 bot 的 `apiRoot` 與 `localFilesDir` (選官方而全域 `apiRoot` 是自架時, 那隻 bot 寫 `"apiRoot": "https://api.telegram.org"`). 然後用那隻 bot 的 server 呼叫 getMe: 成功顯示 `@username (id)`, 失敗時可以重打 token, 重選 server, 或放棄 (不寫入).
 - 修改模式 (已有 config.json): 每一題 `[ ]` 裡是目前的值, Enter 保留; 只有你改了的欄位會寫入, 嚮導沒問的欄位 (`credentials`, `secretKey`, `classifier`, `sandboxDenyRead`, `receiveReact` 等) 與 JSON 的其他內容不動. `owners` 輸入 `-` 清空. 每隻 bot 可保留, 修改或移除 (最後一隻不能移除), 也能新增. token 只顯示「已設定 (末 4 碼)」, Enter 保留; 換 token 只接受同一隻 bot 的 (冒號前的 id 相同, 跟 `/router bot rotate` 一樣), 要換成別的 bot 就移除後新增. token 或 Bot API 改了才重新 getMe. 全部問完列出變更 (token 只寫「更換」), 確認後才寫; 沒有變更就不寫.
 - `access.json`: 不存在時建立 `{"dmPolicy": "pairing", "allowFrom": [<owners>], "groups": {}, "pending": {}}`; 已存在時不換掉, 只把還不在 `allowFrom` 的 owner 加進去 (其他內容不動). 移除 owner 不會把人移出 `allowFrom`.
+- 模型: 問模型前說明哪些模型本身就是 1M context, `[1m]` 要什麼額度; 選了 200K 的模型 (Opus 4.6, Sonnet 4.6 沒有 `[1m]`, 或更舊的) 而 autoCompactWindow 大於 200000 時, 提醒並問要不要改成 200000.
 - 寫入: config.json 與 access.json 都先寫暫存檔 (權限 600) 再改名. router 正在執行 (socket 存在) 時提醒要重啟才套用, 嚮導不會自己重啟.
-- 結尾 (有寫入或沒有) 檢查 bun 與 `claudeBin` 在 systemd unit 的 PATH 下找不找得到: 已安裝的 unit (`~/.config/systemd/user/cc-telegram-router.service`) 看它的 `Environment=PATH=`, 還沒安裝看上面那份預設清單; 找不到就說明要重跑 `deploy/install.sh unit` (或把 `claudeBin` 改成絕對路徑).
+- 資料夾信任 (有寫入或沒有變更時): home 已被信任就說明; 沒有就先給官方建議的互動做法, 再問要不要由嚮導代寫, 只有輸入 `y` 才寫. 代寫照官方文件的手動做法, 在 `~/.claude.json` 把 `projects["<home>"].hasTrustDialogAccepted` 設成 `true` (home 在 git repo 裡時是 repo 根目錄): 先備份成 `~/.claude.json.cc-router-backup-<GMT+8 時間>` (權限 600), 寫之前重新讀最新內容, 只改這一個設定, 暫存檔保留原權限再改名, 寫完讀回確認, 3 秒後再讀一次; 每個執行中的 Claude Code 都會整檔改寫這個檔, 被蓋掉時說明並改建議互動做法. router 正在執行時先提醒 (它的 worker 隨時會寫這個檔, 建議先停 router). home 是使用者的家目錄時不代寫 (家目錄的信任不會存下來). router 本身只讀 `~/.claude.json`, 從不寫.
+- 結尾 (有寫入或沒有) 跑一次 `cc-telegram-router doctor` (見「cli doctor 與 worker 狀態」); 還沒有 config.json 時只檢查 bun 與 `claudeBin` 在 systemd unit 的 PATH 下找不找得到: 已安裝的 unit (`~/.config/systemd/user/cc-telegram-router.service`) 看它的 `Environment=PATH=`, 還沒安裝看上面那份預設清單; 找不到就說明要重跑 `deploy/install.sh unit` (或把 `claudeBin` 改成絕對路徑).
 
 ### 登出後繼續執行 (linger)
 
@@ -156,13 +158,26 @@ bot 可以改走自架的 [telegram-bot-api](https://github.com/tdlib/telegram-b
 
 ## 疑難排解
 
-- `plugin did not connect` (router log): worker 的 telegram plugin 沒連上 router. 依序檢查:
+先跑一次 `cc-telegram-router cli doctor` (見下方「cli doctor 與 worker 狀態」), 它把下面大部分的項目一次查完, 輸出可以直接貼給別人.
+
+- `plugin did not connect` (router log): worker 的 telegram plugin 沒連上 router. router 會讀那個對話的 plugin log, 把原因寫進「🔔 重要通知」(例如 `Executable not found in $PATH: "bun"`). 依序檢查:
   1. unit 的 PATH 有沒有 bun: `systemctl --user cat cc-telegram-router` 的 `Environment=PATH=` 要包含 `command -v bun` 所在的資料夾 (bun 的官方安裝位置 `~/.bun/bin` 不在預設清單裡). 沒有就重跑 `deploy/install.sh unit`, 再 `systemctl --user restart cc-telegram-router`. 設定嚮導結尾也會提醒.
   2. plugin 有沒有裝好: `deploy/install.sh plugin` 之後官方 plugin 快取路徑裡是 v2 (`.deployed-version` 是 `v2`).
   3. plugin 自己的 log: `~/.cache/claude-cli-nodejs/<對話資料夾的絕對路徑, 每個 / 換成 ->/mcp-logs-plugin-telegram-telegram/`. 例如對話資料夾 `/srv/cc/bot123/dm-555` 的 log 在 `~/.cache/claude-cli-nodejs/-srv-cc-bot123-dm-555/mcp-logs-plugin-telegram-telegram/`, 裡面有 plugin 啟動失敗的原因 (例如找不到 bun).
 - `deploy/install.sh` 一開始就停: 照它印出的前置檢查說明補 (裝或更新 bun, 在 repo 執行 `bun install --frozen-lockfile`, 裝 Claude Code), 再重跑同一個子指令.
-- worker 起不來, log 有 `Workspace not trusted`: 見上方「資料夾信任」.
+- worker 起不來, log 有 `Workspace not trusted`: 見上方「資料夾信任」. router 啟動時也會檢查 home 有沒有被信任, 沒有就發「🔔 重要通知」; 設定嚮導可以代寫 (見「設定嚮導」).
+- 每一輪都沒有回覆, 對話裡出現「⚠️ 暫時無法回應」, 重要通知寫「這一輪因 API 錯誤結束」: worker 的 Claude Code 每一輪都在 API 那裡失敗, router 從 StopFailure hook 得知原因. 最常見的是模型名稱帶 `[1m]` (例如 `claude-sonnet-4-6[1m]`) 而帳號沒有 1M context 的額度, 訊息是 `Usage credits required for 1M context`: 改用沒有 `[1m]` 的模型 (`/router config set model claude-sonnet-4-6`, 或 `/router chat <chat_id> model ...` 只改一個對話), 把 `autoCompactWindow` 調到 200000 以下, 或在 router 的使用者下開 `claude` 執行 `/usage-credits` 開啟額度. Opus 4.7 以上, Sonnet 5 以上, Fable 與 Haiku 5.5 本身就是 1M context, 不需要 `[1m]`; Opus 4.6 與 Sonnet 4.6 只有 `[1m]` 版本才是 1M, Sonnet 4.6 的 1M 在所有方案都要 usage credits.
+- 改了模型 (或其他啟動參數) 卻沒有生效 (舊參數殘留): 不帶旗標的 `--resume` 會沿用 daemon job 建立時的參數 (舊的 `--model`). 2.26.0 起 router 叫醒時比對 job 存的旗標, 不同就 `claude stop` 加 `claude rm` 再帶新旗標 resume (見「背景 session 的 job 與 daemon」); `/router config set model` 讓用預設模型的對話閒置時輪替, `/router chat <chat_id> model <模型>` 立刻重啟. 還是沒生效就看 log 有沒有 `was started with other flags` 與 `claude rm ... failed`, 並跑 `cli doctor` 看殘留的 job.
+- `journalctl --user -u cc-telegram-router` 在停止或重啟時出現 `Unit process ... remains running after unit stopped` 或 `Found left-over process ... (claude) in control group while starting unit. Ignoring.`: 這是正常的. unit 用 `KillMode=process`, 停止 router 時只停 router 自己, 由 `claude --bg` 啟動的 worker 與它的 daemon 刻意留著繼續跑 (不然每次重啟 router 都會砍掉所有 worker), systemd 才會提醒有程序留在 cgroup 裡.
 - `--local` 的附件下載失敗: 見「自架 Bot API server」的檔案權限.
+
+## cli doctor 與 worker 狀態
+
+- `cc-telegram-router cli doctor` (Telegram 裡是 `/router doctor`, owner 與 admin, 回在私訊) 經由執行中的 router 一次檢查, 每項一行 (✅ 正常, ⚠️ 要注意, ❌ 會出問題), 不含任何 token, 可以直接貼給別人: bun 與 `claudeBin` 在 systemd unit 的 PATH 下找不找得到 (還沒安裝 unit 時看預設清單); 官方 telegram plugin 是否裝在這個使用者, 跟 `deploy/install.sh plugin` 部署時相同; 位置檔 (`~/.config/cc-telegram-router/router.json`) 是否指向這個 router; home 是否被 Claude Code 信任 (另列自己是 git repo, 不吃 home 信任的對話資料夾); 預設與各對話的模型和 autoCompactWindow 是否一致; 不是對話目前 session 的殘留 job (判斷與 router 的 job 清理相同, `router/jobs.ts`; router 自己每 10 分鐘清掉, doctor 只列出) 與卡住 (`blocked`) 的 worker; claude daemon 是否由 router 帶起, 有沒有沒有 daemon 在管的暖機 spare (同「背景 session 的 job 與 daemon」的唯讀檢查); 在跑但 plugin 沒連上的 worker. router 沒在執行時用 `cc-telegram-router [--config <路徑>] doctor` (少了連線那一項); 設定嚮導結尾也會跑一次. 程式在 `router/doctor.ts`, `router/diagnose.ts`, 測試 `router/test/diagnose.test.ts`, `e2e-diagnose.test.ts`.
+- `/router status` 在每個對話後面多列: worker 在 daemon 裡的狀態 (不是 done, idle, working 時才列, 例如 `worker blocked`), worker 在跑但 plugin 沒連上, 以及 24 小時內最後一次的問題與時間 (GMT+8), 例如 `⚠️ 13:05 資料夾沒有被信任 (Workspace not trusted)`. 這些只存在 router 的記憶體, 重啟後清空.
+- 叫不醒的 worker: 叫醒流程先照「背景 session 的 job 與 daemon」比對旗標 (不同就換掉 job), 再 `--resume` 或開新 session; `claude --bg` 本身拒絕 (例如 `Workspace not trusted`) 時立刻算失敗, 不等 plugin; 否則等 plugin 連線 90 秒. 原因依序取: `claude --bg` 的訊息, 那個對話的 plugin log 最新檔 (10 分鐘內寫的, 只看連線失敗與找不到執行檔這類, 不看工具錯誤), 資料夾信任. 連續失敗時下一次叫醒的間隔是 1, 2, 5, 10, 30 分鐘 (之後都是 30), 期間的訊息留在佇列, 時間到了再試; 同一個對話同一個原因只通知一次, 換了原因再通知, 恢復連線時通知一次. 修好後 `/router session restart <chat_id>` 立刻重試, 不用等.
+- 一輪以 API 錯誤結束 (worker 的 StopFailure hook 回報錯誤類型, 細節與 Claude Code 顯示的錯誤文字): 重要通知寫原因, 原始訊息 (遮蔽 token) 與修法 (1M context 額度, 登入失效, 付款, 額度用完, 模型不存在, 服務忙碌, 輸出過長, 安全機制), 同一對話同一原因 30 分鐘內只通知一次; 對話裡回一句「⚠️ 暫時無法回應: <簡短原因>. 已通知管理員.」, 同一對話 5 分鐘內只回一次.
+- router 啟動時 (第一隻 bot 取得 getMe 後) 檢查一次, 有問題就發重要通知: router 自己的 PATH (也就是 unit 的 PATH) 找不到 bun; home 沒有被 Claude Code 信任, 或讀不到 `~/.claude.json`; 預設模型需要 1M context 額度, 或 autoCompactWindow 超過模型的 context.
 
 ## 升級
 

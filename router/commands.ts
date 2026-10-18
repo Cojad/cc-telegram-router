@@ -63,6 +63,10 @@ export interface CommandDeps {
     stop(c: Conversation): Promise<void>
     /** Run a rotation pass now (stop marked workers that are idle). */
     rotateNow(): void
+    /** /router status: per conversation, what is wrong with its worker (router/diagnose.ts); none when fine. */
+    health?(): Promise<Map<string, string[]>>
+    /** /router doctor (router/doctor.ts). */
+    doctor?(): Promise<string>
   }
   /** Rewrite the conversation's settings and context file; restart the worker if it runs. */
   applySettings(c: Conversation, opts: { dropJob: boolean }): Promise<void>
@@ -179,7 +183,7 @@ export function renderStatus(
   startedAt: Date,
   bots: Array<{ name: string; username: string | null; first_name: string | null; poll?: string }>,
   convs: Conversation[],
-  o: { isConnected(key: string): boolean; label(c: Conversation): string; backlog(c: Conversation): number },
+  o: { isConnected(key: string): boolean; label(c: Conversation): string; backlog(c: Conversation): number; health?(c: Conversation): string[] },
 ): string {
   const lastAt = (c: Conversation) => Date.parse(c.last_seen ?? c.created_at)
   const shown = bots.slice(0, MAX_BOTS)
@@ -195,7 +199,7 @@ export function renderStatus(
     out.push('', `${b.username ? `${b.first_name}(@${b.username})` : `${b.name} (讀取中)`}${b.poll ? ` ${b.poll}` : ''}`)
     if (!list.length) out.push(' (還沒有對話)')
     for (const c of list) {
-      const extra = [o.backlog(c) ? `待送 ${o.backlog(c)}` : '', c.rotate_pending ? '待輪替' : ''].filter(Boolean)
+      const extra = [o.backlog(c) ? `待送 ${o.backlog(c)}` : '', c.rotate_pending ? '待輪替' : '', ...(o.health?.(c) ?? [])].filter(Boolean)
       const icons = `${o.isConnected(c.key) ? STATE_ICON.on : STATE_ICON.off}${TYPE_ICON[c.type] ?? '❔'}${ROLE_ICON[c.role] ?? '❔'}`
       out.push(` ${icons} ${ago(now - lastAt(c)).padStart(width)}前: ${o.label(c)}${extra.length ? ` (${extra.join(', ')})` : ''}`)
     }
@@ -212,6 +216,7 @@ export function roleOf(deps: Pick<CommandDeps, 'cfg' | 'db'>, uid: string): stri
 
 const HELP = [
   '/router status',
+  '/router doctor (一次檢查 bun 與 claude 在 unit 的 PATH, plugin, 位置檔, 資料夾信任, 模型與 autoCompactWindow, daemon 的 job; 可直接貼給別人, 不含 token)',
   '/router bot list | add <名稱> <token> | rotate <名稱> <token> | remove <名稱>',
   '/router role <uid|@username> <角色|none> (回覆某人的訊息時可省略對象) | role list',
   '/router chat (列出全部) | chat <chat_id> | chat [chat_id] compact <750k|1m|auto> | model <模型> | mention <on|off> | react <all|botself_only|disable|default>',
@@ -463,10 +468,17 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       return done(HELP_TOPICS[topic] ?? `沒有 ${topic} 這個主題, 主題: ${Object.keys(HELP_TOPICS).join(', ')}\n\n${HELP}`)
     }
 
+    case 'doctor': {
+      if (!deps.sessions.doctor) return done('這個 router 沒有 doctor')
+      return done(await deps.sessions.doctor(), { private: true })
+    }
+
     case 'status': {
       const bots = await deps.bots.list()
+      const health = await deps.sessions.health?.().catch(() => null) ?? null
       return done(renderStatus(Date.now(), deps.startedAt, bots, db.listConversations(), {
         isConnected: deps.sessions.isConnected,
+        health: c => health?.get(c.key) ?? [],
         label: c => c.type === 'dm' ? dmLabel(db, c.chat_id) : (c.title ?? c.chat_id),
         backlog: c => db.undelivered(c.key).length,
       }) + (deps.sandboxStatus ? `\n\n特權技能的沙箱:\n${deps.sandboxStatus()}` : ''))

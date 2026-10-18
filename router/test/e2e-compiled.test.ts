@@ -138,7 +138,10 @@ test.skipIf(!Bun.which('script'))('the compiled router\'s setup wizard: no termi
   expect(await no.exited).toBe(2)
   expect(await new Response(no.stderr).text()).toContain('要在終端機執行 (這裡沒有 TTY)')
   const token = `321:${'W'.repeat(35)}`
-  const t = inTerminal([exe, '--config', other, 'setup'])
+  // a temporary HOME: the wizard reads ~/.claude.json for folder trust, never this machine's
+  const fakeHome = join(dir, 'wizard-home')
+  mkdirSync(fakeHome, { recursive: true })
+  const t = inTerminal([exe, '--config', other, 'setup'], { HOME: fakeHome })
   for (const [prompt, keys] of [['router 的家目錄 home', '\r'], ['owner 的 Telegram uid', '555\r'], ['worker 用的模型 model', '\r'], ['claude 執行檔 claudeBin', '\r'], ['名稱', '\r'], ['bot token', `${token}\r`], ['Bot API: 1) 官方', '2\r'], ['Bot API server 的網址', `http://127.0.0.1:${api.port}\r`], ['server 的 --dir', '\r'], ['要再加一隻 bot 嗎?', '\r'], ['寫入 ', '\r']] as const) await t.answer(prompt, keys)
   t.close()
   expect(await t.exited).toBe(0)

@@ -25,8 +25,14 @@ export interface SupervisorDeps {
   onStart?: (c: Conversation, resumed: boolean) => void
   log?: (msg: string) => void
   connectTimeoutMs?: number
-  /** The worker did not connect in time (an important notice for the owner). */
-  onWakeFail?: (c: Conversation) => void
+  /** The worker did not wake: claude --bg failed (spawnOut: what it said) or
+   *  the plugin did not connect in time (router/diagnose.ts finds out why). */
+  onWakeFail?: (c: Conversation, info: { spawnOut?: string }) => void
+  /** No wake before this time (ms) after failures in a row; a wake asked for
+   *  earlier is put off until then (router/diagnose.ts createWakeTracker). */
+  holdUntil?: (key: string) => number
+  /** /router session restart: a wake now, whatever holdUntil says. */
+  release?: (key: string) => void
   /** The flags a daemon job was started with (its state.json respawnFlags, router/jobs.ts); null when unreadable. */
   jobFlags?: (jobId: string) => string[] | null
 }
@@ -74,7 +80,8 @@ export function createSupervisor(deps: SupervisorDeps) {
     try { return JSON.parse(r.stdout) as AgentEntry[] } catch { return [] }
   }
 
-  async function start(c: Conversation, agents: AgentEntry[]): Promise<void> {
+  /** Started, or why not (what claude said). */
+  async function start(c: Conversation, agents: AgentEntry[]): Promise<{ failed: boolean; out: string }> {
     const settings = settingsPath(c)
     const wanted = workerArgs(cfg, c, settings)
     if (c.session_id) {
@@ -99,26 +106,43 @@ export function createSupervisor(deps: SupervisorDeps) {
       deps.onStart?.(c, true)
       const args = [cfg.claudeBin, '--bg', '--resume', c.session_id, ...(hasJob ? [] : wanted)]
       const r = await run(args, c.folder)
-      if (r.code !== 0) log(`resume ${c.key} failed: ${r.stderr || r.stdout}`)
-      else if (!hasJob) db.setWorkerFlags(c.key, wanted)
+      if (r.code !== 0) { log(`resume ${c.key} failed: ${r.stderr || r.stdout}`); return { failed: true, out: `${r.stderr}\n${r.stdout}`.trim() } }
+      if (!hasJob) db.setWorkerFlags(c.key, wanted)
       else if (saved) db.setWorkerFlags(c.key, saved)
-      return
+      return { failed: false, out: r.stdout }
     }
     log(`spawn ${c.key}`)
     deps.onStart?.(c, false)
     const r = await run([cfg.claudeBin, '--bg', ...wanted, '--', initPrompt(c)], c.folder)
     const short = parseShortId(r.stdout)
-    if (!short) { log(`spawn ${c.key} failed: ${r.stderr || r.stdout}`); return }
+    if (!short) { log(`spawn ${c.key} failed: ${r.stderr || r.stdout}`); return { failed: true, out: `${r.stderr}\n${r.stdout}`.trim() } }
     const entry = (await listAgents()).find(a => a.id === short)
     if (entry?.sessionId) {
       db.setSession(c.key, entry.sessionId)
       db.setWorkerFlags(c.key, wanted)
       c.session_id = entry.sessionId
     }
+    return { failed: false, out: r.stdout }
+  }
+
+  const later = new Map<string, ReturnType<typeof setTimeout>>()
+  /** A held-back wake: once, when the hold ends, if messages still wait. */
+  function wakeLater(c: Conversation, at: number): void {
+    if (later.has(c.key)) return
+    const t = setTimeout(() => {
+      later.delete(c.key)
+      const now = db.getConversation(c.key) ?? c
+      if (db.undelivered(c.key).length) void ensureAwake(now)
+    }, Math.max(0, at - Date.now()))
+    ;(t as { unref?: () => void }).unref?.()
+    later.set(c.key, t)
   }
 
   async function wake(c: Conversation): Promise<void> {
     if (isConnected(c.key)) return
+    // failed several times in a row: wait (messages stay queued)
+    const hold = deps.holdUntil?.(c.key) ?? 0
+    if (hold > Date.now()) { wakeLater(c, hold); return }
     const agents = await listAgents()
     const live = agents.find(a => c.session_id && a.sessionId === c.session_id && isRunning(a))
     if (live) {
@@ -127,10 +151,12 @@ export function createSupervisor(deps: SupervisorDeps) {
       log(`${c.key} running without plugin connection, restarting`)
       await run([cfg.claudeBin, 'stop', live.id], cfg.home)
     }
-    await start(c, agents)
+    const s = await start(c, agents)
+    // claude --bg itself refused (e.g. Workspace not trusted): no plugin is coming
+    if (s.failed) { deps.onWakeFail?.(c, { spawnOut: s.out }); return }
     if (!(await waitConnected(c.key, timeout))) {
       log(`${c.key}: plugin did not connect within ${timeout}ms`)
-      deps.onWakeFail?.(c)
+      deps.onWakeFail?.(c, {})
     }
   }
 
@@ -165,6 +191,9 @@ export function createSupervisor(deps: SupervisorDeps) {
   }
 
   async function restart(c: Conversation, opts: { dropJob?: boolean } = {}): Promise<void> {
+    deps.release?.(c.key)
+    const t = later.get(c.key)
+    if (t) { clearTimeout(t); later.delete(c.key) }
     await stop(c, opts)
     await ensureAwake(c)
   }

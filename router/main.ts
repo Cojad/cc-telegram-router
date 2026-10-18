@@ -17,6 +17,9 @@ import { basename, dirname, join } from 'path'
 import { defaultConfigPath, loadConfig, hiddenPaths, botApiRoot, credApiRoot, OFFICIAL_API_ROOT, type BotConfig } from './config'
 import { fetchBotFile } from './telegram/files'
 import { isSetup, runSetupCli } from './wizard'
+import { createWakeTracker, wakeCause, latestPluginLog, pluginFailure, readProjects, trustOf, trustFix, apiAdvice, modelWindowNotes, type ApiFailure } from './diagnose'
+import { doctorReport, offlineDoctor, daemonInputs } from './doctor'
+import pkg from '../package.json'
 import { locatorPath, syncLocator, writeLocator } from '../shared/locate'
 import { acquireLock } from './lock'
 import { openRouterDb, type Conversation, type ConvSecret } from './db'
@@ -94,6 +97,8 @@ if (ownArgs()[0] === 'toolbox') process.exit(await toolboxCli(ownArgs().slice(1)
 const configPath = defaultConfigPath(process.argv, process.execPath)
 // `cc-telegram-router [--config x] setup`: the setup wizard (router/wizard.ts), before config.json is read (it may not exist yet)
 if (isSetup(ownArgs())) process.exit(await runSetupCli(configPath))
+// `cc-telegram-router [--config x] doctor`: router/doctor.ts without the running router
+if (ownArgs().filter((a, i, all) => a !== '--config' && all[i - 1] !== '--config')[0] === 'doctor') { console.log(await offlineDoctor(configPath, pkg.version)); process.exit(0) }
 const cfg = loadConfig(configPath)
 
 // `cc-telegram-router [--config x] cli <子指令...>`: talk to the running router.
@@ -325,6 +330,7 @@ async function convSecretCall(live: Peer, conv: Conversation, s: ConvSecret, too
 function ipcOnProgress(peer: Peer, ev: Record<string, unknown>): void {
   const c = peer.conv
   if (!c) return
+  if (ev.event === 'stop' && ev.failure) apiFailed(db.getConversation(c.key) ?? c, ev.failure as ApiFailure)
   if (ev.event === 'stop' || (ev.event === 'prompt' && ev.telegram)) log(`progress ${c.key} ${ev.event}`)
   let replyTo: number | undefined, mirrors: Mirror[] | undefined
   // a turn started by reactions alone (hooks/hook.ts) shows no 🤔 in the chat; the previous turn's progress still closes
@@ -571,6 +577,7 @@ const ipc = createIpc({
   // a worker that cannot be told apart (no process start time) gets none
   onWorker: (c, h) => {
     pluginGuard.check('hello')
+    wakeRecovered(c)
     const w = workerKey(h.session_id ?? db.getConversation(c.key)?.session_id, h.pid)
     if (w) elevation.workerConnected(c.key, w)
     else { elevation.workerGone(c.key); log(`own_agents ${c.key}: no start time for pid ${h.pid}, own subagents do not count`) }
@@ -641,7 +648,9 @@ const supervisor = createSupervisor({
       if (noteStart(c.folder, fp, resumed)) { db.addLog(c.key, STALE_NOTE); log(`${c.key}: plugin or skills changed since its last start, reminder queued`) }
     } catch (e) { log(`${c.key}: freshness check failed: ${e}`) }
   },
-  onWakeFail: c => void postNotice(approvalDeps, c.bot, `⚠️ ${c.key}${c.title ? ` (${c.title})` : ''} 的 worker 叫不醒, 訊息還在佇列裡. 可試 /router session restart ${c.chat_id}`),
+  onWakeFail: (c, info) => wakeFailed(c, info.spawnOut),
+  holdUntil: key => wakes.until(key),
+  release: key => wakes.release(key),
   // the flags the daemon saved for the job: when they are not the router's now, the job is removed first
   jobFlags: id => readJob(JOBS_DIR, id)?.respawnFlags ?? null,
 })
@@ -670,6 +679,58 @@ async function jobSweep(): Promise<void> {
 }
 setTimeout(() => void jobSweep().catch(e => log(`job sweep: ${e}`)), 5_000).unref()
 setInterval(() => void jobSweep().catch(e => log(`job sweep: ${e}`)), 600_000).unref()
+
+// --- why workers fail (router/diagnose.ts): told to the owner once per cause, kept for /router status ---
+const CLAUDE_JSON = join(homedir(), '.claude.json')
+const wakes = createWakeTracker()
+/** The last trouble of each conversation (memory only), for /router status. */
+const lastTrouble = new Map<string, { at: number; text: string }>()
+const convTitle = (c: Conversation) => `${c.key}${c.title ? ` (${c.title})` : ''}`
+
+/** A worker that did not wake: why (claude --bg's words, the plugin's own log, folder trust), when to try again. */
+function wakeFailed(c: Conversation, spawnOut?: string): void {
+  const logFile = latestPluginLog(c.folder, homedir(), Date.now() - 10 * 60_000)
+  let pluginLog: string | null = null
+  try { pluginLog = logFile ? pluginFailure(readFileSync(logFile, 'utf8')) : null } catch {}
+  const projects = readProjects(CLAUDE_JSON)
+  const w = wakeCause({ spawnOut, pluginLog, home: cfg.home, folder: c.folder, logFile, trust: projects ? trustOf(projects, c.folder, homedir()) : null })
+  const r = wakes.fail(c.key, w.cause)
+  lastTrouble.set(c.key, { at: Date.now(), text: w.cause })
+  log(`${c.key}: wake failed (${r.failures} in a row): ${w.cause}; next try ${gmt8(new Date(r.retryAt))}`)
+  if (r.notify) void postNotice(approvalDeps, c.bot, [
+    `⚠️ ${convTitle(c)} 的 worker 叫不醒, 訊息還在佇列裡.`,
+    `原因: ${w.cause}`,
+    `修法: ${w.fix}`,
+    `下次自動重試 ${gmt8(new Date(r.retryAt))}; 連續失敗會拉長間隔 (最長 30 分鐘), 同一原因只通知這一次. 修好後可用 /router session restart ${c.chat_id} 立刻重試.`,
+  ].join('\n'))
+}
+
+/** A plugin said hello: a conversation that kept failing is back. */
+function wakeRecovered(c: Conversation): void {
+  const r = wakes.ok(c.key)
+  if (r.recovered) void postNotice(approvalDeps, c.bot, `✅ ${convTitle(c)} 的 worker 恢復連線 (之前連續失敗 ${r.failures} 次).`)
+}
+
+const apiNoted = new Map<string, number>()
+/** A turn that ended on an API error (StopFailure hook): the owner learns why and what to do (once per 30 minutes and cause), the chat that nothing is coming (once per 5 minutes). */
+function apiFailed(c: Conversation, f: ApiFailure): void {
+  const model = c.model ?? cfg.model
+  const a = apiAdvice(f, model)
+  const said = maskTokens(String(f.message || f.details || '')).replace(/\s+/g, ' ').slice(0, 300)
+  lastTrouble.set(c.key, { at: Date.now(), text: a.reason })
+  log(`${c.key}: turn ended on an API error (${f.error || '?'}): ${said}`)
+  const now = Date.now()
+  const k = `${c.key}|${f.error}|${a.short}`
+  if (now - (apiNoted.get(k) ?? 0) > 30 * 60_000) {
+    apiNoted.set(k, now)
+    void postNotice(approvalDeps, c.bot, [`⚠️ ${convTitle(c)} 這一輪因 API 錯誤結束, 沒有回覆.`, `原因: ${a.reason}`, ...(said ? [`原始訊息: ${said}`] : []), `修法: ${a.fix}`].join('\n'))
+  }
+  if (now - (apiNoted.get(`${c.key}|chat`) ?? 0) > 5 * 60_000) {
+    apiNoted.set(`${c.key}|chat`, now)
+    const replyTo = currentMsg.get(c.key)
+    void bots.get(c.bot)?.bot.api.sendMessage(c.chat_id, `⚠️ 暫時無法回應: ${a.short}. 已通知管理員.`, replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}).catch(e => log(`${c.key}: could not say the turn failed: ${e}`))
+  }
+}
 
 /** Put a router-originated message in front of a conversation's worker. */
 /** The Telegram message each conversation is handling (set as messages are delivered). */
@@ -1152,6 +1213,22 @@ const commandDeps: CommandDeps = {
     restart: (c, opts) => supervisor.restart(c, opts),
     stop: c => supervisor.stop(c),
     rotateNow: () => void rotate(),
+    // /router status: the daemon's state of each worker and its last trouble (router/diagnose.ts)
+    async health() {
+      const agents = await supervisor.listAgents().catch(() => [])
+      const out = new Map<string, string[]>()
+      for (const c of db.listConversations()) {
+        const a = agents.find(x => c.session_id && x.sessionId === c.session_id)
+        const parts: string[] = []
+        if (a?.state && !['done', 'idle', 'working'].includes(a.state)) parts.push(`worker ${a.state}`)
+        if (a && a.pid != null && a.status != null && !ipc.isConnected(c.key)) parts.push('worker 在跑但 plugin 沒連上')
+        const t = lastTrouble.get(c.key)
+        if (t && Date.now() - t.at < 86_400_000) parts.push(`⚠️ ${gmt8(new Date(t.at)).slice(11, 16)} ${t.text}`)
+        if (parts.length) out.set(c.key, parts)
+      }
+      return out
+    },
+    doctor: async () => doctorReport({ cfg, conversations: db.listConversations(), agents: await supervisor.listAgents().catch(() => null), isConnected: ipc.isConnected, version: pkg.version, ...daemonInputs(cfg.claudeBin) }),
   },
   async applySettings(c, opts) {
     settingsFor(c)
@@ -1582,6 +1659,8 @@ function startBot(bc: BotConfig): BotHandle {
       // The bot itself never appears as a sender in its own updates; record it so /id shows its name.
       db.seePerson({ uid: String(info.id), name: info.first_name, username: info.username, chat_id: null })
       log(`${bc.name}: polling as @${info.username}`)
+      // the first bot that can send: the start's environment checks go out (router/diagnose.ts)
+      if (!startupChecked) { startupChecked = true; void startupChecks().catch(e => log(`startup checks: ${e}`)) }
     },
     handle: u => bot.handleUpdate(u),
     notify: e => { if (bots.get(bc.name) === h) pollNotice(bc.name, e) },
@@ -1698,6 +1777,21 @@ const pruneSkillEnvs = () => {
 }
 setTimeout(pruneSkillEnvs, 120_000).unref()
 setInterval(pruneSkillEnvs, 86_400_000).unref()
+// What every worker needs, checked once at start when the first bot is up (router/diagnose.ts), to 🔔 重要通知 (or the owner's DM):
+// bun for the workers' telegram plugin on the router's own PATH (the unit's), home trusted by Claude Code, the model against autoCompactWindow
+let startupChecked = false
+async function startupChecks(): Promise<void> {
+  const notes: string[] = []
+  if (!Bun.which('bun')) notes.push(`⚠️ router 的 PATH 找不到 bun: worker 的 telegram plugin 要用 bun 執行, 每個 worker 都會叫不醒 (plugin did not connect).\n修法: deploy/install.sh unit (把 bun 的資料夾加進 unit 的 PATH), 再 systemctl --user restart cc-telegram-router.\n目前的 PATH: ${process.env.PATH ?? '(空)'}`)
+  const projects = readProjects(CLAUDE_JSON)
+  if (projects) {
+    const t = trustOf(projects, cfg.home, homedir())
+    if (!t.trusted) notes.push(`⚠️ router 的 home ${cfg.home} 沒有被 Claude Code 信任: 新的 worker 會起不來 (Workspace not trusted).\n修法: ${trustFix(cfg.home, t)}`)
+  } else notes.push(`⚠️ 讀不到 ${CLAUDE_JSON}: 無法確認 home ${cfg.home} 是否被 Claude Code 信任. 在 router 的使用者下互動執行一次 cd ${cfg.home} && claude, 接受信任後 /exit.`)
+  const mw = modelWindowNotes(cfg.model, cfg.autoCompactWindow)
+  if (mw.length) notes.push(`ℹ️ ${mw.join('\n')}`)
+  for (const n of notes) { log(`startup check: ${n.split('\n')[0]}`); await noticeEveryBot(n) }
+}
 // Privileged skills' credentials refreshed daily (router/skillrefresh.ts); at start, those not refreshed in 24 hours.
 if (cfg.skillRefreshAt) {
   const sched = scheduleRefresh(refreshDeps, cfg.skillRefreshAt)

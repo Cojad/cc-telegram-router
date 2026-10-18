@@ -27,8 +27,8 @@ export const AREAS: Area[] = [
   },
   {
     name: 'sandbox', title: '沙箱與安裝位置',
-    tests: ['portability.test.ts', 'skilltry.test.ts', 'whitelist.test.ts', 'limits.test.ts', 'e2e-compiled.test.ts', 'pluginguard.test.ts', 'wizard.test.ts', 'e2e-wizard.test.ts', 'preflight.test.ts'],
-    paths: ['shared/locate.ts', 'deploy/**', 'router/pluginguard.ts', 'router/wizard.ts', 'templates/base-settings.json', 'router/settings.ts', 'router/privskill.ts', 'router/sandboxnet.ts', 'router/sandboxfs.ts', 'router/sandboxlimits.ts', 'router/selfpath.ts', 'router/cli.ts', 'plugin/server.ts', 'templates/roles/**'],
+    tests: ['portability.test.ts', 'skilltry.test.ts', 'whitelist.test.ts', 'limits.test.ts', 'e2e-compiled.test.ts', 'pluginguard.test.ts', 'wizard.test.ts', 'e2e-wizard.test.ts', 'preflight.test.ts', 'diagnose.test.ts', 'e2e-diagnose.test.ts'],
+    paths: ['shared/locate.ts', 'deploy/**', 'router/pluginguard.ts', 'router/wizard.ts', 'router/diagnose.ts', 'router/doctor.ts', 'router/supervisor.ts', 'hooks/hook.ts', 'templates/base-settings.json', 'router/settings.ts', 'router/privskill.ts', 'router/sandboxnet.ts', 'router/sandboxfs.ts', 'router/sandboxlimits.ts', 'router/selfpath.ts', 'router/cli.ts', 'plugin/server.ts', 'templates/roles/**'],
   },
   {
     name: 'secrets', title: '密鑰保護',

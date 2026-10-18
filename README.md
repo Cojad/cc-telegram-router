@@ -107,7 +107,9 @@
    - 每隻 bot 的名稱與 token. token 輸入時每打一個字 (或貼上的每一個字) 顯示一個 `*`, 看得出有沒有打進去與長度, 但畫面上永遠不出現 token 本身; Backspace 刪最後一個字, Ctrl-U 清掉重打, Enter 結束.
    - 這隻 bot 用官方 Bot API (`api.telegram.org`) 還是自架的本機 Bot API server ([telegram-bot-api](https://github.com/tdlib/telegram-bot-api)). 選自架就再問網址 (預設 `http://127.0.0.1:8081`) 與 server 的 `--dir` (可不填). 接著用那個 server 呼叫 getMe 驗證 token, 成功顯示 `@username (id)`; 失敗時可以重打 token, 重選 server, 或放棄. 驗證沒過不會寫入任何東西.
    - 最後列出要寫入的內容, 確認後寫入 `config.json` 與 `access.json` (權限 600, 先寫暫存檔再改名). 任何時候按 Ctrl-C 都是取消, 不寫入.
-   - 結尾檢查 bun 與 claude 在 systemd unit 的 PATH 下找不找得到 (已安裝的 unit 看它的 PATH, 還沒安裝看 unit 預設的 PATH), 找不到就說明要重跑 `deploy/install.sh unit`.
+   - 選模型時說明 `[1m]`: Opus 4.7 以上, Sonnet 5 以上本身就是 1M context; 名稱加 `[1m]` 的版本要帳號有 1M context 額度 (Sonnet 4.6 的 1M 在所有方案都要 usage credits), 沒有就每一輪 API 錯誤. 選了 200K 的模型而 autoCompactWindow 比較大時會提醒.
+   - 資料夾信任: `<home>` 還沒被 Claude Code 信任時, 先說明官方的互動做法 (第 6 步), 再問要不要由嚮導代寫 `~/.claude.json`; 只有輸入 `y` 才寫, 會先備份, 只改那一個設定, 寫完再確認沒被其他 Claude Code 蓋掉. router 正在執行時會先提醒.
+   - 結尾自動跑一次 `cc-telegram-router doctor` (bun 與 claude 在 unit 的 PATH, plugin, 位置檔, 信任, 模型), 有問題就說明怎麼補.
 
    第一次跑時 `access.json` 不存在, 嚮導建立預設的一份 (私訊用配對碼 `pairing`, 沒有允許清單, 沒有群組); 已經存在的 `access.json` 不會被換掉, 嚮導只會把 owner 加進它的 `allowFrom` (owner 私訊 bot 不用配對, 見下方「私訊與群組的存取」).
 
@@ -124,6 +126,10 @@
 ## 疑難排解
 
 - router log 一直出現 `plugin did not connect`: worker 的 telegram plugin 沒連上 router. 最常見是 systemd unit 的 PATH 裡沒有 bun (plugin 由 `.mcp.json` 直接執行 `bun`, 而 bun 的官方安裝位置 `~/.bun/bin` 不在 unit 預設的 PATH). 先看 `systemctl --user cat cc-telegram-router` 的 `Environment=PATH=` 有沒有 `command -v bun` 所在的資料夾; 沒有就重跑 `deploy/install.sh unit` (會自動加進去), 再 `systemctl --user restart cc-telegram-router`. 還是不行就看 plugin 自己的 log: `~/.cache/claude-cli-nodejs/<對話資料夾路徑, 斜線換成 ->/mcp-logs-plugin-telegram-telegram/`, 例如對話資料夾 `/srv/cc/bot123/dm-555` 的在 `~/.cache/claude-cli-nodejs/-srv-cc-bot123-dm-555/mcp-logs-plugin-telegram-telegram/`.
+- 先跑 `<home>/.router/cc-telegram-router cli doctor` (Telegram 裡 `/router doctor`): 一次檢查 bun 與 claude 在 unit 的 PATH, plugin, 位置檔, 資料夾信任, 模型與 autoCompactWindow, daemon 裡殘留的 job, 輸出不含 token, 可以直接貼給別人. `/router status` 也會在每個對話後面列出 worker 的狀態與最後一次的問題. router 叫不醒 worker 或某一輪因 API 錯誤結束時, 會在「🔔 重要通知」寫原因與修法 (同一原因只通知一次).
+- 每一輪都沒有回覆, 出現「⚠️ 暫時無法回應」: 最常見是模型名稱帶 `[1m]` (例如 `claude-sonnet-4-6[1m]`) 而帳號沒有 1M context 的額度 (`Usage credits required for 1M context`). 改用沒有 `[1m]` 的模型 (`/router config set model claude-sonnet-4-6`), 或在 router 的使用者下開 `claude` 執行 `/usage-credits`. Opus 4.7 以上, Sonnet 5 以上本身就是 1M context, 不用 `[1m]`.
+- 改了模型卻沒生效 (舊參數殘留): router 叫醒 worker 時會比對 daemon job 存的旗標, 不同就換掉 job (用預設模型的對話閒置時輪替); 還是不行就看 log 與 cli doctor 列出的殘留 job, 見 [部署與維運: 疑難排解](docs/operations.md#疑難排解).
+- journal 在 router 停止或重啟時寫 `left-over process` 或 `remains running after unit stopped`: 正常. unit 用 `KillMode=process`, 停 router 時刻意不停 worker.
 - 更多 (前置檢查, 資料夾信任, 自架 Bot API server 的檔案權限) 見 [部署與維運: 疑難排解](docs/operations.md#疑難排解).
 
 ## 私訊與群組的存取
