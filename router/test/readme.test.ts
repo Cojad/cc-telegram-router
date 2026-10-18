@@ -7,7 +7,12 @@
 // relative link in README, operations.md and secrets.md reaches a file and a
 // heading that exist; operations.md 「自架 Bot API server」 states what
 // local-bot-api.test.ts and e2e-localapi.test.ts check, and the first
-// interactive claude in <home> (資料夾信任) comes before the router starts.
+// interactive claude in <home> (資料夾信任) comes before the router starts;
+// README and operations.md describe the setup wizard (wizard.test.ts,
+// e2e-wizard.test.ts) and the DM and group access rules (policy.test.ts,
+// owners-access.test.ts) as the code has them; the install order (bun,
+// clone, bun install, the official plugin, install.sh), install.sh's checks
+// and the unit's PATH (preflight.test.ts), and 疑難排解 for plugin did not connect.
 // Keep in sync with those sections.
 
 import { test, expect } from 'bun:test'
@@ -44,7 +49,7 @@ test('operations.md 「設定欄位」 lists exactly the fields config.json is r
   expect(credFields.length).toBeGreaterThan(5)
   const credRow = section(OPS, '## 設定欄位').split('\n').find(l => l.startsWith('| `credentials` |'))!
   for (const f of credFields) expect(credRow).toContain(f)
-  expect(README).toContain('完整欄位 (含沒寫在範例裡的 `apiRoot`, `secretKey`, `classifier`, `receiveReact`, `reactFlushMs` 等) 見 [部署與維運: 設定欄位](docs/operations.md#設定欄位)')
+  expect(README).toContain('嚮導沒有問的欄位 (例如 `credentials`, `secretKey`, `classifier`, `receiveReact`, `sandboxDenyRead`, `skillRefreshAt`) 原封不動, 要改見 [部署與維運: 設定欄位](docs/operations.md#設定欄位)')
 })
 
 test('install: the official plugin\'s install command (Claude Code 2.1.302), and linger with how to check it', () => {
@@ -112,4 +117,43 @@ test('operations.md 「自架 Bot API server」 gives the levels, --local from d
   const deploy = section(OPS, '## 部署')
   expect(deploy.indexOf('cd <home> && claude')).toBeLessThan(deploy.indexOf('systemctl --user enable --now'))
   expect(section(OPS, '### 資料夾信任')).toContain('https://code.claude.com/docs/en/permissions#project-allow-rules-and-workspace-trust')
+})
+
+test('the setup wizard in README 「How to install」 and operations.md 「設定嚮導」: in the install steps, the * input and its keys, official or self-hosted with getMe, the edit mode, access.json, no terminal', () => {
+  const install = section(README, '## How to install'), ops = section(OPS, '### 設定嚮導')
+  expect(install).toContain('deploy/install.sh setup')
+  expect(install.indexOf('deploy/install.sh setup')).toBeLessThan(install.indexOf('systemctl --user enable --now'))
+  for (const t of ['顯示一個 `*`', 'Backspace', 'Ctrl-U', 'Enter', 'Ctrl-C', '`http://127.0.0.1:8081`', 'getMe', '修改模式', 'Enter 保留', '已設定 (末 4 碼)', '`allowFrom`', '權限 600', '沒有終端機']) expect(install).toContain(t)
+  for (const t of ['`router/wizard.ts`', '結束碼 2', 'Ctrl-H', 'bracketed paste', '`"apiRoot": "https://api.telegram.org"`', '同一隻 bot 的', '`{"dmPolicy": "pairing", "allowFrom": [<owners>], "groups": {}, "pending": {}}`', '只把還不在 `allowFrom` 的 owner 加進去', '暫存檔 (權限 600) 再改名']) expect(ops).toContain(t)
+  // what the code really says
+  const wiz = read('router/wizard.ts')
+  for (const t of ["LOCAL_API_DEFAULT = 'http://127.0.0.1:8081'", "dmPolicy: 'pairing', allowFrom: [], groups: {}, pending: {}", "if (ch === '\\x15')", "if (ch === '\\x7f' || ch === '\\b')", '要在終端機執行 (這裡沒有 TTY)']) expect(wiz).toContain(t)
+  expect(read('deploy/install.sh')).toContain('setup) install_setup ;;')
+})
+
+test('DM and group access in plain words (README 「私訊與群組的存取」, operations.md): pairing for everyone but owners, 1 hour, 3 waiting, allowlist, disabled, groups; the numbers are the code\'s', () => {
+  const r = section(README, '## 私訊與群組的存取'), o = section(OPS, '## 私訊與群組的存取')
+  for (const t of ['`pairing`', '**每一個人**', '`/router access pair <碼>`', '1 小時有效', '最多 3 個待核可', 'owner 一律在允許清單裡', '`allowlist`', '不發配對碼', '`disabled`', '`/router access group add <chat_id>`', '`--no-mention`']) expect(r).toContain(t)
+  for (const t of ['1 小時有效', '最多 3 個待核可', '`/router config set owners`', '`/router role <uid> owner`', 'router 啟動時', 'owners-access.test.ts']) expect(o).toContain(t)
+  const policy = read('router/telegram/policy.ts')
+  expect(policy).toContain('expiresAt: now + 60 * 60 * 1000, // 1h')
+  expect(policy).toContain('if (Object.keys(access.pending).length >= 3) return { action: \'drop\' }')
+  expect(policy).toContain("if (access.dmPolicy === 'disabled') return { action: 'drop' }")
+})
+
+test('install order and checks: bun (~/.bun/bin) → clone → bun install --frozen-lockfile → the official plugin → install.sh; what install.sh checks; the unit\'s PATH; 疑難排解 for plugin did not connect', () => {
+  const install = section(README, '## How to install')
+  const order = ['https://bun.sh/install', '`~/.bun/bin`', 'git clone', 'bun install --frozen-lockfile', 'claude plugin install', 'deploy/install.sh router', 'deploy/install.sh setup', 'cd <home> && claude', 'systemctl --user enable --now']
+  const at = order.map(t => install.indexOf(t))
+  expect(at.every(i => i >= 0), JSON.stringify(at)).toBe(true)
+  expect([...at].sort((a, b) => a - b)).toEqual(at)
+  for (const t of ['`engines`', '自動執行 `bun install --frozen-lockfile`', '不會改用沒鎖版本的 `bun install`', 'claude 找得到並印出版本', '只警告', 'bun 與 claude 所在的資料夾加進 unit 的 PATH', '重跑 `deploy/install.sh unit` 會更新']) expect(install).toContain(t)
+  const deploy = section(OPS, '## 部署')
+  for (const t of ['`deploy/preflight.ts`', '`engines.bun`', '`bun install --frozen-lockfile`', '`~/.local/bin:~/bin:/usr/local/bin:/usr/bin:/bin`', '`command -v bun`', '`plugin did not connect`']) expect(deploy).toContain(t)
+  for (const t of [section(README, '## 疑難排解'), section(OPS, '## 疑難排解')]) {
+    for (const k of ['`plugin did not connect`', '`deploy/install.sh unit`', '~/.cache/claude-cli-nodejs/', '/mcp-logs-plugin-telegram-telegram/', '-srv-cc-bot123-dm-555']) expect(t).toContain(k)
+  }
+  // the unit template and install.sh say the same
+  expect(read('deploy/cc-telegram-router.service')).toContain('Environment=PATH=@PATH@')
+  expect(read('deploy/install.sh')).toContain('local base="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin"')
 })

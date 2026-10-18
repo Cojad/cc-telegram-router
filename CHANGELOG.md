@@ -6,6 +6,24 @@
 
 ## [Unreleased]
 
+## [2.20.0] - 2026-10-18
+
+### Added
+
+- 設定嚮導 `cc-telegram-router [--config x] setup` (`router/wizard.ts`), `deploy/install.sh setup` 執行它再 `register`; `deploy/install.sh router` 在沒有 config.json 而且在終端機裡時自己帶起. 新建時問 home, owners, model, claudeBin 與每隻 bot 的名稱, token, Bot API (官方, 或自架的本機 server: 網址預設 `http://127.0.0.1:8081` 與 `localFilesDir`), 用那隻 bot 的 server 做 getMe 驗證, 失敗可重打 token, 重選 server 或放棄 (都不寫入). 重跑就是修改模式: 目前的值當預設, Enter 保留, 只寫入改過的欄位, 嚮導沒問的欄位不動; bot 可保留, 修改 (換 token 只接受同一隻 bot), 移除或新增, 官方與自架可互換. token 輸入每個字元 (含貼上) 顯示一個 `*`, Backspace, Ctrl-U, Enter, Ctrl-C (取消, 不寫入), 畫面與錯誤訊息都不出現 token, 修改模式只顯示末 4 碼. config.json 與 access.json 先寫暫存檔 (600) 再改名; 沒有 TTY 時拒絕 (結束碼 2). 結尾檢查 bun 與 claude 在 systemd unit 的 PATH 下找不找得到.
+- access.json 不存在時嚮導建立預設 (`pairing`, 空的 allowFrom, groups, pending); 已存在的不換掉.
+- `deploy/install.sh` 每個子指令開頭的前置檢查 (`deploy/preflight.ts`): bun 找得到且符合 `package.json` 的 `engines`; 相依套件跟 `bun.lock` 一致, 沒裝或過期時自動 `bun install --frozen-lockfile` (失敗就停, 不用沒鎖版本的 install); claude 找得到並印出版本 (比測試版本舊只警告). 缺了就停並說明怎麼補.
+- `deploy/install.sh unit` 把 bun 與 claude 所在的資料夾加進 unit 的 PATH (原本固定是 `~/.local/bin:~/bin:/usr/local/bin:/usr/bin:/bin`, bun 官方安裝位置 `~/.bun/bin` 不在裡面, worker 的 telegram plugin 因此起不來, router 一直報 plugin did not connect); 找不到 bun 就停; 重跑會更新已安裝的 unit.
+
+### Fixed
+
+- owner 自己私訊 bot 也會收到配對碼: 私訊的 gate 只看 access.json 的 allowFrom, 只有認領碼會把 owner 加進去. 現在每種成為 owner 的方式都會加: 設定嚮導, `/router config set owners`, `/router role <uid> owner`, 以及 router 啟動時 (config 的 owners 與 users 表裡的 owner, 例如手改 config.json). 只加不移.
+
+### Changed
+
+- README 從頭對照現況更新: 安裝步驟改成 bun (1.4.2 以上, `~/.bun/bin`) → clone → `bun install --frozen-lockfile` → 官方 plugin → install.sh 與設定嚮導 (含官方/自架 Bot API 選擇, 修改模式, token 星號輸入, 前置檢查, unit 的 PATH); 新增「疑難排解」(plugin did not connect: 先查 unit 的 PATH 有沒有 bun, plugin log 的位置) 與「私訊與群組的存取」(白話說明 pairing, allowlist, disabled, 群組); 與上游差異表, Feature highlights, 升級, 文件索引同步. docs/operations.md 新增「設定嚮導」「私訊與群組的存取」「疑難排解」與前置檢查, unit PATH 的說明; 手寫 config.json 的範例保留給沒有終端機的情況.
+- 測試: 新增 `router/test/wizard.test.ts`, `e2e-wizard.test.ts` (假終端機, util-linux `script`), `owners-access.test.ts`, `preflight.test.ts`, 共用的 `router/test/pty.ts`; `e2e-compiled.test.ts` 加上編譯版的嚮導; `readme.test.ts` 與 `portability.test.ts` 跟上文件與 install.sh.
+
 ## [2.19.0] - 2026-10-18
 
 ### Added

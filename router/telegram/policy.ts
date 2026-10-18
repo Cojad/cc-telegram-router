@@ -117,6 +117,16 @@ export function readAccessFile(accessFile: string): Access {
   }
 }
 
+/** Owners always reach the bot in a DM (the gate reads allowFrom only):
+ *  every owner uid not in allowFrom yet is added, nothing else changes.
+ *  Works on a parsed access.json as it is. Returns the uids added. */
+export function allowOwners(a: { allowFrom?: unknown }, owners: string[]): string[] {
+  const list: string[] = Array.isArray(a.allowFrom) ? (a.allowFrom as unknown[]).map(String) : []
+  const added = [...new Set(owners.map(String))].filter(u => !list.includes(u))
+  if (added.length || !Array.isArray(a.allowFrom)) a.allowFrom = [...list, ...added]
+  return added
+}
+
 export function pruneExpired(a: Access): boolean {
   const now = Date.now()
   let changed = false

@@ -16,6 +16,7 @@ import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFil
 import { basename, dirname, join } from 'path'
 import { defaultConfigPath, loadConfig, hiddenPaths, botApiRoot, credApiRoot, OFFICIAL_API_ROOT, type BotConfig } from './config'
 import { fetchBotFile } from './telegram/files'
+import { isSetup, runSetupCli } from './wizard'
 import { locatorPath, syncLocator, writeLocator } from '../shared/locate'
 import { acquireLock } from './lock'
 import { openRouterDb, type Conversation, type ConvSecret } from './db'
@@ -62,7 +63,7 @@ import { dmLabel, personLabel } from './commands'
 import { parseRelay, mayRelay, relay, codeBlock, ROUTER_CMDS, type Exec, type RelayCmd } from './relay'
 import { homedir } from 'os'
 import { openStore } from './telegram/store'
-import { readAccessFile, gate as policyGate, dmCommandGate as policyDmCommandGate, type Access, type InboundContext } from './telegram/policy'
+import { readAccessFile, allowOwners, gate as policyGate, dmCommandGate as policyDmCommandGate, type Access, type InboundContext } from './telegram/policy'
 import { createHandleInbound } from './telegram/inbound'
 import { registerTransport } from './telegram/transport'
 import { callTool } from './telegram/outbound'
@@ -80,6 +81,8 @@ const startedAt = new Date()
 if (ownArgs()[0] === FAKE_SUBCOMMAND) await runFakeService(ownArgs().slice(1))
 
 const configPath = defaultConfigPath(process.argv, process.execPath)
+// `cc-telegram-router [--config x] setup`: the setup wizard (router/wizard.ts), before config.json is read (it may not exist yet)
+if (isSetup(ownArgs())) process.exit(await runSetupCli(configPath))
 const cfg = loadConfig(configPath)
 
 // `cc-telegram-router [--config x] cli <子指令...>`: talk to the running router.
@@ -193,6 +196,13 @@ function saveAccess(a: Access): void {
   const tmp = ACCESS_FILE + '.tmp'
   writeFileSync(tmp, JSON.stringify(a, null, 2) + '\n', { mode: 0o600 })
   renameSync(tmp, ACCESS_FILE)
+}
+// owners reach the bot in a DM without pairing (the gate reads only allowFrom):
+// config owners and users given the owner role, however they got it (hand-edited config.json too)
+{
+  const a = loadAccess()
+  const added = allowOwners(a, [...cfg.owners, ...db.listUsers().filter(u => u.role === 'owner').map(u => u.uid)])
+  if (added.length) { saveAccess(a); log(`access.json: owner ${added.join(', ')} 加入 allowFrom (owner 私訊不用配對)`) }
 }
 function writeConfig(mutate: (raw: Record<string, unknown>) => void): void {
   const raw = JSON.parse(readFileSync(configPath, 'utf8'))

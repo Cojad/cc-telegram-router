@@ -12,16 +12,36 @@ claude plugin marketplace add anthropics/claude-plugins-official
 claude plugin install telegram@claude-plugins-official            # 預設裝在 user 範圍
 ```
 
-worker 的 settings 會自己啟用它 (`templates/base-settings.json` 的 `enabledPlugins`), `claude plugin list` 顯示 disabled 也沒關係; 同一份 settings 也關掉官方商店的自動更新, 見下方「官方 plugin 的自動更新與快取檢查」. 接著:
+worker 的 settings 會自己啟用它 (`templates/base-settings.json` 的 `enabledPlugins`), `claude plugin list` 顯示 disabled 也沒關係; 同一份 settings 也關掉官方商店的自動更新, 見下方「官方 plugin 的自動更新與快取檢查」. 之前要先裝好 bun (`package.json` 的 `engines`, 官方安裝程式放在 `~/.bun/bin`) 與 Claude Code, 並在 repo 執行過 `bun install --frozen-lockfile`. 接著:
 
 ```bash
-CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cc-telegram-router, 複製 templates 與報表腳本
+CC_ROUTER_STATE=<home>/.router deploy/install.sh router   # 編譯到 <home>/.router/cc-telegram-router, 複製 templates 與報表腳本; 還沒有 config.json 而且在終端機裡時接著開設定嚮導
 deploy/install.sh plugin   # 打包 plugin v2 到官方 plugin 快取路徑 (第一次會備份原內容), 並在 stateDir 記下檔案指紋
 deploy/install.sh unit     # 安裝 systemd user unit
+deploy/install.sh setup    # 設定嚮導 (第一次 router 已經帶起時不用再跑; 之後要改設定再跑, 見下方「設定嚮導」)
 sudo loginctl enable-linger <使用者>   # 見下方「登出後繼續執行 (linger)」
 cd <home> && claude        # 只有第一次: 接受資料夾信任後離開 (/exit), 見下方「資料夾信任」
 systemctl --user enable --now cc-telegram-router
 ```
+
+`deploy/install.sh` 的每個子指令 (`router`, `plugin`, `unit`, `setup`, `all`) 開頭先做前置檢查 (`deploy/preflight.ts`, 測試 `router/test/preflight.test.ts`), 沒過就停下並說明怎麼補:
+
+1. bun: `command -v bun` 找得到 (印出路徑), 版本符合 `package.json` 的 `engines.bun` (照 engines 讀, 太舊時提示 `bun upgrade`). 找不到 bun 時提示官方安裝方式 (放在 `~/.bun/bin`, 要加進 PATH).
+2. 相依套件: `node_modules` 裡每個 `bun.lock` 的套件都在而且版本相同; 不存在或過期時自動執行 `bun install --frozen-lockfile` 並印出正在做, 失敗 (例如 lockfile 跟 package.json 不一致) 就停, 不會改用沒鎖版本的 `bun install`.
+3. claude: `command -v claude` 找得到並印出版本; 比開發與測試用的版本 (README Requirements) 舊時只警告, 找不到就停.
+
+`deploy/install.sh unit` 產生 systemd unit 時, unit 的 PATH 是 `~/.local/bin:~/bin:/usr/local/bin:/usr/bin:/bin`, 前面再加上 bun 所在的資料夾 (`command -v bun`) 與 claude 所在的資料夾 (config 的 `claudeBin` 是絕對路徑時用它, 否則 `command -v claude`), 已經在清單裡的不重複加. worker 的 telegram plugin 由 `.mcp.json` 直接執行 `bun`, PATH 裡沒有 bun 時 plugin 起不來 (router log 的 `plugin did not connect`). 找不到 bun 就停; 已安裝的 unit 重跑 `deploy/install.sh unit` 就會更新, 再 `systemctl --user restart cc-telegram-router`.
+
+### 設定嚮導
+
+`deploy/install.sh setup` 執行 `<home>/.router/cc-telegram-router --config <home>/.router/config.json setup`, 再 `register` 寫入位置檔; `deploy/install.sh router` 編譯完發現還沒有 config.json 而且在終端機裡時也會自己帶起它 (程式在 `router/wizard.ts`, 測試 `router/test/wizard.test.ts`, `e2e-wizard.test.ts`, `e2e-compiled.test.ts`). 只能在終端機執行: stdin 或 stdout 不是終端機時拒絕 (結束碼 2), 改照下方範例與「設定欄位」手寫 config.json.
+
+- 新建 (沒有 config.json): 問 `home` (預設 config.json 所在資料夾的上一層; 必須是絕對路徑, 不能是使用者的家目錄, 因為在家目錄接受的資料夾信任不會存下來), `owners` (可以不填, 用認領碼), `model`, `claudeBin` (預設 PATH 找到的 claude), 再設定 bot; `stateDir` 寫成 config.json 所在的資料夾.
+- 每隻 bot: 名稱 (英數, `-`, `_`), token, Bot API. token 輸入時每個字元 (含一次貼上的每個字元) 顯示一個 `*`; Backspace (含 Ctrl-H) 刪最後一個並擦掉一個 `*`, Ctrl-U 清空, Enter 結束, Ctrl-C 取消整個嚮導; 方向鍵等控制序列與 bracketed paste 的標記忽略. 畫面上與錯誤訊息裡都不會出現 token. Bot API 選官方或自架的本機 server; 自架再問網址 (預設 `http://127.0.0.1:8081`) 與 `localFilesDir` (server 的 `--dir`, 可不填), 寫進那隻 bot 的 `apiRoot` 與 `localFilesDir` (選官方而全域 `apiRoot` 是自架時, 那隻 bot 寫 `"apiRoot": "https://api.telegram.org"`). 然後用那隻 bot 的 server 呼叫 getMe: 成功顯示 `@username (id)`, 失敗時可以重打 token, 重選 server, 或放棄 (不寫入).
+- 修改模式 (已有 config.json): 每一題 `[ ]` 裡是目前的值, Enter 保留; 只有你改了的欄位會寫入, 嚮導沒問的欄位 (`credentials`, `secretKey`, `classifier`, `sandboxDenyRead`, `receiveReact` 等) 與 JSON 的其他內容不動. `owners` 輸入 `-` 清空. 每隻 bot 可保留, 修改或移除 (最後一隻不能移除), 也能新增. token 只顯示「已設定 (末 4 碼)」, Enter 保留; 換 token 只接受同一隻 bot 的 (冒號前的 id 相同, 跟 `/router bot rotate` 一樣), 要換成別的 bot 就移除後新增. token 或 Bot API 改了才重新 getMe. 全部問完列出變更 (token 只寫「更換」), 確認後才寫; 沒有變更就不寫.
+- `access.json`: 不存在時建立 `{"dmPolicy": "pairing", "allowFrom": [<owners>], "groups": {}, "pending": {}}`; 已存在時不換掉, 只把還不在 `allowFrom` 的 owner 加進去 (其他內容不動). 移除 owner 不會把人移出 `allowFrom`.
+- 寫入: config.json 與 access.json 都先寫暫存檔 (權限 600) 再改名. router 正在執行 (socket 存在) 時提醒要重啟才套用, 嚮導不會自己重啟.
+- 結尾 (有寫入或沒有) 檢查 bun 與 `claudeBin` 在 systemd unit 的 PATH 下找不找得到: 已安裝的 unit (`~/.config/systemd/user/cc-telegram-router.service`) 看它的 `Environment=PATH=`, 還沒安裝看上面那份預設清單; 找不到就說明要重跑 `deploy/install.sh unit` (或把 `claudeBin` 改成絕對路徑).
 
 ### 登出後繼續執行 (linger)
 
@@ -39,7 +59,7 @@ router 以 `claude --bg` 在每個對話資料夾 (`<home>` 底下) 啟動 worke
 
 `<home>` 是 router 的家目錄, 位置可自選 (見下方「安裝位置」). 共用的 `<home>/CLAUDE.md` 可以從範例開始: `cp templates/CLAUDE.md.example <home>/CLAUDE.md`. worker 端的使用說明在 plugin 的 `/telegram:doc` skill (`plugin/skills/doc/SKILL.md`).
 
-`<home>/.router/config.json` (權限 600) 與 `access.json` 要手動建立一次, 建好後執行 `<home>/.router/cc-telegram-router register` (或再跑一次 `deploy/install.sh router`) 寫入位置檔:
+沒有終端機可以跑嚮導時, `<home>/.router/config.json` (權限 600) 與 `access.json` 也可以手寫, 建好後執行 `<home>/.router/cc-telegram-router register` (或再跑一次 `deploy/install.sh router`) 寫入位置檔. config.json 的例子 (欄位說明見下方「設定欄位」), access.json 見「私訊與群組的存取」:
 
 ```json
 {
@@ -121,6 +141,27 @@ bot 可以改走自架的 [telegram-bot-api](https://github.com/tdlib/telegram-b
 
 測試: `router/test/local-bot-api.test.ts` (模組), `router/test/e2e-localapi.test.ts` (從原始碼跑的 router, 兩隻 bot 各接一台假 server), `router/test/e2e-compiled.test.ts` (編譯版).
 
+## 私訊與群組的存取
+
+`<stateDir>/access.json` 決定誰的訊息送進 worker (`router/telegram/policy.ts`), 用 `/router access` 管理 (owner 與 admin). 格式沿用上游: `{ "dmPolicy": ..., "allowFrom": [uid...], "groups": { "<chat_id>": { "requireMention": true, "allowFrom": [] } }, "pending": {} }`.
+
+- `dmPolicy` `pairing` (預設): 不在 `allowFrom` 的人私訊 bot 時拿到一組 6 碼配對碼 (訊息不送進 worker), owner 或 admin 用 `/router access pair <碼>` 核可 (加進 `allowFrom`, bot 回他「配對完成」) 或 `deny <碼>` 拒絕. 碼 1 小時有效; 同時最多 3 個待核可, 超過時新來的人不回應; 同一個人在碼有效期間再私訊只再回一次碼, 之後不回應.
+- `allowlist`: 只收 `allowFrom`, 其他人不回應也不發碼; `/router access allow <uid>` 與 `remove <uid>` 管理名單.
+- `disabled`: 私訊與群組都不收.
+- owner 一律在 `allowFrom` 裡: 私訊的 gate 只看 `allowFrom`, 所以每種成為 owner 的方式都會把 uid 加進去: 認領碼 (`/start <碼>`), 設定嚮導, `/router config set owners`, `/router role <uid> owner`, 以及 router 啟動時 (config 的 `owners` 與 `users` 表裡角色是 owner 的人, 例如手改了 config.json; log 寫一行 `access.json: owner ... 加入 allowFrom`). 只會加入, 移除 owner 不會把人移出 `allowFrom`. 測試: `router/test/owners-access.test.ts`, `e2e-wizard.test.ts`, `wizard.test.ts`.
+- 群組: `/router access group add <chat_id> [--no-mention]` 加入 (預設 `requireMention` 為 true, 要 mention bot 或回覆 bot 才送進 worker), `group rm <chat_id>` 移除; 沒列在 `groups` 的群組不回應. 群組的 `allowFrom` 不是空的時只收名單內的人 (手改 access.json).
+- `/router access` (或 `show`) 列出目前設定與待核可的碼; `/router access policy <pairing|allowlist|disabled>` 切換模式.
+
+## 疑難排解
+
+- `plugin did not connect` (router log): worker 的 telegram plugin 沒連上 router. 依序檢查:
+  1. unit 的 PATH 有沒有 bun: `systemctl --user cat cc-telegram-router` 的 `Environment=PATH=` 要包含 `command -v bun` 所在的資料夾 (bun 的官方安裝位置 `~/.bun/bin` 不在預設清單裡). 沒有就重跑 `deploy/install.sh unit`, 再 `systemctl --user restart cc-telegram-router`. 設定嚮導結尾也會提醒.
+  2. plugin 有沒有裝好: `deploy/install.sh plugin` 之後官方 plugin 快取路徑裡是 v2 (`.deployed-version` 是 `v2`).
+  3. plugin 自己的 log: `~/.cache/claude-cli-nodejs/<對話資料夾的絕對路徑, 每個 / 換成 ->/mcp-logs-plugin-telegram-telegram/`. 例如對話資料夾 `/srv/cc/bot123/dm-555` 的 log 在 `~/.cache/claude-cli-nodejs/-srv-cc-bot123-dm-555/mcp-logs-plugin-telegram-telegram/`, 裡面有 plugin 啟動失敗的原因 (例如找不到 bun).
+- `deploy/install.sh` 一開始就停: 照它印出的前置檢查說明補 (裝或更新 bun, 在 repo 執行 `bun install --frozen-lockfile`, 裝 Claude Code), 再重跑同一個子指令.
+- worker 起不來, log 有 `Workspace not trusted`: 見上方「資料夾信任」.
+- `--local` 的附件下載失敗: 見「自架 Bot API server」的檔案權限.
+
 ## 升級
 
 1. 取得新版 (例如 `git pull`), 看 CHANGELOG 這幾版有沒有要另外做的事.
@@ -142,6 +183,8 @@ bot 可以改走自架的 [telegram-bot-api](https://github.com/tdlib/telegram-b
 
 4. 啟動: `systemctl --user start cc-telegram-router`. 資料庫結構由 router 啟動時自動升級: 只新增資料表與欄位, 不刪除也不改名; 有些版本另外做一次性的資料調整 (記在 router.db 的 `migrations`, 會寫在 CHANGELOG 與 log).
 5. 讓 worker 載入新的 plugin 與設定: 在 Telegram 打 `/router session rotate all`, 或終端機 `<home>/.router/cc-telegram-router cli session rotate all`. 閒置的 worker 一分鐘內停掉, 忙碌的等它閒置, 下一則訊息用新版叫醒.
+
+要改設定 (換 token, 換成自架的 Bot API server, 加 owner 等): `deploy/install.sh setup` 的修改模式 (見上方「設定嚮導」), 再重啟 router.
 
 退版: 切回舊版重跑步驟 2 再重啟. 新版只新增資料表與欄位, 舊版通常能直接用同一份 router.db; 要完全回到升級前, 停 router 後把備份的 `router.db*` 與 config.json 複製回去再啟動.
 
@@ -168,7 +211,7 @@ router 可以裝在任何位置, 程式不假設固定路徑:
 
 ## 新 bot 初次設定與審核群組
 
-- config 沒有 owners 時, router log 會印出一次性認領碼; 私訊 bot `/start <碼>` 的人成為 owner.
+- config 沒有 owners 時, router log 會印出一次性認領碼; 私訊 bot `/start <碼>` 的人成為 owner (寫進 config 的 `owners`, 並加進 access.json 的 `allowFrom`).
 - owner 第一次私訊一隻還沒設定的 bot, worker 會先訪談名字, 個性, 說話風格, 用途, 用 `save_bot_profile` 寫進 `bot<id>/CLAUDE.md`.
 - 接著引導設定審核群組: 開了話題的 supergroup, bot 是管理員且能管理話題, 在群組裡下 `/router setup group`. router 建立「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」「🧾 執行授權」「🔑 密鑰偵測」五個話題 (已設定的群組再下一次會補上缺的話題). 可以略過, 之後通知與申請都私訊 owner (提權紀錄只留在 router.db).
 - 設定存在 `bot_setup`, 以 bot 名稱為 key, 並記下它屬於哪個 Telegram bot id (`bot_id`, 跟 `bot<id>` 資料夾一樣是 token 冒號前那段; 啟動時補上現有 bot 的 id). `/router bot add` 時, 同名的設定屬於同一個 bot id 才沿用 (舊紀錄沒有 id 時, 看 `bot<id>` 資料夾在不在): 已完成人設的話, 回覆說明沿用既有人設與審核群組 (或照舊私訊 owner, 或提醒審核群組還沒設定), 不會再說要做初次設定. 名稱給了另一隻 bot 就當新 bot, 設定重置, 回覆照新 bot 的初次設定. 啟動時也一樣: `config.json` 裡某個名稱的 token 換成另一隻 bot (紀錄的 `bot_id` 跟 token 的 id 不同), 那個名稱的設定重置, router log 留一行, 並通知 owner 哪個名稱換了 bot (先用那隻 bot 送, 送不到再用其他 bot). 要重做人設用 `/router setup persona`. `/router bot rotate` 只接受同一隻 bot 的新 token (bot 資訊還沒取得時用舊 token 的 id 比對).

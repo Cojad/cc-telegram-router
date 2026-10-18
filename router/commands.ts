@@ -5,7 +5,7 @@
 
 import type { Config } from './config'
 import type { Conversation, RouterDb, OverrideKind, UserOverrideKind } from './db'
-import type { Access } from './telegram/policy'
+import { allowOwners, type Access } from './telegram/policy'
 import type { MessageRecord } from './telegram/store'
 import { gmt8, maskTokens } from './context'
 import { describeCreds, placementText, defaultHeadersText, parseHttpScope, parseDefaultHeader, refuseDefaultHeader, setHeader, BOT_TOKEN_FULL, httpExample, credSummary, STAGE_TTL_MS, type HttpScope, type CredStaging } from './credentials'
@@ -420,6 +420,14 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     }
     return changed.length ? `\n私訊 ${changed.map(c => c.key).join(', ')} 的 worker 閒置時會停掉, 下一則訊息套用新角色` : ''
   }
+  /** A new owner reaches the bot in a DM without pairing: into access.json's allowFrom (the DM gate reads only that). */
+  const ownersAllowed = (uids: string[]): string => {
+    const a = deps.loadAccess()
+    const added = allowOwners(a, uids)
+    if (!added.length) return ''
+    deps.saveAccess(a)
+    return `\n${added.join(', ')} 加入 access.json 的 allowFrom, 私訊不用配對`
+  }
   /** /router role, and /router perm <私訊> role: same checks, same effect. */
   const setRole = (uid: string, newRole: string | null, prefix = ''): CommandOutput => {
     if (cfg.owners.includes(uid)) return deny(`${prefix}${personLabel(db, uid)} 是 config 指定的 owner, 要改請用 /router config set owners`)
@@ -430,7 +438,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     }
     const changed = db.setUserRole(uid, newRole)
     const label = personLabel(db, uid)
-    return done(`${prefix}${label === uid ? uid : `${label} (${uid})`} 的角色: ${current ?? 'user'} → ${newRole ?? 'user'}${dmsFollow(changed)}`)
+    return done(`${prefix}${label === uid ? uid : `${label} (${uid})`} 的角色: ${current ?? 'user'} → ${newRole ?? 'user'}${newRole === 'owner' ? ownersAllowed([uid]) : ''}${dmsFollow(changed)}`)
   }
   /** Optional leading conversation; defaults to the current chat. */
   const target = (i: number): { conv: Conversation | null; rest: string[]; error?: string } => {
@@ -788,7 +796,8 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
       else (cfg as unknown as Record<string, unknown>)[key] = value
       // an owner is owner in their DMs: the DMs of those added or removed change role
       const dms = key === 'owners' ? dmsFollow(db.syncDmRoles().map(x => x.conv)) : ''
-      return done(`${key}: ${JSON.stringify(cur)} → ${JSON.stringify(value)}${dms}`)
+      const allowed = key === 'owners' ? ownersAllowed(value as string[]) : ''
+      return done(`${key}: ${JSON.stringify(cur)} → ${JSON.stringify(value)}${allowed}${dms}`)
     }
 
     case 'log': {

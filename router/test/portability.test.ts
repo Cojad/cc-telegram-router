@@ -322,7 +322,7 @@ test('cc-hook finds the router through the locator; without one it is unreachabl
 test('install.sh: no fixed default; without CC_ROUTER_STATE or an earlier install it stops and says how', async () => {
   const sh = readFileSync(join(REPO, 'deploy', 'install.sh'), 'utf8')
   expect(sh).not.toContain('/x/')
-  for (const job of ['router', 'unit']) {
+  for (const job of ['router', 'unit', 'setup']) {
     const p = Bun.spawn(['bash', join(REPO, 'deploy', 'install.sh'), job], { env: envAt({}), stdout: 'pipe', stderr: 'pipe' })
     const err = await new Response(p.stderr).text()
     expect(await p.exited).toBe(1)
@@ -334,4 +334,16 @@ test('install.sh: no fixed default; without CC_ROUTER_STATE or an earlier instal
 test('the plugin, hook and shared code name no install path', () => {
   for (const f of ['plugin/server.ts', 'hooks/hook.ts', 'shared/protocol.ts', 'shared/locate.ts', 'router/privskill.ts', 'router/config.ts'])
     expect(readFileSync(join(REPO, f), 'utf8')).not.toMatch(/['"`]\/x[/'"`]/)
+})
+
+test('install.sh setup: runs the router\'s wizard on the state dir\'s config.json, then register; router starts it itself only without config.json and in a terminal', async () => {
+  const sh = readFileSync(join(REPO, 'deploy', 'install.sh'), 'utf8')
+  expect(sh).toContain('setup) install_setup ;;')
+  expect(sh).toContain('"$STATE/cc-telegram-router" --config "$STATE/config.json" setup\n  "$STATE/cc-telegram-router" register')
+  expect(sh).toContain('if [ ! -f "$STATE/config.json" ] && [ -t 0 ] && [ -t 1 ]; then')
+  // no router built in that state dir yet: says how
+  const state = join(dir, 'setup-state')
+  const p = Bun.spawn(['bash', join(REPO, 'deploy', 'install.sh'), 'setup'], { env: envAt({ CC_ROUTER_STATE: state }), stdout: 'pipe', stderr: 'pipe' })
+  expect(await p.exited).toBe(1)
+  expect((await new Response(p.stderr).text()).trim()).toBe(`${state}/cc-telegram-router 不存在: 先執行 CC_ROUTER_STATE=${state} install.sh router`)
 })

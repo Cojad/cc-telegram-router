@@ -27,8 +27,8 @@ export const AREAS: Area[] = [
   },
   {
     name: 'sandbox', title: '沙箱與安裝位置',
-    tests: ['portability.test.ts', 'skilltry.test.ts', 'e2e-compiled.test.ts', 'pluginguard.test.ts'],
-    paths: ['shared/locate.ts', 'deploy/**', 'router/pluginguard.ts', 'templates/base-settings.json', 'router/settings.ts', 'router/privskill.ts', 'router/sandboxnet.ts', 'router/selfpath.ts', 'router/cli.ts', 'plugin/server.ts', 'templates/roles/**'],
+    tests: ['portability.test.ts', 'skilltry.test.ts', 'e2e-compiled.test.ts', 'pluginguard.test.ts', 'wizard.test.ts', 'e2e-wizard.test.ts', 'preflight.test.ts'],
+    paths: ['shared/locate.ts', 'deploy/**', 'router/pluginguard.ts', 'router/wizard.ts', 'templates/base-settings.json', 'router/settings.ts', 'router/privskill.ts', 'router/sandboxnet.ts', 'router/selfpath.ts', 'router/cli.ts', 'plugin/server.ts', 'templates/roles/**'],
   },
   {
     name: 'secrets', title: '密鑰保護',
@@ -37,7 +37,7 @@ export const AREAS: Area[] = [
   },
   {
     name: 'telegram', title: 'Telegram 收發與訊息紀錄',
-    tests: ['format.test.ts', 'inbound.test.ts', 'outbound.test.ts', 'reply-files.test.ts', 'policy.test.ts', 'rich.test.ts', 'store.test.ts', 'poller.test.ts', 'phase4.test.ts', 'channel.test.ts', 'e2e-channel.test.ts', 'local-bot-api.test.ts', 'e2e-localapi.test.ts'],
+    tests: ['format.test.ts', 'inbound.test.ts', 'outbound.test.ts', 'reply-files.test.ts', 'policy.test.ts', 'rich.test.ts', 'store.test.ts', 'poller.test.ts', 'phase4.test.ts', 'channel.test.ts', 'e2e-channel.test.ts', 'local-bot-api.test.ts', 'e2e-localapi.test.ts', 'owners-access.test.ts'],
     paths: ['router/telegram/**', 'router/config.ts', 'router/poller.ts', 'router/pollnotice.ts', 'router/sendretry.ts', 'router/importv1.ts', 'router/setup.ts', 'plugin/skills/doc/**', 'plugin/skills/format/**', 'templates/CLAUDE.md.example', 'shared/tools.ts'],
   },
   {

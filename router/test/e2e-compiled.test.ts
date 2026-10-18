@@ -12,7 +12,10 @@
 // The bot has its own apiRoot, a fake self-hosted server in --local mode
 // (docs/operations.md 「自架 Bot API server」): the config's apiRoot is never
 // reached, and download_attachment reads the absolute path getFile gives
-// from disk (from source in e2e-localapi.test.ts).
+// from disk (from source in e2e-localapi.test.ts). The setup wizard
+// (`cc-telegram-router --config <path> setup`) in the compiled router: no
+// terminal, refused; in a pseudo terminal, a new config with the token as *
+// only (from source in e2e-wizard.test.ts).
 
 import { test, expect, beforeAll, afterAll } from 'bun:test'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'fs'
@@ -21,6 +24,7 @@ import { join } from 'path'
 import { Database } from 'bun:sqlite'
 import { connectRouter } from '../../plugin/client'
 import { relaunchArgs, ownArgs, fakeService, FAKE_SUBCOMMAND } from '../selfpath'
+import { inTerminal } from './pty'
 
 const ROOT = join(import.meta.dir, '..', '..')
 const GUIDE = readFileSync(join(ROOT, 'plugin', 'skills', 'bot-skill', 'SKILL.md'), 'utf8')
@@ -118,3 +122,21 @@ test('the compiled router, started as the systemd unit starts it, runs skill_try
   expect(unused).toEqual([])
   plugin.close()
 }, 120_000)
+
+test.skipIf(!Bun.which('script'))('the compiled router\'s setup wizard: no terminal, refused; in a terminal, a new config whose token shows as * only, checked on the self-hosted server', async () => {
+  const exe = join(state, 'cc-telegram-router')
+  const other = join(dir, 'wizard', '.router', 'config.json')
+  const no = Bun.spawn([exe, '--config', other, 'setup'], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' })
+  no.stdin.end()
+  expect(await no.exited).toBe(2)
+  expect(await new Response(no.stderr).text()).toContain('要在終端機執行 (這裡沒有 TTY)')
+  const token = `321:${'W'.repeat(35)}`
+  const t = inTerminal([exe, '--config', other, 'setup'])
+  for (const [prompt, keys] of [['router 的家目錄 home', '\r'], ['owner 的 Telegram uid', '555\r'], ['worker 用的模型 model', '\r'], ['claude 執行檔 claudeBin', '\r'], ['名稱', '\r'], ['bot token', `${token}\r`], ['Bot API: 1) 官方', '2\r'], ['Bot API server 的網址', `http://127.0.0.1:${api.port}\r`], ['server 的 --dir', '\r'], ['要再加一隻 bot 嗎?', '\r'], ['寫入 ', '\r']] as const) await t.answer(prompt, keys)
+  t.close()
+  expect(await t.exited).toBe(0)
+  expect(t.out).toContain('*'.repeat(token.length))
+  expect(t.out).not.toContain(token)
+  expect(JSON.parse(readFileSync(other, 'utf8')).bots).toEqual([{ name: 'cc', token, apiRoot: `http://127.0.0.1:${api.port}` }])
+  expect(JSON.parse(readFileSync(join(dir, 'wizard', '.router', 'access.json'), 'utf8')).allowFrom).toEqual(['555'])
+}, 60000)

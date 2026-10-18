@@ -6,7 +6,9 @@ After=network-online.target
 Type=simple
 ExecStart=@STATE@/cc-telegram-router
 WorkingDirectory=@STATE@
-Environment=PATH=@HOME@/.local/bin:@HOME@/bin:/usr/local/bin:/usr/bin:/bin
+# deploy/install.sh unit: ~/.local/bin, ~/bin, /usr/local/bin, /usr/bin, /bin, with the folders of
+# bun (the worker's telegram plugin runs it, plugin/.mcp.json) and claude in front when elsewhere
+Environment=PATH=@PATH@
 # Workers are started through `claude --bg`, whose daemon would otherwise sit
 # in this unit's cgroup and be killed on every router restart.
 KillMode=process

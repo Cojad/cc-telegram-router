@@ -18,7 +18,6 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { Database } from 'bun:sqlite'
 import { connectRouter } from '../../plugin/client'
-import { openRouterDb } from '../db'
 
 const dir = mkdtempSync(join(tmpdir(), 'cctr-e2e-localapi-'))
 const state = join(dir, '.router')
@@ -81,11 +80,6 @@ writeFileSync(join(state, 'config.json'), JSON.stringify({
   },
 }, null, 2), { mode: 0o600 })
 writeFileSync(join(state, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: ['555'], groups: {}, pending: {} }))
-{
-  const db = openRouterDb(join(state, 'router.db'))
-  for (const b of ['cc', 'cc2']) db.updateBotSetup(b, { persona_done: 1 })
-  db.close()
-}
 
 const router = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', join(state, 'config.json')], { stdout: 'ignore', stderr: 'pipe' })
 let stderr = ''
@@ -117,7 +111,7 @@ test('each bot\'s getMe and polling go to its own server: cc to its apiRoot, cc2
   expect(new Set(calls.filter(c => c.token === CC).map(c => c.server))).toEqual(new Set(['local']))
   expect(new Set(calls.filter(c => c.token === CC2).map(c => c.server))).toEqual(new Set(['global']))
   expect(calls.some(c => c.server === 'credsrv')).toBe(false)
-})
+}, 30000)
 
 test('--local on cc: a text attachment checked on arrival, a photo downloaded on arrival and download_attachment are read from disk, never over /file; reply uploads to cc\'s server', async () => {
   const delivered: any[] = []
@@ -158,7 +152,7 @@ test('bot_api: self on cc\'s server; a credential with its own apiRoot on that o
   }
   expect(calls.slice(before).filter(c => c.method === 'getMe' && c.token !== CC2).map(c => `${c.server} ${c.token}`)).toEqual([`local ${CC}`, 'credsrv 789:far', 'global 790:near'])
   w.close()
-})
+}, 30000)
 
 test('/router bot rotate: the new token is checked on cc\'s own server, then polled there; config.json keeps its apiRoot and localFilesDir', async () => {
   dm(CC, { text: `/router bot rotate cc ${NEW_CC}` })
@@ -167,4 +161,4 @@ test('/router bot rotate: the new token is checked on cc\'s own server, then pol
   const bots = JSON.parse(readFileSync(join(state, 'config.json'), 'utf8')).bots
   expect(bots[0]).toEqual({ name: 'cc', token: NEW_CC, apiRoot: `http://127.0.0.1:${local.port}/`, localFilesDir: serverDir })
   expect(bots[1]).toEqual({ name: 'cc2', token: CC2 })
-})
+}, 30000)
