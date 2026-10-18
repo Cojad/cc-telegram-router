@@ -66,7 +66,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `classifier` | 工具呼叫分類器 | classifier, e2e-classifier, e2e-classifier-off | `router/classifier.ts` |
 | `core` | 對話生命週期與指令 | phase1, phase2, e2e, e2e-wake, e2e-setup, jobs, e2e-jobs, sessionsend, e2e-sessionsend | `router/` 的 supervisor, jobs, sessionsend, lock, conversations, context, progress, relay, freshness, rotate, setup, cli, guard, settings; `plugin/server.ts`, `plugin/skills/**`, `shared/time.ts`, `templates/**` |
 | `managed` | 專屬設定目錄與 managed channel | managed, e2e-managed | `router/` 的 claudecmd, managed, toolbox, pluginguard, doctor, supervisor, jobs, settings, health; `deploy/**`, `.github/workflows/**`, `templates/base-settings.json` |
-| `repo` | 報表腳本與 repo 檢查 | context-chart, usage-report, requirements, areas, readme, tiers | `scripts/**`, `README.md`, `docs/operations.md`, `docs/secrets.md`, `CHANGELOG.md`, `plugin/package.json`, `deploy/**`, `router/relay.ts`, `router/test/areas.ts`, `router/test/tiers.ts`, `router/test/full.ts`, `router/test/timings.json` |
+| `repo` | 報表腳本與 repo 檢查 | context-chart, usage-report, requirements, areas, readme, tiers, progress | `scripts/**`, `README.md`, `docs/operations.md`, `docs/secrets.md`, `CHANGELOG.md`, `plugin/package.json`, `deploy/**`, `router/relay.ts`, `router/test/areas.ts`, `router/test/tiers.ts`, `router/test/full.ts`, `router/test/progress.ts`, `router/test/progress-preload.ts`, `router/test/timings.json` |
 
 改到某區的測試檔, 也會跑那一區. 一個路徑可以屬於多個區.
 
@@ -95,10 +95,29 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `full-<時間>.log` | 完整的終端機輸出, 跟畫面上看到的一樣 |
 | `full-<時間>.junit.xml` | 單一份 junit, 每支測試檔一個 testsuite |
 | `full-<時間>.files.txt` | 實際跑過的測試檔清單 (取自 junit), 每行一個 |
+| `full-<時間>.progress.jsonl` | 每支測試檔開始與結束的紀錄 (進度用, 見[進度](#進度)) |
 
 最後印出測試數 (pass, skip, fail), 跑了幾個檔與 `router/test` 實際有幾個檔, 以及 log 與 junit 的路徑. 有檔不在 `router/test` 的測試檔裡, 或有測試檔沒跑到, 也算失敗 (結束碼 1). 部署前要檢查的檔案清單就是 `files.txt`.
 
 環境變數: `CCTR_TEST_JOBS` 是 worker 數 (預設 4), `CCTR_TEST_UV` 與 `LIVE` 照[執行](#執行)所說.
+
+### 進度
+
+每跑完一支測試檔, 畫面與 log 各多一行 (一般換行, 不用 `\r`, 所以用 `tail -f` 看 log 也看得到):
+
+```
+[ 23/80]  29%  經過 31s  預估剩 64s  pass 241  fail 0   e2e-managed.test.ts
+[ 24/80]  30%  經過 33s  預估剩 61s  pass 252  fail 1 ❌ diagnose.test.ts
+```
+
+依序是: 跑完第幾支與總數, 百分比, 從開始到現在的秒數, 預估還要幾秒, 到目前為止的 pass 與 fail 項數, 剛跑完的檔名; 那支檔有失敗時檔名前標 ❌, 不用等到最後才知道. 最後的總結與檔案清單比對照舊, 數字以 junit 為準.
+
+- **怎麼知道一支檔跑完**: full.ts 用 `--preload` 把 `router/test/progress-preload.ts` 載進每支測試檔 (並行時每支檔有自己的 global, preload 每檔各載一次), 並用環境變數 `CCTR_TEST_PROGRESS` 指定紀錄檔. preload 在檔開始時寫一行, 在 `afterAll` 寫一行並附上跑了幾項 (`afterEach` 計數), full.ts 每 0.25 秒讀新增的行. preload 只寫這個檔, 不改測試的行為; 沒有 `CCTR_TEST_PROGRESS` 時什麼都不掛. 有沒有掛 preload, junit 的內容 (時間以外) 完全相同.
+- **失敗從哪來**: bun 用 `--reporter=junit` 並行時, 安靜通過的檔不印任何東西; 有失敗 (或有 console 輸出) 的檔會印一段, 開頭是檔案路徑加冒號, 每項失敗一行 `(fail) <測試名稱>`. full.ts 逐行讀 bun 的輸出, 把 `(fail)` 算到那段的檔. 這段比 `afterAll` 晚一點到, 所以跑完的檔等 1 秒才印它那一行; 比這更晚到的失敗另印一行 `❌ <檔名>: 又一項失敗, fail 共 N`.
+- **pass**: 每支檔跑了幾項減去它的失敗項. 跳過的不算; `beforeAll` 就失敗的檔沒有任何一項跑過, 算 0, 不會扣成負數.
+- **預估剩餘時間**: 用每支檔的耗時 (`.test-out/timings.json` 優先, 缺的看 `router/test/timings.json`, 都是開跑前讀的), 還沒跑完的檔加總 (已經開始的只算還剩的部分) 除以 worker 數, 而且不少於剩下最久的那一支. 剩下的檔有一支沒有耗時紀錄就估不出來, 那一行不印這欄.
+
+程式在 `router/test/progress.ts` (判斷與格式) 與 `router/test/progress-preload.ts`, 測試 `router/test/progress.test.ts`.
 
 ### 分組與排程
 
@@ -155,6 +174,7 @@ worker 數預設 4, 等於這台開發機的核心數. 在 4 核機器上開 8 �
 | 檔案 | 對應 |
 |---|---|
 | `router/test/areas.test.ts` | [測試分區](#測試分區)的對照檔 `router/test/areas.ts`: 每支測試檔至少屬於一區, 列出的測試檔都存在, 區名不重複, 路徑 glob 都對得到檔, 「各區」與「std 套組」兩張表與對照檔一致; 本表有每支測試檔的一列 |
+| `router/test/progress.test.ts` | [全套的進度](#進度): 進度行的格式 (有無預估, ❌), 預估剩餘時間 (`.test-out` 的耗時優先, 除以 worker 數, 不少於最久的一支, 有檔沒耗時就不印), 跑完的檔等 bun 的失敗段再印, 晚到的失敗另印一行, pass 與 fail 計數; 真的 `bun test --parallel` 掛 preload: 每檔一個開始與一個結束 (附跑了幾項), junit 與不掛時相同, `(fail)` 算到對的檔 |
 | `router/test/tiers.test.ts` | [test:changed 的判斷方式](#testchanged-的判斷方式): 改到共用核心或對照檔沒涵蓋的檔就只跑全套, 而且是 `bun run test:full` (與 package.json 的 script 相同); 只改文件或某區的檔時跑 std 與受影響的區 (bun test), 不跑全套 |
 | `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor (含 resume 後的說明更新提醒 freshness), plugin MCP, router 離線告知, router.db 剛建立時有別的程序在讀也能開 (先設 busy_timeout 再切 WAL), backlog 第一次掃描 15 秒與密鑰刪除每 10 秒檢查的預設值 (測試專用設定沒寫時) |
 | `router/test/phase2.test.ts` | 規劃 03 的 /router 指令表與拒絕訊息 (含 chat_id 跨 bot 指定, --bot, 對話 key), 06 chat_context, router_log, hook, 「cc /」代打, 即時進度訊息, bot list 與 status 對資訊還沒取得的 bot 顯示讀取中, GMT+8 時間格式 (`iso8`, log 行) |

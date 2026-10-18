@@ -4,9 +4,11 @@
 // root whatever the caller's directory, and stops if that is not this repo.
 // CCTR_TEST_JOBS: workers (default 4). CCTR_TEST_OUT: where the log, junit,
 // file list and this machine's timings go (default .test-out, gitignored).
+// A line per test file as it finishes (progress.ts, progress-preload.ts).
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, createWriteStream } from 'fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, createWriteStream } from 'fs'
 import { isAbsolute, join, resolve } from 'path'
+import { loadTimings, parseEvent, Progress } from './progress'
 
 const ROOT = resolve(import.meta.dir, '..', '..')
 process.chdir(ROOT)
@@ -29,26 +31,58 @@ mkdirSync(out, { recursive: true })
 // GMT+8 in the file names, like every time this project shows
 const stamp = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')
 const log = join(out, `full-${stamp}.log`), junit = join(out, `full-${stamp}.junit.xml`), list = join(out, `full-${stamp}.files.txt`)
+const progressFile = join(out, `full-${stamp}.progress.jsonl`)
 // This machine's timings (written after each run) first; the committed baseline fills in what it lacks.
 const timings = [join(out, 'timings.json'), join(ROOT, TEST_DIR, 'timings.json')].filter((f, i) => i === 0 || existsSync(f))
 
 const expected = [...new Bun.Glob(`${TEST_DIR}/**/*.test.ts`).scanSync({ cwd: ROOT })].sort()
-const args = ['test', TEST_DIR, `--parallel=${jobs}`, ...timings.map(f => `--timings=${f}`), '--update-timings', '--reporter=junit', `--reporter-outfile=${junit}`]
+const args = ['test', TEST_DIR, `--parallel=${jobs}`, ...timings.map(f => `--timings=${f}`), '--update-timings', '--preload', `./${TEST_DIR}/progress-preload.ts`, '--reporter=junit', `--reporter-outfile=${junit}`]
 const sink = createWriteStream(log)
 const say = (s: string) => { process.stdout.write(s); sink.write(s) }
 say(`pwd: ${process.cwd()}\n`)
 say(`bun: ${Bun.version} (${Bun.which('bun')})\n`)
 say(`測試檔: ${expected.length} 個 (${TEST_DIR}/**/*.test.ts), ${jobs} 個 worker\n`)
 say(`bun ${args.join(' ')}\n`)
-say(`log: ${log}\njunit: ${junit}\n\n`)
+say(`log: ${log}\njunit: ${junit}\n進度: ${progressFile}\n\n`)
 
+// Timings read before bun rewrites them at the end (--update-timings).
+const progress = new Progress({ files: expected, jobs, timings: loadTimings(timings), t0: Date.now(), say: l => say(`${l}\n`) })
+writeFileSync(progressFile, '')
 const started = performance.now()
-const p = Bun.spawn(['bun', ...args], { stdout: 'pipe', stderr: 'pipe' })
-const pump = async (s: ReadableStream<Uint8Array>, to: NodeJS.WriteStream) => {
-  for await (const c of s as unknown as AsyncIterable<Uint8Array>) { to.write(c); sink.write(c) }
+const p = Bun.spawn(['bun', ...args], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, CCTR_TEST_PROGRESS: progressFile } })
+// bun's output a whole line at a time, so a progress line never lands inside one
+const pump = async (name: string, s: ReadableStream<Uint8Array>, to: NodeJS.WriteStream) => {
+  const dec = new TextDecoder()
+  let rest = ''
+  const put = (line: string) => { to.write(line); sink.write(line); progress.output(name, line.replace(/\r?\n$/, '')) }
+  for await (const c of s as unknown as AsyncIterable<Uint8Array>) {
+    rest += dec.decode(c, { stream: true })
+    let i: number
+    while ((i = rest.indexOf('\n')) >= 0) { put(rest.slice(0, i + 1)); rest = rest.slice(i + 1) }
+  }
+  rest += dec.decode()
+  if (rest) put(rest)
 }
-await Promise.all([pump(p.stdout, process.stdout), pump(p.stderr, process.stderr)])
+// the preload's events, read as they are appended
+const fd = openSync(progressFile, 'r')
+let offset = 0, partial = ''
+const follow = () => {
+  const buf = Buffer.alloc(65536)
+  let n: number
+  while ((n = readSync(fd, buf, 0, buf.length, offset)) > 0) {
+    offset += n
+    partial += buf.subarray(0, n).toString('utf8')
+    let i: number
+    while ((i = partial.indexOf('\n')) >= 0) { const e = parseEvent(partial.slice(0, i)); partial = partial.slice(i + 1); if (e) progress.event(e) }
+  }
+}
+const timer = setInterval(() => { follow(); progress.tick(Date.now()) }, 250)
+await Promise.all([pump('stdout', p.stdout, process.stdout), pump('stderr', p.stderr, process.stderr)])
 const code = await p.exited
+clearInterval(timer)
+follow()
+progress.tick(Date.now(), true)
+closeSync(fd)
 const secs = (performance.now() - started) / 1000
 
 // The junit: one testsuite per file that ran

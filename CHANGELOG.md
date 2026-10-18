@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.32.7] - 2026-10-18
+
+### Added
+
+- `bun run test:full` 有進度: 每跑完一支測試檔, 畫面與 log 各印一行 (一般換行), 例如 `[ 24/80]  30%  經過 33s  預估剩 61s  pass 252  fail 1 ❌ diagnose.test.ts`. 內容是第幾支, 百分比, 經過秒數, 預估剩餘秒數, 到目前的 pass 與 fail, 那支檔有失敗時標 ❌. 「一支檔跑完」由 `--preload` 載入的 `router/test/progress-preload.ts` 在 `afterAll` 寫進 `.test-out/full-<時間>.progress.jsonl`, 失敗數取自 bun 輸出裡每檔一段的 `(fail)` 行, 預估時間用既有的 timings 並考慮 worker 數 (估不出來就不印那欄). 不改測試行為, junit 與檔案清單比對照舊; full.ts 改成整行轉印 bun 的輸出, 進度行不會插進一行中間. docs/testing.md 全套加「進度」一節.
+- 測試: progress (5 項): 進度行格式, 預估時間, 失敗晚到與計數, 以及真的 `bun test --parallel` 掛 preload (每檔開始與結束, junit 與不掛時相同, `(fail)` 算到對的檔). 對照檔把它放進 repo 區.
+
 ## [2.32.6] - 2026-10-18
 
 ### Fixed
