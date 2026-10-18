@@ -196,6 +196,8 @@ export interface RelayDeps {
   /** Screen must be unchanged this long to count as done (default 3s). */
   settleMs?: number
   maxWaitMs?: number
+  /** How long a view (/cost) may take to show its key hint (default 10s); only tests shorten it. */
+  menuWaitMs?: number
   exec: Exec
   stateDir: string
   claudeBin: string
@@ -255,7 +257,7 @@ export async function relay(deps: RelayDeps, workerId: string, r: RelayCmd): Pro
     // conversation): wait until the screen stops changing instead of a fixed delay.
     let screen = await settle(r.raw ? visible : withScroll, deps.settleMs ?? 3000, deps.maxWaitMs ?? 120_000)
     // views (/cost...) load in stages: read them once their key hint shows
-    if (r.cmd === '/cost') for (let t = 0; t < 10_000 && !MENU_RE.test(bottom(screen)); t += 500) { await sleep(500); screen = await withScroll() }
+    if (r.cmd === '/cost') for (let t = 0; t < (deps.menuWaitMs ?? 10_000) && !MENU_RE.test(bottom(screen)); t += 500) { await sleep(500); screen = await withScroll() }
     if (r.raw) return { kind: 'text', text: stripChrome(screen).slice(-45).join('\n') || `${r.cmd} 沒有輸出` }
     if (/Unknown command:/.test(bottom(screen))) {
       return { kind: 'text', text: `${r.cmd} 不是 Claude Code 的指令. 要看終端機的畫面可以用 cc /${r.cmd}` }

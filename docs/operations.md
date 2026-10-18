@@ -108,6 +108,8 @@ router 以 `claude --bg` 在每個對話資料夾 (`<home>` 底下) 啟動 worke
 | `receiveReact` | 對話沒有自己設定時收哪些表情回應: `all`, `botself_only`, `disable`; 沒寫是 `botself_only`. 見[表情回應 (reaction)](#表情回應-reaction). |
 | `reactFlushMs` | 表情回應等多少毫秒沒有新訊息就單獨交給 worker; 沒寫是 60000, 測試才縮短. 見[表情回應 (reaction)](#表情回應-reaction). |
 | `health` | 給外部監控 (例如 Gatus) 的 HTTP 健康檢查端點 (選配, 預設關閉): `{ "listen": "127.0.0.1:8787", "token": ..., "staleAfterS": 90 }`; 不是本機位址也照開, log 與啟動公告會警告; 寫錯或 port 被佔用只關閉它. 見[健康檢查端點](#健康檢查端點). |
+| `backlogSweepFirstMs` | 只給測試用, 一般使用者不用設. router 啟動後多少毫秒第一次檢查佇列裡還沒送達的訊息 (先讓已經在跑的 worker 重新連上); 沒寫是 15000. |
+| `vaultTickMs` | 只給測試用, 一般使用者不用設. 多久檢查一次到期要刪的密鑰訊息 (刪除時間本身不變, 例如群組指令仍是 10 秒後刪); 沒寫是 10000. |
 
 選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `sandboxExtraRo`, `sandboxTimezone`, `receiveReact`, `health`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
 

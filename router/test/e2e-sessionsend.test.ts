@@ -47,6 +47,8 @@ const DM = { id: 111, type: 'private' }
 writeFileSync(CONFIG, JSON.stringify({
   bots: [{ name: 'cc', token: '123:test' }], home: dir, stateDir: state, owners: ['111'],
   claudeBin: join(import.meta.dir, 'fixtures', 'fake-claude.ts'), apiRoot: `http://127.0.0.1:${api.port}`,
+  // the first backlog sweep 2 s after start (tests only; the router's own waits 15 s)
+  backlogSweepFirstMs: 2000,
 }))
 writeFileSync(join(state, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: ['111'], groups: {}, pending: {} }))
 const env = { ...process.env, FAKE_STATE: FAKE, FAKE_SOCKET: join(state, 'router.sock') }

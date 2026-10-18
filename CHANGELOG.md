@@ -6,6 +6,23 @@
 
 ## [Unreleased]
 
+## [2.31.0] - 2026-10-18
+
+### Added
+
+- `bun run test:full` (`router/test/full.ts`): 全套以 bun 原生的 `bun test --parallel` 分給 4 個 worker 並行 (`CCTR_TEST_JOBS` 可改), 依上次耗時先跑慢的檔 (`--timings`: repo 裡的基準 `router/test/timings.json`, 每次跑完寫到 gitignore 的 `.test-out/timings.json`, 跑測試不會改到 repo). 產出單一 log, junit 與跑過的測試檔清單 (`.test-out/full-<GMT+8 時間>.*`), 並比對清單與 `router/test` 的測試檔, 有檔沒跑到或不在 `router/test` 也算失敗. 4 核機器上全套從約 6 分鐘降到約 1.5 分鐘. 見 [docs/testing.md「全套」](docs/testing.md#全套).
+- 只給測試用的 config 選填欄位 `backlogSweepFirstMs` (router 啟動後第一次掃 backlog, 沒寫是 15000) 與 `vaultTickMs` (檢查到期的密鑰刪除, 沒寫是 10000); relay 多一個程式注入的 `menuWaitMs` (沒給是 10 秒). 正式環境不設, 行為不變.
+
+### Changed
+
+- 需要 Bun 1.4.3 以上 (`package.json` 與 `plugin/package.json` 的 `engines.bun` 改成 `>=1.4.3`, README, `deploy/install.sh` 的說明, 前置檢查一併改). 原因: 1.4.2 的 `Bun.spawnSync` 在等待子程序時, 若 GC 的 finalizer 釋放了別處的 FilePoll, 它自己的 loop 計數會漂移, 之後的 spawnSync 會在子程序結束後以 100% CPU 空轉, 永遠不返回 (oven-sh/bun#44581, 收進 1.4.3). 並行全套曾因此卡住 (toolbox 與 skillcli 的 worker 各自停在 spawnSync); 常駐的 router 也用 spawnSync (沙箱的 nft, systemd-run 檢查), 同樣有卡死的風險.
+
+### Fixed
+
+- router 啟動時 `router.db` 剛建立, 若剛好有別的程序在讀 (cli, 或測試在輪詢), 切換 WAL 會立刻 `SQLITE_BUSY`, router 直接結束: 現在先設 `busy_timeout` 再切 WAL, 等對方讀完 (`router/db.ts`, 分類器的 `router/classifier.ts` 同樣).
+- 特權沙箱在高負載下偶爾「套不上網路規則 (nft)」: 非特權的 bwrap 先回報 child-pid, 沙箱才寫自己的 uid 對應, 對應寫好前用 nsenter 進去跑的 nft 沒有權限. 現在等 `/proc/<pid>/uid_map` 有內容才跑 nft (`router/sandboxnet.ts`). skillstore 與 phase3-privskill 的偶發失敗都是這個原因.
+- 測試: phase1 新增 router.db 開檔與計時預設值兩項, whitelist 新增 uid 對應與 nft 一項; whitelist 的網路探測改成所有目標同時連 (判斷不變); e2e-sessionsend, e2e-creds, phase2 relay 用上面的測試專用設定縮短等待.
+
 ## [2.30.0] - 2026-10-18
 
 ### Added

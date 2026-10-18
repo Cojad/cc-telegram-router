@@ -183,7 +183,8 @@ test('operations.md 「從外部送訊息給 worker」 and README: the command, 
   expect(README).toContain('(docs/operations.md#從外部送訊息給-worker)')
   // the numbers are the code's
   const main = read('router/main.ts')
-  expect(main).toContain('setTimeout(sweepBacklog, 15_000)')
+  expect(main).toContain('setTimeout(sweepBacklog, cfg.backlogSweepFirstMs ?? BACKLOG_SWEEP_FIRST_MS)') // backlogSweepFirstMs: tests only
+  expect(read('router/config.ts')).toContain('export const BACKLOG_SWEEP_FIRST_MS = 15_000')
   expect(main).toContain('setInterval(sweepBacklog, 60_000)')
   expect(read('router/cli.ts')).toContain('waitMs = (a.waitS + 30) * 1000')
 })

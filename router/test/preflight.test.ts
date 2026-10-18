@@ -38,7 +38,8 @@ test('versions: olderThan part by part; bun against package.json\'s engines; cla
   expect(olderThan('1.5.0-canary.1', '1.4.2')).toBe(false)
   const range = bunRange(REPO)!
   expect(range).toBe(JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).engines.bun)
-  expect(checkBun(REPO, '1.4.2', '/opt/bun').ok).toBe(true)
+  expect(checkBun(REPO, '1.4.3', '/opt/bun').ok).toBe(true)
+  expect(checkBun(REPO, '1.4.2', '/opt/bun').ok).toBe(false) // its spawnSync can spin forever (CHANGELOG 2.31.0)
   expect(checkBun(REPO, '1.5.0', '/opt/bun').lines).toEqual([`bun: /opt/bun (1.5.0, 需要 ${range})`])
   const old = checkBun(REPO, '1.3.9', '/opt/bun')
   expect(old.ok).toBe(false)
@@ -108,7 +109,7 @@ test('install.sh: no bun on PATH stops before any job and says how to install it
   for (const job of ['router', 'plugin', 'unit', 'setup', 'all']) {
     const r = await sh(join(REPO, 'deploy', 'install.sh'), job, env(`${bin}:/usr/bin:/bin`))
     expect(r.code).toBe(1)
-    expect(r.err.trim()).toBe('找不到 bun (command -v bun 沒有結果): 先照 https://bun.sh 的官方安裝程式安裝 bun 1.4.2 以上 (它放在 ~/.bun/bin), 開新的 shell 或把 ~/.bun/bin 加進 PATH 後重跑')
+    expect(r.err.trim()).toBe('找不到 bun (command -v bun 沒有結果): 先照 https://bun.sh 的官方安裝程式安裝 bun 1.4.3 以上 (它放在 ~/.bun/bin), 開新的 shell 或把 ~/.bun/bin 加進 PATH 後重跑')
   }
   expect(existsSync(join(home, '.config'))).toBe(false)
 })

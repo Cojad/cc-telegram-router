@@ -5,10 +5,10 @@
 ## 執行
 
 ```bash
-bun test router/test
+bun run test:full
 ```
 
-這是全套 (約 2.5 分鐘). 開發中與交付前改用 `bun run test:changed`, 只跑 std 與改到的區, 見[測試分區](#測試分區).
+這是全套, 4 個 worker 並行, 約 1.5 分鐘 (見[全套](#全套)). 開發中與交付前改用 `bun run test:changed`, 只跑 std 與改到的區, 見[測試分區](#測試分區). 序列的 `bun test router/test` (`bun run test`) 結果相同, 要約 6 分鐘.
 
 建 Python 環境的測試 (`router/test/skillenv.test.ts`, `router/test/e2e-compiled.test.ts` 各有幾項) 要真的 uv: 用 `CCTR_TEST_UV=<uv 執行檔>` 指定 (例如 `<stateDir>/toolbox/bin/uv`), 或讓 PATH 上有 `uv`; 都沒有就跳過那幾項. 要連外網的測試 (真的 PyPI, 下載工具箱, 實際連外網) 只在 `LIVE=1` 時跑.
 
@@ -18,14 +18,15 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 
 ## 測試分區
 
-全套約 2.5 分鐘, 平常不必每次都跑. 測試依功能分成幾個區, 另有一套只測重要項目的 std; 改到哪一區, 才加跑那一區的完整測試. 分區與 std 寫在 `router/test/areas.ts` (對照檔), 指令由 `router/test/tiers.ts` 執行: 它先切到 repo 根目錄並確認是這個 repo, 不是就退出, 所以不論從哪個目錄呼叫, 都只會跑這個 repo 的測試.
+全套約 1.5 分鐘, 平常不必每次都跑. 測試依功能分成幾個區, 另有一套只測重要項目的 std; 改到哪一區, 才加跑那一區的完整測試. 分區與 std 寫在 `router/test/areas.ts` (對照檔), 指令由 `router/test/tiers.ts` 執行: 它先切到 repo 根目錄並確認是這個 repo, 不是就退出, 所以不論從哪個目錄呼叫, 都只會跑這個 repo 的測試.
 
 | 指令 | 跑什麼 | 實測耗時 |
 |---|---|---|
 | `bun run test:std` | std 套組 | 約 19 秒 |
 | `bun run test:area <區名...>` | 指定區的完整測試, 可給多個區; 不給區名時列出所有區 | perm 約 25 秒, secrets 約 18 秒, pkg 約 4 秒 |
 | `bun run test:changed [base]` | std 加上這次改動影響的區 (見下方判斷方式) | 依改動而定 |
-| `bun run test` | 全套 (`bun test router/test`) | 約 2.5 分鐘 |
+| `bun run test:full` | 全套, 4 個 worker 並行, 產出 log, junit 與檔案清單 (見[全套](#全套)) | 約 1.5 分鐘 |
+| `bun run test` | 全套, 序列 (`bun test router/test`) | 約 6 分鐘 |
 
 何時用哪個: teammate 開發中與交付前跑 `test:changed`; 想針對某一區反覆修改時跑 `test:area`; 全套只在 team lead 合併部署前跑一次.
 
@@ -64,7 +65,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `reactions` | 表情回應 | reactions, e2e-reactions | `router/reactions.ts`, `router/telegram/transport.ts`, `router/telegram/inbound.ts` |
 | `classifier` | 工具呼叫分類器 | classifier, e2e-classifier, e2e-classifier-off | `router/classifier.ts` |
 | `core` | 對話生命週期與指令 | phase1, phase2, e2e, e2e-wake, e2e-setup, jobs, e2e-jobs, sessionsend, e2e-sessionsend | `router/` 的 supervisor, jobs, sessionsend, lock, conversations, context, progress, relay, freshness, rotate, setup, cli, guard, settings; `plugin/server.ts`, `plugin/skills/**`, `shared/time.ts`, `templates/**` |
-| `repo` | 報表腳本與 repo 檢查 | context-chart, usage-report, requirements, areas, readme | `scripts/**`, `README.md`, `docs/operations.md`, `docs/secrets.md`, `CHANGELOG.md`, `plugin/package.json`, `deploy/**`, `router/relay.ts`, `router/test/areas.ts`, `router/test/tiers.ts` |
+| `repo` | 報表腳本與 repo 檢查 | context-chart, usage-report, requirements, areas, readme | `scripts/**`, `README.md`, `docs/operations.md`, `docs/secrets.md`, `CHANGELOG.md`, `plugin/package.json`, `deploy/**`, `router/relay.ts`, `router/test/areas.ts`, `router/test/tiers.ts`, `router/test/full.ts`, `router/test/timings.json` |
 
 改到某區的測試檔, 也會跑那一區. 一個路徑可以屬於多個區.
 
@@ -82,12 +83,78 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 
 `router/test/areas.test.ts` (在 std 裡): `router/test` 的每一支測試檔至少屬於一區, 對照檔與 std 列的測試檔都存在, 區名不重複, 每個路徑 glob 都對得到 repo 裡的檔; 本節「各區」表的區名與測試檔, 「std 套組」表的測試檔, 與對照檔一致; [測試檔對照](#測試檔對照)有每支測試檔的一列. 新增測試檔時要同時加進 `areas.ts` 的某一區與測試檔對照表, 改了分區或 std 要一起改本節, 否則這個檢查失敗.
 
+## 全套
+
+`bun run test:full` (`router/test/full.ts`) 跑 `router/test` 底下的每一支測試檔, 由 bun 原生的 `bun test --parallel` 分給多個 worker 並行. 它先切到 repo 根目錄並確認是這個 repo, 不是就退出, 只收 `router/test` 底下的檔, 不論從哪個目錄呼叫都一樣.
+
+輸出都在 `.test-out/` (已列入 `.gitignore`, 用 `CCTR_TEST_OUT=<資料夾>` 可以改), 檔名帶 GMT+8 時間:
+
+| 檔案 | 內容 |
+|---|---|
+| `full-<時間>.log` | 完整的終端機輸出, 跟畫面上看到的一樣 |
+| `full-<時間>.junit.xml` | 單一份 junit, 每支測試檔一個 testsuite |
+| `full-<時間>.files.txt` | 實際跑過的測試檔清單 (取自 junit), 每行一個 |
+
+最後印出測試數 (pass, skip, fail), 跑了幾個檔與 `router/test` 實際有幾個檔, 以及 log 與 junit 的路徑. 有檔不在 `router/test` 的測試檔裡, 或有測試檔沒跑到, 也算失敗 (結束碼 1). 部署前要檢查的檔案清單就是 `files.txt`.
+
+環境變數: `CCTR_TEST_JOBS` 是 worker 數 (預設 4), `CCTR_TEST_UV` 與 `LIVE` 照[執行](#執行)所說.
+
+### 分組與排程
+
+不用手動分組: 每個 worker 是獨立的 bun 程序, 每支測試檔有自己的 global (bun 的 `--isolate`), worker 跑完一檔就拿下一檔. `--timings` 讓上次最慢的檔先跑, 避免最後只剩一個 worker 在跑大檔. 耗時有兩份:
+
+- `router/test/timings.json`: repo 裡的基準, 跑測試時不會改到它.
+- `.test-out/timings.json`: 每次跑完由 bun 寫入 (`--update-timings`), 下次優先用它, 缺的檔才看基準.
+
+測試檔大量增減或耗時明顯改變時, 把 `.test-out/timings.json` 複製成 `router/test/timings.json` 再 commit.
+
+worker 數預設 4, 等於這台開發機的核心數. 在 4 核機器上開 8 個反而更慢 (122 秒), 而且過載: 有的 router 5 秒內起不來, 測試逾時.
+
+### 沒有序列組
+
+所有測試檔都能並行, 沒有需要單獨跑的檔: 每支測試用 `mkdtemp` 開自己的資料夾, sqlite 與 socket 都在裡面; 假 Bot API 與假服務都用 port 0; 沙箱的 nft 規則在各自的 network namespace, 名稱不會互撞; 測試裡的 router 不寫使用者 HOME 底下的東西 (只讀 locator `~/.config/cc-telegram-router/router.json`, 發現指向別的 router 就不動它); 改 `process.env` 的測試會在結束時還原.
+
+開始並行時暴露了三個問題, 都已處理, 不是靠序列跑或加長逾時避開:
+
+- bun 1.4.2 的 `Bun.spawnSync` 偶爾在子程序結束後以 100% CPU 空轉, 永遠不返回 (子程序變成 zombie, 測試逾時也不會觸發). 原因是 spawnSync 等待期間, GC 的 finalizer 釋放了前一支測試檔留下的 FilePoll, 弄亂了 spawnSync 自己的 loop 計數 (oven-sh/bun#44581); 每檔一個新 global 的並行模式較常觸發. bun 1.4.3 修好了, 所以這個 repo 需要 bun 1.4.3 以上.
+
+另外兩個是高負載下的時序問題, 屬於產品程式, 已修好並各有回歸測試:
+
+- router 啟動時 `router.db` 剛建立, 若剛好有別的程序在讀 (cli, 或測試在輪詢), 切換 WAL 會立刻 `SQLITE_BUSY`, router 直接結束. 原因是 `busy_timeout` 設在 WAL 之後; 現在先設 `busy_timeout`, 等對方讀完 (`router/db.ts`, 分類器的 `router/classifier.ts` 同樣). 測試: phase1「router.db opens while another process is reading…」.
+- 特權沙箱偶爾「套不上網路規則 (nft)」: 非特權的 bwrap 先回報 child-pid, 沙箱才寫自己的 uid 對應; 對應寫好前用 nsenter 進去跑的 nft 沒有權限. 實測一拿到 child-pid 就讀, 200 次裡有 32 次 uid 對應還是空的. 現在 `runIsolated` 等 `/proc/<pid>/uid_map` 有內容才跑 nft (`router/sandboxnet.ts` 的 `uidMapped`). 測試: whitelist「uidMapped: a new user namespace is unmapped…」, 同一份規則在對應寫好前 nft 失敗, 寫好後成功.
+
+### 測試專用的等待時間
+
+幾個 router 寫死的等待, 測試透過選填設定縮短; 沒設定時是原本的值, 正式環境不受影響:
+
+| 設定 | 預設 | 測試用 | 用在 |
+|---|---|---|---|
+| config `backlogSweepFirstMs` | 15000 | 2000 | e2e-sessionsend (router 重啟後送出排隊的訊息) |
+| config `vaultTickMs` | 10000 | 1000 | e2e-creds (群組指令 10 秒後刪, 刪除時間不變, 只是檢查得更頻繁) |
+| config `reactFlushMs` | 60000 | 3000 | e2e-reactions (表情回應單獨交給 worker) |
+| relay 的 `menuWaitMs` (程式注入, 不經 config) | 10000 | 1000 | phase2 relay (畫面一直沒出現按鍵提示) |
+
+前兩個的預設值由 phase1「router timers…」守住. 另外 whitelist 的網路探測改成所有目標同時連, 等逾時的目標一起等, 判斷結果不變.
+
+### 耗時
+
+2026-10-18 在 4 核開發機上實測 (同時有其他工作, load 約 1.5~5). 改版前是 2.29.0 (760 項), 本版含 2.30.0 的健康檢查測試 (791 項):
+
+| 跑法 | 耗時 |
+|---|---|
+| 改版前, 序列 `bun test router/test` (bun 1.4.2) | 369.5 秒 |
+| 改版前, 原生 `--parallel=4` (bun 1.4.2) | 105.8 秒 |
+| 本版, 序列 (bun 1.4.3) | 322.9 秒, 791 項 (773 pass, 18 skip) |
+| 本版, `bun run test:full` (4 個 worker, bun 1.4.3), 連續 5 次 | 91.8, 89.7, 90.9, 93.1, 95.9 秒, 每次都是 791 項 (773 pass, 18 skip), 與序列相同 |
+
+序列耗時前幾名 (秒, 改版前 → 本版): phase2 36.0 → 25.9, e2e-creds 24.9 → 15.8, e2e-reactions 23.4 → 23.4, e2e-sessionsend 21.3 → 8.1, whitelist 18.7 → 11.5, e2e-retry 15.6 → 15.7, phase3 14.3 → 12.5, phase1 11.3 → 10.8, e2e 9.5 → 9.6, skillstore 9.3 → 8.3. 剩下的大多是真的 router 與假 Bot API 的流程 (e2e-*), 單項固定等待 (e2e-reactions 的安靜回合, e2e-retry 的 router 停止重試), 以及沙箱 (bwrap, nft, slirp4netns). 並行時總工作量約 380 秒, 4 個 worker 分攤後約 90 秒, 最長的單檔 (phase2) 約 30 秒, 不是瓶頸.
+
 ## 測試檔對照
 
 | 檔案 | 對應 |
 |---|---|
 | `router/test/areas.test.ts` | [測試分區](#測試分區)的對照檔 `router/test/areas.ts`: 每支測試檔至少屬於一區, 列出的測試檔都存在, 區名不重複, 路徑 glob 都對得到檔, 「各區」與「std 套組」兩張表與對照檔一致; 本表有每支測試檔的一列 |
-| `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor (含 resume 後的說明更新提醒 freshness), plugin MCP, router 離線告知 |
+| `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor (含 resume 後的說明更新提醒 freshness), plugin MCP, router 離線告知, router.db 剛建立時有別的程序在讀也能開 (先設 busy_timeout 再切 WAL), backlog 第一次掃描 15 秒與密鑰刪除每 10 秒檢查的預設值 (測試專用設定沒寫時) |
 | `router/test/phase2.test.ts` | 規劃 03 的 /router 指令表與拒絕訊息 (含 chat_id 跨 bot 指定, --bot, 對話 key), 06 chat_context, router_log, hook, 「cc /」代打, 即時進度訊息, bot list 與 status 對資訊還沒取得的 bot 顯示讀取中, GMT+8 時間格式 (`iso8`, log 行) |
 | `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, 帶附件的回覆 (文字當 caption 只送一則, 多張照片成一個相簿, outbound 與訊息紀錄), 群組回到提問者的私訊 (on_behalf_of), /router 指令不轉給 worker, CLI, bot add 後立刻 bot list 就有新 bot 的資訊, log 行與 worker 收到的訊息時間是 GMT+8 |
 | `router/test/phase3.test.ts` | 規劃 03, 07: 角色範本, /router perm, 權限檢查, 跨對話傳訊申請, 審核頻道, 提權 (詢問, 核准, 逾時, 主動申請, 紀錄), hook, bot 資料夾與搬遷 |
@@ -104,7 +171,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/skillcli.test.ts` | [終端機執行特權動作](credentials-and-skills.md#終端機執行特權動作)與 [終端機 CLI](operations.md#終端機-cli), 真的 bwrap 與本機假 Bot API: `cli skill run` 的參數解析, `--out` 與 `--trial-store` 的位置限制, 以對話身分執行 (輸出只在 `--out`, `skill_runs` 記 `terminal:<key>`, 不算也不受對話每小時限額, 角色與參數角色檢查照 run_skill), `--trial` 與 `--trial-store` (正式資料庫不變, 複本的變動, 假 Bot API, token 遮蔽), 通知附在回傳文字, `cli skill refresh` (每日佇列, `terminal:refresh`, 失敗遮蔽, 只跑指定的技能: 另一個已核准技能沒有紀錄), 只限 owner 終端機 (Telegram 裡 owner 的私訊與群組, admin 的私訊與群組下 run 與 refresh 都被拒且完全沒有執行) |
 | `router/test/skillcheck.test.ts` | [檢查技能草稿](credentials-and-skills.md#檢查技能草稿)與 `/telegram:bot-skill` 的特權動作說明: 說明書「範例: 活動報名清單」的三個檔 (從說明書本身抽出) 通過 skill_check 且沒有提醒, 列出核准時的內容, 不含 Telegram id 與私人路徑; 照寫的樣子核准後真的執行 (真的 bwrap, 本機假的活動資訊 API 與 Bot API): join 附加一行, 重複報名 exit 1 且資料庫不變, list 讀出, cancel 只限 owner 與 admin 且整檔改寫, key 與 token 不回到對話; skill_check 回報各種錯誤與修正方式 (參數佔位符, 憑證佔位符, 找不到的腳本, 不合法的正規表示式, timeout, refresh, run 格式, 黏在一起的佔位符, 沒用到的參數, 不認得的欄位, Python 沒加 -B, venv, 角色名稱), loadManifest 的拒絕 (full 模式, 不合法的 JSON, 缺 actions), install_skill 會拒絕的 (SKILL.md, frontmatter, 資料夾名稱, 像 token 的字串, 符號連結), 只讀對話資料夾裡的路徑, 不經符號連結讀 privileged.json 與 SKILL.md, 憑證存在與否和類型 (不含值), 各角色的下一步, 完全不執行程式, 工具定義 |
 | `router/test/skilltry.test.ts` | [試跑技能草稿](credentials-and-skills.md#試跑技能草稿)與[試跑的網路](credentials-and-skills.md#試跑的網路), 真的 bwrap, slirp4netns 與 nft: nft 規則的網段與主機位址, 缺少的工具; 主機 127.0.0.1 (與 localhost) 上的服務, 主機自己的網卡位址, 169.254.169.254, 10.0.2.2, 172.17.0.1, 192.168.1.1, 10.1.2.3, 100.100.100.100 都連不到且主機服務完全沒收到請求, 沙箱自己的 loopback 連得到, resolv.conf 是 10.0.2.3, 預設路由經 tap0, 沙箱裡 nft 改不了; unix socket: `/run` 與 `/var/run` 不存在, `/run/docker.sock`, `/var/run/docker.sock`, dbus, `/run/user/<uid>/` 底下的 socket 與主機在沙箱看得到的資料夾裡開的 socket 都連不上 (EPERM, 主機沒收到連線), socketpair 與 TCP 照常, DNS 照常; seccomp 程式的內容與架構; `LIVE=1` 才實際連外網 (經 slirp 的 DNS); 說明書範例以 power 試跑 join (假服務收到 GET 與 sendMessage, 假 key 與 token 遮蔽, 真的憑證與正式資料庫內容不出現, 正式資料庫不變, 輸出資料夾, `try:<key>` 紀錄不算 run_skill), session 接連 join, list, 重複報名失敗, cancel, 沒有 session 從空的開始, store_seed (符號連結與資料夾外拒絕), user 可以試跑 (2.25.0 起) 而 guest 拒絕, role 不能高於自己, roles 與 args.roles 的拒絕, internal 動作沒有主機存取 (host), 回傳寫明外網開的 port, timeout 上限 600 秒, 憑證不存在的提醒, 缺少網路工具時拒絕, 沙箱在設定網路前就結束時 (例如掛載的路徑不存在) 以 bwrap 自己的錯誤拒絕, 每小時 20 次; 工具定義與說明書, 文件 |
-| `router/test/whitelist.test.ts` | [執行環境規格](skill-runtime.md)的掛載路徑, 網路, 主機存取 host, 對外 port, 真的 bwrap, slirp4netns 與 nft, 經 run_skill 與 refresh 的同一條路: 看不到使用者家目錄, router 的 stateDir, 其他對話與技能, `/home`, `/run`, `/sys`, `/etc/shadow`, `/etc/ssl/private`, 主機的 passwd (只有 3 行); 看得到 `/usr`, CA, `/etc/resolv.conf`, `/cctr/creds/<ENV>`; 工作目錄是對話資料夾, 環境變數不含 stateDir 的路徑; 主機本機的 Bot API (config apiRoot 在 127.0.0.1): 有 `bots` 的動作經 10.0.2.2 連得到那個 port, 主機其他 port 與沒有 `bots` 的動作連不到, token 遮蔽; 對話呼叫的動作外網只開 80, 443, 53, 22 (TEST-NET 位址: 開的 port 送出去後逾時, 擋的 port 立刻 refused), outbound_ports 加開的 port 通, 其他照擋; 主機 127.0.0.1, 10.0.2.2, 主機網卡位址, metadata, 內網一律連不到, 不能建 unix socket; internal 動作連得到 host.ports 宣告的主機 port (經 `$CCTR_HOST`), 沒宣告的與主機其他位址連不到, 外網不限 port, 連得到宣告掛載的 unix socket, 同資料夾沒宣告的不存在; privileged.json 的 host 只給 internal, outbound_ports 只給非 internal, port 範圍與重複, 舊寫法 mounts/env 當成 host; 核准: host 與 outbound_ports 只有 owner (admin 被拒並列出原因與宣告), 一般技能 admin 可以; skill_check 的提醒; nft 規則順序與 seccomp 程式; `LIVE=1` 實際連外網 80, 443 與被擋的 8080 |
+| `router/test/whitelist.test.ts` | [執行環境規格](skill-runtime.md)的掛載路徑, 網路, 主機存取 host, 對外 port, 真的 bwrap, slirp4netns 與 nft, 經 run_skill 與 refresh 的同一條路: 看不到使用者家目錄, router 的 stateDir, 其他對話與技能, `/home`, `/run`, `/sys`, `/etc/shadow`, `/etc/ssl/private`, 主機的 passwd (只有 3 行); 看得到 `/usr`, CA, `/etc/resolv.conf`, `/cctr/creds/<ENV>`; 工作目錄是對話資料夾, 環境變數不含 stateDir 的路徑; 主機本機的 Bot API (config apiRoot 在 127.0.0.1): 有 `bots` 的動作經 10.0.2.2 連得到那個 port, 主機其他 port 與沒有 `bots` 的動作連不到, token 遮蔽; 對話呼叫的動作外網只開 80, 443, 53, 22 (TEST-NET 位址: 開的 port 送出去後逾時, 擋的 port 立刻 refused), outbound_ports 加開的 port 通, 其他照擋; 主機 127.0.0.1, 10.0.2.2, 主機網卡位址, metadata, 內網一律連不到, 不能建 unix socket; internal 動作連得到 host.ports 宣告的主機 port (經 `$CCTR_HOST`), 沒宣告的與主機其他位址連不到, 外網不限 port, 連得到宣告掛載的 unix socket, 同資料夾沒宣告的不存在; privileged.json 的 host 只給 internal, outbound_ports 只給非 internal, port 範圍與重複, 舊寫法 mounts/env 當成 host; 核准: host 與 outbound_ports 只有 owner (admin 被拒並列出原因與宣告), 一般技能 admin 可以; skill_check 的提醒; nft 規則順序與 seccomp 程式; `LIVE=1` 實際連外網 80, 443 與被擋的 8080; uid 對應寫好前 nft 失敗, 寫好後成功 (`uidMapped`, 沙箱等它才跑 nft) |
 | `router/test/limits.test.ts` | [執行環境規格: 資源上限](skill-runtime.md#資源上限), [exit code 與輸出](skill-runtime.md#exit-code-與輸出), [時區](skill-runtime.md#時區): 預設與最高值, 放寬只限 owner (admin 被拒, 核准畫面列出), cgroup 與降級的前置指令, 降級寫在 `/router status`; 實際執行 (主機有 cgroup 委派時): 記憶體被終止並註明, 程序數讓執行緒開不出來, 單檔超過收到 SIGXFSZ 並註明, 輸出超過被終止, 時間到被終止; 降級時 prlimit 仍限記憶體與單檔; `stop_exits` (正常停止, 記 stopped, 不寫回資料庫, 範圍與說明); router 私有路徑整段遮掉, `XDG_RUNTIME_DIR` 不進沙箱; 時區 Asia/Taipei 與 `sandboxTimezone`; refresh 回傳完整摘要 (頭尾) 並通知 owner |
 | `router/test/toolbox.test.ts` | [執行環境規格: 工具箱](skill-runtime.md#工具箱): 安裝 gz, zip, tgz (先核對 sha256, 只取指定的檔, 可以執行, installed.json), 同版本保留, 檔案不見重裝, sha256 不符只影響那個工具 (舊版保留, 其他照裝), 不支援的 CPU, 網址鏡像; `toolbox status` 與用法; 真正的工具表 (x64 與 arm64, 固定 tag, sha256), `install.sh` 只警告; 沙箱裡 `/cctr/tools/bin` 在 PATH 最前面, 缺工具拒絕並說明, `tools` 只能是工具箱的名稱; `LIVE=1` 下載並執行真的工具 |
 | `router/test/skillenv.test.ts` | [執行環境規格: Python 套件 (uv)](skill-runtime.md#python-套件-uv)與[核准](skill-runtime.md#核准): uv.lock 的 PyPI 與自訂來源 (git 的 commit, path, 其他 index), 沒鎖 commit 拒絕, 兩個檔要一起; 有 uv (`CCTR_TEST_UV` 或 PATH) 時: 主機上的假 index 在沙箱裡建環境, `/cctr/env` 在 PATH 最前面, 重用不再下載, 同 lock 共用, lock 不符建置失敗不留東西, 改 uv.lock 技能暫停, 核准畫面與確認碼, 錯的確認碼, 先建好才核准, 建不起來不核准; 沒有 lock 的一步核准, 主機存取只限 owner 且要確認, 套件清單與模型判斷, 沒有審核時 PyPI 也要人看; 指令帶確認碼, Telegram 另外收到結果, 終端機等結果; `skill_try` 拒絕自訂來源, 不是 low 的套件與沒有審核的情況; `LIVE=1` 用真的 PyPI 與 uv 自己的 Python |
@@ -154,7 +221,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `router/test/sessionsend.test.ts` | [從外部送訊息給 worker](operations.md#從外部送訊息給-worker): `cli session send` 的參數解析 (對話與選項在前, 其餘是文字, `--`, `-` 與沒給文字讀 stdin, `--wait`), `--from` 的格式, 送進 worker 的標頭 (來源, 發送者, 回應去向), 終端機端 (文字原樣放在指令列旁邊, stdin, stdin 是終端機時不等輸入, 空內容, router 沒在跑, 結束碼 0/1/2), 指令 (chat_id, 對話 key, `--bot`, 已送達與逾時仍在佇列, 找不到對話, 沒有文字, Telegram 裡拒絕且不入佇列), `/router help` 的 session 那行 |
 | `router/test/e2e-sessionsend.test.ts` | 同上, 真的 router + 假 claude CLI + 真的 `cli session send`: worker 醒著直接送達 (已送達, exit 0, router 不往對話貼), worker 不在時叫醒並送達 (stdin 的多行), worker 叫不醒時留在佇列 (exit 2), router 停著時報錯不入佇列 (exit 1), router 重啟後同一筆訊息送達 |
 | `router/test/e2e-wake.test.ts` | 真的 router + 假 claude CLI (`fixtures/`, 假 worker 是真的程序): 私訊與群組各自一個 worker 且不串線, 被回收後自動喚醒, worker 不在時連發多則只喚醒一次且不掉訊息 |
-| `router/test/requirements.test.ts` | README 的 Requirements 與 package 檔: 根目錄 package.json 沒有 v1 的 `bin` 與 `start`, Bun 1.4.2 以上 (README 寫明, 兩個 package 檔的 `engines.bun` 是 `>=1.4.2`), plugin 版本與 repo 和 CHANGELOG 一致, 報表腳本一律用 python3 (shebang 與呼叫), curl, jq 與 matplotlib 列在強烈建議, 分類器的 API key 在依功能需要, repo 自己的程式與腳本不用 curl 與 jq |
+| `router/test/requirements.test.ts` | README 的 Requirements 與 package 檔: 根目錄 package.json 沒有 v1 的 `bin` 與 `start`, Bun 1.4.3 以上 (README 寫明, 兩個 package 檔的 `engines.bun` 是 `>=1.4.3`), plugin 版本與 repo 和 CHANGELOG 一致, 報表腳本一律用 python3 (shebang 與呼叫), curl, jq 與 matplotlib 列在強烈建議, 分類器的 API key 在依功能需要, repo 自己的程式與腳本不用 curl 與 jq |
 | `router/test/readme.test.ts` | README 與 [部署與維運](operations.md) 跟上現況: operations.md「設定欄位」剛好列出 `loadConfig` 讀的每個欄位 (多一個少一個都不行) 與憑證的每個欄位, README 連到它; 安裝步驟有官方 plugin 的安裝指令 (在 `deploy/install.sh plugin` 之前) 與 linger 和確認方式 (在啟動之前); README「How to upgrade」與 operations.md「升級」的備份, 安裝, 停止與啟動, 輪替, 資料庫只新增; Feature highlights 涵蓋 2.11 之後的功能; [密鑰](secrets.md#加密金鑰-secretkey)說明 secretKey (加密什麼, 遺失就解不開, 跟 router.db 一起備份, 不可外流, 錯誤訊息跟程式一致); README, operations.md 與 secrets.md 的每個相對連結都連到存在的檔案與標題 |
 | `router/test/context-chart.test.ts` | [cc / 報表腳本](operations.md#cc--報表腳本)的 `tg-context-chart.py`: 有 matplotlib 時寫 PNG, 沒有時 (PYTHONPATH 放一個 import 失敗的 matplotlib) exit 3, 文字圖 (各行接續到 100%, 有用量的類別至少八分之一格) 與安裝建議, 不寫 PNG; phase2 另測 relay 收到 exit 3 時送表格加文字圖 |
 | `router/test/usage-report.test.ts` | [cc / 報表腳本](operations.md#cc--報表腳本): `/usage` 報表的列, 倒數只顯示最大的兩個單位, 燃燒速率 (柯姊的範例, 週期剛開始, 超速中, 接近重置, 用完, 跨年, 沒有 Weekly 或重置時間), 腳本可執行, 兩支 `.sh` 以假 tmux 送指令與離開畫面, `/status` 只印白名單欄位 |

@@ -35,7 +35,7 @@ UNIT_DIR="$HOME/.config/systemd/user"
 # when not), claude found. Stops with what to do when something is missing.
 preflight() {
   if ! command -v bun >/dev/null 2>&1; then
-    echo "找不到 bun (command -v bun 沒有結果): 先照 https://bun.sh 的官方安裝程式安裝 bun 1.4.2 以上 (它放在 ~/.bun/bin), 開新的 shell 或把 ~/.bun/bin 加進 PATH 後重跑" >&2
+    echo "找不到 bun (command -v bun 沒有結果): 先照 https://bun.sh 的官方安裝程式安裝 bun 1.4.3 以上 (它放在 ~/.bun/bin), 開新的 shell 或把 ~/.bun/bin 加進 PATH 後重跑" >&2
     exit 1
   fi
   bun "$REPO/deploy/preflight.ts" || { echo "前置檢查沒過, 照上面的說明補好後重跑 $(basename "$0") ${1:-}" >&2; exit 1; }

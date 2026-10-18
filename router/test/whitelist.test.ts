@@ -27,7 +27,7 @@ import { join } from 'path'
 import { openRouterDb, type RouterDb, type Conversation } from '../db'
 import { hashSkill, loadManifest, ownerOnly } from '../privskill'
 import { runSkill, runAction, approveRefusal, describeActions, outPortsOf, apiForSandbox, type SkillRunDeps } from '../skillrun'
-import { nftRules, unixBlockFilter, interfaceAddrs, OUT_PORTS } from '../sandboxnet'
+import { nftRules, unixBlockFilter, interfaceAddrs, OUT_PORTS, uidMapped } from '../sandboxnet'
 import { sandboxDeps } from './fixtures/sandbox'
 import { checkSkill } from '../skillcheck'
 
@@ -44,20 +44,27 @@ let dir: string, db: RouterDb, deps: SkillRunDeps, conv: Conversation, skill: st
 const told: string[] = []
 
 /** One line per target: "<target> ok ...", "<target> refused <error>" (fails at once) or "<target> timeout". */
-const PROBE = `import socket, sys, time, urllib.request
-for t in sys.argv[1:]:
+// every target at once (each its own thread, results in the given order): the ones that time out wait together
+const PROBE = `import socket, sys, threading, time, urllib.request
+def probe(t):
     try:
         if t.startswith('unix:'):
-            s = socket.socket(socket.AF_UNIX); s.connect(t[5:]); print(t, 'ok', s.recv(32).decode().strip())
+            s = socket.socket(socket.AF_UNIX); s.connect(t[5:]); return f"{t} ok {s.recv(32).decode().strip()}"
         elif t.startswith('http'):
-            print(t, 'ok', urllib.request.urlopen(t, timeout=4).read().decode()[:40])
+            return f"{t} ok {urllib.request.urlopen(t, timeout=4).read().decode()[:40]}"
         else:
             h, p = t.rsplit(':', 1)
-            socket.create_connection((h, int(p)), timeout=2.5).close(); print(t, 'ok connected')
+            socket.create_connection((h, int(p)), timeout=2.5).close(); return f"{t} ok connected"
     except (socket.timeout, TimeoutError):
-        print(t, 'timeout')
+        return f"{t} timeout"
     except Exception as e:
-        print(t, 'refused', type(e).__name__, e)
+        return f"{t} refused {type(e).__name__} {e}"
+out = [None] * (len(sys.argv) - 1)
+def run(i, t): out[i] = probe(t)
+ts = [threading.Thread(target=run, args=(i, t)) for i, t in enumerate(sys.argv[1:])]
+for x in ts: x.start()
+for x in ts: x.join()
+print('\\n'.join(out))
 `
 
 function writeSkill(actions: Record<string, unknown>) {
@@ -251,6 +258,25 @@ test('skill_check: the old mounts/env spelling, host.ports ($CCTR_HOST) and outb
   expect(r.text).toContain('- 動作 go: outbound_ports (8443) 讓動作連外網的這些 port (預設只有 80, 443, 53, 22); 有這個宣告的技能只有 owner 能核准')
   writeFileSync(join(d, 'privileged.json'), JSON.stringify({ actions: { go: { run: ['bash', 'scripts/r.sh'], host: { ports: [9222] } } } }))
   expect(checkSkill(folder, 'skills/hosty', 'owner').text).toContain('/router skill approve 會拒絕: 動作 go 不是 internal, 不能宣告 host')
+})
+
+// bwrap reports child-pid before the sandbox writes its uid map; nft entered then had no capabilities
+// (「套不上網路規則 (nft)」 under load). runIsolated waits for the map; this is what it waits on.
+test('uidMapped: a new user namespace is unmapped until its uid map is written; nft entered before that fails, after it loads the rules', async () => {
+  const rules = join(dir, 'rules.nft')
+  writeFileSync(rules, nftRules(interfaceAddrs()))
+  const nft = (pid: number) => Bun.spawnSync(['nsenter', `--user=/proc/${pid}/ns/user`, `--net=/proc/${pid}/ns/net`, '--preserve-credentials', 'nft', '-f', rules]).exitCode
+  const p = Bun.spawn(['unshare', '--user', '--net', 'sleep', '10'], { stdio: ['ignore', 'ignore', 'ignore'] })
+  try {
+    // unshare execs sleep once the namespace is in place: the process then shows it
+    for (let t = 0; t < 200 && readFileSync(`/proc/${p.pid}/cmdline`, 'utf8').split('\0')[0] !== 'sleep'; t++) await Bun.sleep(10)
+    expect(uidMapped(p.pid)).toBe(false)
+    expect(nft(p.pid)).not.toBe(0) // what runIsolated hit when it did not wait
+    writeFileSync(`/proc/${p.pid}/uid_map`, `0 ${process.getuid!()} 1\n`)
+    expect(uidMapped(p.pid)).toBe(true)
+    expect(nft(p.pid)).toBe(0)
+  } finally { p.kill(9); await p.exited }
+  expect(uidMapped(p.pid)).toBe(false) // gone
 })
 
 test('the rules and the seccomp program: host ports before the private ranges, the port rule after them; AF_UNIX allowed only when asked, io_uring always refused', () => {

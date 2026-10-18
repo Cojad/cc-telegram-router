@@ -75,6 +75,8 @@ chmodSync(fakeClaude, 0o755)
 writeFileSync(join(state, 'config.json'), JSON.stringify({
   bots: [{ name: 'cc', token: '123:test' }], home: dir, stateDir: state, owners: ['555'],
   model: 'claude-opus-5-5', claudeBin: fakeClaude, apiRoot: `http://127.0.0.1:${api.port}`,
+  // due deletions checked every second (tests only; the router's own is every 10 s): a deletion still waits its 10 s
+  vaultTickMs: 1000,
 }))
 writeFileSync(join(state, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: ['555', '666', '777', '888'], groups: { [String(GROUP)]: { requireMention: false, allowFrom: [] } }, pending: {} }))
 // deletions of registration messages scheduled before a restart: one due while the router was down, one not yet

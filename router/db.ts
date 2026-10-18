@@ -361,8 +361,9 @@ export interface RouterDb {
 export function openRouterDb(path: string, opts: { owners?: readonly string[] } = {}): RouterDb {
   const owners = opts.owners ?? []
   const db = new Database(path, { create: true })
-  db.exec('PRAGMA journal_mode = WAL')
+  // busy_timeout first: switching a new file to WAL needs every other reader gone (a cli or test reading it right then)
   db.exec('PRAGMA busy_timeout = 5000')
+  db.exec('PRAGMA journal_mode = WAL')
   db.exec(`
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

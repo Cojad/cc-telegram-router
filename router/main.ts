@@ -14,7 +14,7 @@ import { randomBytes } from 'crypto'
 import { spawn } from 'child_process'
 import { mkdirSync, renameSync, writeFileSync, readFileSync, existsSync, copyFileSync, realpathSync, readdirSync, rmSync } from 'fs'
 import { basename, dirname, join } from 'path'
-import { defaultConfigPath, loadConfig, hiddenPaths, botApiRoot, credApiRoot, OFFICIAL_API_ROOT, type BotConfig } from './config'
+import { defaultConfigPath, loadConfig, hiddenPaths, botApiRoot, credApiRoot, OFFICIAL_API_ROOT, BACKLOG_SWEEP_FIRST_MS, VAULT_TICK_MS, type BotConfig } from './config'
 import { fetchBotFile } from './telegram/files'
 import { isSetup, runSetupCli } from './wizard'
 import { UNIT_NAME, createWakeTracker, wakeCause, latestPluginLog, pluginFailure, readProjects, trustOf, trustFix, apiAdvice, modelWindowNotes, type ApiFailure } from './diagnose'
@@ -1740,7 +1740,7 @@ const vaultTick = () => {
   void vault.tick().catch(e => log(`secret deletions: ${e}`)).finally(() => { vaultTicking = false })
 }
 vaultTick()
-setInterval(vaultTick, 10_000).unref()
+setInterval(vaultTick, cfg.vaultTickMs ?? VAULT_TICK_MS).unref()
 // kept copies of text attachments unused for 30 days go, at startup and daily
 {
   const purge = () => { try { const n = vault.purgeAttachments(); if (n) log(`attachments: removed ${n} kept file(s) unused for 30 days`) } catch (e) { log(`attachment purge: ${e}`) } }
@@ -1798,7 +1798,7 @@ async function rotate(): Promise<void> {
 setInterval(() => void rotate(), 60_000).unref()
 // After a router restart, give already-running workers a moment to
 // reconnect before deciding they need waking.
-setTimeout(sweepBacklog, 15_000).unref()
+setTimeout(sweepBacklog, cfg.backlogSweepFirstMs ?? BACKLOG_SWEEP_FIRST_MS).unref()
 // how privileged sandboxes are limited on this host (a degraded host is said once, here and in /router status)
 void primeLimitMode().then(m => log(`skill sandbox: ${describeLimitMode(m)}`))
 // Python environments no approved skill uses and unused for 30 days (router/skillenv.ts): at start, then daily.

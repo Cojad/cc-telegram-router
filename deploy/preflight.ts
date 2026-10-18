@@ -11,7 +11,7 @@ import { join } from 'path'
 /** The Claude Code version the router is developed and tested with (README Requirements). */
 export const TESTED_CLAUDE = '2.1.302'
 
-/** package.json's engines.bun, e.g. ">=1.4.2". */
+/** package.json's engines.bun, e.g. ">=1.4.3". */
 export function bunRange(repo: string): string | null {
   const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'))
   return typeof pkg.engines?.bun === 'string' ? pkg.engines.bun : null

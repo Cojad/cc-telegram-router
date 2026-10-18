@@ -1,10 +1,10 @@
 {
   "name": "claude-channel-telegram",
-  "version": "2.30.0",
+  "version": "2.31.0",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
-    "bun": ">=1.4.2"
+    "bun": ">=1.4.3"
   },
   "scripts": {
     "start": "bun server.js"

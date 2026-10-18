@@ -498,8 +498,9 @@ export type ClassifyStore = ReturnType<typeof openClassifyStore>
 /** Its own handle on router.db (WAL), so the tables stay in this module. */
 export function openClassifyStore(path: string) {
   const db = new Database(path, { create: true })
-  db.exec('PRAGMA journal_mode = WAL')
+  // busy_timeout first: switching a new file to WAL needs every other reader gone (a cli or test reading it right then)
   db.exec('PRAGMA busy_timeout = 5000')
+  db.exec('PRAGMA journal_mode = WAL')
   db.exec(`
     CREATE TABLE IF NOT EXISTS classify_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, conv TEXT NOT NULL, role TEXT NOT NULL, tool TEXT NOT NULL, summary TEXT NOT NULL, sent TEXT NOT NULL, masked INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS classify_results (

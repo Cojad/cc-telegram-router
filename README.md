@@ -54,7 +54,7 @@
 | 項目 | 需求 | 用途 |
 |---|---|---|
 | 作業系統 | Linux, systemd user service (`systemctl --user`) | router 以 user unit 常駐 (`deploy/cc-telegram-router.service`) |
-| [Bun](https://bun.sh) | 1.4.2 以上 (`package.json` 的 `engines`; 之後的排程要用 `Bun.cron.parse`); 開發與測試用 1.4.2 | 編譯 router 與 hook (`bun build --compile`), 打包 plugin, `bun:sqlite`, 測試 |
+| [Bun](https://bun.sh) | 1.4.3 以上 (`package.json` 的 `engines`; 之後的排程要用 `Bun.cron.parse`; 1.4.2 的 `Bun.spawnSync` 可能空轉卡死, 見 CHANGELOG 2.31.0); 開發與測試用 1.4.3 | 編譯 router 與 hook (`bun build --compile`), 打包 plugin, `bun:sqlite`, 測試 |
 | Claude Code CLI | 支援 `--bg`, `--resume`, `attach`, `--channels` 的版本; 開發與測試用 2.1.302 | worker (`claude --bg`), 套件審核與 event_raw 的 `claude -p`, `cc /` 代打 |
 | 官方 telegram plugin | 先裝好 `telegram@claude-plugins-official` (0.0.7) | `deploy/install.sh plugin` 把 plugin v2 放進它的快取路徑 (第一次會備份原內容) |
 | bubblewrap (`bwrap`) 與 socat | 發行版套件: `sudo apt-get install bubblewrap socat` (或 dnf) | owner 以外的角色範本都開啟 Claude Code 的 sandbox, Linux 上要靠這兩個 ([官方文件](https://code.claude.com/docs/en/sandboxing)); 特權技能的專屬沙箱 (`bwrap`). Ubuntu 24.04 以後預設的 AppArmor 會阻止 bubblewrap 建立 user namespace (`sysctl kernel.apparmor_restrict_unprivileged_userns` 是 1 就會擋), 要照官方文件加 AppArmor profile. Claude Code 的 `/sandbox` 面板 Dependencies 分頁會列出缺少的 ripgrep, bubblewrap, socat, seccomp filter |
@@ -84,7 +84,7 @@
 
 安裝位置可自選. 以下 `<home>` 是 router 的家目錄 (每個對話一個資料夾, 例如 `~/cc`; 不能是使用者的家目錄 `~` 本身), 狀態目錄 (執行檔, config.json, access.json, router.db) 用 `<home>/.router`.
 
-1. 安裝 bun 1.4.2 以上與 Claude Code. bun 的官方安裝程式 (`curl -fsSL https://bun.sh/install | bash`) 放在 `~/.bun/bin` 並把它加進 shell 的 PATH, 開新的 shell 後用 `bun --version` 確認; 已經有 bun 時 `bun upgrade` 更新. Claude Code 裝好後 `claude --version` 確認 (開發與測試用的版本見上方 Requirements).
+1. 安裝 bun 1.4.3 以上與 Claude Code. bun 的官方安裝程式 (`curl -fsSL https://bun.sh/install | bash`) 放在 `~/.bun/bin` 並把它加進 shell 的 PATH, 開新的 shell 後用 `bun --version` 確認; 已經有 bun 時 `bun upgrade` 更新. Claude Code 裝好後 `claude --version` 確認 (開發與測試用的版本見上方 Requirements).
 2. 取得本專案並安裝相依套件 (照 `bun.lock` 鎖定的版本):
 
    ```bash

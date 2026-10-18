@@ -15,10 +15,10 @@ test('root package.json: no v1 bin or start pointing at a missing server.ts; tes
   expect(existsSync(join(ROOT, 'server.ts'))).toBe(false)
 })
 
-test('Bun 1.4.2 or later: README says so, both package files declare engines.bun >=1.4.2', () => {
-  expect(json('package.json').engines).toEqual({ bun: '>=1.4.2' })
-  expect(json('plugin/package.json').engines).toEqual({ bun: '>=1.4.2' })
-  expect(read('README.md')).toMatch(/\n\| \[Bun\]\(https:\/\/bun\.sh\) \| 1\.4\.2 以上/)
+test('Bun 1.4.3 or later (1.4.2\'s spawnSync can spin forever, oven-sh/bun#44581): README says so, both package files declare engines.bun >=1.4.3', () => {
+  expect(json('package.json').engines).toEqual({ bun: '>=1.4.3' })
+  expect(json('plugin/package.json').engines).toEqual({ bun: '>=1.4.3' })
+  expect(read('README.md')).toMatch(/\n\| \[Bun\]\(https:\/\/bun\.sh\) \| 1\.4\.3 以上/)
 })
 
 test('plugin/package.json has the same version as the repo, the latest release in CHANGELOG', () => {

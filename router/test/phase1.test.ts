@@ -8,8 +8,10 @@ import { join } from 'path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { z } from 'zod'
-import type { Config } from '../config'
+import { Database } from 'bun:sqlite'
+import { loadConfig, BACKLOG_SWEEP_FIRST_MS, VAULT_TICK_MS, type Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
+import { openClassifyStore } from '../classifier'
 import { convKey, convType, ensureConversation, findByFolder } from '../conversations'
 import { renderSettings } from '../settings'
 import { makeAssertAllowedChat, makeAssertSendable } from '../guard'
@@ -41,6 +43,35 @@ afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 // --- 05 目錄: conversation folders -------------------------------------------
+
+// A reader on router.db just as it is created (a cli, a test polling it) once made the router die at start
+// with SQLITE_BUSY: switching a new file to WAL needs the other readers gone, and busy_timeout came after it.
+test('router.db opens while another process is reading the new file: both openers wait for it instead of failing', async () => {
+  for (const open of [(p: string) => openRouterDb(p), (p: string) => openClassifyStore(p)]) {
+    const path = join(dir, `busy-${Math.random().toString(36).slice(2)}.db`)
+    const holder = Bun.spawn(['bun', '-e', `const { Database } = require('bun:sqlite'); const d = new Database(${JSON.stringify(path)}, { create: true }); d.exec('BEGIN'); d.query('SELECT * FROM sqlite_master').all(); console.log('held'); setTimeout(() => { d.exec('COMMIT'); d.close() }, 300)`], { stdout: 'pipe' })
+    await holder.stdout.getReader().read() // its read lock is held
+    open(path).close() // threw SQLITE_BUSY before
+    await holder.exited
+    const check = new Database(path, { readonly: true })
+    expect(check.query('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'wal' })
+    check.close()
+  }
+}, 15000)
+
+// backlogSweepFirstMs and vaultTickMs are for tests only (docs/operations.md): without them the router keeps its own timing
+test('router timers: the first backlog sweep 15 s after start, secret deletions checked every 10 s, unless config shortens them (tests only)', () => {
+  expect([BACKLOG_SWEEP_FIRST_MS, VAULT_TICK_MS]).toEqual([15_000, 10_000])
+  const p = join(dir, 'timers.json')
+  const timers = (extra: object) => { writeFileSync(p, JSON.stringify({ bots: [{ name: 'cc', token: '1:x' }], ...extra })); const c = loadConfig(p); return [c.backlogSweepFirstMs, c.vaultTickMs] }
+  expect(timers({})).toEqual([undefined, undefined])
+  expect(timers({ backlogSweepFirstMs: 1000, vaultTickMs: 500 })).toEqual([1000, 500])
+  expect(timers({ backlogSweepFirstMs: 0, vaultTickMs: '500' })).toEqual([undefined, undefined])
+  // main.ts falls back to the defaults
+  const main = readFileSync(join(import.meta.dir, '..', 'main.ts'), 'utf8')
+  expect(main).toContain('setTimeout(sweepBacklog, cfg.backlogSweepFirstMs ?? BACKLOG_SWEEP_FIRST_MS)')
+  expect(main).toContain('setInterval(vaultTick, cfg.vaultTickMs ?? VAULT_TICK_MS)')
+})
 
 test('conversation keys: dm-<id>, group-<id without minus>, prefix for non-primary bots', () => {
   expect(convType('137438526', 'private')).toBe('dm')

@@ -22,6 +22,10 @@ export type BotConfig = {
 }
 
 export const OFFICIAL_API_ROOT = 'https://api.telegram.org'
+/** The router's first backlog sweep after start (already-running workers get this long to reconnect). */
+export const BACKLOG_SWEEP_FIRST_MS = 15_000
+/** How often the router checks for secret deletions that are due. */
+export const VAULT_TICK_MS = 10_000
 
 /** A token for cross-bot skills (router/credentials.ts); never shown to workers. */
 export type Credential = {
@@ -99,6 +103,10 @@ export type Config = {
   reactFlushMs?: number
   /** The health endpoint for outside monitors (router/health.ts): loopback only; off when missing or wrong. */
   health?: HealthConfig
+  /** How long after start the router first sweeps the backlog (default BACKLOG_SWEEP_FIRST_MS); only tests shorten it. */
+  backlogSweepFirstMs?: number
+  /** How often due secret deletions are checked (default VAULT_TICK_MS); only tests shorten it. */
+  vaultTickMs?: number
   /** Optional settings that were wrong and so turned off (logged at start): the router still runs. */
   warnings?: string[]
 }
@@ -235,6 +243,8 @@ export function loadConfig(path: string): Config {
     receiveReact: parseReactMode(raw.receiveReact, warnings),
     reactFlushMs: typeof raw.reactFlushMs === 'number' && raw.reactFlushMs > 0 ? raw.reactFlushMs : undefined,
     health: parseHealth(raw.health, warnings),
+    backlogSweepFirstMs: typeof raw.backlogSweepFirstMs === 'number' && raw.backlogSweepFirstMs > 0 ? raw.backlogSweepFirstMs : undefined,
+    vaultTickMs: typeof raw.vaultTickMs === 'number' && raw.vaultTickMs > 0 ? raw.vaultTickMs : undefined,
     warnings,
   }
 }

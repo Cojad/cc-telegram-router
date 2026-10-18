@@ -698,7 +698,8 @@ test('progress: a turn answering a request replies to the message that asked, an
 test('relay: a view still loading (no key hint yet) is closed too; a busy worker gets no keys at all', async () => {
   const loading = 'Usage\n  Loading usage…\n' + '\n'.repeat(10)
   const { exec, seen } = fakeTmux({ '/cost': loading })
-  const out = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 30 }, 'w', { cmd: '/cost', args: '', raw: false })
+  // the key hint never shows: it gives up after menuWaitMs (10 s unless a test shortens it) and closes the view all the same
+  const out = await relay({ exec, stateDir: dir, claudeBin: 'claude', scriptsDir: '/s', settleMs: 30, menuWaitMs: 1000 }, 'w', { cmd: '/cost', args: '', raw: false })
   expect(out.kind).toBe('text')
   expect(seen.filter(s => s.args[1] === 'send-keys').map(s => s.args[4])).toEqual(['/cost', 'Escape'])
   const busy = '● Working…\n✻ Thinking… (esc to interrupt)\n' + BOX

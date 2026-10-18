@@ -159,6 +159,14 @@ function ownerUserns(netFd: number): number {
   return libc ? libc.ioctl(netFd, NS_GET_USERNS) : -1
 }
 
+/** Whether the process's user namespace has its uid map written. bwrap (unprivileged) reports child-pid
+ *  before the sandbox writes its own map; nsenter into an unmapped namespace leaves nft and slirp4netns
+ *  without capabilities (EPERM). The owner's map is written before any nested namespace exists, so a
+ *  map seen here means the owner's is in place. */
+export function uidMapped(pid: number): boolean {
+  try { return readFileSync(`/proc/${pid}/uid_map`, 'utf8').trim() !== '' } catch { return false }
+}
+
 /** timedOut, outputOver: the router killed the run (its time, or more output than outputMax). */
 export type NetRun = { code: number; out: string; timedOut?: boolean; outputOver?: boolean } | { error: string }
 
@@ -228,6 +236,8 @@ export async function runIsolated(o: IsolatedRun): Promise<NetRun> {
     try { netFd = openSync(`/proc/${pid}/ns/net`, 'r') } catch (e) { return (await ended()) ?? await fail(`讀不到沙箱的網路空間: ${e}`) }
     userFd = ownerUserns(netFd)
     if (userFd < 0) return await fail('找不到擁有沙箱網路空間的 user namespace (ioctl NS_GET_USERNS)')
+    for (let t = 0; t < 1000 && !uidMapped(pid) && p.exitCode === null; t++) await Bun.sleep(5)
+    if (!uidMapped(pid)) return (await ended()) ?? await fail('沙箱的 user namespace 沒有寫好 uid 對應')
     const fdPath = (fd: number) => `/proc/${process.pid}/fd/${fd}`
     const nft = Bun.spawnSync([which('nsenter'), `--user=${fdPath(userFd)}`, `--net=${fdPath(netFd)}`, '--preserve-credentials', which('nft'), '-f', rules], { stderr: 'pipe' })
     if (nft.exitCode !== 0) return (await ended()) ?? await fail(`套不上網路規則 (nft): ${nft.stderr.toString().trim().slice(-300)}`)
