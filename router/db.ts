@@ -63,8 +63,18 @@ export type BotSetup = {
   authuse_topic: number | null
   /** Topic for secret detections, raw requests and handles (🔑 密鑰偵測, plan 10e). */
   secret_topic: number | null
+  /** Topic for DM pairing requests with approve/deny buttons (🤝 配對申請, router/pairing.ts). */
+  pairing_topic: number | null
   /** The owner chose DM instead of a group. */
   group_skipped: number
+}
+
+/** A DM pairing request (router/pairing.ts): a code gate() issued, posted
+ *  with approve/deny buttons; the record of how it was settled. */
+export type PairingRequest = {
+  id: number; bot: string; code: string; uid: string; chat_id: string; name: string; username: string | null; first_text: string | null
+  created_at: string; expires_at: number; status: 'pending' | 'approved' | 'denied' | 'expired'
+  decided_by: string | null; decided_via: 'button' | 'command' | 'expiry' | null; decided_at: string | null
 }
 
 /** Messages that carry approve/deny buttons, so every copy shows the outcome. */
@@ -262,6 +272,14 @@ export interface RouterDb {
   /** Create the row if missing, then set the given fields. */
   updateBotSetup(bot: string, fields: Partial<Omit<BotSetup, 'bot'>>): BotSetup
   addApprovalMsg(m: ApprovalMsg): void
+  addPairingRequest(r: Pick<PairingRequest, 'bot' | 'code' | 'uid' | 'chat_id' | 'name' | 'username' | 'first_text' | 'expires_at'>): number
+  getPairingRequest(id: number): PairingRequest | null
+  /** The newest request for a code (codes are random, a later one may repeat an old). */
+  pairingRequestByCode(code: string): PairingRequest | null
+  /** Settle a pending request; false when it was no longer pending (another path got there first). */
+  settlePairingRequest(id: number, status: 'approved' | 'denied' | 'expired', by: string | null, via: 'button' | 'command' | 'expiry'): boolean
+  /** Pending requests whose code expired before now (ms). */
+  expiredPairingRequests(now: number): PairingRequest[]
   approvalMsgs(kind: string, ref: number): ApprovalMsg[]
   getPkgVerdict(eco: string, name: string): PkgVerdict | null
   setPkgVerdict(v: Omit<PkgVerdict, 'at'>): void
@@ -439,6 +457,12 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
       role TEXT NOT NULL, by TEXT NOT NULL, until INTEGER, at TEXT NOT NULL, PRIMARY KEY (kind, conv, agent)
     );
     CREATE TABLE IF NOT EXISTS bot_messages (bot TEXT NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, ts TEXT NOT NULL, PRIMARY KEY (bot, chat_id, message_id));
+    CREATE TABLE IF NOT EXISTS pairing_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, bot TEXT NOT NULL, code TEXT NOT NULL, uid TEXT NOT NULL, chat_id TEXT NOT NULL,
+      name TEXT NOT NULL, username TEXT, first_text TEXT, created_at TEXT NOT NULL, expires_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending', decided_by TEXT, decided_via TEXT, decided_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS pairing_requests_code ON pairing_requests (code);
   `)
   // Columns added after Phase 1.
   const cols = new Set((db.query('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name))
@@ -450,6 +474,7 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
   if (!setupCols.has('elevlog_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN elevlog_topic INTEGER')
   if (!setupCols.has('authuse_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN authuse_topic INTEGER')
   if (!setupCols.has('secret_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN secret_topic INTEGER')
+  if (!setupCols.has('pairing_topic')) db.exec('ALTER TABLE bot_setup ADD COLUMN pairing_topic INTEGER')
   // which Telegram bot the setup belongs to (setup.ts adoptBotSetup): a name reused for another bot starts over
   if (!setupCols.has('bot_id')) db.exec('ALTER TABLE bot_setup ADD COLUMN bot_id TEXT')
   // custom-source packages an approval lets through once (pkgreview.ts): no override, used up by one install
@@ -716,15 +741,21 @@ export function openRouterDb(path: string, opts: { owners?: readonly string[] } 
       ? db.prepare('SELECT ts, conv, kind, text, ref FROM elev_log WHERE conv = ? ORDER BY id DESC LIMIT ?').all(conv, limit)
       : db.prepare('SELECT ts, conv, kind, text, ref FROM elev_log ORDER BY id DESC LIMIT ?').all(limit)) as any,
     bumpContext: bot => { db.prepare('UPDATE conversations SET ctx_v = ctx_v + 1 WHERE bot = ?').run(bot) },
-    getBotSetup: bot => (db.prepare('SELECT bot, bot_id, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, secret_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup | null) ?? null,
+    getBotSetup: bot => (db.prepare('SELECT bot, bot_id, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, secret_topic, pairing_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup | null) ?? null,
     updateBotSetup(bot, fields) {
       db.prepare('INSERT OR IGNORE INTO bot_setup (bot, updated_at) VALUES (?, ?)').run(bot, now())
-      const keys = Object.keys(fields).filter(k => ['bot_id', 'persona_done', 'persona', 'approvals_chat', 'approvals_topic', 'notices_topic', 'elevlog_topic', 'authuse_topic', 'secret_topic', 'group_skipped'].includes(k))
+      const keys = Object.keys(fields).filter(k => ['bot_id', 'persona_done', 'persona', 'approvals_chat', 'approvals_topic', 'notices_topic', 'elevlog_topic', 'authuse_topic', 'secret_topic', 'pairing_topic', 'group_skipped'].includes(k))
       if (keys.length) db.prepare(`UPDATE bot_setup SET ${keys.map(k => `${k} = ?`).join(', ')}, updated_at = ? WHERE bot = ?`).run(...keys.map(k => ((fields as any)[k] ?? null) as string | number | null), now(), bot)
-      return db.prepare('SELECT bot, bot_id, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, secret_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup
+      return db.prepare('SELECT bot, bot_id, persona_done, persona, approvals_chat, approvals_topic, notices_topic, elevlog_topic, authuse_topic, secret_topic, pairing_topic, group_skipped FROM bot_setup WHERE bot = ?').get(bot) as BotSetup
     },
     addApprovalMsg: m => { db.prepare('INSERT INTO approval_msgs (kind, ref, bot, chat_id, message_id, text) VALUES (?, ?, ?, ?, ?, ?)').run(m.kind, m.ref, m.bot, m.chat_id, m.message_id, m.text) },
     approvalMsgs: (kind, ref) => db.prepare('SELECT * FROM approval_msgs WHERE kind = ? AND ref = ?').all(kind, ref) as ApprovalMsg[],
+    addPairingRequest: r => Number(db.prepare('INSERT INTO pairing_requests (bot, code, uid, chat_id, name, username, first_text, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(r.bot, r.code, r.uid, r.chat_id, r.name, r.username, r.first_text, now(), r.expires_at).lastInsertRowid),
+    getPairingRequest: id => (db.prepare('SELECT * FROM pairing_requests WHERE id = ?').get(id) as PairingRequest | null) ?? null,
+    pairingRequestByCode: code => (db.prepare('SELECT * FROM pairing_requests WHERE code = ? ORDER BY id DESC LIMIT 1').get(code) as PairingRequest | null) ?? null,
+    settlePairingRequest: (id, status, by, via) => db.prepare("UPDATE pairing_requests SET status = ?, decided_by = ?, decided_via = ?, decided_at = ? WHERE id = ? AND status = 'pending'").run(status, by, via, now(), id).changes > 0,
+    expiredPairingRequests: t => db.prepare("SELECT * FROM pairing_requests WHERE status = 'pending' AND expires_at < ? ORDER BY id").all(t) as PairingRequest[],
     getPkgVerdict: (eco, name) => (db.prepare('SELECT * FROM pkg_verdicts WHERE eco = ? AND name = ?').get(eco, name) as PkgVerdict | null) ?? null,
     setPkgVerdict: v => { db.prepare('INSERT OR REPLACE INTO pkg_verdicts (eco, name, risk, reason, at) VALUES (?, ?, ?, ?, ?)').run(v.eco, v.name, v.risk, v.reason, now()) },
     addPkgRequest: r => Number(db.prepare('INSERT INTO pkg_requests (conv, pkgs, reason, created_at) VALUES (?, ?, ?, ?)').run(r.conv, r.pkgs, r.reason, now()).lastInsertRowid),

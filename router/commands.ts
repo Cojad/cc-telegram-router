@@ -6,6 +6,8 @@
 import type { Config } from './config'
 import type { Conversation, RouterDb, OverrideKind, UserOverrideKind } from './db'
 import { allowOwners, type Access } from './telegram/policy'
+import { settlePairing } from './pairing'
+import type { ApprovalDeps } from './approvals'
 import type { MessageRecord } from './telegram/store'
 import { gmt8, maskTokens } from './context'
 import { describeCreds, placementText, defaultHeadersText, parseHttpScope, parseDefaultHeader, refuseDefaultHeader, setHeader, BOT_TOKEN_FULL, httpExample, credSummary, STAGE_TTL_MS, type HttpScope, type CredStaging } from './credentials'
@@ -44,6 +46,10 @@ export interface CommandDeps {
   db: RouterDb
   loadAccess(): Access
   saveAccess(a: Access): void
+  /** Where /router access pair|deny writes its outcome onto the pairing request's messages (router/pairing.ts); none in tests that do not post them. */
+  pairingApprovals?: ApprovalDeps
+  /** The router's journal (pairing settlements). */
+  journal?(msg: string): void
   bots: {
     /** id, username, first_name are null until the bot's getMe is in (shown as 讀取中). */
     list(): Promise<Array<{ name: string; id: number | null; username: string | null; first_name: string | null; poll?: string }>>
@@ -703,14 +709,15 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return done([`dmPolicy: ${a.dmPolicy}`, `allowFrom: ${a.allowFrom.map(u => personLabel(db, u) === u ? u : `${personLabel(db, u)} ${u}`).join(', ') || '(空)'}`, `groups: ${Object.entries(a.groups).map(([g, p]) => `${g}${p.requireMention ? '' : ' (不需 mention)'}`).join(', ') || '(空)'}`, `pending: ${pend.join(', ') || '(無)'}`].join('\n'), { private: true })
       }
       if (op === 'pair' || op === 'deny') {
+        // the same settlement as the request's ✅ 同意 / ❌ 拒絕 buttons: the first one wins (router/pairing.ts)
         const code = args[2]
-        const p = code ? a.pending[code] : undefined
-        if (!code || !p || p.expiresAt < Date.now()) return done(`找不到有效的配對碼 ${code ?? ''}`)
-        delete a.pending[code]
-        if (op === 'pair' && !a.allowFrom.includes(p.senderId)) a.allowFrom.push(p.senderId)
-        deps.saveAccess(a)
-        if (op === 'pair') await deps.sendTo(input.bot, p.chatId, '配對完成, 可以開始對話了.').catch(() => {})
-        return done(op === 'pair' ? `已核可 ${p.senderId}` : `已拒絕配對碼 ${code}`)
+        if (!code) return done('找不到有效的配對碼 ')
+        const r = await settlePairing({
+          db, loadAccess: () => deps.loadAccess(), saveAccess: a2 => deps.saveAccess(a2), sendTo: (b, c, t) => deps.sendTo(b, c, t),
+          ...(deps.pairingApprovals ? { approvals: deps.pairingApprovals } : {}),
+          label: uid => personLabel(db, uid), log: deps.journal,
+        }, { bot: input.bot, code, verdict: op === 'pair' ? 'approve' : 'deny', by: input.senderId, via: 'command' })
+        return done(r.text)
       }
       if (op === 'allow' || op === 'remove') {
         const uid = args[2]

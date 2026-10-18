@@ -164,6 +164,9 @@ export interface InboundDeps {
   store: Pick<Store, 'record' | 'lookup'>
   /** Where a dropped duplicate and a store or delivery failure are noted (default stderr). */
   log?: (msg: string) => void
+  /** A new pairing code was given (not a reminder of one): the router posts
+   *  the request with approve/deny buttons (router/pairing.ts). */
+  onPairCode?: (p: { code: string; uid: string; chatId: string; name: string; username?: string; text: string }) => void
 }
 
 export function createHandleInbound(deps: InboundDeps) {
@@ -237,6 +240,15 @@ export function createHandleInbound(deps: InboundDeps) {
       await ctx.reply(
         `${result.isResend ? '配對仍在等待' : '需要配對'}: 請 bot 的 owner 執行\n\n/router access pair ${result.code}`,
       )
+      if (!result.isResend && ctx.from && ctx.chat) {
+        const f = ctx.from
+        const name = [f.first_name, f.last_name].filter(Boolean).join(' ') || (f.username ? `@${f.username}` : String(f.id))
+        try {
+          deps.onPairCode?.({ code: result.code, uid: String(f.id), chatId: String(ctx.chat.id), name, ...(f.username ? { username: f.username } : {}), text })
+        } catch (err) {
+          log(`telegram channel: pairing request for ${f.id} failed: ${err}`)
+        }
+      }
       return
     }
 

@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+## [2.21.0] - 2026-10-18
+
+### Added
+
+- 私訊配對改用按鈕核可 (見 [docs/permissions.md](docs/permissions.md#私訊配對)): pairing 模式下陌生人拿到配對碼時, 申請貼到審核群組新的第六個話題「🤝 配對申請」(沒有審核群組就私訊 owner; 群組還沒有這個話題時先放重要通知), 內容是對方名稱, @username, uid, 第一則訊息的開頭 (當成不可信資料: 一行, 最多 200 字), 配對碼與到期時間 (GMT+8), 附「✅ 同意」「❌ 拒絕」. 只有 owner 與 admin 按得動; 按下等同 `/router access pair` / `deny` (指令照舊), 兩條路共用同一段結算, 先到先贏, 後到的回已處理. 一小時內沒人處理就標為過期 (每分鐘檢查), 按鈕拿掉. 每次同意, 拒絕, 過期都寫回申請訊息, 記在 router.db 新表 `pairing_requests` 與 `router_log` (`router:pairing`), router log 也寫一行.
+- 審核群組的話題: `/router setup group` 建六個話題 (已設定的群組再下一次補上缺的), router 啟動時替缺「🔑 密鑰偵測」或「🤝 配對申請」的群組補建. `bot_setup` 新增 `pairing_topic` 欄位 (只新增, 舊資料庫啟動時自動補上).
+- 測試: 新增 `router/test/pairing.test.ts` (含上一版結構且有資料的 router.db 升級) 與 `router/test/e2e-pairing.test.ts` (用上一版的 router.db 啟動真的 router, 走完發碼, 申請, 按鈕與指令); `e2e-setup`, `e2e-rawvault`, `rawvault` 跟著六個話題調整.
+
 ## [2.20.0] - 2026-10-18
 
 ### Added

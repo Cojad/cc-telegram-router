@@ -50,7 +50,7 @@ export function initBotSetups(db: RouterDb, bots: Array<{ name: string; id: stri
 
 /** A bot under this name is another Telegram bot: no persona, no approvals place. */
 function resetBotSetup(db: RouterDb, name: string, botId: string): void {
-  db.updateBotSetup(name, { bot_id: botId, persona_done: 0, persona: null, approvals_chat: null, approvals_topic: null, notices_topic: null, elevlog_topic: null, authuse_topic: null, secret_topic: null, group_skipped: 0 })
+  db.updateBotSetup(name, { bot_id: botId, persona_done: 0, persona: null, approvals_chat: null, approvals_topic: null, notices_topic: null, elevlog_topic: null, authuse_topic: null, secret_topic: null, pairing_topic: null, group_skipped: 0 })
 }
 
 /** What the owner is told when the start found another bot under a name. */
@@ -97,7 +97,7 @@ export const GROUP_GUIDE = [
   '1. 建立一個新群組, 在群組設定裡打開「話題」(Topics)',
   '2. 把我加進群組並設為管理員, 權限勾選「管理話題」',
   '3. 在群組裡傳 /router setup group',
-  '我會建立「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」「🧾 執行授權」「🔑 密鑰偵測」五個話題.',
+  '我會建立「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」「🧾 執行授權」「🔑 密鑰偵測」「🤝 配對申請」六個話題.',
   '不想另開群組也可以略過, 之後這些訊息都直接私訊給你 (隨時可以再用 /router setup group 設定).',
 ].join('\n')
 
@@ -127,7 +127,7 @@ export function addedSetupText(username: string, s: BotSetup | null): string {
 
 export function describeSetup(s: BotSetup | null, ownerDm: string | undefined): string {
   const place = s?.approvals_chat
-    ? `群組 ${s.approvals_chat} (重要通知話題 ${s.notices_topic ?? '?'}, 權限審核話題 ${s.approvals_topic ?? '?'}, 提權紀錄話題 ${s.elevlog_topic ?? '?'}, 執行授權話題 ${s.authuse_topic ?? '?'}, 密鑰偵測話題 ${s.secret_topic ?? '?'})`
+    ? `群組 ${s.approvals_chat} (重要通知話題 ${s.notices_topic ?? '?'}, 權限審核話題 ${s.approvals_topic ?? '?'}, 提權紀錄話題 ${s.elevlog_topic ?? '?'}, 執行授權話題 ${s.authuse_topic ?? '?'}, 密鑰偵測話題 ${s.secret_topic ?? '?'}, 配對申請話題 ${s.pairing_topic ?? '?'})`
     : `owner 私訊 ${ownerDm ?? '(沒有 owner)'}${s?.group_skipped ? ' (已略過群組設定)' : ' (群組尚未設定)'}`
   return [`人設: ${needsPersona(s) ? '尚未完成 (owner 下次私訊時會開始訪談)' : '已完成'}`, `審核與通知: ${place}`].join('\n')
 }

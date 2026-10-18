@@ -145,7 +145,7 @@ bot 可以改走自架的 [telegram-bot-api](https://github.com/tdlib/telegram-b
 
 `<stateDir>/access.json` 決定誰的訊息送進 worker (`router/telegram/policy.ts`), 用 `/router access` 管理 (owner 與 admin). 格式沿用上游: `{ "dmPolicy": ..., "allowFrom": [uid...], "groups": { "<chat_id>": { "requireMention": true, "allowFrom": [] } }, "pending": {} }`.
 
-- `dmPolicy` `pairing` (預設): 不在 `allowFrom` 的人私訊 bot 時拿到一組 6 碼配對碼 (訊息不送進 worker), owner 或 admin 用 `/router access pair <碼>` 核可 (加進 `allowFrom`, bot 回他「配對完成」) 或 `deny <碼>` 拒絕. 碼 1 小時有效; 同時最多 3 個待核可, 超過時新來的人不回應; 同一個人在碼有效期間再私訊只再回一次碼, 之後不回應.
+- `dmPolicy` `pairing` (預設): 不在 `allowFrom` 的人私訊 bot 時拿到一組 6 碼配對碼 (訊息不送進 worker), owner 或 admin 用 `/router access pair <碼>` 核可 (加進 `allowFrom`, bot 回他「配對完成」) 或 `deny <碼>` 拒絕. 碼 1 小時有效; 同時最多 3 個待核可, 超過時新來的人不回應; 同一個人在碼有效期間再私訊只再回一次碼, 之後不回應. 發碼的同時, 申請貼到審核群組的「🤝 配對申請」話題 (沒有審核群組就私訊 owner), owner 或 admin 按「✅ 同意」或「❌ 拒絕」就等於下 pair 或 deny, 見[私訊配對](permissions.md#私訊配對).
 - `allowlist`: 只收 `allowFrom`, 其他人不回應也不發碼; `/router access allow <uid>` 與 `remove <uid>` 管理名單.
 - `disabled`: 私訊與群組都不收.
 - owner 一律在 `allowFrom` 裡: 私訊的 gate 只看 `allowFrom`, 所以每種成為 owner 的方式都會把 uid 加進去: 認領碼 (`/start <碼>`), 設定嚮導, `/router config set owners`, `/router role <uid> owner`, 以及 router 啟動時 (config 的 `owners` 與 `users` 表裡角色是 owner 的人, 例如手改了 config.json; log 寫一行 `access.json: owner ... 加入 allowFrom`). 只會加入, 移除 owner 不會把人移出 `allowFrom`. 測試: `router/test/owners-access.test.ts`, `e2e-wizard.test.ts`, `wizard.test.ts`.
@@ -213,7 +213,7 @@ router 可以裝在任何位置, 程式不假設固定路徑:
 
 - config 沒有 owners 時, router log 會印出一次性認領碼; 私訊 bot `/start <碼>` 的人成為 owner (寫進 config 的 `owners`, 並加進 access.json 的 `allowFrom`).
 - owner 第一次私訊一隻還沒設定的 bot, worker 會先訪談名字, 個性, 說話風格, 用途, 用 `save_bot_profile` 寫進 `bot<id>/CLAUDE.md`.
-- 接著引導設定審核群組: 開了話題的 supergroup, bot 是管理員且能管理話題, 在群組裡下 `/router setup group`. router 建立「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」「🧾 執行授權」「🔑 密鑰偵測」五個話題 (已設定的群組再下一次會補上缺的話題). 可以略過, 之後通知與申請都私訊 owner (提權紀錄只留在 router.db).
+- 接著引導設定審核群組: 開了話題的 supergroup, bot 是管理員且能管理話題, 在群組裡下 `/router setup group`. router 建立「🔔 重要通知」「🔐 權限審核」「📜 提權紀錄」「🧾 執行授權」「🔑 密鑰偵測」「🤝 配對申請」六個話題 (已設定的群組再下一次會補上缺的話題; 缺「🔑 密鑰偵測」或「🤝 配對申請」的群組在 router 啟動時自動補建). 「🤝 配對申請」收私訊配對的申請與 ✅ 同意 / ❌ 拒絕 按鈕, 見[私訊配對](permissions.md#私訊配對). 可以略過, 之後通知與申請都私訊 owner (提權紀錄只留在 router.db).
 - 設定存在 `bot_setup`, 以 bot 名稱為 key, 並記下它屬於哪個 Telegram bot id (`bot_id`, 跟 `bot<id>` 資料夾一樣是 token 冒號前那段; 啟動時補上現有 bot 的 id). `/router bot add` 時, 同名的設定屬於同一個 bot id 才沿用 (舊紀錄沒有 id 時, 看 `bot<id>` 資料夾在不在): 已完成人設的話, 回覆說明沿用既有人設與審核群組 (或照舊私訊 owner, 或提醒審核群組還沒設定), 不會再說要做初次設定. 名稱給了另一隻 bot 就當新 bot, 設定重置, 回覆照新 bot 的初次設定. 啟動時也一樣: `config.json` 裡某個名稱的 token 換成另一隻 bot (紀錄的 `bot_id` 跟 token 的 id 不同), 那個名稱的設定重置, router log 留一行, 並通知 owner 哪個名稱換了 bot (先用那隻 bot 送, 送不到再用其他 bot). 要重做人設用 `/router setup persona`. `/router bot rotate` 只接受同一隻 bot 的新 token (bot 資訊還沒取得時用舊 token 的 id 比對).
 
 ## bot 設定提醒

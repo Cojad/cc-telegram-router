@@ -107,7 +107,9 @@ const worker = (key: string, pid: number, delivered: string[] = []) => {
 
 test('startup: an approvals group from before gets its 🔑 密鑰偵測 topic; a deletion due while the router was down is done', async () => {
   await until(() => calls.some(c => c.method === 'createForumTopic'))
-  expect(calls.filter(c => c.method === 'createForumTopic').map(c => c.body.name)).toEqual(['🔑 密鑰偵測'])
+  // and its 🤝 配對申請 topic (router/pairing.ts)
+  await until(() => calls.filter(c => c.method === 'createForumTopic').length === 2)
+  expect(calls.filter(c => c.method === 'createForumTopic').map(c => c.body.name)).toEqual(['🔑 密鑰偵測', '🤝 配對申請'])
   expect(await until(() => q("SELECT secret_topic FROM bot_setup WHERE bot = 'cc'")[0].secret_topic)).toBe(45)
   await until(() => sentTo(APPROVALS, '密鑰偵測: ').length === 1)
   expect(sentTo(APPROVALS, '密鑰偵測: ')[0]!.body.message_thread_id).toBe(45)

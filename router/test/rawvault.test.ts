@@ -400,9 +400,9 @@ test('docs: docs/secrets.md 「原始事件與密鑰保護」, /telegram:doc, /t
   const sec = secrets.slice(secrets.indexOf('## 原始事件與密鑰保護'))
   for (const s of ['`<已遮蔽 #<event id>.<序號>>`', 'event_raw', 'AES-256-GCM', '綁定 event id', '「🔑 密鑰偵測」', '5 分鐘後刪除', '取消刪除', '發送者, owner, admin', 'claude -p', 'haiku', '出口檢查', '預設 10 分鐘, 最多 60 分鐘, 或永久', 'secret_from_handle', '/secret handles', 'cli event raw', '權限 600', '5 筆舊紀錄', '文字類附件', '收到訊息時就檢查', '`attachment_cache`', '保留 30 天 (以最後使用時間算', '`download_attachment`', '1 MB', '圖片, 二進位檔']) expect(sec).toContain(s)
   expect(readFileSync(join(root, 'docs', 'testing.md'), 'utf8')).toContain('## 10e 原始事件與密鑰保護驗收對照')
-  expect(readFileSync(join(root, 'docs', 'operations.md'), 'utf8')).toContain('「🔑 密鑰偵測」五個話題')
+  expect(readFileSync(join(root, 'docs', 'operations.md'), 'utf8')).toContain('「🔑 密鑰偵測」「🤝 配對申請」六個話題')
   const doc = readFileSync(join(root, 'plugin', 'skills', 'doc', 'SKILL.md'), 'utf8')
-  for (const s of ['## 密鑰與原文 (event_raw)', '文字類附件', '<已遮蔽 #<event id>.<序號>: 種類, 末 4 碼 xxxx>', '取消刪除', 'event_raw', 'secret_from_handle', '/secret handles', 'cli event raw', '五個話題']) expect(doc).toContain(s)
+  for (const s of ['## 密鑰與原文 (event_raw)', '文字類附件', '<已遮蔽 #<event id>.<序號>: 種類, 末 4 碼 xxxx>', '取消刪除', 'event_raw', 'secret_from_handle', '/secret handles', 'cli event raw', '六個話題']) expect(doc).toContain(s)
   expect(readFileSync(join(root, 'plugin', 'skills', 'bot-skill', 'SKILL.md'), 'utf8')).toContain('`secret_from_handle`')
   const { TOOL_DEFINITIONS } = await import('../../shared/tools')
   const tool = (n: string) => TOOL_DEFINITIONS.find(t => t.name === n) as any

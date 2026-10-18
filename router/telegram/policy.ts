@@ -28,7 +28,7 @@ import { flattenRichMessage } from './rich'
 // again; the shape here is still designed to support one.
 export type InboundEntity = { type: string; offset: number; length: number; user?: { is_bot?: boolean; username?: string } }
 export type InboundContext = {
-  from?: { id: number | string; username?: string }
+  from?: { id: number | string; username?: string; first_name?: string; last_name?: string }
   chat?: { id: number | string; type?: string }
   message?: {
     message_id?: number

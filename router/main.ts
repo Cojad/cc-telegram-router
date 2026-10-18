@@ -32,6 +32,7 @@ import { importV1Messages } from './importv1'
 import { refuseUse, refuseOwnBot, credRoleRefusal, botApiCall, httpApiCall, refuseHeaders, refuseKeyParam, parseHttpScope, placementText, defaultHeadersText, setHeader, readJsonFile, jsonFileAnywhere, createCredStaging, BOT_TOKEN_FULL, httpExample, takeB64, shorten, DEFAULT_CRED_ROLES, type HttpScope } from './credentials'
 import { newSecretKey, maskSecretUpdate, openSecret, refuseSecret, secretCred, scrubSecret, servesChat } from './secrets'
 import { createVault, claudeAsk, SECRET_TOPIC, SECRET_TOPIC_INTRO } from './rawvault'
+import { PAIRING_TOPIC, PAIRING_TOPIC_INTRO, postPairingRequest, decidePairButton, expirePairings, type PairingDeps } from './pairing'
 import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
 import { fingerprint, noteStart, STALE_NOTE } from './freshness'
 import { createAuthz } from './authz'
@@ -683,6 +684,14 @@ const approvalDeps: ApprovalDeps = {
   },
 }
 
+// DM pairing requests with buttons in the 🤝 配對申請 topic (router/pairing.ts)
+const pairingDeps: PairingDeps & { approvals: ApprovalDeps } = {
+  db, loadAccess, saveAccess, approvals: approvalDeps,
+  async sendTo(bot, chatId, text) { await bots.get(bot)?.bot.api.sendMessage(chatId, text) },
+  label: uid => personLabel(db, uid),
+  log,
+}
+
 const label = (id: string) => {
   const c = db.listConversations().find(x => x.chat_id === id)
   if (c?.type === 'dm' || (!c && !id.startsWith('-'))) return `${dmLabel(db, id)} (${id})`
@@ -899,15 +908,22 @@ const vault = createVault({
   log,
 })
 
-/** The 🔑 密鑰偵測 topic of a bot's approvals group, created when missing (setup group, startup). */
-async function ensureSecretTopic(bot: string): Promise<void> {
-  const s = db.getBotSetup(bot)
-  const api = bots.get(bot)?.bot.api
-  if (!s?.approvals_chat || s.secret_topic || !api) return
-  const t = (await api.createForumTopic(s.approvals_chat, SECRET_TOPIC)).message_thread_id
-  db.updateBotSetup(bot, { secret_topic: t })
-  await approvalDeps.send(bot, { chat_id: s.approvals_chat, thread_id: t }, SECRET_TOPIC_INTRO, [])
-  log(`${bot}: created topic ${SECRET_TOPIC} in the approvals group`)
+/** Topics added after the first group setups (🔑 密鑰偵測, 🤝 配對申請): created at startup in an approvals group that lacks them. */
+const LATER_TOPICS = [
+  { field: 'secret_topic', name: SECRET_TOPIC, intro: SECRET_TOPIC_INTRO },
+  { field: 'pairing_topic', name: PAIRING_TOPIC, intro: PAIRING_TOPIC_INTRO },
+] as const
+
+async function ensureLaterTopics(bot: string): Promise<void> {
+  for (const t of LATER_TOPICS) {
+    const s = db.getBotSetup(bot)
+    const api = bots.get(bot)?.bot.api
+    if (!s?.approvals_chat || s[t.field] || !api) continue
+    const id = (await api.createForumTopic(s.approvals_chat, t.name)).message_thread_id
+    db.updateBotSetup(bot, { [t.field]: id })
+    await approvalDeps.send(bot, { chat_id: s.approvals_chat, thread_id: id }, t.intro, [])
+    log(`${bot}: created topic ${t.name} in the approvals group`)
+  }
 }
 
 /** Group setup: /router setup group, run in the forum group itself. The reply is HTML (the bot settings notice). */
@@ -922,17 +938,19 @@ async function setupGroup(bot: string, chatId: string): Promise<string> {
   if (!check.ok) return `⛔ ${escHtml(check.reason)}\n\n${botSettingsNotice(meOf.get(bot) ?? h.info)}`
   const s = db.getBotSetup(bot)
   const same = s?.approvals_chat === chatId
-  const reuse = same && !!s.notices_topic && !!s.approvals_topic && !!s.elevlog_topic && !!s.authuse_topic && !!s.secret_topic
+  const reuse = same && !!s.notices_topic && !!s.approvals_topic && !!s.elevlog_topic && !!s.authuse_topic && !!s.secret_topic && !!s.pairing_topic
   const topic = async (have: number | null | undefined, name: string) => (same && have) ? have : (await h.bot.api.createForumTopic(chatId, name)).message_thread_id
   const notices = await topic(s?.notices_topic, '🔔 重要通知')
   const approvals = await topic(s?.approvals_topic, '🔐 權限審核')
   const elevlog = await topic(s?.elevlog_topic, '📜 提權紀錄')
   const authuse = await topic(s?.authuse_topic, '🧾 執行授權')
   const secret = await topic(s?.secret_topic, SECRET_TOPIC)
+  const pairing = await topic(s?.pairing_topic, PAIRING_TOPIC)
   const fresh = (have: number | null | undefined) => !(same && have)
-  db.updateBotSetup(bot, { approvals_chat: chatId, notices_topic: notices, approvals_topic: approvals, elevlog_topic: elevlog, authuse_topic: authuse, secret_topic: secret, group_skipped: 0 })
+  db.updateBotSetup(bot, { approvals_chat: chatId, notices_topic: notices, approvals_topic: approvals, elevlog_topic: elevlog, authuse_topic: authuse, secret_topic: secret, pairing_topic: pairing, group_skipped: 0 })
   if (fresh(s?.authuse_topic)) await approvalDeps.send(bot, { chat_id: chatId, thread_id: authuse }, '執行授權: 每一次動用已核准的權限 (提權的 subagent, 永久允許的動作, 跨對話傳訊, 已核准的套件) 都會記在這裡, 附工具呼叫內容與 🚫 撤銷 按鈕.', [])
   if (fresh(s?.secret_topic)) await approvalDeps.send(bot, { chat_id: chatId, thread_id: secret }, SECRET_TOPIC_INTRO, [])
+  if (fresh(s?.pairing_topic)) await approvalDeps.send(bot, { chat_id: chatId, thread_id: pairing }, PAIRING_TOPIC_INTRO, [])
   if (!reuse) {
     await approvalDeps.send(bot, { chat_id: chatId, thread_id: notices }, '這裡會收到重要通知: 新對話, worker 叫不醒等.', [])
     await approvalDeps.send(bot, { chat_id: chatId, thread_id: approvals }, '這裡會收到權限申請: 跨對話傳訊, 套件安裝, 向 owner 的提權申請. owner 與 admin 可以按允許或拒絕.', [])
@@ -1036,6 +1054,8 @@ const credStaging = createCredStaging({
 })
 
 const commandDeps: CommandDeps = {
+  pairingApprovals: approvalDeps,
+  journal: log,
   cfg, db, loadAccess, saveAccess, writeConfig, startedAt,
   bots: {
     async list() {
@@ -1409,7 +1429,7 @@ function startBot(bc: BotConfig): BotHandle {
     }
     // Buttons: send grants, package reviews, setup. Each settles every copy itself.
     const data = ctx.callbackQuery?.data
-    if (data && ctx.from && /^(grant|pkg|elev|setup|sdel|credow):/.test(data)) {
+    if (data && ctx.from && /^(grant|pkg|elev|setup|sdel|credow|pair):/.test(data)) {
       const uid = String(ctx.from.id)
       let answer = null as string | null
       // the request message that was pressed: the turn this decision starts mirrors its progress there
@@ -1421,6 +1441,7 @@ function startBot(bc: BotConfig): BotHandle {
         else if (data.startsWith('pkg:')) answer = await pkgGate.decide(data, uid)
         else if (data.startsWith('elev:')) answer = await elevation.decide(data, uid)
         else if (data.startsWith('sdel:')) answer = await vault.cancel(data, uid)
+        else if (data.startsWith('pair:')) answer = await decidePairButton(pairingDeps, data, uid)
         else if (data.startsWith('credow:')) {
           // 覆蓋 / 取消 under a /router cred add for a name that exists
           const r = await decideCredOverwrite(data, uid, commandDeps)
@@ -1492,7 +1513,14 @@ function startBot(bc: BotConfig): BotHandle {
   }
   const gate = (ctx: InboundContext) => policyGate(ctx, loadAccess(), h.info?.username ?? '', saveAccess, () => randomBytes(3).toString('hex'))
   const dmCommandGate = (ctx: InboundContext) => policyDmCommandGate(ctx, loadAccess(), saveAccess)
-  const handleInbound = createHandleInbound({ gate, bot, mcp: fakeMcp as never, store: store.forBot(bc.name), log: m => log(`${bc.name}: ${m}`) })
+  const handleInbound = createHandleInbound({
+    gate, bot, mcp: fakeMcp as never, store: store.forBot(bc.name), log: m => log(`${bc.name}: ${m}`),
+    // a new pairing code: the request with ✅ 同意 / ❌ 拒絕 goes to the 🤝 配對申請 topic (router/pairing.ts)
+    onPairCode: p => {
+      const expiresAt = loadAccess().pending[p.code]?.expiresAt ?? Date.now() + 3_600_000
+      void postPairingRequest(pairingDeps, { bot: bc.name, ...p, expiresAt }).catch(e => log(`${bc.name}: pairing request: ${e}`))
+    },
+  })
   registerTransport({ bot, mcp: fakeMcp as never, dmCommandGate, loadAccess, handleInbound, fetchFile: id => fetchBotFile(botFiles(h), id), inboxDir: INBOX })
   bot.on('message_reaction', ctx => onReaction(bc.name, ctx.messageReaction))
   bot.catch(err => log(`${bc.name}: handler error: ${err.error}`))
@@ -1545,7 +1573,9 @@ for (const r of setupResets) {
 
 // 🔑 密鑰偵測 for approvals groups set up before it existed; deletions due
 // while the router was down go now, the rest as they come due.
-for (const bc of cfg.bots) void ensureSecretTopic(bc.name).catch(e => log(`${bc.name}: topic ${SECRET_TOPIC}: ${e}`))
+for (const bc of cfg.bots) void ensureLaterTopics(bc.name).catch(e => log(`${bc.name}: approvals group topics: ${e}`))
+// pairing codes nobody settled: marked expired, their request messages lose the buttons (router/pairing.ts)
+setInterval(() => void expirePairings(pairingDeps).catch(e => log(`pairing expiry: ${e}`)), 60_000).unref()
 let vaultTicking = false
 const vaultTick = () => {
   if (vaultTicking) return
