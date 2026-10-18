@@ -409,7 +409,7 @@ cc-telegram-router cli skill refresh web-instagram
 
 ## 從外部送訊息給 worker
 
-主機終端機, 或同一台機器上的其他 Claude Code session (例如 v1), 要把訊息送進某個對話的 worker 時用 `cli session send`. 它經過 router, 所以 worker 輪替或閒置停掉 (它的 SendMessage 位址跟著消失) 時一樣送得到: router 會叫醒它. managed 模式 (預設) 的 worker 登記在 router 自己的設定目錄, 其他 session 的 ListAgents 看不到它們, 也不能用名稱 SendMessage 給它們, 所以一律用這個指令 (見 [managed-channel](managed-channel.md#其他會改的地方)).
+主機終端機, 或同一台機器上的其他 Claude Code session (例如 v1), 要把訊息送進某個對話的 worker 時用 `cli session send`. 它經過 router, 所以 worker 輪替或閒置停掉 (它的 SendMessage 位址跟著消失) 時一樣送得到: router 會叫醒它. managed 模式 (預設) 的 worker 跟使用者的 session 共用名冊, 正在跑的 worker 用 ListAgents 看得到, 也能用名稱 SendMessage, 但睡著或輪替中的 worker 不在名冊裡, 所以要確定送到就用這個指令 (見 [managed-channel](managed-channel.md#共用-session-名冊)).
 
 ```bash
 cc-telegram-router cli session send <chat_id|對話key> [--bot <名稱>] [--from <發送者>] [--wait <秒>] [<文字> | -]

@@ -6,7 +6,8 @@
 // Managed mode (e2e-managed.test.ts): `daemon run` stays up as the daemon of
 // CLAUDE_CONFIG_DIR (daemon.status.json, daemon/roster.json with the workers
 // --bg starts), `daemon stop` ends it; FAKE_ENV_LOG gets one JSON line per call
-// with the config folders and whether /etc/claude-code had the managed settings.
+// with the config folders, whether /etc/claude-code had the managed settings and
+// what <CLAUDE_CONFIG_DIR>/sessions held (the shared session registry).
 
 import { readFileSync, writeFileSync, appendFileSync, readdirSync, rmSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
@@ -25,7 +26,7 @@ const save = (j: Record<string, Job>) => {
 const alive = (pid: number | null) => { if (!pid) return false; try { process.kill(pid, 0); return true } catch { return false } }
 const args = process.argv.slice(2)
 appendFileSync(STATE + '.log', args.join(' ') + '\n')
-if (process.env.FAKE_ENV_LOG) appendFileSync(process.env.FAKE_ENV_LOG, JSON.stringify({ args, config: process.env.CLAUDE_CONFIG_DIR ?? null, secure: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? null, managed: existsSync('/etc/claude-code/managed-settings.json'), telegram: Object.keys(process.env).filter(k => k.startsWith('TELEGRAM_')) }) + '\n')
+if (process.env.FAKE_ENV_LOG) appendFileSync(process.env.FAKE_ENV_LOG, JSON.stringify({ args, config: process.env.CLAUDE_CONFIG_DIR ?? null, secure: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? null, managed: existsSync('/etc/claude-code/managed-settings.json'), telegram: Object.keys(process.env).filter(k => k.startsWith('TELEGRAM_')), sessions: (() => { try { return readdirSync(join(process.env.CLAUDE_CONFIG_DIR ?? '', 'sessions')) } catch { return [] } })() }) + '\n')
 const jobs = load()
 const CFG = process.env.CLAUDE_CONFIG_DIR
 const statusFile = CFG ? join(CFG, 'daemon.status.json') : ''

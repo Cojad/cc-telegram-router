@@ -21,6 +21,12 @@ function writeJson(p: string, v: unknown, mode = 0o600): void {
   renameSync(`${p}.cctr-new`, p)
 }
 
+/** What bwrap's mounts need (claudecmd.ts bwrapArgs): the managed settings, and both session registry folders (700). */
+export function prepareMounts(p: Pick<ManagedPaths, 'managedDir' | 'managedFile' | 'userSessions' | 'sessionsDir'>): void {
+  writeManagedSettings(p)
+  for (const d of [p.userSessions, p.sessionsDir]) mkdirSync(d, { recursive: true, mode: 0o700 })
+}
+
 /** <stateDir>/managed/managed-settings.json as it should be (rewritten only when different). */
 export function writeManagedSettings(p: Pick<ManagedPaths, 'managedDir' | 'managedFile'>): void {
   mkdirSync(p.managedDir, { recursive: true, mode: 0o755 })

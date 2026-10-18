@@ -15,7 +15,7 @@ import { maskTokens } from './context'
 import { modelWindowNotes, readProjects, trustFix, trustOf, unitPathCheck, unitFile } from './diagnose'
 import { checkMarketplace, checkPluginCache, pluginsRoot } from './pluginguard'
 import { resolveChannel, describeMode, LEGACY_BY_CONFIG, type Channel } from './claudecmd'
-import { checkNamespaces, writeManagedSettings, type NsCheck } from './managed'
+import { checkNamespaces, prepareMounts, type NsCheck } from './managed'
 import { readLocator, locatorPath } from '../shared/locate'
 import { daemonReport, jobsDir, listJobs, readProcs, reportNotices, strayJobs, type JobState, type Proc } from './jobs'
 import { dirname as dirOf } from 'path'
@@ -147,7 +147,7 @@ export async function offlineDoctor(configPath: string, version?: string): Promi
       try { conversations = db.query('SELECT * FROM conversations').all() as Conversation[] } finally { db.close() }
     } catch {}
   }
-  const channel = resolveChannel(cfg, { writeManaged: writeManagedSettings })
+  const channel = resolveChannel(cfg, { prepare: prepareMounts })
   const l = channel.launcher
   let agents: AgentEntry[] | null = null
   try {

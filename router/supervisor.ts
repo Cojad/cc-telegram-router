@@ -80,9 +80,11 @@ export function createSupervisor(deps: SupervisorDeps) {
   const timeout = deps.connectTimeoutMs ?? 90_000
   const locks = new Map<string, Promise<void>>()
 
+  /** The daemon's jobs. Managed mode shares the user's session registry (docs/managed-channel.md), so
+   *  claude agents also lists the user's interactive sessions: those have no job id and are left out. */
   async function listAgents(): Promise<AgentEntry[]> {
     const r = await run([cfg.claudeBin, 'agents', '--json', '--all'], cfg.home)
-    try { return JSON.parse(r.stdout) as AgentEntry[] } catch { return [] }
+    try { return (JSON.parse(r.stdout) as AgentEntry[]).filter(a => typeof a?.id === 'string' && a.id !== '') } catch { return [] }
   }
 
   /** Started, or why not (what claude said). */

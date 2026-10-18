@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.32.1] - 2026-10-18
+
+### Changed
+
+- 共用 session 名冊: managed 模式的 bwrap 多掛一條 `--bind <使用者的設定目錄>/sessions <stateDir>/claude-config/sessions`, worker 與這台機器上使用者自己的 Claude Code session 又用同一份名冊, ListAgents 互相看得到, 也能用名稱互相傳訊 (2.32.0 起兩邊分開, 互相看不到). 兩個資料夾在試跑 bwrap 前建好 (700); config 設 legacy 時不建. router 的 `claude agents` 只取有 job id 的項目, 共用名冊帶進來的使用者 session 不會混進 job 清理, 叫醒與狀態. power 以下的 worker 呼叫 ListAgents 與傳給其他 session 的 SendMessage 照舊被 router 的 hook 擋下 (高風險工具), admin 與 owner 看得到使用者所有的 session. 見 [docs/managed-channel.md](docs/managed-channel.md#共用-session-名冊), 含 `.key` 檔的分析, symlink 與 bind 兩種做法的實測, user 角色的實測.
+- 測試: managed.test (17 項) 加 bwrap 的名冊掛載, 試跑前才準備掛載, listAgents 篩掉沒有 id 的項目; e2e-managed 驗證 namespace 裡 router 的 `sessions/` 就是使用者的, 外面仍是空的; 假 claude 的環境紀錄多記 `sessions/` 的內容.
+
 ## [2.32.0] - 2026-10-18
 
 ### Added

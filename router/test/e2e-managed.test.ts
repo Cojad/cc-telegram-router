@@ -10,7 +10,8 @@
 //     <stateDir>/claude-config, the old job removed with the user's own claude;
 //     the router's daemon runs in the namespace and sees the managed settings
 //   - every claude the router runs goes through bwrap, with the router's config
-//     folder, the user's for the login, and no TELEGRAM_*; the worker resumes
+//     folder, the user's for the login, and no TELEGRAM_*; inside, the router's
+//     sessions/ is the user's (the shared session registry); the worker resumes
 //     the same session with plugin:telegram@cc-telegram-router and the local
 //     marketplace in its settings, and gets the message
 //   - a daemon outside the namespace: stopped, started again in it, the owner told
@@ -65,12 +66,13 @@ function putBwrap(stateDir: string, script: string) {
 }
 putBwrap(state, `#!/bin/bash
 echo "$*" >> '${BWLOG}'
-managed=""
+managed=""; extra=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
     --ro-bind) [ "$3" = /etc/claude-code ] && managed="$2"; shift 3 ;;
-    --bind|--dev-bind) shift 3 ;;
+    --bind) [ "$2" != / ] && extra+=(--bind "$2" "$3"); shift 3 ;;
+    --dev-bind) shift 3 ;;
     --overlay-src|--tmp-overlay|--remount-ro) shift 2 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -80,7 +82,7 @@ for p in /etc/* /etc/.[!.]*; do
   [ -e "$p" ] || [ -L "$p" ] || continue
   if [ -L "$p" ]; then a+=(--symlink "$(readlink "$p")" "$p"); else a+=(--bind "$p" "$p"); fi
 done
-exec bwrap "\${a[@]}" --ro-bind "$managed" /etc/claude-code --remount-ro /etc -- "$@"
+exec bwrap "\${a[@]}" --ro-bind "$managed" /etc/claude-code --remount-ro /etc "\${extra[@]}" -- "$@"
 `)
 
 // --- before: a conversation with its session; the user's config folder with its transcript and a job ---
@@ -99,6 +101,9 @@ const store = (root: string) => join(root, 'projects', folder.replace(/[/.]/g, '
 mkdirSync(join(store(userCfg), SESSION, 'tool-results'), { recursive: true })
 writeFileSync(join(store(userCfg), `${SESSION}.jsonl`), '{"type":"user","message":"before the switch"}\n')
 writeFileSync(join(store(userCfg), SESSION, 'tool-results', 'big.txt'), 'a tool result')
+// one of the user's own sessions in their registry (docs/managed-channel.md 「共用 session 名冊」)
+mkdirSync(join(userCfg, 'sessions'), { recursive: true })
+writeFileSync(join(userCfg, 'sessions', '999999.json'), JSON.stringify({ pid: 999999, name: 'owner-terminal', kind: 'interactive' }))
 mkdirSync(join(userCfg, 'jobs', 'old66666'), { recursive: true })
 writeFileSync(join(userCfg, 'jobs', 'old66666', 'state.json'), JSON.stringify({ name: 'tg-dm-666', cwd: folder, sessionId: SESSION, state: 'done' }))
 
@@ -124,7 +129,7 @@ afterAll(async () => {
 })
 
 const lines = (f: string) => existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').filter(Boolean) : []
-const envCalls = () => lines(ENVLOG).map(l => JSON.parse(l) as { args: string[]; config: string | null; secure: string | null; managed: boolean; telegram: string[] })
+const envCalls = () => lines(ENVLOG).map(l => JSON.parse(l) as { args: string[]; config: string | null; secure: string | null; managed: boolean; telegram: string[]; sessions: string[] })
 const deliveries = () => lines(FAKE + '.deliveries').map(l => JSON.parse(l) as { dir: string; content: string })
 const configDir = join(state, 'claude-config')
 const status = (): { supervisorPid: number } | null => { try { return JSON.parse(readFileSync(join(configDir, 'daemon.status.json'), 'utf8')) } catch { return null } }
@@ -173,7 +178,10 @@ test('a message: the worker resumes the same session in the namespace with the r
   const ours = envCalls().filter(c => c.args[1] !== 'old66666')
   expect(ours.length).toBeGreaterThan(2)
   expect(ours.filter(c => !c.managed || c.config !== configDir)).toEqual([])
-  for (const l of lines(BWLOG)) expect(l).toStartWith(`--bind / / --dev-bind /dev /dev --overlay-src /etc --tmp-overlay /etc --ro-bind ${join(state, 'managed')} /etc/claude-code --remount-ro /etc -- `)
+  for (const l of lines(BWLOG)) expect(l).toStartWith(`--bind / / --dev-bind /dev /dev --overlay-src /etc --tmp-overlay /etc --ro-bind ${join(state, 'managed')} /etc/claude-code --remount-ro /etc --bind ${join(userCfg, 'sessions')} ${join(configDir, 'sessions')} -- `)
+  // the shared session registry: inside the namespace the router's config folder has the user's sessions
+  expect(bg.sessions).toContain('999999.json')
+  expect(existsSync(join(configDir, 'sessions', '999999.json'))).toBe(false) // outside, the router's own folder stays empty
   const settings = JSON.parse(readFileSync(join(state, 'sessions', 'dm-666.json'), 'utf8'))
   expect(settings.enabledPlugins).toEqual({ 'telegram@cc-telegram-router': true })
   expect(settings.extraKnownMarketplaces['cc-telegram-router'].source).toEqual({ source: 'directory', path: join(state, 'marketplace') })
@@ -234,6 +242,7 @@ test('degraded: a bwrap that cannot make the namespace puts the router in legacy
     expect(hello.text).toContain('channel 模式: legacy (降級: bwrap 試跑失敗')
     expect(hello.text).toContain('setting up uid map: Permission denied')
     expect(err2).toContain('channel mode: legacy')
-    expect(existsSync(join(state2, 'claude-config'))).toBe(false)
+    expect(existsSync(join(state2, 'claude-config', 'migrated.json'))).toBe(false)
+    expect(existsSync(join(state2, 'claude-config', 'settings.json'))).toBe(false)
   } finally { r2.kill('SIGTERM'); await r2.exited }
 }, 30000)

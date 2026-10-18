@@ -15,7 +15,8 @@ import { join } from 'path'
 import { createHash } from 'crypto'
 import type { Conversation } from '../db'
 import { bwrapArgs, CHANNELS, claudeJsonOf, decideMode, describeMode, launcherRunner, makeLauncher, managedPaths, managedSettings, MARKETPLACE, pluginSettings, resolveChannel, shellLine } from '../claudecmd'
-import { checkNamespaces, createDaemonKeeper, describeMigration, initConfigDir, migrateCli, migrated, migrateTranscripts, syncBack, writeManagedSettings } from '../managed'
+import { checkNamespaces, createDaemonKeeper, describeMigration, initConfigDir, migrateCli, migrated, migrateTranscripts, prepareMounts, syncBack, writeManagedSettings } from '../managed'
+import { createSupervisor } from '../supervisor'
 import { HOST_TOOLS, hostDir, hostTool, installTools, installed, binDir, type Tool } from '../toolbox'
 import { checkMarketplace, writeFingerprint, MARKETPLACE_FINGERPRINT_FILE } from '../pluginguard'
 import { writeSessionSettings } from '../settings'
@@ -41,13 +42,13 @@ function putBwrap(toolbox: string, content = '#!/bin/sh\nexit 0\n'): string {
 
 // --- the mode ---------------------------------------------------------------
 
-test('bwrap options: the whole host, /etc an overlay of itself, the managed folder at /etc/claude-code, then /etc read-only', () => {
-  expect(bwrapArgs({ managedDir: '/s/managed' })).toEqual(['--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--overlay-src', '/etc', '--tmp-overlay', '/etc', '--ro-bind', '/s/managed', '/etc/claude-code', '--remount-ro', '/etc'])
+test('bwrap options: the whole host, /etc an overlay of itself, the managed folder at /etc/claude-code, then /etc read-only; the user\'s session registry over the router\'s', () => {
+  expect(bwrapArgs({ managedDir: '/s/managed', userSessions: '/h/.claude/sessions', sessionsDir: '/s/claude-config/sessions' })).toEqual(['--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--overlay-src', '/etc', '--tmp-overlay', '/etc', '--ro-bind', '/s/managed', '/etc/claude-code', '--remount-ro', '/etc', '--bind', '/h/.claude/sessions', '/s/claude-config/sessions'])
 })
 
 test('mode: legacy by config, off Linux, without bwrap, with a changed bwrap, when the probe fails; managed when the full mount runs', () => {
   const toolbox = join(dir, 'state', 'toolbox')
-  const paths = { managedDir: join(dir, 'state', 'managed') }
+  const paths = { managedDir: join(dir, 'state', 'managed'), userSessions: join(dir, 'h', 'sessions'), sessionsDir: join(dir, 'state', 'claude-config', 'sessions') }
   const yes = () => ({ ok: true, out: '' })
   expect(decideMode({ setting: 'legacy', toolbox, paths, probe: yes })).toEqual({ mode: 'legacy', reason: 'config 的 channelMode 是 legacy' })
   expect(decideMode({ setting: 'auto', platform: 'darwin', toolbox, paths, probe: yes }).reason).toContain('只能在 Linux')
@@ -64,6 +65,12 @@ test('mode: legacy by config, off Linux, without bwrap, with a changed bwrap, wh
   expect(d.reason).toContain('setting up uid map: Permission denied')
   expect(tried[0]).toEqual([bw, ...bwrapArgs(paths), '--', 'true'])
   expect(decideMode({ setting: 'auto', platform: 'linux', toolbox, paths, probe: yes })).toEqual({ mode: 'managed', bwrap: bw })
+  // prepare runs right before the probe, never when legacy was decided before it
+  const order: string[] = []
+  decideMode({ setting: 'auto', platform: 'linux', toolbox, paths, prepare: () => order.push('prepare'), probe: () => { order.push('probe'); return { ok: true, out: '' } } })
+  decideMode({ setting: 'legacy', toolbox, paths, prepare: () => order.push('legacy prepare') })
+  decideMode({ setting: 'auto', platform: 'darwin', toolbox, paths, prepare: () => order.push('darwin prepare') })
+  expect(order).toEqual(['prepare', 'probe'])
   expect(describeMode({ mode: 'managed' })).toStartWith('managed')
   expect(describeMode({ mode: 'legacy', reason: 'x' })).toContain('降級: x')
 })
@@ -76,15 +83,19 @@ test('config channelMode: auto by default, legacy, anything else auto with a war
   expect(w).toEqual(['channelMode 要是 "auto" 或 "legacy", 收到 "managed"; 用 auto'])
 })
 
-test('resolveChannel: writes the managed settings before the probe, then the launcher of the decided mode', () => {
+test('resolveChannel: the mounts prepared before the probe (managed settings, both session registry folders), then the launcher of the decided mode', () => {
   const stateDir = join(dir, 'state')
   putBwrap(join(stateDir, 'toolbox'))
   let seen = ''
-  const ch = resolveChannel({ stateDir, claudeBin: 'claude' }, { platform: 'linux', env: {}, home: join(dir, 'home'), writeManaged: writeManagedSettings, probe: argv => { seen = readFileSync(join(argv[argv.indexOf('/etc/claude-code') - 1]!, 'managed-settings.json'), 'utf8'); return { ok: true, out: '' } } })
+  const ch = resolveChannel({ stateDir, claudeBin: 'claude' }, { platform: 'linux', env: {}, home: join(dir, 'home'), prepare: prepareMounts, probe: argv => { seen = readFileSync(join(argv[argv.indexOf('/etc/claude-code') - 1]!, 'managed-settings.json'), 'utf8'); return { ok: true, out: '' } } })
   expect(seen).toBe(managedSettings())
+  for (const d of [join(dir, 'home', '.claude', 'sessions'), join(stateDir, 'claude-config', 'sessions')]) expect(statSync(d).mode & 0o777).toBe(0o700)
+  expect(ch.paths.userSessions).toBe(join(dir, 'home', '.claude', 'sessions'))
   expect(ch.launcher.mode).toBe('managed')
   expect(ch.launcher.channel).toBe(CHANNELS.managed)
-  expect(resolveChannel({ stateDir, claudeBin: 'claude', channelMode: 'legacy' }, { env: {}, home: join(dir, 'home') }).launcher.channel).toBe('plugin:telegram@claude-plugins-official')
+  const other = join(dir, 'state-legacy')
+  expect(resolveChannel({ stateDir: other, claudeBin: 'claude', channelMode: 'legacy' }, { env: {}, home: join(dir, 'home2'), prepare: prepareMounts }).launcher.channel).toBe('plugin:telegram@claude-plugins-official')
+  expect(existsSync(join(other, 'claude-config'))).toBe(false) // nothing made for a mode that needs none
 })
 
 // --- the launcher -------------------------------------------------------------
@@ -92,8 +103,8 @@ test('resolveChannel: writes the managed settings before the probe, then the lau
 test('launcher: managed wraps claude in bwrap with the router\'s config folder and the user\'s for the login; legacy runs claude as it is; TELEGRAM_* never passed', () => {
   const home = join(dir, 'home')
   const paths = managedPaths('/s', { CLAUDE_CONFIG_DIR: undefined }, home)
-  expect(paths).toEqual({ configDir: '/s/claude-config', managedDir: '/s/managed', managedFile: '/s/managed/managed-settings.json', marketplace: '/s/marketplace', pluginDir: '/s/marketplace/telegram', userConfigDir: join(home, '.claude') })
-  expect(managedPaths('/s', { CLAUDE_CONFIG_DIR: '/c' }, home).userConfigDir).toBe('/c')
+  expect(paths).toEqual({ configDir: '/s/claude-config', managedDir: '/s/managed', managedFile: '/s/managed/managed-settings.json', marketplace: '/s/marketplace', pluginDir: '/s/marketplace/telegram', userConfigDir: join(home, '.claude'), userSessions: join(home, '.claude', 'sessions'), sessionsDir: '/s/claude-config/sessions' })
+  expect(managedPaths('/s', { CLAUDE_CONFIG_DIR: '/c' }, home)).toMatchObject({ userConfigDir: '/c', userSessions: '/c/sessions' })
   const m = makeLauncher({ mode: 'managed', claudeBin: 'claude', paths, bwrap: '/s/toolbox/host/bwrap', home })
   expect(m.argv(['agents', '--json'])).toEqual(['/s/toolbox/host/bwrap', ...bwrapArgs(paths), '--', 'claude', 'agents', '--json'])
   const e = m.env({ PATH: '/bin', TELEGRAM_BOT_TOKEN: 'x', TELEGRAM_STATE_DIR: 'y' })
@@ -408,4 +419,14 @@ test('marketplace check: no record, as deployed, files changed, another folder r
   expect(checkMarketplace(state, '/other')[0]!.kind).toBe('install-path')
   rmSync(plugin, { recursive: true })
   expect(checkMarketplace(state, plugin)[0]!.kind).toBe('missing-folder')
+})
+
+test('listAgents: only the daemon\'s jobs; the user\'s interactive sessions the shared registry adds (no job id) are left out', async () => {
+  const out = JSON.stringify([
+    { id: 'aaaa1111', sessionId: 's1', name: 'tg-dm-1', kind: 'background', pid: 1, status: 'idle' },
+    { sessionId: 's2', name: 'probe-n', kind: 'interactive', pid: 2, status: 'idle' },
+    { id: '', name: 'odd' },
+  ])
+  const sup = createSupervisor({ cfg: { claudeBin: 'claude', home: dir } as any, db: {} as any, run: async () => ({ code: 0, stdout: out, stderr: '' }), isConnected: () => false, waitConnected: async () => false, settingsPath: () => '' })
+  expect((await sup.listAgents()).map(a => a.id)).toEqual(['aaaa1111'])
 })

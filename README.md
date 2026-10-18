@@ -38,7 +38,7 @@
 - **每隻 bot 的資料庫**: 特權動作可以宣告 `store`, user 與 power 對話不用提權就能累積資料 (append 只能新增, 要刪改用 full 且限 owner 與 admin 的動作), 檢查通過才寫回.
 - **特權動作的 bot 憑證**: 動作用 `bots` 拿到另一隻 bot 的 Bot API 網址, token 不進對話, 出現在輸出或檔案就遮蔽並通知 owner.
 - **自己的 plugin, 不怕官方更新**: worker 載入 router 自己商店的 telegram plugin, 在 bwrap 的 mount namespace 裡用 router 專屬的 Claude Code 設定目錄與 daemon, 不用 sudo, 跟這台機器上的其他 session 分開; router 看管 daemon, 不對就自動修復並通知. bwrap 或 user namespace 不能用時降級回官方 plugin 的做法, 照常運作. 見 [專屬設定目錄與 managed channel](docs/managed-channel.md).
-- **從外部送訊息給 worker**: 主機終端機或其他 Claude Code session 用 `cli session send <對話> --from <名稱> <文字>` (或從 stdin) 把訊息送進某個對話的 worker; 經 router 的佇列, worker 睡著就叫醒, router 重啟也不會掉, 收到才印「已送達」. 回覆給 Telegram 或用 SendMessage 回給發送者由 worker 判斷, 見[部署與維運](docs/operations.md#從外部送訊息給-worker). managed 模式的 worker 在 router 自己的設定目錄, 其他 session 的 ListAgents 看不到它們, 要送訊息就用這個指令.
+- **從外部送訊息給 worker**: 主機終端機或其他 Claude Code session 用 `cli session send <對話> --from <名稱> <文字>` (或從 stdin) 把訊息送進某個對話的 worker; 經 router 的佇列, worker 睡著就叫醒, router 重啟也不會掉, 收到才印「已送達」. 回覆給 Telegram 或用 SendMessage 回給發送者由 worker 判斷, 見[部署與維運](docs/operations.md#從外部送訊息給-worker). managed 模式的 worker 跟使用者的 session 共用名冊, 在跑的 worker 用 ListAgents 看得到, 睡著的看不到, 要確定送到就用這個指令.
 - **終端機執行與試跑**: owner 在終端機以某個對話與角色的身分跑特權動作 (`cli skill run`, 可用拋棄式資料庫與本機假 Bot API), 或立刻更新某個技能的憑證 (`cli skill refresh`).
 - **skill_check 與 skill_try**: worker 不用讀 router 原始碼就能寫特權技能; `skill_check` 檢查草稿並列出核准時會看到的內容, user 以上用 `skill_try` 以假憑證與試跑資料庫不經核准跑一次 (白名單沙箱, 外網只開 80, 443, 53, 22).
 - **試跑沙箱的網路隔離**: 試跑連得到外網, 連不到主機本機, 內網, 雲端 metadata 與主機上的 unix socket (例如 docker.sock, 其他 session 的 socket).

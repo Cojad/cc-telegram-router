@@ -37,18 +37,26 @@ export interface ManagedPaths {
   pluginDir: string
   /** The user's own config folder (CLAUDE_CONFIG_DIR of the router's environment, else ~/.claude): login, legacy mode. */
   userConfigDir: string
+  /** The session registry ListAgents and SendMessage by name read: the user's (<userConfigDir>/sessions), bound over the router's
+   *  (<configDir>/sessions) inside bwrap, so workers and the user's own sessions see each other (docs/managed-channel.md 「共用 session 名冊」). */
+  userSessions: string
+  sessionsDir: string
 }
 
 export function managedPaths(stateDir: string, env: Record<string, string | undefined> = process.env, home = homedir()): ManagedPaths {
   const managedDir = join(stateDir, 'managed')
   const marketplace = join(stateDir, 'marketplace')
+  const configDir = join(stateDir, 'claude-config')
+  const userConfigDir = env.CLAUDE_CONFIG_DIR || join(home, '.claude')
   return {
-    configDir: join(stateDir, 'claude-config'),
+    configDir,
     managedDir,
     managedFile: join(managedDir, 'managed-settings.json'),
     marketplace,
     pluginDir: join(marketplace, 'telegram'),
-    userConfigDir: env.CLAUDE_CONFIG_DIR || join(home, '.claude'),
+    userConfigDir,
+    userSessions: join(userConfigDir, 'sessions'),
+    sessionsDir: join(configDir, 'sessions'),
   }
 }
 
@@ -59,9 +67,10 @@ export function managedSettings(): string {
 
 /** bwrap's options: the whole host as it is (--bind / / recursive), /etc an overlay of
  *  itself with the managed folder at /etc/claude-code, then /etc read-only (no
- *  managed-settings.d of a worker's own). No pid or network namespace. */
-export function bwrapArgs(p: Pick<ManagedPaths, 'managedDir'>): string[] {
-  return ['--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--overlay-src', '/etc', '--tmp-overlay', '/etc', '--ro-bind', p.managedDir, '/etc/claude-code', '--remount-ro', '/etc']
+ *  managed-settings.d of a worker's own); the user's session registry over the
+ *  router's (both folders must exist, prepareMounts). No pid or network namespace. */
+export function bwrapArgs(p: Pick<ManagedPaths, 'managedDir' | 'userSessions' | 'sessionsDir'>): string[] {
+  return ['--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--overlay-src', '/etc', '--tmp-overlay', '/etc', '--ro-bind', p.managedDir, '/etc/claude-code', '--remount-ro', '/etc', '--bind', p.userSessions, p.sessionsDir]
 }
 
 export interface ModeDecision { mode: ChannelMode; reason?: string; bwrap?: string }
@@ -72,7 +81,9 @@ export interface DecideDeps {
   setting: ChannelSetting
   platform?: string
   toolbox: string
-  paths: Pick<ManagedPaths, 'managedDir'>
+  paths: Pick<ManagedPaths, 'managedDir' | 'userSessions' | 'sessionsDir'>
+  /** Right before the probe: what the mount needs on disk (router/managed.ts prepareMounts). Not called when legacy is decided earlier. */
+  prepare?: () => void
   /** Runs argv, true when it exits 0 within a few seconds; else what it said. */
   probe?: (argv: string[]) => { ok: boolean; out: string }
 }
@@ -92,6 +103,7 @@ export function decideMode(d: DecideDeps): ModeDecision {
   if (platform !== 'linux') return { mode: 'legacy', reason: `bwrap 只能在 Linux 用 (這台是 ${platform})` }
   const t = hostTool(d.toolbox, 'bwrap')
   if ('why' in t) return { mode: 'legacy', reason: t.why }
+  d.prepare?.()
   const r = (d.probe ?? probeBwrap)([t.path, ...bwrapArgs(d.paths), '--', 'true'])
   if (!r.ok) return { mode: 'legacy', reason: `bwrap 試跑失敗 (user namespace 可能被系統關閉, 例如 Ubuntu 24.04 的 apparmor_restrict_unprivileged_userns=1): ${r.out}` }
   return { mode: 'managed', bwrap: t.path }
@@ -157,12 +169,11 @@ export function shellLine(l: Launcher, args: string[]): string {
 
 export interface Channel { decision: ModeDecision; paths: ManagedPaths; launcher: Launcher }
 
-/** The mode for this router and how to run claude in it: managed settings written
- *  (the probe mounts them), the mode decided, the launcher made. */
-export function resolveChannel(cfg: { stateDir: string; claudeBin: string; channelMode?: ChannelSetting }, o: { probe?: DecideDeps['probe']; platform?: string; env?: Record<string, string | undefined>; home?: string; writeManaged?: (p: ManagedPaths) => void } = {}): Channel {
+/** The mode for this router and how to run claude in it: the mode decided (prepare, e.g.
+ *  router/managed.ts prepareMounts, runs right before the probe mounts things), the launcher made. */
+export function resolveChannel(cfg: { stateDir: string; claudeBin: string; channelMode?: ChannelSetting }, o: { probe?: DecideDeps['probe']; platform?: string; env?: Record<string, string | undefined>; home?: string; prepare?: (p: ManagedPaths) => void } = {}): Channel {
   const paths = managedPaths(cfg.stateDir, o.env, o.home)
-  o.writeManaged?.(paths)
-  const decision = decideMode({ setting: cfg.channelMode ?? 'auto', platform: o.platform, toolbox: join(cfg.stateDir, 'toolbox'), paths, probe: o.probe })
+  const decision = decideMode({ setting: cfg.channelMode ?? 'auto', platform: o.platform, toolbox: join(cfg.stateDir, 'toolbox'), paths, probe: o.probe, prepare: o.prepare ? () => o.prepare!(paths) : undefined })
   return { decision, paths, launcher: makeLauncher({ mode: decision.mode, claudeBin: cfg.claudeBin, paths, bwrap: decision.bwrap, home: o.home }) }
 }
 

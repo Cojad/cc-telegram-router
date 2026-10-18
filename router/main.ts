@@ -65,7 +65,7 @@ import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants
 import { postNotice, noticePlace, requestOriginNoter, type ApprovalDeps } from './approvals'
 import { createPluginGuard, scheduleDaily } from './pluginguard'
 import { resolveChannel, describeMode, launcherRunner, shellLine, pluginSettings, claudeJsonOf } from './claudecmd'
-import { writeManagedSettings, initConfigDir, createDaemonKeeper, migrated, migrateTranscripts, describeMigration, syncBack, migrateCli } from './managed'
+import { prepareMounts, initConfigDir, createDaemonKeeper, migrated, migrateTranscripts, describeMigration, syncBack, migrateCli } from './managed'
 import { createPkgGate, claudeReviewer } from './pkgreview'
 import { createClassifier, openClassifyStore, apiJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER, API_PROVIDERS } from './classifier'
 import { escHtml, htmlToText } from './setup'
@@ -207,7 +207,7 @@ mkdirSync(cfg.home, { recursive: true })
 
 // How workers get their channel (router/claudecmd.ts, docs/managed-channel.md): managed (every claude
 // in bwrap with the router's own config folder and plugin) or legacy, decided once here.
-const channel = resolveChannel(cfg, { writeManaged: writeManagedSettings })
+const channel = resolveChannel(cfg, { prepare: prepareMounts })
 const launcher = channel.launcher
 const managedMode = launcher.mode === 'managed'
 log(`channel mode: ${describeMode(channel.decision)}`)

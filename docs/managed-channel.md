@@ -19,6 +19,7 @@ router 的 worker 原本載入官方商店的 `telegram@claude-plugins-official`
 - **daemon:** router 看管一個常駐在 bwrap 內的 `claude daemon run`. 叫醒前與定時檢查 daemon 與 worker 是否看得到 managed settings, 不符就修復並發重要通知.
 - **對話紀錄:** 切換時把各對話目前 session 的紀錄 (含 tool-results) 從 `~/.claude/projects` 複製到新設定目錄, worker 醒來就能接續. 舊的留在 `~/.claude` 當備份. 原本 daemon 底下 router 對話的 job 會 stop 加 rm.
 - **全機設定只帶全域 CLAUDE.md:** 不帶個人 skills, 其他 plugin, MCP server.
+- **共用 session 名冊 (2.32.1):** bwrap 另外把使用者的 `sessions/` 名冊掛到專屬設定目錄的 `sessions/` 上, worker 與這台機器上使用者自己的 session 用 ListAgents 互相看得到, 也能用名稱互相傳訊 (見「共用 session 名冊」).
 - **plugin 來源:** 本機資料夾商店 `cc-telegram-router`, 指向 router 部署時安裝的 plugin, 不依賴 GitHub. plugin 名稱維持 `telegram`, 所以工具名稱 `mcp__plugin_telegram_telegram_*`, channel 標籤 `plugin:telegram:telegram`, 技能命名空間都不變.
 
 ## 兩種模式
@@ -59,8 +60,11 @@ router 的 worker 原本載入官方商店的 `telegram@claude-plugins-official`
 <stateDir>/toolbox/host/bwrap --bind / / --dev-bind /dev /dev \
   --overlay-src /etc --tmp-overlay /etc \
   --ro-bind <stateDir>/managed /etc/claude-code \
-  --remount-ro /etc -- <claude 指令>
+  --remount-ro /etc \
+  --bind <原本的設定目錄>/sessions <stateDir>/claude-config/sessions -- <claude 指令>
 ```
+
+- 最後一條是「共用 session 名冊」. 兩個資料夾都要先存在 (bind 的來源與掛載點), router 在試跑 bwrap 前建好, 權限 700 (`prepareMounts`). config 設 legacy 時不會建.
 
 - 沒有切 pid 與網路 namespace, 程序與網路都跟主機相同. `/run/user/<uid>/cc-socks`, `/tmp` 也是同一份.
 - `--remount-ro /etc` 讓 worker 不能在 overlay 上自己加 `managed-settings.d/*.json`.
@@ -148,7 +152,30 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
   - bwrap 版本與 sha256 是否相符.
   - daemon 與 worker 是否看得到 managed settings (pid 與檢查結果).
 - **`/healthz`:** JSON 多一個 `channel` 欄位, 例如 `{"mode": "managed", "managedOk": true}` 或 `{"mode": "legacy", "reason": "..."}`. 只是資訊, 不影響 200 或 503 的判斷 (那仍只看 polling 是否新鮮).
-- **其他 session 看不到 worker:** worker 登記在專屬設定目錄, owner 的終端機與 v1 用 ListAgents 看不到它們, 也不能用名稱傳訊. 要送訊息給 worker, 一律用 `cc-telegram-router cli session send`. 用 uds 位址仍然可以雙向傳訊 (已實測), 但不建議依賴. 寫進 operations 與 README.
+- **其他 session 與 worker 互相看得到:** 見下方「共用 session 名冊」. 要送訊息給睡著或輪替中的 worker, 仍用 `cc-telegram-router cli session send` (經 router 的佇列, 會叫醒它); 用名稱 SendMessage 只送得到正在跑的 worker.
+
+## 共用 session 名冊
+
+**為什麼:** ListAgents 與用名稱 SendMessage, 靠的是 `<設定目錄>/sessions/` 裡的名冊: 每個 session 一個 `<pid>.json` (name, sessionId, messagingSocketPath, peerFeatures 等) 與一個 `<pid>.<hash>.key`. socket 本身都在共用的 `/run/user/<uid>/cc-socks`. worker 改用專屬設定目錄後名冊分開, 兩邊互相看不到 (2.32.0 實測: ListAgents 列不出對方, 用名稱傳訊回 `No agent named ... is reachable`; 只有直接用 `uds:<socket 路徑>` 才送得到).
+
+**做法 (2.32.1):** router 的 bwrap 多一條 `--bind <原本的設定目錄>/sessions <stateDir>/claude-config/sessions`. bwrap 裡的 daemon 與 worker 都把名冊寫進使用者的 `sessions/`, 也從那裡讀, 所以跟使用者自己的 session 用同一份名冊. bwrap 外看 `<stateDir>/claude-config/sessions` 是空的.
+
+**`.key` 檔是什麼** (讀 Claude Code 2.1.302 的程式, 沒讀任何 key 的內容):
+- 每個 session 啟動時寫自己的 `<pid>.<sha256(socket 路徑)>.key`, 權限 600, 內容是一個隨機的 peerToken, 加上程序的啟動時間與 pidDomain.
+- 傳送端要送到某個 socket 時, 在自己設定目錄的 `sessions/` 找 `.<sha256(那個 socket)>.key` 結尾的檔, 把對方的 peerToken 放進握手; 接收端比對是不是自己的 token. 找不到 key 時改用 socket 的對等端檢查 (同一個 uid), 所以分開時用 uds 位址仍送得到.
+- 共用名冊不會衝突: 檔名含 pid 與 socket 路徑, bwrap 沒切 pid namespace, 兩邊的 pid 不會重複, pidDomain 也相同. 清理只刪 pid 已經不在而且 pidDomain 相同的檔, 哪一邊清都正確.
+
+**實測** (2026-10-18, Claude Code 2.1.302, 兩個自建的設定目錄, 一個當使用者的, 一個在 static bwrap 裡當 router 的):
+- 前景 session 互相: ListAgents 雙向看得到, 用名稱傳訊與回覆雙向都通.
+- bwrap 裡的背景 worker 與使用者的前景 session: 互相看得到, 用名稱傳訊與回覆都通.
+- 名冊只寫在使用者的 `sessions/`; 前景 `/exit` 與背景 `claude rm` 後都清乾淨.
+- bwrap 外對 router 設定目錄下的 `claude agents`, 只列出 daemon 的 job; bwrap 裡的 `claude agents` 另外列出使用者的 session (那些項目沒有 job id). router 的 listAgents 在 bwrap 裡, 只取有 id 的 job, 所以 job 清理, 叫醒與 `/router status` 不會混進使用者的 session.
+- 另一個做法是把 router 的 `sessions/` 換成指向使用者 `sessions/` 的 symlink. 實測一樣通 (Claude Code 不會把 symlink 換成實體資料夾, 只會把被指向的資料夾權限改成 700), 但它在 bwrap 外也會生效, 改用 bind 只影響 router 自己的 claude.
+
+**影響: worker 看得到使用者所有的 session.** 共用之後, worker 的 ListAgents 會列出這台機器上使用者自己的每一個 Claude Code session, 包括名稱, 種類, 狀態, tmux 位置與啟動時間, 也能用名稱傳訊給它們.
+- Claude Code 自己的權限不擋: 實測 user 角色的範本 (`dontAsk`), 沒掛 router 的 hook 時, ListAgents 與 SendMessage 都直接成功, 列出了使用者的兩個 session, 也傳出了訊息.
+- router 的 hook 會擋: ListAgents 是[高風險工具](permissions.md#高風險工具), 傳給其他 session 的 SendMessage 也一樣. power 以下的角色會被 router 的 PreToolUse hook 擋下 (`router/permcheck.ts` 的 `RISKY_TOOLS` 與 `riskyRefusal`), 只能提權後一次一次允許; admin 與 owner 的對話可以直接用. 所以實際上只有 admin 與 owner 的 worker 看得到使用者的 session.
+- 反過來, 使用者的 session (包括 v1) 也看得到每一個在跑的 worker (`tg-<對話>`), 可以用名稱傳訊. worker 睡著時不在名冊裡, 要叫醒它就用 `cli session send`.
 
 ## 工具箱與 GitHub Actions
 
@@ -162,7 +189,7 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
 
 ## 測試
 
-- `router/test/managed.test.ts` (16 項): 模組層級, 見下方清單.
+- `router/test/managed.test.ts` (17 項): 模組層級, 見下方清單.
 - `router/test/e2e-managed.test.ts` (5 項): 真的 router, 假 Bot API, e2e-wake 的假 claude, 以及用系統 bwrap 做出同樣 mount namespace 的 bwrap 替身.
 - `router/test/health.test.ts`: 啟動公告的 channel 一行, `/healthz` 的 `channel` 欄位, 文件範例的欄位.
 - 驗收對照表在 [testing](testing.md#managed-channel-驗收對照).
