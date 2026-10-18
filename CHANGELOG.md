@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.13.2] - 2026-10-18
+
+### Changed
+
+- router 需要 Bun 1.4.2 以上 (之後的排程要用 `Bun.cron.parse`): README 的 Requirements 寫明, `package.json` 與 `plugin/package.json` 加 `"engines": {"bun": ">=1.4.2"}`.
+
 ## [2.13.1] - 2026-10-18
 
 ### Changed
