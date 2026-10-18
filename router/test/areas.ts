@@ -57,7 +57,7 @@ export const AREAS: Area[] = [
   },
   {
     name: 'repo', title: '報表腳本與 repo 檢查',
-    tests: ['context-chart.test.ts', 'usage-report.test.ts', 'requirements.test.ts', 'areas.test.ts', 'readme.test.ts'],
+    tests: ['context-chart.test.ts', 'usage-report.test.ts', 'requirements.test.ts', 'areas.test.ts', 'readme.test.ts', 'tiers.test.ts'],
     paths: ['scripts/**', 'README.md', 'docs/operations.md', 'docs/secrets.md', 'CHANGELOG.md', 'plugin/package.json', 'deploy/**', 'router/relay.ts', 'router/test/areas.ts', 'router/test/tiers.ts', 'router/test/full.ts', 'router/test/timings.json'],
   },
 ]

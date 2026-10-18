@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.31.1] - 2026-10-18
+
+### Changed
+
+- `bun run test:changed` 判定要跑全套時 (改到共用核心或建置設定, 或對照檔沒涵蓋的檔), 改成執行 `bun run test:full` (並行, 單一 log, junit 與檔案清單), 不再是序列的 `bun test router/test`. 判定邏輯抽成 `router/test/tiers.ts` 的 `decideChanged`, 被 import 時不會執行.
+- 測試: 新增 `router/test/tiers.test.ts` (全套一律是 `test:full` 而且與 package.json 的 script 相同; 只改文件或某區的檔時只跑 std 與該區).
+
 ## [2.31.0] - 2026-10-18
 
 ### Added

@@ -65,17 +65,17 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `reactions` | 表情回應 | reactions, e2e-reactions | `router/reactions.ts`, `router/telegram/transport.ts`, `router/telegram/inbound.ts` |
 | `classifier` | 工具呼叫分類器 | classifier, e2e-classifier, e2e-classifier-off | `router/classifier.ts` |
 | `core` | 對話生命週期與指令 | phase1, phase2, e2e, e2e-wake, e2e-setup, jobs, e2e-jobs, sessionsend, e2e-sessionsend | `router/` 的 supervisor, jobs, sessionsend, lock, conversations, context, progress, relay, freshness, rotate, setup, cli, guard, settings; `plugin/server.ts`, `plugin/skills/**`, `shared/time.ts`, `templates/**` |
-| `repo` | 報表腳本與 repo 檢查 | context-chart, usage-report, requirements, areas, readme | `scripts/**`, `README.md`, `docs/operations.md`, `docs/secrets.md`, `CHANGELOG.md`, `plugin/package.json`, `deploy/**`, `router/relay.ts`, `router/test/areas.ts`, `router/test/tiers.ts`, `router/test/full.ts`, `router/test/timings.json` |
+| `repo` | 報表腳本與 repo 檢查 | context-chart, usage-report, requirements, areas, readme, tiers | `scripts/**`, `README.md`, `docs/operations.md`, `docs/secrets.md`, `CHANGELOG.md`, `plugin/package.json`, `deploy/**`, `router/relay.ts`, `router/test/areas.ts`, `router/test/tiers.ts`, `router/test/full.ts`, `router/test/timings.json` |
 
 改到某區的測試檔, 也會跑那一區. 一個路徑可以屬於多個區.
 
 ### test:changed 的判斷方式
 
 1. 改動: 從 base (預設 `main`) 與目前 HEAD 的分岔點算起, 已 commit, 還沒 commit 的改動, 以及還沒追蹤的新檔都算. 每個檔歸到哪裡都會印出來.
-2. 改到所有功能都會經過的共用核心或建置設定, 跑全套: `router/main.ts`, `router/db.ts`, `router/config.ts`, `router/ipc.ts`, `router/commands.ts`, `hooks/**`, `plugin/client.ts`, `shared/protocol.ts`, `router/test/fixtures/**`, `package.json`, `bun.lock`, `bunfig.toml`, `.npmrc`.
+2. 改到所有功能都會經過的共用核心或建置設定, 跑全套 (`bun run test:full`, 並行, 產出 log, junit 與檔案清單, 見[全套](#全套)): `router/main.ts`, `router/db.ts`, `router/config.ts`, `router/ipc.ts`, `router/commands.ts`, `hooks/**`, `plugin/client.ts`, `shared/protocol.ts`, `router/test/fixtures/**`, `package.json`, `bun.lock`, `bunfig.toml`, `.npmrc`.
 3. 符合某區的路徑或測試檔: 加跑那一區.
 4. 沒有測試會讀的檔 (`docs/**`, `LICENSE`, `.gitignore`, `.gitattributes`): 只跑 std.
-5. 對照檔沒有涵蓋的路徑: 保守地跑全套, 並印出是哪個檔.
+5. 對照檔沒有涵蓋的路徑: 保守地跑全套 (同樣是 `bun run test:full`), 並印出是哪個檔.
 
 最後印出決定 (跑全套與原因, 或 std 加上哪些區), 再執行. std 已整檔跑過的不重跑; 區裡含有 std 只跑部分的檔, 就改成整檔跑.
 
@@ -154,6 +154,7 @@ worker 數預設 4, 等於這台開發機的核心數. 在 4 核機器上開 8 �
 | 檔案 | 對應 |
 |---|---|
 | `router/test/areas.test.ts` | [測試分區](#測試分區)的對照檔 `router/test/areas.ts`: 每支測試檔至少屬於一區, 列出的測試檔都存在, 區名不重複, 路徑 glob 都對得到檔, 「各區」與「std 套組」兩張表與對照檔一致; 本表有每支測試檔的一列 |
+| `router/test/tiers.test.ts` | [test:changed 的判斷方式](#testchanged-的判斷方式): 改到共用核心或對照檔沒涵蓋的檔就只跑全套, 而且是 `bun run test:full` (與 package.json 的 script 相同); 只改文件或某區的檔時跑 std 與受影響的區 (bun test), 不跑全套 |
 | `router/test/phase1.test.ts` | 規劃 03, 04, 05, 07 的模組行為: 對話資料夾, settings 範本, 佇列, 送出檢查, 單一實例, IPC, supervisor (含 resume 後的說明更新提醒 freshness), plugin MCP, router 離線告知, router.db 剛建立時有別的程序在讀也能開 (先設 busy_timeout 再切 WAL), backlog 第一次掃描 15 秒與密鑰刪除每 10 秒檢查的預設值 (測試專用設定沒寫時) |
 | `router/test/phase2.test.ts` | 規劃 03 的 /router 指令表與拒絕訊息 (含 chat_id 跨 bot 指定, --bot, 對話 key), 06 chat_context, router_log, hook, 「cc /」代打, 即時進度訊息, bot list 與 status 對資訊還沒取得的 bot 顯示讀取中, GMT+8 時間格式 (`iso8`, log 行) |
 | `router/test/e2e.test.ts` | 真的 router + 假 Bot API: 每個 update 與送出的 payload 都在 db, 回覆送出與紀錄, 帶附件的回覆 (文字當 caption 只送一則, 多張照片成一個相簿, outbound 與訊息紀錄), 群組回到提問者的私訊 (on_behalf_of), /router 指令不轉給 worker, CLI, bot add 後立刻 bot list 就有新 bot 的資訊, log 行與 worker 收到的訊息時間是 GMT+8 |
