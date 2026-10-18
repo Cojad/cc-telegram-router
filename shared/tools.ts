@@ -196,6 +196,17 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'skill_check',
+    description: 'Check a skill you wrote in your folder (e.g. skills/<name>) before it is installed or approved: the router reads SKILL.md and privileged.json with its own parser (nothing is run) and tells you what is wrong and how to fix it, what install_skill would refuse, what /router skill approve would list, and what your role can do next. Every role but guest. See /telegram:bot-skill.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'The skill folder, relative to your folder (e.g. skills/signup) or a bare name meaning skills/<name>' },
+      },
+      required: ['path'],
+    },
+  },
+  {
     name: 'install_skill',
     description: 'Install a skill you wrote in <your folder>/skills/<name>/ (you cannot write under .claude yourself): scope "conversation" puts it in this conversation\'s .claude/skills (power and up), "bot" makes every conversation of this bot get it, "all" every bot (owner/admin). A role too low is refused like any other block (elevation). Skills must not contain tokens. See /telegram:bot-skill.',
     inputSchema: {

@@ -3,7 +3,9 @@
 // sections and docs/operations.md 「新 bot 初次設定與審核群組」.
 //   claim code -> owner; persona interview (<bootstrap>, save_bot_profile)
 //   -> <home>/bot<id>/CLAUDE.md, read by every conversation of the bot;
-//   approvals group checks and topics; skip button.
+//   approvals group checks and topics; skip button. Also install_skill and
+//   skill_check through the router (docs/credentials-and-skills.md 技能範圍,
+//   檢查技能草稿).
 
 import { test, expect, afterAll } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from 'fs'
@@ -349,6 +351,30 @@ test('install_skill end to end: from <folder>/skills into the conversation\'s ow
   expect(existsSync(join(dir, 'bot123', 'dm-666', '.claude', 'skills', 'hello'))).toBe(false)
   expect(q("SELECT kind FROM elev_log WHERE conv = 'dm-666' AND text LIKE '%install_skill%'").length).toBeGreaterThan(0)
   owner.close(); user.close()
+}, 30000)
+
+test('skill_check end to end: a user conversation checks its draft (nothing installed, nothing run); guest is refused (docs/credentials-and-skills.md 「檢查技能草稿」)', async () => {
+  const user = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-666'), pid: 53 }, onMessage(m) { if (m.t === 'deliver') user.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => user.state().kind === 'ready')
+  const skill = join(dir, 'bot123', 'dm-666', 'skills', 'notes')
+  mkdirSync(join(skill, 'scripts'), { recursive: true })
+  writeFileSync(join(skill, 'SKILL.md'), '---\nname: notes\ndescription: 測試用\n---\n')
+  writeFileSync(join(skill, 'scripts', 'n.sh'), 'echo hi\n')
+  writeFileSync(join(skill, 'privileged.json'), JSON.stringify({ actions: { add: { run: ['bash', 'scripts/n.sh', '{text}'], args: { text: { pattern: '.{1,50}' } }, store: { NOTES: 'notes' } } } }))
+  const r = await user.call('skill_check', { path: 'skills/notes' })
+  expect(r.isError).toBeFalsy()
+  expect(r.content[0]!.text).toStartWith('skill check: ok')
+  expect(r.content[0]!.text).toContain('add: bash scripts/n.sh {text}; 角色 owner, admin, power, user; 資料庫 notes (append)')
+  expect(r.content[0]!.text).toContain('下一步: user 角色現在還不能安裝技能')
+  expect((await user.call('skill_check', { path: '../dm-555' })).content[0]!.text).toContain('不在這個對話的資料夾裡')
+  dm(OWNER, '/router role 666 guest')
+  await until(() => q("SELECT role FROM conversations WHERE key = 'dm-666'")[0]?.role === 'guest')
+  const g = await user.call('skill_check', { path: 'skills/notes' })
+  expect(g.isError).toBe(true)
+  expect(g.content[0]!.text).toBe('guest 角色的對話不能寫檔, 也就沒有技能可以檢查')
+  dm(OWNER, '/router role 666 none')
+  await until(() => q("SELECT role FROM conversations WHERE key = 'dm-666'")[0]?.role === 'user')
+  user.close()
 }, 30000)
 
 test('bot_api "self": owner and admin conversations call any Bot API method as their own bot; others are refused; methods that would break the router are blocked', async () => {

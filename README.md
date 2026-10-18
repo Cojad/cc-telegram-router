@@ -17,7 +17,7 @@
 | 權限 | Claude Code 的權限詢問轉到允許清單的私訊 (Allow / Deny) | 依對話角色的 settings 與 router 檢查每個工具呼叫; 先擋再問的提權, 三選一審核按鈕, 撤銷, 執行授權紀錄 |
 | 管理介面 | 終端機的 `/telegram:access`, `/telegram:configure` | Telegram 裡的 `/router` 指令, 終端機 CLI, `cc /指令` 代打 Claude Code 的 slash command |
 | 訊息紀錄 | 沒有歷史與搜尋 | 每個 update 與送出的 payload 都在 `router.db`; `lookup_message`, 回覆引用自動補全 |
-| 工具 | reply, react, edit_message, download_attachment | 另有 send_sticker, lookup_message, get_chat_context, bot_api, http_api, install_skill, run_skill, request_elevation, request_send_grant, event_raw, secret_from_handle, save_bot_profile |
+| 工具 | reply, react, edit_message, download_attachment | 另有 send_sticker, lookup_message, get_chat_context, bot_api, http_api, install_skill, skill_check, run_skill, request_elevation, request_send_grant, event_raw, secret_from_handle, save_bot_profile |
 | 憑證與密鑰 | bot token 存在 `.env` | 跨 bot 憑證與 HTTP API key 由 router 代呼叫 (worker 看不到值); 對話專屬密鑰 (AES-256-GCM) |
 | 密鑰保護 | 沒有 | 每個 update 與文字附件都掃描密鑰, 存遮蔽版, 原文加密, 提醒並 5 分鐘後刪除原訊息 |
 | 技能 | 沒有 | 三層技能範圍與 `install_skill`; 特權技能 (bwrap 沙箱, 雜湊核准, 每日更新憑證, 每隻 bot 一份的附加式資料庫) |

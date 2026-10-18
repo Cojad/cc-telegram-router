@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+## [2.14.0] - 2026-10-18
+
+### Added
+
+- worker 用的 `skill_check` 工具 (guest 以外的角色): 給對話資料夾裡的技能草稿 (例如 `skills/signup`), router 用自己的 `loadManifest` 與 `describeActions` 讀 SKILL.md 與 privileged.json, 不執行任何程式, 回報格式錯在哪與怎麼改, install_skill 會拒絕的, `/router skill approve` 會列出的內容, 與這個角色的下一步. 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#檢查技能草稿).
+
+### Changed
+
+- `/telegram:bot-skill` 改寫特權動作的說明, 讓 worker 不讀 router 原始碼也能寫出特權技能: privileged.json 的欄位 (`{名稱?}` 可省參數, `{cred:X}`, pattern 整串比對), 執行時的環境 (工作目錄是對話資料夾, 技能資料夾唯讀所以 Python 加 `-B`, 私有 HOME, `$<ENV>_URL`, `$<ENV>_HEADER`, `$<ENV>_API` 與 store 路徑, exit code 非 0 算失敗, 輸出掃描遮蔽, 每小時 10 次, 改檔要重新核准, 不從對話資料夾載入程式), store 的 append 與 full 規則, 各角色能寫, 裝, 核准到哪裡 (user 現在還不能安裝), 去識別化的完整範例 (活動報名清單: http 憑證, bots, store 一起用). 刪掉跟特權動作衝突的舊說法 (「腳本與工具的分工」原本叫用憑證的操作一律走 `bot_api`, 套件一律裝 `.pylib`), 改成分開說明一般技能與特權動作.
+
 ## [2.13.2] - 2026-10-18
 
 ### Changed

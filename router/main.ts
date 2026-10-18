@@ -34,6 +34,7 @@ import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
 import { fingerprint, noteStart, STALE_NOTE } from './freshness'
 import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
+import { checkSkill } from './skillcheck'
 import { scheduleRefresh, type RefreshDeps } from './skillrefresh'
 import { terminalRun, terminalRefresh } from './skillcli'
 import { createPoller, type PollEvent } from './poller'
@@ -399,6 +400,13 @@ const ipc = createIpc({
       const argWhy = elevation.extraCheck(conv, call, role)
       if (argWhy) return { content: [{ type: 'text', text: (await elevation.refuse(conv, call, argWhy)).reason ?? argWhy }], isError: true }
       const r = await callConv.run(conv.key, () => runSkill(skillDeps, conv, role, String(args.skill ?? ''), String(args.action ?? ''), (args.args ?? {}) as Record<string, unknown>))
+      return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
+    }
+    if (tool === 'skill_check') {
+      if (!conv) return { content: [{ type: 'text', text: 'terminal: 沒有對話資料夾, 直接看技能的檔案' }], isError: true }
+      // guest cannot write files: there is nothing of its own to check
+      if (role === 'guest') return { content: [{ type: 'text', text: 'guest 角色的對話不能寫檔, 也就沒有技能可以檢查' }], isError: true }
+      const r = checkSkill(conv.folder, String(args.path ?? ''), role, { cred: n => cfg.credentials[n] })
       return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
     }
     if (tool === 'install_skill') {

@@ -1,6 +1,6 @@
 ---
 name: bot-skill
-description: 建立或修改技能 (skill) 的 SOP: 技能放在哪個範圍 (單一對話, 這隻 bot, 全部 bot), 誰能安裝到哪個範圍, 技能需要 token 或要操作另一隻 bot (跨 bot 技能) 時怎麼處理. 使用者要你「做一個技能」「把這個存成 skill」, 或技能需要任何 token 時, 先讀這份再動手.
+description: 建立或修改技能 (skill) 的 SOP: 技能放在哪個範圍 (單一對話, 這隻 bot, 全部 bot), 各角色能寫, 裝, 核准到哪裡, 技能需要 token 或要操作另一隻 bot (跨 bot 技能) 時怎麼處理, 特權動作 (privileged.json) 的執行細節與完整範例, 用 skill_check 檢查草稿. 使用者要你「做一個技能」「把這個存成 skill」, 或技能需要任何 token 時, 先讀這份再動手.
 ---
 
 # 建立技能的 SOP
@@ -15,14 +15,15 @@ Claude Code 會從工作目錄往上讀 `.claude/skills`, 所以技能裝在哪�
 | 這隻 bot 的所有對話 | `<home>/bot<id>/.claude/skills/<名稱>/` | owner 與 admin 對話, `install_skill` (scope `bot`) |
 | 全部 bot 的所有對話 | `<home>/.claude/skills/<名稱>/` | owner 與 admin 對話, `install_skill` (scope `all`) |
 
-不確定範圍時先問使用者; 預設只裝在這個對話. 對話角色不夠時 `install_skill` 跟其他越權動作一樣被擋並走提權 (發話者角色較高就在對話裡詢問, 否則問使用者要不要用 request_elevation 向 owner 申請), 只能允許一次.
+不確定範圍時先問使用者; 預設只裝在這個對話. user 角色現在還不能自己安裝技能 (之後的階段才開放), 見[各角色能做到哪裡](#各角色能做到哪裡). 對話角色不夠時 `install_skill` 跟其他越權動作一樣被擋並走提權 (發話者角色較高就在對話裡詢問, 否則問使用者要不要用 request_elevation 向 owner 申請), 只能允許一次.
 
 ## 步驟
 
 1. 在自己資料夾寫好 `skills/<名稱>/SKILL.md` (frontmatter 要有 `name` 與 `description`, description 寫清楚「什麼時候用」), 腳本放 `skills/<名稱>/scripts/`.
-2. 照 SKILL.md 實際跑一次腳本, 確認可用.
-3. 呼叫 `install_skill` (name, scope). router 會檢查: 對話角色夠裝這個範圍, 有 SKILL.md, 沒有符號連結, 檔案裡沒有像 token 的字串; 通過後複製過去 (venv, node_modules 不複製). scope `conversation` 會在這一輪結束, worker 閒置後重新叫醒時載入; `bot` 與 `all` 讓其他對話下次叫醒時載入.
-4. 告訴使用者裝在哪個範圍, 之後怎麼更新 (改 `skills/<名稱>/`, 再用 `install_skill` 帶 `replace: true`).
+2. 一般技能照 SKILL.md 實際跑一次腳本, 確認可用 (特權動作的腳本要靠 router 給的環境變數, 你自己直接跑不起來, 見[特權動作](#特權動作-技能的-sudo-bit)).
+3. 呼叫 `skill_check` (path: `skills/<名稱>`) 檢查: router 用自己的解析程式讀 SKILL.md 與 privileged.json (不執行任何程式), 告訴你哪裡錯, 怎麼改, `install_skill` 會不會拒絕, `/router skill approve` 會列出什麼. 有錯就照著改再檢查一次, 直到第一行是 `skill check: ok`.
+4. 呼叫 `install_skill` (name, scope). router 會檢查: 對話角色夠裝這個範圍, 有 SKILL.md, 沒有符號連結, 檔案裡沒有像 token 的字串; 通過後複製過去 (venv, node_modules 不複製). scope `conversation` 會在這一輪結束, worker 閒置後重新叫醒時載入; `bot` 與 `all` 讓其他對話下次叫醒時載入.
+5. 告訴使用者裝在哪個範圍, 之後怎麼更新 (改 `skills/<名稱>/`, 再用 `install_skill` 帶 `replace: true`).
 
 ## 技能需要 token 時
 
@@ -62,46 +63,220 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 沒寫路徑就是那個網址底下全部路徑, 要收窄就列出路徑 (結尾 `*` 代表前綴). 範例 (Anthropic):
 `/router cred add anthropic sk-ant-... --http https://api.anthropic.com --header x-api-key --default-header anthropic-version:2023-06-01`. 換 key 用 `/router cred rotate <名稱> <新 key>`, 不用重貼 key 改預設標頭用 `/router cred header <名稱> set <標頭>:<值>` (同名就更新), 移除用 `rm <標頭>`, 不帶參數就列出. 完整說明: 使用者打 `/router help cred`.
 技能裡用 `http_api` (credential, path, json 或 json_file 或 form + files, 可選 headers) 呼叫. key 放哪裡由憑證決定, 你不用也不能自己放:
-`headers` 只放 API 需要的其他標頭 (例如 `{"anthropic-version": "2023-06-01"}`; 憑證有預設標頭時 router 自動補上, 你帶了同名的就用你的), 帶 key 所在的那個標頭 (例如 x-api-key 憑證的 x-api-key), Authorization, Proxy-Authorization, Cookie, Host, Content-Type 這類會被擋; 用 `--query` 的憑證, path 裡也不能自己帶那個參數. 回應裡的 base64
+`headers` 只放 API 需要的其他標頭 (例如 `{"anthropic-version": "2023-06-01"}`; 憑證有預設標頭時 router 自動補上, 你帶了同名的就用你的), 帶 key 所在的那個標頭 (例如 x-api-key 憑證的 x-api-key), Authorization, Proxy-Authorization, Cookie, Host, Content-Type 這類會被擋; 用 `--query` 的憑證, path 裡也不能自己帶那個參數.
 很大的請求 (例如幾十萬 token 的 count_tokens) 先寫成自己資料夾裡的 JSON 檔, 用 `json_file: "相對路徑"` 送出 (最多 20 MB, 要是合法 JSON, 跟 json, form, files 擇一), 不要把內容塞進 json 參數. 檔案是 router 讀的: owner 與 admin 對話可以給資料夾外的路徑 (router 狀態目錄除外), user 與 power 只能用自己資料夾裡的.
-大檔 (例如產生的圖) 用 `save_b64` `{ "at": "data.0.b64_json", "to": "相對路徑" }` 直接存進自己資料夾,
+回應裡的 base64 大檔 (例如產生的圖) 用 `save_b64` `{ "at": "data.0.b64_json", "to": "相對路徑" }` 直接存進自己資料夾,
 不要讓它回到對話裡.
 
 ## 特權動作 (技能的 sudo bit)
 
-技能要用到 user 或 power 對話拿不到的東西 (cookie, 沙箱外的檔案), 又希望這些對話不用提權就能用時, 在技能資料夾加 `privileged.json`, 列出動作 (像 sudoers):
+技能要用到 user 或 power 對話拿不到的東西 (cookie, API key, 另一隻 bot 的 token, 這隻 bot 共用的資料), 又希望這些對話不用提權就能用時, 在技能資料夾加 `privileged.json`, 列出動作 (像 sudoers). 對話用 `run_skill` (skill, action, args) 呼叫, router 在專屬沙箱執行, 憑證永遠不進對話. 完整可用的例子見[範例: 活動報名清單](#範例-活動報名清單).
 
-```json
-{ "actions": {
-  "extract": { "run": ["bash", "scripts/extract.sh", "{url}", "{force?}"],
-               "args": { "url": { "pattern": "https://(www\\.)?youtube\\.com/\\S+" }, "force": { "flag": "--force" } },
-               "roles": ["owner", "admin", "power", "user"], "creds": { "COOKIE_DIR": "my-cookies" },
-               "timeout": 900, "auth_failure": "reason=auth", "refresh": "refresh" },
-  "refresh": { "run": ["python3", "scripts/refresh.py", "{cred:COOKIE_DIR}"], "creds": { "COOKIE_DIR": "my-cookies" }, "internal": true } } }
+### 流程
+
+1. 在 `skills/<名稱>/` 寫 SKILL.md, privileged.json, 腳本.
+2. `skill_check` 檢查到 `skill check: ok`, 把它回報的「核准時會列出」給使用者看.
+3. 特權動作只在**這隻 bot 或全部 bot 範圍**有效 (只裝在對話範圍的技能, 對話自己改得到, 不給特權): 由 owner 或 admin 的對話 `install_skill` (scope `bot` 或 `all`).
+4. owner 或 admin 在 Telegram 打 `/router skill approve <名稱>` 核准. 核准記下檔案雜湊 (不含 venv, node_modules, `__pycache__`, `.git`), **之後改了任何檔案都自動暫停**, 要重新核准; 所以改好, 裝好之後再請他核准.
+5. 動作用到的憑證要先登記 (見上面「技能需要 token 時」); 憑證本身的 roles 與 methods 不套用在特權動作上, 由核准與動作的 `roles` 把關.
+
+### privileged.json 的欄位
+
+每個動作是 `actions` 底下的一個物件:
+
+| 欄位 | 意思 |
+|---|---|
+| `run` | 要執行的指令, 字串陣列, 不經 shell. 含 `/` 的相對路徑 (例如 `scripts/x.py`) 換成技能資料夾裡那個檔的絕對路徑; 找不到這個檔就原樣傳入, 而工作目錄是對話資料夾, 所以一定失敗 |
+| `{名稱}` | `run` 裡獨占一個元素的參數, 換成 `args` 裡同名參數的值; 沒帶就拒絕執行. 不能跟其他字黏在一起 (`"--url={url}"` 會原樣傳入), 要寫成 `"--url", "{url}"` |
+| `{名稱?}` | 可省的參數: 沒帶 (或空字串) 就整個略過, 不傳空字串 |
+| `{cred:環境變數}` | 換成 `creds` 裡那個環境變數對應的憑證資料夾路徑 |
+| `args.<名稱>.pattern` | 正規表示式, **整串比對** (router 包成 `^(?:pattern)$`), 所以不用自己加 `^` `$`, 也不能只比對到一部分就過. 值最長 2000 字, 不能有換行. 沒寫 pattern 就是任何一行字 |
+| `args.<名稱>.flag` | 開關型參數: 值是 `true` 時傳入這個字 (例如 `--force`), 否則略過 |
+| `args.<名稱>.roles` | 只有這些角色能帶這個參數, 較低角色帶了照一般流程觸發提權申請 (只能一次一次允許) |
+| `roles` | 能呼叫的對話角色; 沒寫是 owner, admin, power, user (guest 不行) |
+| `creds` | `{環境變數: 憑證資料夾名稱}`: 資料夾在 router 那邊 (`<stateDir>/creds/<名稱>`), 由 owner 放入檔案 (例如 cookie); 腳本在 `$環境變數` 拿到路徑, 唯讀 |
+| `http` | `{環境變數: http 憑證名稱}`: 腳本拿到 `$<ENV>_URL` (base URL, 結尾沒有 `/`) 與 `$<ENV>_HEADER` (整行授權標頭, 例如 `Authorization: Bearer ...`) |
+| `bots` | `{環境變數: telegram-bot 憑證名稱}`: 腳本拿到 `$<ENV>_API` (`https://api.telegram.org/bot<token>` 這種網址), 例如 `$NOTIFY_BOT_API/sendMessage` |
+| `store` | `{環境變數: 資料庫名稱}` 或 `{環境變數: {"name": ..., "mode": "full"}}`: 這隻 bot 共用的資料庫, 腳本在 `$環境變數` 拿到工作副本的路徑 (規則見下) |
+| `timeout` | 秒, 沒寫是 600; 超過就被終止 |
+| `internal` | `true`: 對話不能呼叫, 只由 router 執行 (憑證更新) |
+| `auth_failure`, `refresh` | 輸出比對到 `auth_failure` (正規表示式, 不分大小寫) 時, router 執行 `refresh` 指的 internal 動作一次 (只有它能寫憑證資料夾) 再重試; router 每天固定時間 (預設 05:00 GMT+8) 與啟動時發現超過 24 小時沒成功更新, 也會主動執行它, 所以它要能在憑證還有效時重複執行 |
+| `mounts`, `env` | 只給 internal 動作: 額外唯讀可見的路徑, 額外的環境變數 |
+
+環境變數名稱不能重複 (包含 `http` 展開的 `_URL`, `_HEADER` 與 `bots` 展開的 `_API`), 也不能是 PATH, HOME, LANG, TMPDIR, PYTHONUSERBASE. 資料庫名稱是小寫英數字與 `-`. internal 動作不能用 store 與 bots.
+
+### 執行時的環境
+
+- **工作目錄是對話資料夾** (呼叫它的那個對話), 也是唯一寫得到的地方 (它的 `.chat` 唯讀), 輸出檔就寫在這裡, 寫相對路徑即可; 之後你用 `reply` 的 `files` 送出.
+- **技能資料夾在沙箱裡唯讀**. Python 一律加 `-B` (例如 `["python3", "-B", "scripts/x.py"]`), 或 internal 動作的 env 設 `PYTHONDONTWRITEBYTECODE=1`, 不要寫 `__pycache__`.
+- `HOME` 是沙箱私有的 `/tmp` (每次執行都是空的, 跑完就消失), `TMPDIR` 也是; 憑證的工作副本 (例如要改寫的 cookie 檔) 放這裡, 不要寫進對話資料夾. `PATH` 是 `~/.local/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`; Python 找得到 router 使用者裝在 `~/.local` 的套件 (唯讀).
+- 看不到: router 的家目錄 (其他對話), router 狀態目錄, router 使用者的 $HOME, config `sandboxDenyRead`. 看得到的只有系統, 技能資料夾, 宣告的憑證資料夾, 資料庫副本, 對話資料夾.
+- **不要從對話資料夾載入程式或套件** (例如 `PYTHONPATH=./.pylib`, `source ./x.sh`): 那個資料夾對話自己寫得到, 等於讓對話用動作的憑證跑任意程式. 套件用系統的, `~/.local` 的, 或技能資料夾裡的 venv (`install_skill` 不複製 venv, 雜湊也不含它, 要由 owner 在安裝位置建好).
+- 參數是呼叫者給的輸入, 一律當資料: 不要拿去 `eval` 或組 shell 指令. 參數是檔名時, pattern 擋掉 `..` (例如 `(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}`), 腳本再確認它在工作目錄裡.
+- 授權標頭與 bot 網址不要放在命令列 (別的程序看得到), 也不要印出來或寫進檔案: Python 直接放進請求; shell 先寫進 `/tmp` 的檔再 `curl -H @檔案`. 印錯誤時只印錯誤種類, 不要印整個請求或網址.
+- **exit code 不是 0 就算失敗** (資料庫也不寫回). 對話收到 `exit <碼>` 開頭, 加上輸出 (stdout 與 stderr) 的最後 60 行.
+- **輸出會掃描憑證**: 回傳文字裡出現的憑證內容 (cookie 值, http key, bot token) 遮蔽成 `<已遮蔽>`; 這次執行在對話資料夾寫出的文字檔含有憑證內容, 或檔名像 cookie 檔, 就刪除; 兩種都會通知 owner.
+- **每個對話每小時最多 10 次** (`run_skill`, 不分技能).
+- 正式執行沒有網路隔離, 腳本可以連網.
+
+### 資料庫 store
+
+- 同一隻 bot 的所有對話共用一份 (`<stateDir>/skill-store/bot<id>/<名稱>/`, 對話看不到), 只有宣告它的動作執行時看得到. 每次執行拿到的是副本, **exit 0 而且檢查通過才寫回**; 有一項不過就整次作廢, 資料庫不動, 對話收到原因, owner 收到通知. 同一個資料庫的執行依序排隊.
+- append 模式 (預設): 原有的檔案與資料夾一個都不能少, 一般檔案內容不能變; `.jsonl` 只能在尾端加完整的 JSON 行: 每行一個合法 JSON, 以換行結尾, 不能有空行, 不能刪改舊行 (舊內容要逐位元是新內容的開頭). 可以新增檔案與資料夾 (新的 `.jsonl` 一樣每行都要是合法 JSON). 所以 user 與 power 能用的動作 (例如新增一筆) 用 append.
+- full 模式: 可以新增, 修改, 刪除; **只准用在 roles 只有 owner 與 admin 的動作** (沒寫 roles 也不行), 否則 privileged.json 讀取失敗, 核准會拒絕.
+- 兩種模式: 不接受符號連結, 裝置檔, fifo; 寫入的單檔上限 5 MB (append 的 `.jsonl` 算新加的部分), 一次執行所有資料庫加起來 20 MB; 寫入的內容含有這個動作的憑證內容也不接受.
+
+### 各角色能做到哪裡
+
+| 角色 | 寫草稿 (`skills/<名稱>/`) | `skill_check` | `install_skill` | 核准 (`/router skill approve`) |
+|---|---|---|---|---|
+| owner, admin | 可以 | 可以 | 對話, 這隻 bot, 全部 bot 範圍 | 可以 (在 Telegram 打指令, 不是工具) |
+| power | 可以 | 可以 | 只有對話範圍; bot 與 all 範圍會被擋並走提權 | 不行 |
+| user | 可以 | 可以 | 現在還不能 (被擋時走提權; 開放 user 自己安裝要等之後的階段) | 不行 |
+| guest | 不行 (不能寫檔) | 不行 | 不行 | 不行 |
+
+所以 user 與 power 對話寫特權技能的終點是: 草稿寫好, `skill_check` 通過, 把結果 (特別是「核准時會列出」那段) 告訴使用者, 請 owner 或 admin 安裝到 bot 範圍並核准. 不要自己宣稱已經可以用.
+
+### 範例: 活動報名清單
+
+「群組活動的報名清單: 成員只能報名自己, 看清單; 取消報名與整理清單只限 owner 與 admin. 報名時查活動名稱, 並通知一個公告頻道」. 用到 http 憑證 (查活動資訊的 API), bot 憑證 (另一隻 bot 管理的公告頻道), store (append 給報名, full 給取消). 以下網址與名稱都是範例值.
+
+`skills/signup/SKILL.md`:
+
+```markdown
+---
+name: signup
+description: 這隻 bot 共用的活動報名清單. 使用者要報名, 看誰報名了, 或管理員要取消某人的報名時用.
+---
+
+# 活動報名清單
+
+用 run_skill 呼叫 (skill: signup):
+
+- 報名: action join, args {"name": "顯示名稱", "note": "選填的備註"}
+- 看清單: action list
+- 取消: action cancel, args {"index": "編號"} (只有 owner 與 admin)
+
+需要的憑證: http 憑證 event-api (查活動資訊), telegram-bot 憑證 notify-bot (公告頻道 @example_events 的管理 bot).
 ```
 
-- 技能要裝在這隻 bot 或全部 bot 範圍, 由 owner 或 admin 用 `/router skill approve <技能>` 核准; 核准會記下檔案雜湊, 之後改了任何檔案都自動暫停, 要重新核准.
-- 對話用 `run_skill` (skill, action, args) 呼叫. router 檢查角色與參數格式 (不經 shell), 在專屬沙箱執行: 只讀得到技能資料夾與 `creds` 指定的憑證資料夾 (路徑放在環境變數), 只寫得到對話資料夾, router 狀態與 $HOME 都看不到.
-- 憑證資料夾在 router 那邊 (`<stateDir>/creds/<名稱>`, stateDir 是 router 的狀態目錄), 由 owner 放入檔案. 腳本要把憑證的工作副本放 `/tmp` (沙箱私有), 不要寫進對話資料夾; router 也會掃描回傳文字與輸出檔, 發現憑證內容就刪除並通知 owner.
-- `auth_failure` 比對到輸出時, router 執行 `refresh` 指定的 internal 動作一次 (只有它能寫憑證資料夾) 再重試; 更新失敗會通知 owner. 另外 router 每天固定時間 (預設 05:00 GMT+8), 以及啟動時發現超過 24 小時沒成功更新, 也會主動執行一次這個 refresh 動作, 所以它要能在憑證還有效時重複執行; 這時它在 router 的私有資料夾執行, 不在任何對話資料夾.
-- 動作要呼叫 API (例如 Whisper) 時寫 `"http": { "WHISPER": "openai" }`: 腳本拿到 `$WHISPER_URL` (base URL) 與 `$WHISPER_HEADER` (整行授權標頭, 例如 `Authorization: Bearer ...`), 要寫進 `/tmp` 的檔案再給 `curl -H @檔案`, 不要放命令列; key 出現在輸出會被遮蔽並通知 owner.
-- 動作要用 bot token 呼叫 Bot API (例如把貼圖加進另一隻 bot 建立的貼圖包) 時寫 `"bots": { "STICKER_BOT": "baldeagle" }` (登記好的 telegram-bot 憑證): 腳本拿到 `$STICKER_BOT_API` (`https://api.telegram.org/bot<token>` 這種網址), 直接 `curl "$STICKER_BOT_API/addStickerToSet" ...`; 不要把網址印出來或寫進檔案, 出現在輸出會被遮蔽並通知 owner.
-- 動作要累積資料 (例如已加入的貼圖紀錄) 時寫 `"store": { "STICKERS": "tg-sticker" }`: 腳本在 `$STICKERS` 拿到這隻 bot 共用資料庫的工作副本, 動作 exit 0 且檢查通過才寫回. 預設 append 模式: 只能新增檔案, `.jsonl` 只能在尾端加完整的 JSON 行 (以換行結尾), 不能刪改原有的檔案; 要刪改用 `{ "name": "tg-sticker", "mode": "full" }`, 只准 roles 只有 owner, admin 的動作. 單檔 5 MB, 一次 20 MB, 不接受 symlink; 不通過就整次不寫回並通知 owner. 同一個資料庫的執行依序排隊.
-- 某個參數只給較高角色用時寫 `"force": { "flag": "--force", "roles": ["owner", "admin"] }`: 其他角色帶這個參數會被擋, 照一般流程觸發提權申請 (發起者角色夠高就在對話裡問, 不然請對方用 request_elevation); 核准後由 subagent 重新呼叫. 這種限制不能永久允許.
-- 每個對話每小時最多 10 次.
+`skills/signup/privileged.json`:
+
+```json
+{
+  "actions": {
+    "join": {
+      "run": ["python3", "-B", "scripts/signup.py", "join", "{name}", "{note?}"],
+      "args": {
+        "name": { "pattern": "[^\\s].{0,39}" },
+        "note": { "pattern": ".{1,200}" }
+      },
+      "roles": ["owner", "admin", "power", "user"],
+      "http": { "EVENTS": "event-api" },
+      "bots": { "NOTIFY_BOT": "notify-bot" },
+      "store": { "SIGNUPS": "signup" },
+      "timeout": 60
+    },
+    "list": {
+      "run": ["python3", "-B", "scripts/signup.py", "list"],
+      "roles": ["owner", "admin", "power", "user"],
+      "store": { "SIGNUPS": "signup" },
+      "timeout": 30
+    },
+    "cancel": {
+      "run": ["python3", "-B", "scripts/signup.py", "cancel", "{index}"],
+      "args": { "index": { "pattern": "[0-9]{1,4}" } },
+      "roles": ["owner", "admin"],
+      "store": { "SIGNUPS": { "name": "signup", "mode": "full" } },
+      "timeout": 30
+    }
+  }
+}
+```
+
+`skills/signup/scripts/signup.py`:
+
+```python
+"""活動報名: join <名稱> [備註] | list | cancel <編號>. 由 router 以特權動作執行."""
+import json, os, sys, time, urllib.request
+
+
+def fail(msg):
+    print(msg)
+    sys.exit(1)
+
+
+store = os.environ.get('SIGNUPS') or fail('沒有 $SIGNUPS: 這支要由 router 以特權動作執行')
+path = os.path.join(store, 'signups.jsonl')
+
+
+def rows():
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding='utf-8') as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def call(url, data=None, header=None):
+    # the auth header and the bot URL go straight into the request: never printed, never on a command line
+    req = urllib.request.Request(url, data=None if data is None else json.dumps(data).encode())
+    if data is not None:
+        req.add_header('Content-Type', 'application/json')
+    if header:
+        name, value = header.split(': ', 1)
+        req.add_header(name, value)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+
+cmd = sys.argv[1]
+if cmd == 'join':
+    name, note = sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else ''
+    if any(r['name'] == name for r in rows()):
+        # exit 1: the run failed, so nothing is written back
+        fail(f'{name} 已經報名過了')
+    event = '這次活動'
+    try:
+        event = call(f"{os.environ['EVENTS_URL']}/v1/events/current", header=os.environ['EVENTS_HEADER']).get('title') or event
+    except Exception as e:
+        print(f'查不到活動名稱 ({type(e).__name__})')
+    # append mode: one complete JSON line, ending in a newline
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(json.dumps({'name': name, 'note': note, 'event': event, 'at': int(time.time())}, ensure_ascii=False) + '\n')
+    try:
+        call(f"{os.environ['NOTIFY_BOT_API']}/sendMessage", {'chat_id': '@example_events', 'text': f'🙋 {name} 報名了{event}'})
+    except Exception as e:
+        print(f'通知頻道失敗 ({type(e).__name__}), 報名已記下')
+    print(f'{name} 報名成功, 目前 {len(rows())} 人 ({event})')
+elif cmd == 'list':
+    for i, r in enumerate(rows(), 1):
+        print(f"{i}. {r['name']}" + (f" ({r['note']})" if r['note'] else ''))
+elif cmd == 'cancel':
+    keep, n = rows(), int(sys.argv[2])
+    if not 1 <= n <= len(keep):
+        fail(f'沒有第 {n} 位 (共 {len(keep)} 位)')
+    gone = keep.pop(n - 1)
+    # full mode (owner and admin only): the whole file is rewritten
+    with open(path, 'w', encoding='utf-8') as f:
+        f.writelines(json.dumps(r, ensure_ascii=False) + '\n' for r in keep)
+    print(f"已取消第 {n} 位: {gone['name']}")
+else:
+    fail(f'不認得的指令 {cmd}')
+```
+
+上線步驟: owner 或 admin 在自己和 bot 的私訊登記 `/router cred add event-api <API key> --http https://events.example.com` 與 `/router cred add notify-bot <bot token>` (那隻 bot 要是頻道管理員), 由 owner 或 admin 的對話 `install_skill` (name `signup`, scope `bot`), 再 `/router skill approve signup`. 之後任何 user 以上的對話: `run_skill` (skill `signup`, action `join`, args `{"name": "小明", "note": "會晚到"}`).
 
 ## 跨 bot 技能
 
-要操作另一隻 bot 的資源 (例如只有建立者能修改的貼圖包) 就是跨 bot 技能: 那隻 bot 的 token 照上面登記成憑證, 方法只開放需要的那幾個. 憑證只用來管理資源, 不拿來以那隻 bot 的身分發言. 這類技能通常放「全部 bot」範圍, 由 owner 或 admin 安裝.
+要操作另一隻 bot 的資源 (例如只有建立者能修改的貼圖包) 就是跨 bot 技能: 那隻 bot 的 token 照上面登記成憑證. 兩種用法: 一般技能由你呼叫 `bot_api` (憑證的方法只開放需要的那幾個, 角色照憑證設定); 特權動作寫 `bots`, 腳本自己呼叫 (上面的範例). 憑證只用來管理資源, 不拿來以那隻 bot 的身分發言. 這類技能通常放「全部 bot」範圍, 由 owner 或 admin 安裝.
 
 ## 腳本與工具的分工
 
-腳本 (bash, python) 呼叫不到 MCP 工具, 所以:
+腳本 (bash, python) 呼叫不到 MCP 工具. 分兩種情況:
 
-- 腳本負責產生檔案 (產圖, 轉檔, 整理資料), 輸出檔案路徑.
-- 需要 Telegram 的步驟由你呼叫工具: 送訊息用 `reply`, 送貼圖用 `send_sticker`, 用憑證的操作用 `bot_api`; 一般 API 用 `http_api`.
-- 放在「這隻 bot」或「全部 bot」範圍的技能, 腳本對所有角色的對話都是唯讀可執行 (sandbox 允許讀, 不能改); 需要的 Python 套件裝在自己資料夾 (例如 `pip install --target ./.pylib <套件>` 再設 `PYTHONPATH=./.pylib`).
-- 終端機的 session 沒有這些工具: owner 在終端機用 `cc-telegram-router cli botapi <憑證> <方法> '<JSON>' [--file 欄位=/路徑]`.
+- **一般技能** (沒有 privileged.json, 腳本在你自己的沙箱跑): 腳本負責產生檔案 (產圖, 轉檔, 整理資料), 輸出檔案路徑; 需要 Telegram 或憑證的步驟由你呼叫工具: 送訊息用 `reply`, 送貼圖用 `send_sticker`, bot token 的操作用 `bot_api`, 一般 API 用 `http_api`. 需要的 Python 套件裝在自己資料夾 (例如 `pip install --target ./.pylib <套件>` 再設 `PYTHONPATH=./.pylib`, power 以上的對話, 安裝會經過套件審核). 放在「這隻 bot」或「全部 bot」範圍的技能, 腳本對所有角色的對話都是唯讀可執行.
+- **特權動作** (privileged.json): 腳本由 router 在專屬沙箱執行, 自己用 `$<ENV>_HEADER`, `$<ENV>_API` 呼叫 API, 自己讀寫 `$<ENV>` 的資料庫; 不用 `bot_api` 與 `http_api`, 也不用 `.pylib` (見[執行時的環境](#執行時的環境)). 送訊息與送檔仍由你在 `run_skill` 回來之後用 `reply`.
+- 終端機的 session 沒有這些工具: owner 在終端機用 `cc-telegram-router cli botapi <憑證> <方法> '<JSON>' [--file 欄位=/路徑]`, 特權動作用 `cc-telegram-router cli skill run` (見 docs/credentials-and-skills.md).
 
 ## 檢查清單
 
@@ -109,4 +284,5 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 - [ ] 沒有任何 token, 密碼, API key 寫在檔案裡
 - [ ] 需要的憑證已登記, 方法只開放必要的
 - [ ] 範圍與使用者確認過
-- [ ] 實際跑過一次
+- [ ] `skill_check` 第一行是 `skill check: ok`
+- [ ] 一般技能實際跑過一次; 特權動作已安裝到 bot 或全部 bot 範圍並核准後, 用 `run_skill` 跑過一次

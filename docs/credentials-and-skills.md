@@ -92,6 +92,15 @@ cc-telegram-router cli skill refresh <技能>
 - `skill refresh <技能>`: 跟每日更新同一條路 (`refreshAll`, 同樣的沙箱, 掛載, env, 雜湊檢查, 在 `<stateDir>/skill-refresh/<技能>/` 執行), 只跑這個技能被 `refresh` 指到的 internal 動作, 其他已核准技能不跑 (以技能名稱比對: 同名技能在不同 bot 或全部 bot 範圍都核准時, 每一份都跑), 排進每日更新的同一個佇列 (不會跟每日更新重疊). `skill_runs` 記成 `terminal:refresh`, 不算每日更新 (啟動時的補跑仍看 `router:refresh`). 回傳每個動作的結果與最後幾行輸出 (遮蔽憑證), 失敗時的 owner 通知同樣附在回傳文字裡.
 - 終端機等 router 回答最多 1 小時 (其他 cli 子指令 2 分鐘), 因為一次執行可能是動作的逾時兩次加一次憑證更新.
 
+### 檢查技能草稿
+
+worker 寫特權技能不用讀 router 原始碼: `/telegram:bot-skill` 寫明 privileged.json 的欄位, 執行時的環境 (工作目錄是對話資料夾, 參數整串比對, 技能資料夾唯讀, 私有 HOME, 環境變數名稱, exit code, 輸出掃描, 每小時 10 次, 改檔要重新核准), store 的規則, 各角色能做到哪裡, 以及一個完整範例 (活動報名清單: http 憑證, bots, store 的 append 與 full 一起用); worker 再用 `skill_check` 檢查.
+
+- `skill_check` (path): 技能資料夾, 相對於對話資料夾 (例如 `skills/signup`), 只給名稱時是 `skills/<名稱>`. 只能是這個對話資料夾裡的路徑 (跟著符號連結算, 連到外面的拒絕).
+- router 只讀檔案, 不執行任何程式: 用自己的 `loadManifest` 讀 privileged.json (它拒絕的內容就是 `/router skill approve` 會拒絕的, 原樣回報), 再檢查 `loadManifest` 放行但執行時會出錯的地方 (`run` 不是字串陣列, `{名稱}` 在 args 沒有, `{cred:X}` 在 creds 沒有, 技能裡找不到的腳本路徑, 不合法的 pattern 或 auth_failure, refresh 指到不存在的動作, timeout 不是正數), 以及提醒 (黏在其他字裡不會被替換的佔位符, 沒出現在 run 的參數, 沒有 pattern 的參數, 不認得的欄位與可能想寫的名稱, Python 沒加 `-B`, venv 不會被 install_skill 複製, 不是角色的名稱, 非 internal 動作的 mounts 與 env, http 與 bots 指的憑證在 config 裡不存在或類型不對; 只說名稱與類型, 不含值). 也檢查 install_skill 會拒絕的: 沒有 SKILL.md 或 frontmatter 缺 name, description, 資料夾名稱不是小寫英數與 `-`, 符號連結, 像 bot token 的字串. privileged.json 與 SKILL.md 是符號連結時不讀, privileged.json 超過 256 KB 不讀.
+- 回傳第一行是 `skill check: ok` (可能附提醒數) 或 `skill check: 有 N 個錯誤要改`, 接著是錯誤與提醒 (每項說明怎麼改), 沒有錯誤時列出 `/router skill approve` 會列出的內容 (`describeActions`), 以及這個角色的下一步 (owner 與 admin: install_skill 到 bot 或 all 範圍再核准; power: 請 owner 或 admin 安裝並核准; user: 現在還不能安裝, 請 owner 或 admin 處理).
+- guest 以外的角色都能用 (guest 不能寫檔, 沒有東西可檢查, router 拒絕). 不需要提權, 不計次, 不記進 `skill_runs`.
+
 ## worker 端 SOP
 
 - worker 端的 SOP 在 `/telegram:bot-skill`.
@@ -100,5 +109,6 @@ cc-telegram-router cli skill refresh <技能>
 
 - `router/test/cred-flows.test.ts` (9 項, 模組層級) 與 `router/test/e2e-creds.test.ts` (7 項, 真的 router 對假的 Bot API 與本機假 HTTP 伺服器): 登記訊息的延遲刪除與取消 (私訊 60 秒, 發訊者, owner, admin 能取消, 其他人沒有權限; 群組 10 秒且不附按鈕; 被拒的立刻刪; 重啟後到期照刪), rotate 保留設定, 同名 add 的覆蓋 / 取消與逾時丟棄, 預設標頭 (補上, 被 worker 覆蓋, 不能是被擋的標頭, `/router cred header` 與 `/secret header` 的列出, 更新, rm), json_file (owner 與 admin 可讀資料夾外, user 與 power 限資料夾內, stateDir 一律拒絕, 大小上限, 非法 JSON, 與 json 互斥, 實際送出內容).
 - `router/test/skillcli.test.ts` (10 項, 真的 bwrap 與本機假 Bot API): [終端機執行特權動作](#終端機執行特權動作)的參數解析 (JSON 參數含空白, `--out` 必填, `--api` 只限試跑與本機網址), `--out` 與 `--trial-store` 的位置限制, 以對話身分執行 (輸出只在 `--out`, `skill_runs` 記 `terminal:<key>`, 不算也不受對話每小時限額, `--role` 與參數角色檢查照 run_skill 拒絕, failed 與 refused 分開), `--trial` (正式資料庫不變, 複本刪除, 列出變動, 假 Bot API 收到呼叫, token 遮蔽), `--trial-store` (publish 後 remove 共用複本), 核准後被改過時通知附在回傳文字, `skill refresh` (排進佇列, 記 `terminal:refresh` 不算每日更新, 失敗遮蔽; 兩個已核准且有 refresh 的技能只 refresh 其中一個時, 另一個在 `skill_runs` 沒有紀錄, 憑證資料夾不動), `/router skill run|refresh` 只限 owner 終端機 (Telegram 裡 owner 的私訊與群組, admin 的私訊與群組都被拒且完全沒有執行).
+- `router/test/skillcheck.test.ts` (7 項, 真的 bwrap 與本機假 API) 與 `router/test/e2e-setup.test.ts` 的 skill_check 一項: [檢查技能草稿](#檢查技能草稿)的每一種錯誤與提醒, install_skill 會拒絕的, 只讀對話資料夾裡的路徑, 不經符號連結讀檔, 憑證只報名稱與類型, 各角色的下一步, 不執行任何程式, guest 被拒; `/telegram:bot-skill` 的「範例: 活動報名清單」從說明書本身抽出, 通過檢查, 核准後照寫的樣子真的執行 (join, 重複報名失敗且不寫回, list, cancel 只限 owner 與 admin, key 與 token 不外流).
 - `router/test/cred-http.test.ts`, `router/test/phase3-cred.test.ts`: key 放哪裡, worker 自帶標頭, /router help cred.
 - `router/test/skillstore.test.ts` (19 項, 真的 bwrap): [資料庫 store](#資料庫-store) 兩種模式的寫回與每一種整次作廢 (刪檔, 刪資料夾, 改檔, 改 `.jsonl` 舊行, 非法 JSON 行, 空行, 沒以換行結尾, 單檔與單次上限, symlink, fifo, 腳本鎖住讀不到的資料夾), 動作失敗不寫回, full 只准 owner 與 admin 的動作, 其他宣告錯誤, 跨對話排隊, 對對話與其他動作隱藏; [bot 憑證 bots](#bot-憑證-bots) 的 `$<ENV>_API`, 只接受 telegram-bot, token 從輸出, 檔案, 資料庫擋下; 同一個動作同時用 store, bots, http.
