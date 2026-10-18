@@ -101,6 +101,7 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 | `timeout` | 秒, 沒寫是 600; 超過就被終止 |
 | `internal` | `true`: 對話不能呼叫, 只由 router 執行 (憑證更新) |
 | `auth_failure`, `refresh` | 輸出比對到 `auth_failure` (正規表示式, 不分大小寫) 時, router 執行 `refresh` 指的 internal 動作一次 (只有它能寫憑證資料夾) 再重試; router 每天固定時間 (預設 05:00 GMT+8) 與啟動時發現超過 24 小時沒成功更新, 也會主動執行它, 所以它要能在憑證還有效時重複執行 |
+| `tools` | 需要的工具箱工具: `ffmpeg` (含 ffprobe), `deno`, `uv`; router 安裝時下載的固定版本, 在 `PATH` 最前面. 宣告了但工具箱沒裝時拒絕執行並說明. 系統的 `/usr/bin` 工具不用宣告 |
 | `outbound_ports` | 只給非 internal 動作: 外網要多開的 port (1~65535 的整數陣列, tcp 與 udp), 預設只開 80, 443, 53, 22. 開不了主機本機與內網. **有這個宣告的技能只有 owner 能核准** |
 | `host` | 只給 internal 動作, 主機存取: `{"ports": [主機的 port], "mounts": [唯讀可見的主機路徑, "~/" 是 router 使用者的家目錄], "env": {額外的環境變數}}`. `ports` 經 `$CCTR_HOST` 連 (例如 `http://$CCTR_HOST:9222`; 沙箱裡的 127.0.0.1 是沙箱自己, 不是主機); 有 `mounts` 時可以連掛進來的 unix socket (例如 ssh agent). 主機其他 port 與內網照樣連不到. **有這個宣告的技能只有 owner 能核准** |
 | `mounts`, `env` | 舊寫法, internal 動作的 `host.mounts` 與 `host.env`; 寫在其他動作上沒有作用 |
@@ -111,9 +112,10 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 
 - **工作目錄是對話資料夾** (呼叫它的那個對話), 也是唯一寫得到的地方 (它的 `.chat` 唯讀), 輸出檔就寫在這裡, 寫相對路徑即可; 之後你用 `reply` 的 `files` 送出.
 - **技能資料夾在沙箱裡唯讀**. Python 一律加 `-B` (例如 `["python3", "-B", "scripts/x.py"]`), 或 internal 動作的 `host.env` 設 `PYTHONDONTWRITEBYTECODE=1`, 不要寫 `__pycache__`.
-- `HOME` 是沙箱私有的 `/tmp` (每次執行都是空的, 跑完就消失), `TMPDIR` 也是; 憑證的工作副本 (例如要改寫的 cookie 檔) 放這裡, 不要寫進對話資料夾. `PATH` 是 `/usr/local/bin`, `/usr/bin`, `/bin`.
+- `HOME` 是沙箱私有的 `/tmp` (每次執行都是空的, 跑完就消失), `TMPDIR` 也是; 憑證的工作副本 (例如要改寫的 cookie 檔) 放這裡, 不要寫進對話資料夾. `PATH` 是 `/cctr/env/bin` (技能有 Python 環境時), `/cctr/tools/bin` (工具箱), `/usr/local/bin`, `/usr/bin`, `/bin`.
 - **白名單: 只看得到列出來的東西**, 像手機 App. 有: `/usr` (系統的程式與函式庫, 例如 bash, curl, python3), 少數 `/etc` 檔 (CA 憑證, 名稱解析; `/etc/passwd` 只有沙箱自己的使用者), 技能資料夾, 宣告的憑證資料夾 (`/cctr/creds/<環境變數>`), 資料庫副本 (`/cctr/store/<環境變數>`), 對話資料夾, 私有的 `/tmp`. 其他全部不存在: router 使用者的家目錄 (裡面裝的套件與工具也用不到), `/home`, `/opt`, `/run`, `/sys`, router 的家目錄 (其他對話), router 狀態目錄, 其他技能.
-- **不要從對話資料夾載入程式或套件** (例如 `PYTHONPATH=./.pylib`, `source ./x.sh`): 那個資料夾對話自己寫得到, 等於讓對話用動作的憑證跑任意程式. 套件用系統的, 或技能資料夾裡的 venv (`install_skill` 不複製 venv, 雜湊也不含它, 要由 owner 在安裝位置建好).
+- **不要從對話資料夾載入程式或套件** (例如 `PYTHONPATH=./.pylib`, `source ./x.sh`): 那個資料夾對話自己寫得到, 等於讓對話用動作的憑證跑任意程式.
+- **Python 套件用 uv**: 技能資料夾放 `pyproject.toml` (`dependencies` 寫死版本) 與 `uv.lock` (用 `uv lock` 產生, 兩個檔一起放; GitHub 這類 git 來源寫在 `[tool.uv.sources]`, lock 會鎖在 commit). router 核准時建好環境並唯讀掛在 `/cctr/env`, `run` 寫 `"python3"` 就是環境裡的 Python (不要寫 `venv/bin/python3`). PyPI 套件由模型判斷風險, git 等自訂來源一律人工審核. 不要自己在技能資料夾建 venv (`install_skill` 不複製, 雜湊也不含).
 - 參數是呼叫者給的輸入, 一律當資料: 不要拿去 `eval` 或組 shell 指令. 參數是檔名時, pattern 擋掉 `..` (例如 `(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}`), 腳本再確認它在工作目錄裡.
 - 授權標頭與 bot 網址不要放在命令列 (別的程序看得到), 也不要印出來或寫進檔案: Python 直接放進請求; shell 先寫進 `/tmp` 的檔再 `curl -H @檔案`. 印錯誤時只印錯誤種類, 不要印整個請求或網址.
 - **exit code 不是 0 就算失敗** (資料庫也不寫回). 對話收到 `exit <碼>` 開頭, 加上輸出 (stdout 與 stderr) 的最後 60 行.
@@ -141,7 +143,7 @@ power 以上的對話用 `skill_try` (path, action, args, 選填 role, session, 
 - 每個對話每小時 20 次, 不算進 `run_skill` 的 10 次.
 - 第一行是 `skill try: ok`, `failed` (跑了, 但 exit 不是 0 或資料庫寫回被拒) 或 `refused` (沒有跑, 附原因).
 
-試跑通過不等於正式能跑: 真的憑證要先登記 (試跑會提醒 router 裡不存在的), 要裝到 bot 範圍並核准, venv 要在安裝位置建好.
+試跑通過不等於正式能跑: 真的憑證要先登記 (試跑會提醒 router 裡不存在的), 要裝到 bot 範圍並核准. 有 `uv.lock` 的草稿試跑時也建環境, 但只限全部是 PyPI 而且自動審核判定 low 的套件; 有自訂來源的要等核准.
 
 ### 各角色能做到哪裡
 

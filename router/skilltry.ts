@@ -35,6 +35,9 @@ import { resolveSkillDir } from './skillcheck'
 import { snap, diff } from './skillcli'
 import { RANK } from './permcheck'
 import { netMissing, runIsolated, OUT_PORTS } from './sandboxnet'
+import { lockFiles, lockPackages, customLabel } from './skillenv'
+import type { Pkg } from './packages'
+import type { Verdict } from './pkgreview'
 
 export const TRY_PER_HOUR = 20
 export const TRY_MAX_TIMEOUT = 600
@@ -51,6 +54,28 @@ export interface SkillTryDeps extends SkillRunDeps {
   cred(name: string): Credential | undefined
   /** How the sandbox starts the fake service, and what it must see read-only for that (router/selfpath.ts fakeService). */
   fake: { cmd: string[]; ro: string[] }
+  /** pkgreview's verdicts for a draft's uv.lock (router/pkgreview.ts); none: a draft with packages is refused. */
+  reviewPkgs?(pkgs: Pkg[]): Promise<Verdict[]>
+}
+
+/** Why a draft's uv.lock may not be built for a trial, or null (no lock, or only PyPI packages judged low):
+ *  a custom source or a riskier package waits for approval, where a person looks at it. */
+async function envRefusal(deps: SkillTryDeps, dir: string): Promise<string | null> {
+  const f = lockFiles(dir)
+  if (!f) return null
+  if ('error' in f) return f.error
+  const pkgs = lockPackages(f.lock)
+  if (!Array.isArray(pkgs)) return pkgs.error
+  const custom = pkgs.filter(p => !p.pypi)
+  if (custom.length) return `試跑只建 PyPI 套件的環境; 這些是自訂來源, 要 owner 或 admin 核准時人工審核: ${custom.map(customLabel).join(', ')}`
+  const pypi = pkgs.filter(p => p.pypi)
+  if (!pypi.length) return null
+  if (!deps.reviewPkgs) return '這個 router 沒有套件審核, 試跑不建 Python 環境'
+  let vs: Verdict[] = []
+  try { vs = await deps.reviewPkgs(pypi.map(p => ({ eco: 'pypi', name: p.name.toLowerCase() }))) } catch {}
+  const not = pypi.filter(p => vs.find(v => v.name === p.name.toLowerCase())?.risk !== 'low')
+  if (not.length) return `試跑只建自動審核判定 low 的套件; 這些要 owner 或 admin 核准時再看: ${not.map(p => { const v = vs.find(x => x.name === p.name.toLowerCase()); return `${p.name} ${p.version} [${v ? `${v.risk}: ${v.reason}` : '沒有審核結果'}]` }).join(', ')}`
+  return null
 }
 
 const inside = (p: string, dir: string) => { const r = relative(dir, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)) }
@@ -116,6 +141,8 @@ export async function trySkill(deps: SkillTryDeps, conv: Conversation, role: str
   if (seed && typeof seed !== 'string') return refused(seed.error)
   const missing = (deps.netMissing ?? netMissing)()
   if (missing) return refused(`這台主機缺少試跑網路隔離需要的工具 (${missing}), 不試跑 (不會改成不隔離)`)
+  const envWhy = await envRefusal(deps, dir)
+  if (envWhy) return refused(envWhy)
   const runAs = `${TRY_PREFIX}${conv.key}`
   const used = deps.db.skillRunsSince(runAs, new Date(Date.now() - 3_600_000).toISOString())
   if (used >= TRY_PER_HOUR) { deps.db.addSkillRun(runAs, skill, actionName, 'refused'); return refused(`這個對話一小時內已經試跑 ${used} 次, 上限 ${TRY_PER_HOUR} 次, 請稍後再試`) }
@@ -168,6 +195,8 @@ export async function trySkill(deps: SkillTryDeps, conv: Conversation, role: str
     httpCred: n => fakeOf(n, 'http', httpEnv.get(n) ?? n.toUpperCase().replace(/\W/g, '_')),
     botCred: n => fakeOf(n, 'telegram-bot', botEnv.get(n) ?? n),
     notifyOwner: (_c, text) => notices.push(text),
+    // a draft's Python environment: built like an approved skill's, kept apart from theirs
+    envPrefix: 'try-',
     // the fake service starts first inside the sandbox, then runs the action; an internal action's
     // trial still gets only the ports every other action gets (80, 443, 53, 22 and outbound_ports)
     isolated: o => (deps.isolated ?? runIsolated)({ ...o, workDir: join(io, `net-${++attempt}`), wrap: [...deps.fake.cmd, log, '--'], extraRo: [...(o.extraRo ?? []), ...deps.fake.ro], extraRw: [...(o.extraRw ?? []), io], outPorts: o.outPorts ?? OUT_PORTS }),

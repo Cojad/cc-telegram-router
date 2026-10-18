@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+## [2.23.0] - 2026-10-18
+
+### Added
+
+- 共用工具箱 (`router/toolbox.ts`): 固定版本的 ffmpeg 與 ffprobe 7.0.2 (靜態版), deno 2.9.7, uv 0.12.22 (x86_64 與 aarch64, GitHub release 固定 tag 的檔案), 每個檔案先核對 sha256 才解開, 放在 `<stateDir>/toolbox/bin`, 每個特權沙箱唯讀掛在 `/cctr/tools/bin`, PATH 最前面. `deploy/install.sh router` 會執行新的子指令 `cc-telegram-router toolbox install --state <stateDir>` (另有 `toolbox status`, `--mirror`); 某個工具下載失敗只印警告, 只影響需要它的技能. privileged.json 新增 `tools` (例如 `["ffmpeg", "deno"]`): 宣告的工具沒裝時拒絕執行並說明怎麼補.
+- 技能的 Python 環境 (`router/skillenv.ts`): 技能帶 `pyproject.toml` 與 `uv.lock` (算在核准雜湊裡) 時由 router 建 uv 環境, 唯讀掛在 `/cctr/env`, `python3` 就是環境裡的. 建置在兩個白名單沙箱與獨立網路裡: 先只用 uv 下載它自己的 Python 到 `<stateDir>/toolbox/python`, 再以唯讀的 Python 與一次性的快取 `uv sync --locked`, 失敗不留東西; 同一份 lock 共用 `<stateDir>/skill-env/<key>`, 執行時不見了就照 lock 重建, 30 天沒用而且沒有已核准技能用到的會清掉.
+- 核准接上套件審核 (`router/skillapprove.ts`): uv.lock 的 PyPI 套件交給套件審核的同一個模型與快取, git, URL, 路徑與其他 index 是自訂來源一律人工審核, git 沒鎖完整 commit 拒絕. 有主機存取, 額外的對外 port, 不是 low 或自訂來源的套件時, `/router skill approve` 先回確認畫面 (⚠️ 列出每一項, 全部套件與模型的判斷), 再以 `/router skill approve <技能> <確認碼>` (雜湊前 8 碼) 核准; 有 Python 環境的技能先回「核准中」, 建好才記核准並另外發結果 (終端機等到結果一起回). `skill_try` 只建全部是 PyPI 且判定 low 的草稿環境 (`skill-env/try-<key>`), 其他拒絕並說明.
+- `skill_check` 檢查 `pyproject.toml` 與 `uv.lock` (要一起, git 要鎖 commit, 提醒自訂來源), `run` 用 `venv/bin/python3` 時建議改用 uv. `.venv` 不算在雜湊裡, `install_skill` 也不複製.
+- [docs/skill-runtime.md](docs/skill-runtime.md) 新增「工具箱」與「Python 套件 (uv)」, 「核准」寫明確認畫面與建環境; `/telegram:bot-skill` 加上 `tools` 與 uv 的寫法. 新測試 `router/test/toolbox.test.ts` (6 項), `router/test/skillenv.test.ts` (7 項, 建環境的測試要 uv: `CCTR_TEST_UV` 或 PATH 上的 uv), `router/test/e2e-compiled.test.ts` 加上編譯版的工具箱.
+
 ## [2.22.0] - 2026-10-18
 
 ### Changed

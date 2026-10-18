@@ -38,7 +38,7 @@ function walk(dir: string, out: string[] = []): string[] {
     const p = join(dir, e)
     const st = lstatSync(p)
     if (st.isSymbolicLink()) throw new Error(`技能裡不能有符號連結: ${e}`)
-    if (st.isDirectory()) { if (e !== 'venv' && e !== 'node_modules' && e !== '__pycache__') walk(p, out) }
+    if (st.isDirectory()) { if (e !== 'venv' && e !== '.venv' && e !== 'node_modules' && e !== '__pycache__') walk(p, out) }
     else out.push(p)
   }
   return out
@@ -65,6 +65,6 @@ export function installSkill(o: { convFolder: string; role: string; name: string
     if (!o.replace) throw new Error(`${dest} 已經有同名技能; 確定要覆蓋就帶 replace: true`)
     rmSync(dest, { recursive: true, force: true })
   }
-  cpSync(src, dest, { recursive: true, filter: s => !/\/(venv|node_modules|__pycache__)(\/|$)/.test(s) })
+  cpSync(src, dest, { recursive: true, filter: s => !/\/(\.?venv|node_modules|__pycache__)(\/|$)/.test(s) })
   return dest
 }

@@ -8,6 +8,7 @@
 
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'fs'
 import { basename, isAbsolute, join, relative } from 'path'
+import { lockFiles, lockPackages, customLabel } from './skillenv'
 import { loadManifest, type Action } from './privskill'
 import { describeActions } from './skillrun'
 import { TOKEN_RE } from './credentials'
@@ -23,7 +24,7 @@ const ROLES = ['owner', 'admin', 'power', 'user', 'guest']
 const DEFAULT_ROLES = ['owner', 'admin', 'power', 'user']
 const KNOWN = new Set(['run', 'args', 'roles', 'creds', 'timeout', 'internal', 'auth_failure', 'refresh', 'host', 'outbound_ports', 'mounts', 'env', 'http', 'bots', 'store'])
 const LIKELY: Record<string, string> = { role: 'roles', arg: 'args', cred: 'creds', command: 'run', cmd: 'run', argv: 'run', stores: 'store', bot: 'bots', mount: 'mounts', authFailure: 'auth_failure', 'auth-failure': 'auth_failure', ports: 'outbound_ports (或 host.ports)', outbound: 'outbound_ports', outboundPorts: 'outbound_ports', hosts: 'host' }
-const SKIP_DIR = new Set(['venv', 'node_modules', '__pycache__'])
+const SKIP_DIR = new Set(['venv', '.venv', 'node_modules', '__pycache__'])
 const MAX_FILES = 2000
 const MAX_MANIFEST = 256 * 1024
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/
@@ -98,7 +99,7 @@ function lintAction(dir: string, n: string, a: Action, all: Record<string, Actio
     if (!tok.includes('/') && !tok.startsWith('-') && /\.\w+$/.test(tok) && existsSync(join(dir, tok)) && lstatSync(join(dir, tok)).isFile()) warnings.push(`${at}: ${tok} 不含 /, 會原樣傳入 (工作目錄是對話資料夾, 找不到技能裡的這個檔); 寫成 ./${tok} 或放進 scripts/ 再寫 scripts/${tok}`)
     if (tok.includes('/') && !isAbsolute(tok) && !tok.startsWith('-')) {
       const p = join(dir, tok)
-      if (/^(venv|node_modules)\//.test(tok)) warnings.push(`${at}: ${tok} 在 ${tok.split('/')[0]} 裡: install_skill 不複製 ${tok.split('/')[0]}, 核准的雜湊也不含它; 安裝後要由 owner 在安裝位置建好, 否則執行時找不到`)
+      if (/^(venv|node_modules)\//.test(tok)) warnings.push(`${at}: ${tok} 在 ${tok.split('/')[0]} 裡: install_skill 不複製 ${tok.split('/')[0]}, 核准的雜湊也不含它; 安裝後要由 owner 在安裝位置建好, 否則執行時找不到${tok.startsWith('venv/') ? '. Python 套件改用 pyproject.toml 加 uv.lock (router 建環境, run 寫 "python3")' : ''}`)
       else if (!existsSync(p)) errors.push(`${at}: 找不到 ${tok} (技能資料夾裡沒有這個檔): 執行時會原樣當成字串傳入, 而工作目錄是對話資料夾, 一定失敗`)
     }
   }
@@ -152,6 +153,18 @@ function lintAction(dir: string, n: string, a: Action, all: Record<string, Actio
   }
 }
 
+/** pyproject.toml and uv.lock (router/skillenv.ts): both or neither, git sources locked to a commit; custom sources noted. */
+function lintLock(dir: string, errors: string[], warnings: string[]) {
+  const f = lockFiles(dir)
+  if (!f) return
+  if ('error' in f) { errors.push(f.error); return }
+  const pkgs = lockPackages(f.lock)
+  if (!Array.isArray(pkgs)) { errors.push(pkgs.error); return }
+  const custom = pkgs.filter(p => !p.pypi)
+  if (custom.length) warnings.push(`uv.lock 有自訂來源的套件 (${custom.map(customLabel).join(', ')}): 核准時一律人工審核, skill_try 不建這種環境`)
+  if (!pkgs.length) warnings.push('uv.lock 沒有任何套件: 不需要 Python 套件就不用 pyproject.toml 與 uv.lock')
+}
+
 /** What this role can do with a skill once it checks out. */
 function nextSteps(role: string, name: string, privileged: boolean): string {
   const approve = `owner 或 admin 在 Telegram 打 /router skill approve ${name} 核准 (核准記下檔案雜湊, 之後改了任何檔案就暫停, 要重新核准)`
@@ -196,6 +209,7 @@ export function checkSkill(folder: string, path: string, role: string, deps: Ski
             lintAction(dir, n, a, m.actions, deps, errors, warnings)
           }
           if (!Object.values(m.actions).some(a => a && !a.internal)) warnings.push('沒有對話能呼叫的動作 (全部是 internal)')
+          lintLock(dir, errors, warnings)
           if (!errors.length) approve = describeActions(dir)
         } catch (e) { errors.push(`/router skill approve 會拒絕: ${e instanceof Error ? e.message : e}`) }
       }

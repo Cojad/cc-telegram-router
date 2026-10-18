@@ -88,7 +88,7 @@ router 以 `claude --bg` 在每個對話資料夾 (`<home>` 底下) 啟動 worke
 |---|---|
 | `bots` | bot 清單, 每隻 `{ "name": ..., "token": ... }`, 至少一隻 (必填); 之後用 `/router bot add` / `rotate` 管理. 選填 `apiRoot` (這隻 bot 的 Bot API server, 優先於全域 `apiRoot`) 與 `localFilesDir` (自架 server 在 `--local` 模式時, 附件只從這個絕對路徑底下讀). 見[自架 Bot API server](#自架-bot-api-server). |
 | `home` | router 的家目錄, 每個對話一個資料夾; 沒寫是 config.json 所在資料夾的上一層. 見[安裝位置](#安裝位置). |
-| `stateDir` | 狀態目錄 (router.db, access.json, 技能的資料庫與憑證資料夾, 執行檔); 沒寫是 config.json 所在的資料夾. 見[安裝位置](#安裝位置). |
+| `stateDir` | 狀態目錄 (router.db, access.json, 技能的資料庫與憑證資料夾, 工具箱 `toolbox/` 與技能的 Python 環境 `skill-env/`, 執行檔); 沒寫是 config.json 所在的資料夾. 見[安裝位置](#安裝位置). |
 | `socket` | router 的 unix socket (plugin, hook 與 `cli` 連它); 沒寫是 `<stateDir>/router.sock`, 放在 home 與 stateDir 以外時沙箱另外隱藏它. 見[安裝位置](#安裝位置). |
 | `owners` | 一律是 owner 的 Telegram uid; 可以留空, 用認領碼認領. 見[新 bot 初次設定與審核群組](#新-bot-初次設定與審核群組). |
 | `model` | worker 與套件審核用的模型 (`--model`); 沒寫是 `claude-opus-5-5`. |

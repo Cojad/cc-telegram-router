@@ -36,11 +36,14 @@ import { PAIRING_TOPIC, PAIRING_TOPIC_INTRO, postPairingRequest, decidePairButto
 import { installSkill, installRefusal, skillScope, SKILL_SRC } from './skills'
 import { fingerprint, noteStart, STALE_NOTE } from './freshness'
 import { createAuthz } from './authz'
-import { runSkill, skillDirs, describeActions, approveRefusal, type SkillRunDeps } from './skillrun'
+import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
+import { approveSkill } from './skillapprove'
+import { pruneEnvs, envNameOf, type EnvDeps } from './skillenv'
 import { checkSkill } from './skillcheck'
 import { trySkill, type SkillTryDeps } from './skilltry'
 import { interfaceAddrs, cloudPublicAddrs } from './sandboxnet'
 import { writeSandboxEtc } from './sandboxfs'
+import { toolboxCli, toolboxDir } from './toolbox'
 import { relaunchArgs, ownArgs, fakeService, FAKE_SUBCOMMAND } from './selfpath'
 import { runFakeService } from './skilltry-fake'
 import { scheduleRefresh, type RefreshDeps } from './skillrefresh'
@@ -81,6 +84,10 @@ const startedAt = new Date()
 // sandbox (router/selfpath.ts, router/skilltry-fake.ts): before anything reads config.json, which
 // the sandbox hides.
 if (ownArgs()[0] === FAKE_SUBCOMMAND) await runFakeService(ownArgs().slice(1))
+
+// `cc-telegram-router toolbox install|status [--state <stateDir>] [--mirror <x>]`: the shared toolbox
+// (router/toolbox.ts; deploy/install.sh router runs install), without config.json.
+if (ownArgs()[0] === 'toolbox') process.exit(await toolboxCli(ownArgs().slice(1), dirname(process.execPath)))
 
 const configPath = defaultConfigPath(process.argv, process.execPath)
 // `cc-telegram-router [--config x] setup`: the setup wizard (router/wizard.ts), before config.json is read (it may not exist yet)
@@ -722,13 +729,19 @@ const skillDeps: SkillRunDeps = {
   botCred: name => cfg.credentials[name],
   apiRoot: cfg.apiRoot,
   storeRoot: join(cfg.stateDir, 'skill-store'),
+  // the shared toolbox (deploy/install.sh router) and the skills' Python environments (router/skillenv.ts)
+  toolbox: toolboxDir(cfg.stateDir),
+  envRoot: join(cfg.stateDir, 'skill-env'),
   notifyOwner: (c, text) => void postNotice(approvalDeps, c.bot, text),
   log,
 }
+/** Building a skill's Python environment at approval (router/skillenv.ts), the same folders as a run's. */
+const envDeps: EnvDeps = { toolbox: skillDeps.toolbox!, envRoot: skillDeps.envRoot!, etcDir: skillDeps.etcDir, runRoot: skillDeps.runRoot, hostAddrs: skillDeps.hostAddrs, log }
 /** skill_try (router/skilltry.ts): a draft's action with fake credentials, in its own network (router/sandboxnet.ts). */
 const tryDeps: SkillTryDeps = {
   ...skillDeps, stateDir: cfg.stateDir,
   cred: n => cfg.credentials[n],
+  reviewPkgs: pkgs => pkgGate.review(pkgs),
   // compiled: the router's own executable runs the fake service; from source: bun and the script (router/selfpath.ts)
   fake: fakeService(),
 }
@@ -1190,13 +1203,11 @@ const commandDeps: CommandDeps = {
       }
       return rows.join('\n') || '沒有帶 privileged.json 的技能'
     },
-    approve(bot, name, by, role) {
+    async approve(bot, name, by, role, code) {
       const dir = skillDirs({ home: cfg.home, botDir: b => botDir(cfg, b) }, bot, name)[0]
-      if (!dir) return `找不到帶 privileged.json 的技能 ${name} (只看這隻 bot 與全部 bot 範圍)`
-      const why = approveRefusal(dir, name, role)
-      if (why) return why
-      db.approveSkill(dir, name, hashSkill(dir), by)
-      return `已核准技能 ${name} 的特權動作 (${dir}):\n${describeActions(dir)}\n之後檔案若被改動會自動暫停, 需要重新核准`
+      if (!dir) return { text: `找不到帶 privileged.json 的技能 ${name} (只看這隻 bot 與全部 bot 範圍)` }
+      // the screen, the uv.lock review (pkgreview's model and cache), the environment, then the approval (router/skillapprove.ts)
+      return approveSkill({ db, review: pkgs => pkgGate.review(pkgs), env: envDeps }, dir, name, by, role, code)
     },
     revoke(bot, name) {
       const dir = skillDirs({ home: cfg.home, botDir: b => botDir(cfg, b) }, bot, name)[0]
@@ -1642,6 +1653,16 @@ setInterval(() => void rotate(), 60_000).unref()
 // After a router restart, give already-running workers a moment to
 // reconnect before deciding they need waking.
 setTimeout(sweepBacklog, 15_000).unref()
+// Python environments no approved skill uses and unused for 30 days (router/skillenv.ts): at start, then daily.
+const pruneSkillEnvs = () => {
+  try {
+    const inUse = new Set(db.listSkillApprovals().map(x => envNameOf(x.dir, skillDeps.toolbox!)).filter((n): n is string => !!n))
+    const gone = pruneEnvs(skillDeps.envRoot!, inUse)
+    if (gone.length) log(`skill env: removed ${gone.join(', ')}`)
+  } catch (e) { log(`skill env prune: ${e}`) }
+}
+setTimeout(pruneSkillEnvs, 120_000).unref()
+setInterval(pruneSkillEnvs, 86_400_000).unref()
 // Privileged skills' credentials refreshed daily (router/skillrefresh.ts); at start, those not refreshed in 24 hours.
 if (cfg.skillRefreshAt) {
   const sched = scheduleRefresh(refreshDeps, cfg.skillRefreshAt)

@@ -12,6 +12,8 @@ import { basename, join } from 'path'
 import type { Conversation, RouterDb } from './db'
 import { loadManifest, hashSkill, buildArgv, sandboxArgv, secretsIn, scrubOutputs, redact, argRoleRefusal, storeOf, hostOf, ownerOnly, VIRT, RUNS_PER_HOUR, type Action, type Manifest } from './privskill'
 import { runIsolated, netMissing, OUT_PORTS, SLIRP_HOST, type IsolatedRun, type NetRun } from './sandboxnet'
+import { binDir, missingTools } from './toolbox'
+import { lockFiles, ensureEnv } from './skillenv'
 import type { Credential } from './config'
 import { storesOf, withStoreLocks, stage, check, commit, workDir, RUN_MAX, type Plan, type StoreUse } from './skillstore'
 
@@ -39,6 +41,14 @@ export interface SkillRunDeps {
   isolated?(o: IsolatedRun): Promise<NetRun>
   /** Which network tools are missing (router/sandboxnet.ts netMissing; replaced in tests). */
   netMissing?(): string | null
+  /** <stateDir>/toolbox (router/toolbox.ts): mounted at /cctr/tools/bin; uv and Python for the environments. */
+  toolbox?: string
+  /** <stateDir>/skill-env (router/skillenv.ts): the skills' Python environments. */
+  envRoot?: string
+  /** uv's --python-preference for the environments (only-managed; tests use the system's). */
+  pythonPreference?: string
+  /** skill_try: drafts' environments are kept apart (try-<key>). */
+  envPrefix?: string
   botDir(bot: string): string
   /** An http API credential by name (router config), for actions that declare http. */
   httpCred?(name: string): Credential | undefined
@@ -76,6 +86,17 @@ function botCredRefusal(deps: Pick<SkillRunDeps, 'botCred'>, a: Action): string 
 /** Every token an action's run must never hand back: http keys and bot tokens. */
 const tokensOf = (deps: Pick<SkillRunDeps, 'httpCred' | 'botCred'>, a: Action) => [...httpCreds(deps, a), ...botCreds(deps, a)].map(h => h.cred?.token ?? '').filter(t => t.length >= 16)
 
+/** The skill's Python environment (router/skillenv.ts), built when missing; none without pyproject.toml and uv.lock. */
+async function pyEnvOf(deps: Omit<SkillRunDeps, 'notifyOwner'>, dir: string): Promise<{ env?: { env: string; python: string } } | { error: string }> {
+  const f = lockFiles(dir)
+  if (!f) return {}
+  if ('error' in f) return { error: `技能的 Python 套件設定有誤: ${f.error}` }
+  if (!deps.toolbox || !deps.envRoot) return { error: '這個 router 沒有設定工具箱與 Python 環境的位置' }
+  const r = await ensureEnv({ toolbox: deps.toolbox, envRoot: deps.envRoot, etcDir: deps.etcDir, runRoot: deps.runRoot, hostAddrs: deps.hostAddrs, isolated: deps.isolated, pythonPreference: deps.pythonPreference, log: deps.log }, f, deps.envPrefix ?? '')
+  if (!r.ok) return { error: `技能的 Python 環境建不起來, 沒有執行: ${r.why}` }
+  return { env: { env: r.dir, python: join(deps.toolbox, 'python') } }
+}
+
 /** A Bot API URL as the sandbox reaches it: one on the host's loopback (http://127.0.0.1, localhost or
  *  [::1], e.g. a self-hosted Bot API server or a test's fake) becomes slirp's host alias on that port,
  *  the one host port the run may then use (the server must listen on 127.0.0.1); any other is kept. */
@@ -108,6 +129,10 @@ export async function runAction(deps: Omit<SkillRunDeps, 'notifyOwner'>, dir: st
   if ('error' in argv) return { code: -1, out: argv.error }
   const tools = (deps.netMissing ?? netMissing)()
   if (tools) return { code: -1, out: `這台主機缺少沙箱網路隔離需要的工具 (${tools}), 沒有執行 (不會改成不隔離)` }
+  const lack = missingTools(deps.toolbox, a.tools)
+  if (lack.length) return { code: -1, out: `工具箱缺少這個動作需要的 ${lack.join(', ')}, 沒有執行 (安裝時下載失敗或還沒裝: owner 在主機上執行 cc-telegram-router toolbox install)` }
+  const py = await pyEnvOf(deps, dir)
+  if ('error' in py) return { code: -1, out: py.error }
   const httpEnv: Record<string, string> = Object.fromEntries(http.flatMap(({ env, cred }) => [
     [`${env}_URL`, cred!.baseUrl!.replace(/\/+$/, '')],
     [`${env}_HEADER`, `${cred!.header ?? 'Authorization'}: ${`${cred!.scheme ?? 'Bearer'} ${cred!.token}`.trim()}`],
@@ -120,7 +145,8 @@ export async function runAction(deps: Omit<SkillRunDeps, 'notifyOwner'>, dir: st
   const mounts = (host?.mounts ?? []).map(m => m.startsWith('~/') ? join(deps.userHome, m.slice(2)) : m)
   const hostPorts = [...new Set([...(host?.ports ?? []), ...bots.flatMap(b => b.api.port ? [b.api.port] : [])])]
   const hostEnv = { ...(host?.env ?? {}), ...(hostPorts.length ? { CCTR_HOST: SLIRP_HOST } : {}) }
-  const sb = sandboxArgv({ argv, skillDir: dir, convFolder: folder, etcDir: deps.etcDir, creds: credEnv(deps, a), credsWritable: !!a.internal, stores, hidden: [...deps.hidden, deps.userHome], extraRo: [...deps.extraRo, ...mounts], env: { ...hostEnv, ...httpEnv, ...botEnv } })
+  const toolsBin = deps.toolbox && existsSync(binDir(deps.toolbox)) ? binDir(deps.toolbox) : undefined
+  const sb = sandboxArgv({ argv, skillDir: dir, convFolder: folder, etcDir: deps.etcDir, toolsBin, pyEnv: py.env, creds: credEnv(deps, a), credsWritable: !!a.internal, stores, hidden: [...deps.hidden, deps.userHome], extraRo: [...deps.extraRo, ...mounts], env: { ...hostEnv, ...httpEnv, ...botEnv } })
   mkdirSync(deps.runRoot, { recursive: true, mode: 0o700 })
   const work = mkdtempSync(join(deps.runRoot, 'run-'))
   try {
@@ -271,5 +297,5 @@ function hostLine(a: Action): string {
 export function describeActions(dir: string): string {
   const m = loadManifest(dir)
   if (!m) return '(沒有 privileged.json)'
-  return Object.entries(m.actions).map(([n, a]) => `${n}${a.internal ? ' (只由 router 執行)' : ''}: ${a.run.join(' ')}; 角色 ${(a.roles ?? ['owner', 'admin', 'power', 'user']).join(', ')}${a.creds ? `; 憑證 ${Object.values(a.creds).join(', ')}` : ''}${a.http ? `; API 憑證 ${Object.values(a.http).join(', ')}` : ''}${a.bots ? `; bot 憑證 ${Object.values(a.bots).join(', ')}` : ''}${a.store ? `; 資料庫 ${Object.values(a.store).map(d => { const s = storeOf(d); return `${s.name} (${s.mode})` }).join(', ')}` : ''}${Object.entries(a.args ?? {}).filter(([, s]) => s.roles).map(([n, s]) => `; 參數 ${n} 限 ${s.roles!.join(', ')}`).join('')}${a.outbound_ports?.length ? `; ⚠️ 額外的對外 port ${a.outbound_ports.join(', ')} (只有 owner 能核准)` : ''}${hostLine(a)}`).join('\n')
+  return Object.entries(m.actions).map(([n, a]) => `${n}${a.internal ? ' (只由 router 執行)' : ''}: ${a.run.join(' ')}; 角色 ${(a.roles ?? ['owner', 'admin', 'power', 'user']).join(', ')}${a.creds ? `; 憑證 ${Object.values(a.creds).join(', ')}` : ''}${a.http ? `; API 憑證 ${Object.values(a.http).join(', ')}` : ''}${a.bots ? `; bot 憑證 ${Object.values(a.bots).join(', ')}` : ''}${a.store ? `; 資料庫 ${Object.values(a.store).map(d => { const s = storeOf(d); return `${s.name} (${s.mode})` }).join(', ')}` : ''}${Object.entries(a.args ?? {}).filter(([, s]) => s.roles).map(([n, s]) => `; 參數 ${n} 限 ${s.roles!.join(', ')}`).join('')}${a.tools?.length ? `; 工具 ${a.tools.join(', ')}` : ''}${a.outbound_ports?.length ? `; ⚠️ 額外的對外 port ${a.outbound_ports.join(', ')} (只有 owner 能核准)` : ''}${hostLine(a)}`).join('\n')
 }

@@ -2,6 +2,7 @@
 # Build and install cc-telegram-router (plan 03 「專案位置與部署」).
 #
 #   deploy/install.sh router   compile the router into the state dir, copy templates and the report scripts,
+#                              install the skills' toolbox (ffmpeg, deno, uv: <state>/toolbox, a failure only warns),
 #                              and (once config.json exists) write the locator the plugin and hook use
 #                              (~/.config/cc-telegram-router/router.json, shared/locate.ts)
 #   deploy/install.sh plugin   bundle plugin v2 into the official plugin cache path and record its
@@ -66,6 +67,11 @@ install_router() {
   bun build --compile "$REPO/hooks/hook.ts" --outfile "$STATE/hooks/cc-hook.new"
   mv -f "$STATE/hooks/cc-hook.new" "$STATE/hooks/cc-hook"
   echo "router -> $STATE/cc-telegram-router, hook -> $STATE/hooks/cc-hook, report scripts -> $STATE/scripts"
+  # the shared toolbox (ffmpeg, deno, uv; fixed versions, sha256 checked): a tool that fails only fails
+  # the skills that need it, so the install goes on (docs/skill-runtime.md 「工具箱」)
+  if ! "$STATE/cc-telegram-router" toolbox install --state "$STATE"; then
+    echo "警告: 工具箱有工具沒有裝好 (見上面), 需要它的特權技能會拒絕執行; 之後可以再跑 $STATE/cc-telegram-router toolbox install --state $STATE" >&2
+  fi
   if [ ! -f "$STATE/config.json" ] && [ -t 0 ] && [ -t 1 ]; then
     echo "還沒有 $STATE/config.json: 開始設定嚮導 (Ctrl-C 取消, 之後可以用 $(basename "$0") setup 再跑)"
     "$STATE/cc-telegram-router" --config "$STATE/config.json" setup || true

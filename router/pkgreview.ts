@@ -184,7 +184,8 @@ export function createPkgGate(deps: PkgDeps) {
     return word
   }
 
-  return { check, decide }
+  /** review: verdicts for these registry packages (the same model and week-long cache as installs), for a skill's uv.lock (router/skillapprove.ts). */
+  return { check, decide, review: verdicts }
 }
 
 // --- the real reviewer --------------------------------------------------------

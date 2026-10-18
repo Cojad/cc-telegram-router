@@ -95,8 +95,9 @@ export interface CommandDeps {
   /** Privileged skill actions (router/skillrun.ts). */
   skills: {
     list(bot: string): string
-    /** role: the approver's (a skill with host access or more internet ports: owner only). */
-    approve(bot: string, name: string, by: string, role: string): string
+    /** role: the approver's (a skill with host access or more internet ports: owner only); code: the
+     *  screen's confirmation code. later: the result once the skill's Python environment is built. */
+    approve(bot: string, name: string, by: string, role: string, code?: string): Promise<{ text: string; later?: Promise<string> }>
     revoke(bot: string, name: string): string
     /** Owner's terminal: one action as a conversation (router/skillcli.ts). */
     run?(conv: Conversation, o: SkillRunOpts): Promise<string>
@@ -217,7 +218,7 @@ const HELP = [
   '/router perm [chat_id] show | role <角色> (私訊等同 /router role) | tool allow|deny|rm <規則> | path read|write|rm <路徑> | net allow|rm <網域> | mcp allow|rm <名稱> | send allow|rm <chat_id> | pkg allow|rm <pypi|npm:名稱> | reset',
   '/router perm user <uid|@username> show | tool|path|net|mcp ... | reset (掛在使用者身上的覆寫: 他發起的一輪重算高風險工具, 他的私訊也套用)',
   '/router setup (這隻 bot 的設定狀態) | setup group (在開了話題的群組裡下, 設為審核群組) | setup skip (通知與申請改私訊 owner) | setup persona (下次私訊重新做人設訪談)',
-  '/router skill list | approve <技能> | revoke <技能> (技能的特權動作: 核准後 user 與 power 對話也能執行, 憑證不外流) | run <對話> <技能> <動作> --out <資料夾> [--role <角色>] [--trial | --trial-store <資料夾>] [--api <本機網址>] [JSON 參數] | refresh <技能> (run 與 refresh 只在 owner 的終端機: 驗收用)',
+  '/router skill list | approve <技能> [確認碼] | revoke <技能> (技能的特權動作: 核准後 user 與 power 對話也能執行, 憑證不外流; 有要再看一眼的宣告或套件時先回確認畫面, 照畫面帶確認碼再核准一次) | run <對話> <技能> <動作> --out <資料夾> [--role <角色>] [--trial | --trial-store <資料夾>] [--api <本機網址>] [JSON 參數] | refresh <技能> (run 與 refresh 只在 owner 的終端機: 驗收用)',
   '/router cred list | add <名稱> <bot token> [方法...] | add <名稱> <API key> --http <網址> [--header <標頭>] [--scheme <前綴|none>] [--query <參數>] [--default-header <名稱>:<值>]... [路徑...] | rotate <名稱> <新的 key> [--default-header <名稱>:<值>]... (add 與 rotate 只在 owner 或 admin 自己的私訊) | header <名稱> [set <標頭>:<值> | rm <標頭>] (不帶參數就列出預設標頭) | allow|disallow <名稱> <方法或路徑...> | roles <名稱> <角色,...> | rm <名稱> | reload',
   '/router secret list [chat_id] (不寫就列出所有有密鑰的對話) | rm <chat_id> [名稱] (不寫名稱就全部移除): 各對話用 /secret 登記的密鑰',
   '/router secret handles [chat_id] (原文請求發出的密鑰代號, 不寫就列出全部) | revoke <代號>',
@@ -842,7 +843,13 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         return deps.skills.run ? done(await deps.skills.run(found.conv, o)) : done('這個 router 沒有 skill run')
       }
       if (!name) return done('用法: /router skill list | approve <技能> | revoke <技能> | run, refresh (只在終端機)')
-      if (op === 'approve') return done(deps.skills.approve(input.bot, name, `${input.senderName} ${input.senderId}`, role))
+      if (op === 'approve') {
+        const r = await deps.skills.approve(input.bot, name, `${input.senderName} ${input.senderId}`, role, args[3])
+        // the environment's build: the terminal waits for it; Telegram gets the result as its own message
+        if (r.later && input.terminal) return done(`${r.text}\n${await r.later}`)
+        if (r.later) void r.later.then(t => deps.sendTo(input.bot, input.chatId, t)).catch(() => {})
+        return done(r.text)
+      }
       if (op === 'revoke') return done(deps.skills.revoke(input.bot, name))
       return done('用法: /router skill list | approve <技能> | revoke <技能> | run, refresh (只在終端機)')
     }

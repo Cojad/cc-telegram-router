@@ -37,6 +37,7 @@ import { createHash } from 'crypto'
 import { existsSync, readdirSync, readFileSync, statSync, lstatSync, rmSync } from 'fs'
 import { join, relative, isAbsolute } from 'path'
 import { systemArgs } from './sandboxfs'
+import { TOOL_NAMES } from './toolbox'
 
 export type ArgSpec = {
   pattern?: string
@@ -61,6 +62,8 @@ export type Action = {
   refresh?: string
   /** Internal actions only, owner approval: what of the host it reaches (HostDecl). */
   host?: HostDecl
+  /** Toolbox tools the action needs (router/toolbox.ts: ffmpeg, deno, uv): refused, saying which, when one is missing. */
+  tools?: string[]
   /** Not internal, owner approval: internet ports besides 80, 443, 53, 22 (tcp and udp). */
   outbound_ports?: number[]
   /** Old spelling of host.mounts and host.env (internal actions only), read as such. */
@@ -155,6 +158,11 @@ export function storeOf(d: StoreDecl): { name: string; mode: 'append' | 'full' }
 /** What loadManifest refuses in one action's store and bots (thrown, shown by /router skill approve). */
 function checkAction(n: string, a: Action) {
   checkHost(n, a)
+  if (a.tools !== undefined) {
+    if (!Array.isArray(a.tools) || a.tools.some(t => typeof t !== 'string')) throw new Error(`動作 ${n} 的 tools 要是工具名稱陣列, 例如 ["ffmpeg", "deno"]`)
+    const bad = a.tools.filter(t => !TOOL_NAMES.includes(t))
+    if (bad.length) throw new Error(`動作 ${n} 的 tools 裡的 ${bad.join(', ')} 不在工具箱裡 (有: ${TOOL_NAMES.join(', ')})`)
+  }
   if (a.outbound_ports !== undefined) {
     const p = a.outbound_ports as unknown
     if (a.internal) throw new Error(`動作 ${n} 是 internal, 對外本來就不限 port, 不用 outbound_ports`)
@@ -314,6 +322,12 @@ export const VIRT = {
   creds: '/cctr/creds',
   /** a database's staged copy, by its environment variable: <stateDir>/skill-store-work/run-* */
   store: '/cctr/store',
+  /** the toolbox's programs: <stateDir>/toolbox/bin (router/toolbox.ts) */
+  tools: '/cctr/tools/bin',
+  /** the skill's Python environment: <stateDir>/skill-env/<key> (router/skillenv.ts) */
+  env: '/cctr/env',
+  /** uv's own Python builds the environment uses: <stateDir>/toolbox/python */
+  python: '/cctr/python',
 } as const
 export const SYSTEM_PATH = ['/usr/local/bin', '/usr/bin', '/bin']
 
@@ -324,8 +338,11 @@ export const SYSTEM_PATH = ['/usr/local/bin', '/usr/bin', '/bin']
  *  /cctr/store/<ENV> (writable), the conversation folder writable (its .chat read-only), the
  *  conversation folder as working directory. The environment: PATH (extra bin folders first), HOME
  *  and TMPDIR /tmp, LANG C.UTF-8, TZ, each credential and database variable with its /cctr path, env. */
-export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: string; etcDir: string; creds?: Record<string, string>; credsWritable?: boolean; stores?: Record<string, string>; hidden: string[]; extraRo?: string[]; env?: Record<string, string>; timezone?: string }): Sandbox {
+export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: string; etcDir: string; creds?: Record<string, string>; credsWritable?: boolean; stores?: Record<string, string>; hidden: string[]; extraRo?: string[]; env?: Record<string, string>; timezone?: string; toolsBin?: string; pyEnv?: { env: string; python: string } }): Sandbox {
   const b = ['bwrap', '--die-with-parent', '--unshare-pid', '--new-session', ...systemArgs({ etcDir: o.etcDir, extraRo: o.extraRo, hidden: o.hidden, timezone: o.timezone })]
+  // the toolbox and the skill's Python environment, read-only at their fixed paths
+  if (o.toolsBin) b.push('--ro-bind', o.toolsBin, VIRT.tools)
+  if (o.pyEnv) b.push('--ro-bind', o.pyEnv.env, VIRT.env, '--ro-bind', o.pyEnv.python, VIRT.python)
   b.push('--ro-bind', o.skillDir, o.skillDir)
   const vars: Record<string, string> = {}
   // only the router's own refresh writes credentials; actions a conversation calls read them
@@ -337,6 +354,7 @@ export function sandboxArgv(o: { argv: string[]; skillDir: string; convFolder: s
   b.push('--chdir', o.convFolder, '--', ...o.argv)
   // bin folders made visible (config sandboxExtraRo, host mounts) go on PATH before the system's
   const bins = (o.extraRo ?? []).filter(p => p.endsWith('/bin'))
-  const env: Record<string, string> = { PATH: [...bins, ...SYSTEM_PATH].join(':'), HOME: '/tmp', LANG: 'C.UTF-8', TMPDIR: '/tmp', ...(o.timezone ? { TZ: o.timezone } : {}), ...vars, ...o.env }
+  const path = [...(o.pyEnv ? [`${VIRT.env}/bin`] : []), ...(o.toolsBin ? [VIRT.tools] : []), ...bins, ...SYSTEM_PATH]
+  const env: Record<string, string> = { PATH: path.join(':'), HOME: '/tmp', LANG: 'C.UTF-8', TMPDIR: '/tmp', ...(o.timezone ? { TZ: o.timezone } : {}), ...(o.pyEnv ? { VIRTUAL_ENV: VIRT.env } : {}), ...vars, ...o.env }
   return { argv: b, env }
 }

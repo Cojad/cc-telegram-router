@@ -72,7 +72,7 @@
 
 | 項目 | 用途 |
 |---|---|
-| 特權技能需要的工具 (例如 yt-dlp, deno) | 由技能自己決定; 沙箱是白名單, 只看得到 `/usr` (系統裝的) 與 config `sandboxExtraRo` 加的路徑, 家目錄裡裝的看不到 (見 [執行環境規格](docs/skill-runtime.md)) |
+| 特權技能需要的工具 (例如 yt-dlp) | ffmpeg, deno, uv 由 `deploy/install.sh router` 下載固定版本到 stateDir 的工具箱 (主機不用裝; 下載失敗只影響需要它的技能), Python 套件由技能的 `uv.lock` 建環境; 其他的沙箱只看得到 `/usr` (系統裝的) 與 config `sandboxExtraRo` 加的路徑, 家目錄裡裝的看不到 (見 [執行環境規格](docs/skill-runtime.md)) |
 | OpenRouter 或其他分類器的 API key | 工具呼叫分類器 (預設關閉) |
 | slirp4netns (1.0 以上), nftables (`nft`), util-linux 的 `nsenter` | 特權技能 (`run_skill`, 憑證更新, `skill_try`) 的網路隔離 (外網只開 80, 443, 53, 22, 連不到主機本機與內網), 也要能建 unprivileged user namespace (bwrap 本來就要). 缺少時特權技能一律拒絕執行, 其他功能不受影響. 安裝: `sudo apt-get install slirp4netns nftables` |
 
@@ -155,7 +155,7 @@
 | [docs/architecture.md](docs/architecture.md) | 結構, 運作方式, 目錄, 訊息紀錄, 廣播頻道 |
 | [docs/permissions.md](docs/permissions.md) | 權限檢查與提權, 套件安裝審核, 審核按鈕, 撤銷, 執行授權 |
 | [docs/credentials-and-skills.md](docs/credentials-and-skills.md) | 技能範圍, 憑證 (bot_api, http_api), 特權技能 |
-| [docs/skill-runtime.md](docs/skill-runtime.md) | 特權技能的執行環境規格: 掛載路徑, 環境變數, 工作目錄, 網路, 主機存取, 對外 port, 核准, exit code 與輸出 |
+| [docs/skill-runtime.md](docs/skill-runtime.md) | 特權技能的執行環境規格: 掛載路徑, 環境變數, 工具箱, Python 套件 (uv), 工作目錄, 網路, 主機存取, 對外 port, 核准, exit code 與輸出 |
 | [docs/secrets.md](docs/secrets.md) | 對話專屬密鑰 (10b), 原始事件與密鑰保護 (10e) |
 | [docs/classifier.md](docs/classifier.md) | 工具呼叫分類器 (第一階段, 只記錄) |
 | [docs/operations.md](docs/operations.md) | 部署, 設定嚮導, linger, 資料夾信任, config.json 設定欄位, 自架 Bot API server, 私訊與群組的存取, 升級, 表情回應, 安裝位置, 新 bot 初次設定與審核群組, bot 設定提醒, router 重啟, 輪詢與重試, 工具呼叫紀錄, CLI, 時間, 報表腳本 |

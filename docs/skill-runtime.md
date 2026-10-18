@@ -19,6 +19,9 @@
 | `/tmp`, `/var/tmp`, `/dev/shm` | 可寫 | 沙箱私有的空 tmpfs, 每次執行都是空的, 跑完就消失 |
 | 技能資料夾 | 唯讀 | 真實路徑 (例如 `<home>/bot<id>/.claude/skills/<技能>`); `run` 裡的 `scripts/x.sh` 換成這裡的絕對路徑 |
 | `/cctr/creds/<環境變數>` | 唯讀 (只有 router 執行的 internal 動作可寫) | 動作 `creds` 宣告的憑證資料夾, 實際在 `<stateDir>/creds/<名稱>`; 腳本只看到 `/cctr` 路徑 |
+| `/cctr/tools/bin` | 唯讀 | [工具箱](#工具箱) (ffmpeg, ffprobe, deno, uv), 實際在 `<stateDir>/toolbox/bin` |
+| `/cctr/env` | 唯讀 | 技能的 [Python 環境](#python-套件-uv) (有 `pyproject.toml` 與 `uv.lock` 時), 實際在 `<stateDir>/skill-env/<key>` |
+| `/cctr/python` | 唯讀 | Python 環境用的 uv 自己的 Python, 實際在 `<stateDir>/toolbox/python` |
 | `/cctr/store/<環境變數>` | 可寫 | 動作 `store` 宣告的資料庫, 這次執行的工作副本 (見[資料庫 store](credentials-and-skills.md#資料庫-store)) |
 | 對話資料夾 | 可寫 (`.chat` 唯讀) | 真實路徑, 讓對話的 worker 找得到輸出檔; 試跑時是 `<對話資料夾>/skill-try/<時間>-<動作>/`, 終端機時是 `--out` |
 | config `sandboxExtraRo` 的路徑 | 唯讀 | owner 自己加的 (預設沒有), 結尾是 `/bin` 的放進 PATH |
@@ -32,7 +35,8 @@
 
 | 名稱 | 值 |
 |---|---|
-| `PATH` | `sandboxExtraRo` 裡結尾是 `/bin` 的路徑, 然後 `/usr/local/bin:/usr/bin:/bin` |
+| `PATH` | `/cctr/env/bin` (有 Python 環境時), `/cctr/tools/bin` (有工具箱時), `sandboxExtraRo` 裡結尾是 `/bin` 的路徑, 然後 `/usr/local/bin:/usr/bin:/bin` |
+| `VIRTUAL_ENV` | 有 Python 環境時: `/cctr/env` |
 | `HOME`, `TMPDIR` | `/tmp` |
 | `LANG` | `C.UTF-8` |
 | `<creds 的環境變數>` | `/cctr/creds/<環境變數>` |
@@ -43,6 +47,31 @@
 | internal 動作的 `host.env` | 照宣告 |
 
 技能自己宣告的環境變數名稱不能是 `PATH`, `HOME`, `LANG`, `TMPDIR`, `TZ`, `CCTR_HOST`, `VIRTUAL_ENV`, 也不能互相重複.
+
+## 工具箱
+
+router 安裝時 (`deploy/install.sh router` 執行 `cc-telegram-router toolbox install --state <stateDir>`) 下載固定版本的工具, 每個檔案先核對 sha256 才解開 (只取指定的那個檔), 放在 `<stateDir>/toolbox/bin`, `installed.json` 記版本與檔案的 sha256 (`router/toolbox.ts`). 每個沙箱都唯讀掛在 `/cctr/tools/bin`, 排在 PATH 最前面 (在系統的同名程式之前):
+
+| 工具 | 版本 | 來源 (GitHub release 固定 tag 的檔案) |
+|---|---|---|
+| ffmpeg, ffprobe | 7.0.2 (靜態版) | `eugeneware/ffmpeg-static` 的 `b6.1.1` (johnvansickle 的靜態版; 他自己的網址會換, BtbN 的 autobuild 會被刪) |
+| deno | 2.9.7 | `denoland/deno` 的 `v2.9.7` |
+| uv | 0.12.22 | `astral-sh/uv` 的 `0.12.22` |
+
+- x86_64 與 aarch64 各有一份. 同版本再裝一次照舊保留 (檔案與記錄的 sha256 相同時); 有檔案不見就重裝.
+- 某個工具下載失敗或 sha256 不符: 只有它沒裝 (舊版照舊), 其他照裝, `toolbox install` 結束碼 1, `install.sh` 只印警告, router 照常運作. 之後再跑 `cc-telegram-router toolbox install --state <stateDir>` 補裝; `toolbox status` 列出現況. `--mirror <資料夾或網址>` 從鏡像拿同名的檔案 (照樣核對 sha256).
+- 動作宣告 `"tools": ["ffmpeg", "deno"]` (只能是工具箱裡的名稱, 算在核准雜湊裡): 宣告的工具沒裝時拒絕執行, 回傳 `exit -1` 與 `工具箱缺少這個動作需要的 <工具>, 沒有執行 (... cc-telegram-router toolbox install)`. 沒宣告的工具裝了也照樣在 PATH 上.
+- 解開 zip 用 `python3`, tgz 用 `tar` (router 的必要條件), 主機本身不需要裝 ffmpeg, deno, uv.
+
+## Python 套件 (uv)
+
+技能資料夾放 `pyproject.toml` 與 `uv.lock` (用 `uv lock` 產生, 版本鎖死; git 來源鎖在完整的 commit; 可以加 `.python-version`) 就有自己的 Python 環境 (`router/skillenv.ts`). 只有其中一個檔時 privileged.json 照讀, 但核准與執行都拒絕. 這兩個檔 (和 `.python-version`) 算在核准雜湊裡, 改了技能就暫停; `.venv` 不算, `install_skill` 也不複製.
+
+- **誰建, 在哪裡建**: router 建, 技能自己不建. 位置 `<stateDir>/skill-env/<key>/`, key 是 lock, pyproject, `.python-version`, uv 版本與 CPU 架構的雜湊, 同一份 lock 的技能共用. 建置在兩個白名單沙箱裡, 都在獨立網路 (外網 80, 443, 53, 22): (1) 只跑 uv 自己, 下載專案要的 Python (uv 自己的 python-build-standalone, uv 內建 sha256 核對) 到 `<stateDir>/toolbox/python`, 這是唯一可以寫那裡的時候; (2) `uv sync --locked --no-install-project --no-dev`, 套件的 build 會執行程式, 所以這時 Python 唯讀, uv 快取是這次自己的 (用完丟掉), 目標掛在執行時同一個路徑 `/cctr/env` (環境裡的指令與連結才對得上). 沙箱裡沒有 `/etc/uv` 也沒有使用者設定, uv 只讀專案自己的 `[tool.uv]` (index, git 來源). 失敗就什麼都不留.
+- **執行時**: 唯讀掛在 `/cctr/env`, Python 在 `/cctr/python`, `PATH` 最前面是 `/cctr/env/bin`, 所以 `run` 寫 `"python3"` 就是環境裡的 Python, 不是系統的. 系統的 `/usr/bin/python3` 照樣在 (沒有 lock 的技能用它).
+- **何時建**: `/router skill approve` (建好才記核准, 見[核准](#核准)); 執行時環境不見了 (stateDir 清過, 換了 uv 版本) 用同一份 lock 自動重建一次, 不重新審核, 建不起來就回 `exit -1` 與 `技能的 Python 環境建不起來, 沒有執行: ...`; `skill_try` 試跑草稿時另外建 (`skill-env/try-<key>`, 不跟已核准的技能共用). 沒有任何已核准技能用到, 而且 30 天沒用的環境, router 啟動兩分鐘後與之後每天清掉.
+- **套件審核**: `uv.lock` 的每個套件 (含間接依賴, 專案本身除外) 分兩類: registry 是 `https://pypi.org/simple` 的交給套件審核的同一個模型與同一份 7 天快取 ([套件安裝審核](permissions.md#套件安裝審核)) 判斷風險; git, URL, 本機路徑與其他 index 是自訂來源, 一律人工審核. git 來源沒有鎖在完整 commit 的 lock 一律拒絕.
+- `skill_try` 只建全部是 PyPI 而且都判定 low 的環境; 有自訂來源或其他風險的草稿拒絕試跑並列出原因, 等核准時由人看.
 
 ## 工作目錄
 
@@ -89,7 +118,13 @@
 
 ## 核准
 
-`/router skill approve` 列出每個動作的內容 (`describeActions`). 有 `host` 或 `outbound_ports` 的技能**只有 owner 能核准**: admin 下指令會被拒, 回覆寫明原因 (哪個動作宣告了什麼) 並列出動作清單; 核准畫面以 `⚠️ 主機存取 (只有 owner 能核准): 連得到主機本機的 port ... (經 $CCTR_HOST), 可讀 ... (可以連 unix socket), 環境變數 ...; 主機其他 port 與內網照樣連不到` 與 `⚠️ 額外的對外 port ... (只有 owner 能核准)` 標出.
+`/router skill approve <技能>` (`router/skillapprove.ts`) 列出每個動作的內容 (`describeActions`). 有 `host` 或 `outbound_ports` 的技能**只有 owner 能核准**: admin 下指令會被拒, 回覆寫明原因 (哪個動作宣告了什麼) 並列出動作清單.
+
+沒有要再看一眼的東西時一步核准 (跟以前一樣). 有的話先回**確認畫面**: 每一項以 ⚠️ 開頭 (主機存取, 額外的對外 port, 不是 low 或沒有審核結果的 PyPI 套件, 每個自訂來源的套件), 接著是動作清單與 uv.lock 的全部套件 (含模型的判斷), 最後一行 `確認核准: /router skill approve <技能> <確認碼>`. 確認碼是技能雜湊的前 8 碼, 畫面之後檔案被改過, 或打錯, 就回 `確認碼 ... 不符` 要重看畫面. 自訂來源與有風險的套件 owner 或 admin 都能確認, 主機存取與額外的對外 port 只有 owner.
+
+有 `pyproject.toml` 與 `uv.lock` 的技能, 確認後 router 先回 `核准中: 正在建技能 <技能> 的 Python 環境 ...`, 建好才記下核准, 再發一則結果 (`已核准技能 ...`; 或 `沒有核准: Python 環境建不起來: ...`, `建環境的時候檔案被改過了`); 在 owner 的終端機 (`cli`) 下的指令會等到結果一起回. 結果出來前技能還不能用.
+
+核准畫面以 `⚠️ 主機存取 (只有 owner 能核准): 連得到主機本機的 port ... (經 $CCTR_HOST), 可讀 ... (可以連 unix socket), 環境變數 ...; 主機其他 port 與內網照樣連不到` 與 `⚠️ 額外的對外 port ... (只有 owner 能核准)` 標出.
 
 ## exit code 與輸出
 
@@ -100,7 +135,9 @@
 ## 驗證
 
 - `router/test/whitelist.test.ts` (10 項, 1 項要 `LIVE=1`; 真的 bwrap, slirp4netns, nft, 經 `run_skill` 與 refresh 的同一條路): [掛載路徑](#掛載路徑) (看不到與看得到的路徑, `/cctr/creds`, 工作目錄, 環境變數不含 stateDir 的路徑, passwd), [網路](#網路) (對話呼叫的動作只開 80, 443, 53, 22; 主機, 主機位址, metadata, 內網連不到; 不能建 unix socket), [對外 port](#對外-port-outbound_ports), 主機本機的 Bot API (有 `bots` 的動作經 10.0.2.2 只連得到那個 port, 沒有 `bots` 的連不到), [主機存取 host](#主機存取-host) (宣告的主機 port 經 `$CCTR_HOST` 連得到, 沒宣告的連不到, 外網不限 port, 只看得到宣告的 socket), privileged.json 的檢查與舊寫法, [核准](#核准) (只有 owner), `skill_check` 的提醒, nft 規則順序與 seccomp 程式; `LIVE=1` 實際連外網.
+- `router/test/toolbox.test.ts` (6 項, 1 項要 `LIVE=1`): [工具箱](#工具箱)的安裝 (gz, zip, tgz, 只取指定的檔, sha256 不符只影響那個工具, 同版本保留, 檔案不見重裝, 不支援的 CPU, 網址鎖像), `toolbox status` 與指令用法, 真正的工具表 (x64 與 arm64, 固定 tag 的 GitHub release, sha256), `install.sh` 只警告; 沙箱裡 `/cctr/tools/bin` 排在 PATH 最前面, 缺工具時拒絕並說明, `tools` 只能寫工具箱的名稱; `LIVE=1` 下載真的工具並在沙箱裡執行.
+- `router/test/skillenv.test.ts` (7 項, 3 項要 uv, 1 項另外要 `LIVE=1`; uv 用 `CCTR_TEST_UV` 指定或在 PATH 上, 沒有就跳過): [Python 套件 (uv)](#python-套件-uv)的 lock 解析 (PyPI 與自訂來源, git 的 commit, 兩個檔要一起), 用主機上的假套件 index 在沙箱裡建環境 (`/cctr/env` 排在 PATH 最前面, 第二次不再下載, 同一份 lock 共用, lock 與 pyproject 不符時建置失敗且不留東西, 改 uv.lock 技能暫停), [核准](#核准) (一步核准, 確認畫面與確認碼, 錯的確認碼, 先建好再核准, 建不起來不核准, 主機存取只限 owner, 套件清單與模型判斷, 沒有審核時 PyPI 也要人看), 指令把確認碼帶進去且 Telegram 另外收到結果, 終端機等結果, `skill_try` 拒絕自訂來源與不是 low 的套件; `LIVE=1` 用真的 PyPI 與 uv 自己的 Python 建環境.
 - `router/test/skilltry.test.ts`: 網路的擋下與 unix socket (經試跑的同一個模組), 試跑的 port 與主機存取.
 - `router/test/portability.test.ts`: bwrap 的白名單參數, 隱藏清單只在掛進來的路徑裡蓋上, config `sandboxExtraRo`.
-- `router/test/e2e-compiled.test.ts`: 編譯版 router 照 systemd unit 啟動, 已核准技能的 `run_skill` 在白名單與獨立網路裡執行, 有 `bots` 的動作連得到主機本機的 Bot API.
+- `router/test/e2e-compiled.test.ts`: 編譯版 router 照 systemd unit 啟動, 已核准技能的 `run_skill` 在白名單與獨立網路裡執行, 有 `bots` 的動作連得到主機本機的 Bot API; `toolbox status` 與 `toolbox install` 不需要 config.json (下載失敗結束碼 1), run_skill 用到 stateDir 的工具箱, 缺工具時拒絕; `LIVE=1` 而且有 uv 時從真的 PyPI lock 建環境並執行.
 - `router/test/phase3-privskill.test.ts`: 沙箱的環境變數與 `/cctr` 路徑.

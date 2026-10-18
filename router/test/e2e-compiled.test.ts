@@ -19,7 +19,9 @@
 // And run_skill of an approved skill (docs/skill-runtime.md): the whitelisted
 // file system and its own network, from the compiled router with the unit's
 // PATH (nft, nsenter found outside it); a bot credential with its own
-// apiRoot on the host's 127.0.0.1 is reached at 10.0.2.2 on that port.
+// apiRoot on the host's 127.0.0.1 is reached at 10.0.2.2 on that port. The toolbox (docs/skill-runtime.md
+// 「工具箱」): the toolbox subcommand without config.json, the toolbox mounted
+// for run_skill, a missing tool refused.
 
 import { test, expect, beforeAll, afterAll } from 'bun:test'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'fs'
@@ -188,3 +190,63 @@ PY
   expect(q("SELECT status FROM skill_runs WHERE conv = 'dm-555' AND skill = 'probe'").map(x => x.status)).toEqual(['ok', 'ok'])
   plugin.close()
 }, 120_000)
+
+test('the compiled router\'s toolbox: `toolbox status` and `toolbox install` work without config.json (a failed download only fails that tool, exit 1); run_skill finds the toolbox at /cctr/tools/bin and refuses an action whose tool is missing', async () => {
+  const exe = join(state, 'cc-telegram-router')
+  const empty = join(dir, 'empty-mirror'); mkdirSync(empty, { recursive: true })
+  const other = join(dir, 'other-state')
+  const st = Bun.spawnSync([exe, 'toolbox', 'status', '--state', other], { cwd: dir, env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME! } })
+  expect(st.exitCode).toBe(0)
+  expect(st.stdout.toString()).toContain('ffmpeg: 沒有安裝 (cc-telegram-router toolbox install)')
+  const ins = Bun.spawnSync([exe, 'toolbox', 'install', '--state', other, '--mirror', empty], { cwd: dir, env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME! } })
+  expect(ins.exitCode).toBe(1)
+  expect(ins.stdout.toString()).toContain('ffmpeg 7.0.2: 失敗')
+  expect(ins.stdout.toString()).toContain('uv 0.12.22: 失敗')
+  // a toolbox in the router's state dir (as toolbox install leaves it), with a stand-in ffmpeg
+  const box = join(state, 'toolbox')
+  mkdirSync(join(box, 'bin'), { recursive: true })
+  writeFileSync(join(box, 'bin', 'ffmpeg'), '#!/bin/sh\necho "toolbox ffmpeg $*"\n'); chmodSync(join(box, 'bin', 'ffmpeg'), 0o755)
+  writeFileSync(join(box, 'installed.json'), JSON.stringify({ ffmpeg: { version: '7.0.2', bins: { ffmpeg: 'x' } } }))
+  const skill = join(dir, 'bot123', '.claude', 'skills', 'media')
+  mkdirSync(skill, { recursive: true })
+  writeFileSync(join(skill, 'SKILL.md'), '---\nname: media\ndescription: x\n---\n')
+  writeFileSync(join(skill, 'privileged.json'), JSON.stringify({ actions: { cut: { run: ['ffmpeg', '-i', 'a'], tools: ['ffmpeg'] }, js: { run: ['deno', 'x'], tools: ['deno'] } } }))
+  const { openRouterDb } = await import('../db')
+  const { hashSkill } = await import('../privskill')
+  const db = openRouterDb(join(state, 'router.db'))
+  db.approveSkill(skill, 'media', hashSkill(skill), 'test')
+  db.close()
+  const folder = join(dir, 'bot123', 'dm-555')
+  const plugin = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: folder, pid: 79 }, onMessage(m) { if (m.t === 'deliver') plugin.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => plugin.state().kind === 'ready')
+  const cut = (await plugin.call('run_skill', { skill: 'media', action: 'cut' })).content[0]!.text
+  expect(cut, cut).toBe('exit 0\ntoolbox ffmpeg -i a')
+  const js = (await plugin.call('run_skill', { skill: 'media', action: 'js' })).content[0]!.text
+  expect(js).toContain('工具箱缺少這個動作需要的 deno, 沒有執行')
+  plugin.close()
+}, 120_000)
+
+const UV = process.env.CCTR_TEST_UV ?? Bun.which('uv') ?? null
+test.skipIf(!UV || !process.env.LIVE)('LIVE=1 with uv: the compiled router builds a skill\'s Python environment from a real PyPI lock (uv\'s own Python) and runs it', async () => {
+  const box = join(state, 'toolbox')
+  mkdirSync(join(box, 'bin'), { recursive: true })
+  cpSync(UV!, join(box, 'bin', 'uv')); chmodSync(join(box, 'bin', 'uv'), 0o755)
+  const prev = JSON.parse(readFileSync(join(box, 'installed.json'), 'utf8'))
+  writeFileSync(join(box, 'installed.json'), JSON.stringify({ ...prev, uv: { version: Bun.spawnSync([UV!, '--version']).stdout.toString().split(' ')[1]!.trim(), bins: { uv: 'x' } } }))
+  const skill = join(dir, 'bot123', '.claude', 'skills', 'pysix')
+  mkdirSync(skill, { recursive: true })
+  writeFileSync(join(skill, 'SKILL.md'), '---\nname: pysix\ndescription: x\n---\n')
+  writeFileSync(join(skill, 'privileged.json'), JSON.stringify({ actions: { v: { run: ['python3', '-B', '-c', 'import six, sys; print("six", six.__version__, sys.executable)'] } } }))
+  writeFileSync(join(skill, 'pyproject.toml'), '[project]\nname = "pysix"\nversion = "0"\nrequires-python = ">=3.12,<3.13"\ndependencies = ["six==1.17.0"]\n')
+  expect(Bun.spawnSync([UV!, 'lock', '--quiet'], { cwd: skill, env: { PATH: '/usr/bin:/bin', HOME: dir, UV_CACHE_DIR: join(dir, 'uv-cache-host') } }).exitCode).toBe(0)
+  const { openRouterDb } = await import('../db')
+  const { hashSkill } = await import('../privskill')
+  const db = openRouterDb(join(state, 'router.db'))
+  db.approveSkill(skill, 'pysix', hashSkill(skill), 'test')
+  db.close()
+  const plugin = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-555'), pid: 80 }, onMessage(m) { if (m.t === 'deliver') plugin.send({ t: 'ack', qid: m.qid }) } })
+  await until(() => plugin.state().kind === 'ready')
+  const v = (await plugin.call('run_skill', { skill: 'pysix', action: 'v' })).content[0]!.text
+  expect(v, v).toBe('exit 0\nsix 1.17.0 /cctr/env/bin/python3')
+  plugin.close()
+}, 600_000)
