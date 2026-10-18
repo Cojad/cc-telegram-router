@@ -19,7 +19,7 @@ router 的 worker 原本載入官方商店的 `telegram@claude-plugins-official`
 - **daemon:** router 看管一個常駐在 bwrap 內的 `claude daemon run`. 叫醒前與定時檢查 daemon 與 worker 是否看得到 managed settings, 不符就修復並發重要通知.
 - **對話紀錄:** 切換時把各對話目前 session 的紀錄 (含 tool-results) 從 `~/.claude/projects` 複製到新設定目錄, worker 醒來就能接續. 舊的留在 `~/.claude` 當備份. 原本 daemon 底下 router 對話的 job 會 stop 加 rm.
 - **全機設定只帶全域 CLAUDE.md:** 不帶個人 skills, 其他 plugin, MCP server.
-- **共用 session 名冊 (2.32.1):** bwrap 另外把使用者的 `sessions/` 名冊掛到專屬設定目錄的 `sessions/` 上, worker 與這台機器上使用者自己的 session 用 ListAgents 互相看得到, 也能用名稱互相傳訊 (見「共用 session 名冊」).
+- **共用 session 名冊 (2.32.1, 2.32.2 起可用 config `managed.shareSessions` 關閉):** bwrap 另外把使用者的 `sessions/` 名冊掛到專屬設定目錄的 `sessions/` 上, worker 與這台機器上使用者自己的 session 用 ListAgents 互相看得到, 也能用名稱互相傳訊 (見「共用 session 名冊」).
 - **plugin 來源:** 本機資料夾商店 `cc-telegram-router`, 指向 router 部署時安裝的 plugin, 不依賴 GitHub. plugin 名稱維持 `telegram`, 所以工具名稱 `mcp__plugin_telegram_telegram_*`, channel 標籤 `plugin:telegram:telegram`, 技能命名空間都不變.
 
 ## 兩種模式
@@ -64,7 +64,7 @@ router 的 worker 原本載入官方商店的 `telegram@claude-plugins-official`
   --bind <原本的設定目錄>/sessions <stateDir>/claude-config/sessions -- <claude 指令>
 ```
 
-- 最後一條是「共用 session 名冊」. 兩個資料夾都要先存在 (bind 的來源與掛載點), router 在試跑 bwrap 前建好, 權限 700 (`prepareMounts`). config 設 legacy 時不會建.
+- 最後一條是「共用 session 名冊」, config `managed.shareSessions` 是 `false` 時不加. 兩個資料夾都要先存在 (bind 的來源與掛載點), router 在試跑 bwrap 前建好, 權限 700 (`prepareMounts`). config 設 legacy 或關閉共用時不會建.
 
 - 沒有切 pid 與網路 namespace, 程序與網路都跟主機相同. `/run/user/<uid>/cc-socks`, `/tmp` 也是同一份.
 - `--remount-ro /etc` 讓 worker 不能在 overlay 上自己加 `managed-settings.d/*.json`.
@@ -117,7 +117,7 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
 - `.claude.json`: `projects[<home>].hasTrustDialogAccepted = true`, 其他內容保留. 背景 session 遇到未信任的資料夾會直接失敗 (`Workspace not trusted`, 已實測), 事先寫好信任後不會出現信任畫面 (已實測).
   - 這個檔會被 Claude Code 自己改寫. router 只在 daemon 啟動前寫入, 寫法是讀進來, 合併, 寫暫存檔再改名.
 - **全域 CLAUDE.md 不用 symlink:** 實測換了 `CLAUDE_CONFIG_DIR` 後, Claude Code 仍讀 `~/.claude/CLAUDE.md`. 它裡面的 `@memory/...` 匯入, 在新設定目錄裡沒有生效, 因為那屬於「外部匯入」, 要逐個專案核准. 現在正式環境各對話的 `hasClaudeMdExternalIncludesApproved` 也都是 false, 所以行為跟現在相同. router 不會自動核准外部匯入.
-- 不帶個人 skills (`~/.claude/skills`), 其他 plugin, MCP server: 新設定目錄本來就沒有這些. 注意: claude.ai 帳號層級的東西不在設定目錄裡, 照樣會出現. 包括帳號同步的技能 (會下載到 `<設定目錄>/skills/synced`) 與 claude.ai 的 MCP 連接器. 這跟現在相同.
+- worker 兩種模式都帶 `--setting-sources project,local`, 使用者層的 `settings.json` 本來就不載入, 不是切換後才改變. 換設定目錄影響的是放在設定目錄裡的其他東西: 個人 skills (`~/.claude/skills`), plugin 的安裝紀錄與快取, `.claude.json` 裡的 MCP server; 新設定目錄裡沒有這些. 注意: claude.ai 帳號層級的東西不在設定目錄裡, 照樣會出現. 包括帳號同步的技能 (會下載到 `<設定目錄>/skills/synced`) 與 claude.ai 的 MCP 連接器. 這跟現在相同.
 
 ## 對話紀錄的遷移
 
@@ -158,6 +158,8 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
 
 **為什麼:** ListAgents 與用名稱 SendMessage, 靠的是 `<設定目錄>/sessions/` 裡的名冊: 每個 session 一個 `<pid>.json` (name, sessionId, messagingSocketPath, peerFeatures 等) 與一個 `<pid>.<hash>.key`. socket 本身都在共用的 `/run/user/<uid>/cc-socks`. worker 改用專屬設定目錄後名冊分開, 兩邊互相看不到 (2.32.0 實測: ListAgents 列不出對方, 用名稱傳訊回 `No agent named ... is reachable`; 只有直接用 `uds:<socket 路徑>` 才送得到).
 
+**開關 (2.32.2):** config.json 的 `"managed": { "shareSessions": true }`, 沒寫就是開. 設成 `false` 時不加這條 bind, worker 登記在專屬設定目錄, 回到 2.32.0 的行為: 兩邊的 ListAgents 互相看不到, 也不能用名稱傳訊 (用 `uds:<socket 路徑>` 仍送得到). 寫錯 (不是物件, 或 `shareSessions` 不是 true/false) 時當作開, log 寫一行 `config.json: ...`. 啟動公告與 `cli doctor` 的「channel 模式」那行會寫「session 名冊與使用者共用」或「session 名冊不共用」. 改了要重啟 router; 已經在跑的 worker 要輪替後才換名冊.
+
 **做法 (2.32.1):** router 的 bwrap 多一條 `--bind <原本的設定目錄>/sessions <stateDir>/claude-config/sessions`. bwrap 裡的 daemon 與 worker 都把名冊寫進使用者的 `sessions/`, 也從那裡讀, 所以跟使用者自己的 session 用同一份名冊. bwrap 外看 `<stateDir>/claude-config/sessions` 是空的.
 
 **`.key` 檔是什麼** (讀 Claude Code 2.1.302 的程式, 沒讀任何 key 的內容):
@@ -177,6 +179,22 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
 - router 的 hook 會擋: ListAgents 是[高風險工具](permissions.md#高風險工具), 傳給其他 session 的 SendMessage 也一樣. power 以下的角色會被 router 的 PreToolUse hook 擋下 (`router/permcheck.ts` 的 `RISKY_TOOLS` 與 `riskyRefusal`), 只能提權後一次一次允許; admin 與 owner 的對話可以直接用. 所以實際上只有 admin 與 owner 的 worker 看得到使用者的 session.
 - 反過來, 使用者的 session (包括 v1) 也看得到每一個在跑的 worker (`tg-<對話>`), 可以用名稱傳訊. worker 睡著時不在名冊裡, 要叫醒它就用 `cli session send`.
 
+## 從終端機看 worker: managed agents 與 attach
+
+worker 用 router 的設定目錄, 在終端機直接跑 `claude agents` 或 `claude attach <id>` 找不到它們 (那是使用者自己的 daemon); 要自己帶 `CLAUDE_CONFIG_DIR=<stateDir>/claude-config` 與 `CLAUDE_SECURESTORAGE_CONFIG_DIR=~/.claude`, 而且最好也在 bwrap 裡, 否則可能在 bwrap 外帶起 daemon (見「daemon 的看管」). router 提供兩個指令代勞, 用法跟 `claude agents` 與 `claude attach` 相同:
+
+```bash
+cc-telegram-router [--config <路徑>] managed agents [claude agents 的參數...]
+cc-telegram-router [--config <路徑>] managed attach <job id | 對話 key | chat_id> [--bot <名稱>] [claude attach 的其他參數...]
+cc-telegram-router [--config <路徑>] managed help
+```
+
+- managed 模式經 launcher 執行 (bwrap 加 router 的設定目錄); legacy 模式直接執行 `claudeBin`. 參數原樣轉給 claude.
+- `attach` 的對象可以是 job id, 或對話 key, chat_id: router 讀 router.db (唯讀) 找到那個對話目前的 session, 再從 `claude agents` 找出它的 job id. 同一個 chat_id 在好幾隻 bot 都有對話時要加 `--bot`. 對話還沒有 session, 或目前沒有 job (worker 睡著) 時說明並結束 (結束碼 1), 要叫醒就用 `cli session send`.
+- 終端機直接交給 claude (stdin, stdout, stderr 繼承, 保留 TTY), Ctrl-C 等按鍵由 claude 處理; 結束碼是 claude 的.
+- `managed` 不帶子指令或 `managed help` 列出 `migrate`, `agents`, `attach`; 不認得的子指令印說明, 結束碼 2.
+- 只在主機終端機用, 不經 router socket, router 沒在跑也能用; Telegram 的 `/router` 沒有這兩個指令.
+
 ## 工具箱與 GitHub Actions
 
 - `.github/workflows/bwrap-static.yml`: 手動觸發 (`workflow_dispatch`, 輸入 release tag).
@@ -189,8 +207,8 @@ router 在 managed 模式啟動時, 每次都做一次 (都是冪等的):
 
 ## 測試
 
-- `router/test/managed.test.ts` (17 項): 模組層級, 見下方清單.
-- `router/test/e2e-managed.test.ts` (5 項): 真的 router, 假 Bot API, e2e-wake 的假 claude, 以及用系統 bwrap 做出同樣 mount namespace 的 bwrap 替身.
+- `router/test/managed.test.ts` (20 項): 模組層級, 見下方清單.
+- `router/test/e2e-managed.test.ts` (6 項): 真的 router, 假 Bot API, e2e-wake 的假 claude, 以及用系統 bwrap 做出同樣 mount namespace 的 bwrap 替身.
 - `router/test/health.test.ts`: 啟動公告的 channel 一行, `/healthz` 的 `channel` 欄位, 文件範例的欄位.
 - 驗收對照表在 [testing](testing.md#managed-channel-驗收對照).
 - 實機驗證 (2026-10-18, Claude Code 2.1.302, static bwrap 0.13.1, 獨立的設定目錄, 沒碰正式環境): 用 router 的模組 (`resolveChannel`, `migrateTranscripts`, `createDaemonKeeper`, launcher) 搭配真的 claude 與一個探針 channel plugin (商店 `cc-telegram-router`, plugin `telegram`).

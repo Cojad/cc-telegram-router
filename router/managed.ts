@@ -8,6 +8,7 @@ import { spawn } from 'child_process'
 import { cpSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync, chmodSync, closeSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import type { Conversation } from './db'
+import type { AgentEntry } from './supervisor'
 import { projectStore } from './conversations'
 import { listJobs } from './jobs'
 import { claudeJsonOf, managedSettings, type Launcher, type ManagedPaths } from './claudecmd'
@@ -21,10 +22,10 @@ function writeJson(p: string, v: unknown, mode = 0o600): void {
   renameSync(`${p}.cctr-new`, p)
 }
 
-/** What bwrap's mounts need (claudecmd.ts bwrapArgs): the managed settings, and both session registry folders (700). */
-export function prepareMounts(p: Pick<ManagedPaths, 'managedDir' | 'managedFile' | 'userSessions' | 'sessionsDir'>): void {
+/** What bwrap's mounts need (claudecmd.ts bwrapArgs): the managed settings, and with shareSessions both session registry folders (700). */
+export function prepareMounts(p: Pick<ManagedPaths, 'managedDir' | 'managedFile' | 'userSessions' | 'sessionsDir'>, shareSessions = true): void {
   writeManagedSettings(p)
-  for (const d of [p.userSessions, p.sessionsDir]) mkdirSync(d, { recursive: true, mode: 0o700 })
+  if (shareSessions) for (const d of [p.userSessions, p.sessionsDir]) mkdirSync(d, { recursive: true, mode: 0o700 })
 }
 
 /** <stateDir>/managed/managed-settings.json as it should be (rewritten only when different). */
@@ -344,4 +345,70 @@ export async function migrateCli(args: string[], d: MigrateCliDeps): Promise<num
     print(`遷移失敗: ${e instanceof Error ? e.message : e}`)
     return 1
   } finally { release?.() }
+}
+
+// --- cc-telegram-router managed agents | attach ---------------------------------
+
+/** The managed subcommands, for help and wrong use. */
+export const MANAGED_USAGE = [
+  '用法: cc-telegram-router [--config <路徑>] managed <子指令>',
+  '  migrate [--dry-run] [--user-config <原本的設定目錄>] [--force]  把各對話的紀錄複製到 router 的設定目錄 (router 停著時)',
+  '  agents [claude agents 的參數...]  在 router 的環境執行 claude agents, 列出 worker',
+  '  attach <job id | 對話 key | chat_id> [--bot <名稱>] [claude attach 的其他參數...]  在 router 的環境執行 claude attach, 接上 worker',
+  '  help  顯示這段說明',
+  'managed 模式經 bwrap 並帶 router 的設定目錄; legacy 模式直接執行 claude. 只在主機終端機用.',
+].join('\n')
+
+export type AttachTarget = { id: string } | { error: string }
+
+/** attach's target as claude attach takes it: a conversation key or chat_id becomes the job id of the
+ *  conversation's current session (from claude agents); anything else (a job id) is given as it is. */
+export function resolveAttachTarget(target: string, bot: string | undefined, convs: Conversation[], agents: AgentEntry[]): AttachTarget {
+  let c = convs.find(x => x.key === target && (!bot || x.bot === bot))
+  if (!c) {
+    const byChat = convs.filter(x => x.chat_id === target && (!bot || x.bot === bot))
+    if (byChat.length > 1) return { error: `chat_id ${target} 在好幾隻 bot 都有對話 (${byChat.map(x => x.bot).join(', ')}), 加 --bot <名稱>` }
+    c = byChat[0]
+  }
+  if (!c) return bot ? { error: `bot ${bot} 沒有對話 ${target}` } : { id: target }
+  if (!c.session_id) return { error: `對話 ${c.key} 還沒有 session (還沒叫醒過)` }
+  const job = agents.find(a => a.sessionId === c!.session_id && a.id)
+  if (!job) return { error: `對話 ${c.key} 目前沒有 job (worker 睡著或被移除): 先用 cc-telegram-router cli session send 叫醒它` }
+  return { id: job.id }
+}
+
+export interface ClaudeCliDeps {
+  launcher: Launcher
+  convs: () => Conversation[]
+  /** Runs argv with the terminal (stdin, stdout, stderr inherited); its exit code. */
+  runTty: (argv: string[], env: Record<string, string | undefined>) => Promise<number>
+  /** claude agents --json --all through the launcher, parsed; [] when it fails. */
+  agents: () => Promise<AgentEntry[]>
+  print?: (s: string) => void
+}
+
+/** `managed agents [args...]`: claude agents with the router's environment, its arguments as they are. */
+export function agentsCli(args: string[], d: ClaudeCliDeps): Promise<number> {
+  return d.runTty(d.launcher.argv(['agents', ...args]), d.launcher.env())
+}
+
+/** `managed attach <target> [--bot <name>] [args...]`: claude attach with the router's environment on the user's terminal. */
+export async function attachCli(args: string[], d: ClaudeCliDeps): Promise<number> {
+  const print = d.print ?? (s => console.error(s))
+  const rest = [...args]
+  let bot: string | undefined
+  const b = rest.indexOf('--bot')
+  if (b >= 0) {
+    bot = rest[b + 1]
+    if (!bot || bot.startsWith('-')) { print(MANAGED_USAGE); return 2 }
+    rest.splice(b, 2)
+  }
+  const at = rest.findIndex(a => !a.startsWith('-'))
+  if (at < 0) return d.runTty(d.launcher.argv(['attach', ...rest]), d.launcher.env()) // e.g. --help: claude's own
+  const target = rest[at]!, convs = d.convs()
+  // claude agents only when the target is a conversation (a job id goes as it is)
+  const t = resolveAttachTarget(target, bot, convs, convs.some(c => c.key === target || c.chat_id === target) ? await d.agents() : [])
+  if ('error' in t) { print(t.error); return 1 }
+  rest[at] = t.id
+  return d.runTty(d.launcher.argv(['attach', ...rest]), d.launcher.env())
 }

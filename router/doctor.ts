@@ -62,7 +62,7 @@ export function doctorReport(d: DoctorDeps): string {
   const managed = ch?.launcher.mode === 'managed'
   if (ch) {
     const intended = ch.decision.mode === 'legacy' && ch.decision.reason === LEGACY_BY_CONFIG
-    out.push(managed || intended ? ok(`channel 模式: ${describeMode(ch.decision)}`) : warn(`channel 模式: ${describeMode(ch.decision)}`))
+    out.push(managed || intended ? ok(`channel 模式: ${describeMode(ch.decision, ch.shareSessions)}`) : warn(`channel 模式: ${describeMode(ch.decision, ch.shareSessions)}`))
     if (managed) out.push(ok(`bwrap ${ch.decision.bwrap} (sha256 與工具箱安裝時相同), 設定目錄 ${ch.paths.configDir}`))
   }
 

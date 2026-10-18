@@ -67,10 +67,11 @@ export function managedSettings(): string {
 
 /** bwrap's options: the whole host as it is (--bind / / recursive), /etc an overlay of
  *  itself with the managed folder at /etc/claude-code, then /etc read-only (no
- *  managed-settings.d of a worker's own); the user's session registry over the
- *  router's (both folders must exist, prepareMounts). No pid or network namespace. */
-export function bwrapArgs(p: Pick<ManagedPaths, 'managedDir' | 'userSessions' | 'sessionsDir'>): string[] {
-  return ['--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--overlay-src', '/etc', '--tmp-overlay', '/etc', '--ro-bind', p.managedDir, '/etc/claude-code', '--remount-ro', '/etc', '--bind', p.userSessions, p.sessionsDir]
+ *  managed-settings.d of a worker's own); with shareSessions (config managed.shareSessions,
+ *  default on) the user's session registry over the router's (both folders must exist,
+ *  prepareMounts). No pid or network namespace. */
+export function bwrapArgs(p: Pick<ManagedPaths, 'managedDir' | 'userSessions' | 'sessionsDir'>, shareSessions = true): string[] {
+  return ['--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--overlay-src', '/etc', '--tmp-overlay', '/etc', '--ro-bind', p.managedDir, '/etc/claude-code', '--remount-ro', '/etc', ...(shareSessions ? ['--bind', p.userSessions, p.sessionsDir] : [])]
 }
 
 export interface ModeDecision { mode: ChannelMode; reason?: string; bwrap?: string }
@@ -82,6 +83,8 @@ export interface DecideDeps {
   platform?: string
   toolbox: string
   paths: Pick<ManagedPaths, 'managedDir' | 'userSessions' | 'sessionsDir'>
+  /** The session registry shared with the user's sessions (bwrapArgs); default true. */
+  shareSessions?: boolean
   /** Right before the probe: what the mount needs on disk (router/managed.ts prepareMounts). Not called when legacy is decided earlier. */
   prepare?: () => void
   /** Runs argv, true when it exits 0 within a few seconds; else what it said. */
@@ -104,7 +107,7 @@ export function decideMode(d: DecideDeps): ModeDecision {
   const t = hostTool(d.toolbox, 'bwrap')
   if ('why' in t) return { mode: 'legacy', reason: t.why }
   d.prepare?.()
-  const r = (d.probe ?? probeBwrap)([t.path, ...bwrapArgs(d.paths), '--', 'true'])
+  const r = (d.probe ?? probeBwrap)([t.path, ...bwrapArgs(d.paths, d.shareSessions ?? true), '--', 'true'])
   if (!r.ok) return { mode: 'legacy', reason: `bwrap 試跑失敗 (user namespace 可能被系統關閉, 例如 Ubuntu 24.04 的 apparmor_restrict_unprivileged_userns=1): ${r.out}` }
   return { mode: 'managed', bwrap: t.path }
 }
@@ -127,7 +130,7 @@ export function claudeJsonOf(configDir: string, home = homedir()): string {
   return configDir === join(home, '.claude') ? join(home, '.claude.json') : join(configDir, '.claude.json')
 }
 
-export function makeLauncher(o: { mode: ChannelMode; claudeBin: string; paths: ManagedPaths; bwrap?: string; home?: string }): Launcher {
+export function makeLauncher(o: { mode: ChannelMode; claudeBin: string; paths: ManagedPaths; bwrap?: string; home?: string; shareSessions?: boolean }): Launcher {
   const managed = o.mode === 'managed'
   if (managed && !o.bwrap) throw new Error('managed mode needs bwrap')
   const configDir = managed ? o.paths.configDir : o.paths.userConfigDir
@@ -137,7 +140,7 @@ export function makeLauncher(o: { mode: ChannelMode; claudeBin: string; paths: M
     channel: CHANNELS[o.mode],
     configDir,
     claudeJson: claudeJsonOf(configDir, o.home),
-    argv: args => managed ? [o.bwrap!, ...bwrapArgs(o.paths), '--', o.claudeBin, ...args] : [o.claudeBin, ...args],
+    argv: args => managed ? [o.bwrap!, ...bwrapArgs(o.paths, o.shareSessions ?? true), '--', o.claudeBin, ...args] : [o.claudeBin, ...args],
     env: (base = process.env) => {
       const e: Record<string, string | undefined> = { ...base }
       // the daemon's environment is every worker's (#98872): no bot token or other TELEGRAM_* in it
@@ -167,19 +170,20 @@ export function shellLine(l: Launcher, args: string[]): string {
   return [...(vars.length ? ['env', ...vars] : []), ...l.argv(args).map(shq)].join(' ')
 }
 
-export interface Channel { decision: ModeDecision; paths: ManagedPaths; launcher: Launcher }
+export interface Channel { decision: ModeDecision; paths: ManagedPaths; launcher: Launcher; shareSessions: boolean }
 
 /** The mode for this router and how to run claude in it: the mode decided (prepare, e.g.
  *  router/managed.ts prepareMounts, runs right before the probe mounts things), the launcher made. */
-export function resolveChannel(cfg: { stateDir: string; claudeBin: string; channelMode?: ChannelSetting }, o: { probe?: DecideDeps['probe']; platform?: string; env?: Record<string, string | undefined>; home?: string; prepare?: (p: ManagedPaths) => void } = {}): Channel {
+export function resolveChannel(cfg: { stateDir: string; claudeBin: string; channelMode?: ChannelSetting; managed?: { shareSessions: boolean } }, o: { probe?: DecideDeps['probe']; platform?: string; env?: Record<string, string | undefined>; home?: string; prepare?: (p: ManagedPaths, shareSessions: boolean) => void } = {}): Channel {
   const paths = managedPaths(cfg.stateDir, o.env, o.home)
-  const decision = decideMode({ setting: cfg.channelMode ?? 'auto', platform: o.platform, toolbox: join(cfg.stateDir, 'toolbox'), paths, probe: o.probe, prepare: o.prepare ? () => o.prepare!(paths) : undefined })
-  return { decision, paths, launcher: makeLauncher({ mode: decision.mode, claudeBin: cfg.claudeBin, paths, bwrap: decision.bwrap, home: o.home }) }
+  const shareSessions = cfg.managed?.shareSessions ?? true
+  const decision = decideMode({ setting: cfg.channelMode ?? 'auto', platform: o.platform, toolbox: join(cfg.stateDir, 'toolbox'), paths, shareSessions, probe: o.probe, prepare: o.prepare ? () => o.prepare!(paths, shareSessions) : undefined })
+  return { decision, paths, shareSessions, launcher: makeLauncher({ mode: decision.mode, claudeBin: cfg.claudeBin, paths, bwrap: decision.bwrap, home: o.home, shareSessions }) }
 }
 
 /** The mode in one line (start notice, doctor, log). */
-export function describeMode(d: ModeDecision): string {
-  if (d.mode === 'managed') return 'managed (worker 用 router 自己的 telegram plugin, 在 bwrap 裡執行)'
+export function describeMode(d: ModeDecision, shareSessions?: boolean): string {
+  if (d.mode === 'managed') return `managed (worker 用 router 自己的 telegram plugin, 在 bwrap 裡執行${shareSessions === undefined ? '' : shareSessions ? '; session 名冊與使用者共用' : '; session 名冊不共用 (managed.shareSessions 關閉)'})`
   return d.reason === LEGACY_BY_CONFIG ? `legacy (${d.reason}; worker 用官方 plugin 的快取)` : `legacy (降級: ${d.reason ?? '?'}; worker 用官方 plugin 的快取)`
 }
 

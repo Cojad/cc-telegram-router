@@ -48,6 +48,21 @@
 - **時間一律 GMT+8**: log, 通知, 報表與 worker 收到的訊息時間都是 GMT+8.
 - **健康檢查端點**: 選配的 `GET /healthz` (建議只聽本機位址, 可要 bearer token) 給 Gatus 這類監控工具, 每隻 bot 的輪詢超過門檻就回 503; router 每次啟動與關機都發重要通知 (含 health 網址與對外開放的警告). 設定與 Gatus 範例見 [部署與維運: 健康檢查端點](docs/operations.md#健康檢查端點).
 
+## bwrap 版 (managed 模式) 的差異
+
+2.32.0 起預設用 managed 模式. 跟以前 (legacy 模式) 比, 差在這些地方 (細節見 [專屬設定目錄與 managed channel](docs/managed-channel.md)):
+
+- **用自己的 plugin, 不怕官方更新.** 以前 worker 載入官方商店的 telegram plugin, 再把我們的檔案蓋上去, 官方一更新就可能被換掉. 現在 worker 載入 router 自己商店 (`<stateDir>/marketplace`) 裡的 plugin. Claude Code 只讓系統層 managed settings 核可的 plugin 當 channel, 那本來要用 sudo 寫進 `/etc/claude-code`; router 改用 bwrap 只在 worker 看得到的地方掛上自己的檔案, 真的 `/etc` 不動, 不用 sudo.
+- **專屬設定目錄與常駐 daemon.** router 下的每個 `claude` 指令都在 bwrap 裡執行, 用 router 自己的設定目錄 (`<stateDir>/claude-config`). 所以 router 有自己的 daemon, 跟你終端機的 session 分開; router 一直讓它在 bwrap 裡跑著, 每分鐘與每次叫醒前檢查, 不對就自動修好並通知. 登入沿用你自己的 (`~/.claude`), 不用另外登入.
+- **worker 的資料換了位置.** 對話紀錄 (`projects/`), daemon 的 job, 資料夾信任 (`.claude.json`) 都在 `<stateDir>/claude-config`. 第一次啟動時 router 會把各對話目前的紀錄複製過去 (原本的留在 `~/.claude` 當備份), worker 醒來接續原本的對話. worker 一直都帶 `--setting-sources project,local`, 你使用者層的 `settings.json` 本來就不載入, 這點沒變; 全域的 `~/.claude/CLAUDE.md` 照樣載入.
+- **session 名冊預設共用.** config.json 的 `"managed": { "shareSessions": true }` (沒寫就是開): worker 跟你終端機的 Claude Code session 用同一份名冊, ListAgents 互相看得到, 也能用名稱互相 SendMessage. 設成 `false` 時名冊分開, 互相看不到, 也不能用名稱傳訊. 不論開關, power 以下角色的 worker 都不能用 ListAgents 或傳訊給其他 session (router 會擋, 可提權), admin 與 owner 的 worker 開著共用時看得到你所有的 session.
+- **在終端機看 worker 要用 router 的指令.** 直接跑 `claude agents` 或 `claude attach` 看到的是你自己的 daemon, 找不到 worker; 要帶 `CLAUDE_CONFIG_DIR=<stateDir>/claude-config`, 或改用 `cc-telegram-router managed agents` 與 `cc-telegram-router managed attach <job id | 對話 key | chat_id>` (用法相同, router 代你帶好環境, 也在 bwrap 裡).
+- **睡著的 worker 不在名冊.** 名冊只有正在跑的 session; 要確定送到某個對話 (必要時叫醒它), 用 `cc-telegram-router cli session send`.
+- **worker 的環境多了兩件事.** 有 managed settings 時, Claude Code 會在每個 session 掛上內建的 `cc-plugin-sec-default` (依它的說明不加任何政策); worker 看到的 `/etc` 是唯讀的 (不能自己加 managed settings).
+- **static bwrap 與降級.** router 用工具箱的 bubblewrap 0.13.1 static 版 (本 repo 的 GitHub Actions 建置, release 固定 sha256, `deploy/install.sh router` 下載, 目前只有 x86_64), 跟系統的 bwrap 分開. 不是 Linux, 工具箱沒有它或檔案被改過, 或系統不讓一般使用者建 user namespace (例如 Ubuntu 24.04 的 `kernel.apparmor_restrict_unprivileged_userns=1`) 時, router 自動降級成 legacy 模式照常運作, 原因寫在啟動公告與 `cli doctor`.
+- **風險.** managed settings 對個人帳號 (Pro, Max) 有效是實測結果 (Claude Code 2.1.302), 官方文件沒有保證; 之後的版本若不再採用, channel 事件會被靜默丟掉. router 檢查得到檔案有沒有掛上, 檢查不到 Claude Code 有沒有採用.
+- **退回 legacy.** config.json 加 `"channelMode": "legacy"` 後重啟 router: worker 回到官方 plugin 的快取與 `~/.claude`, router 會把專屬設定目錄裡比較新的對話紀錄複製回 `~/.claude`. legacy 模式需要先裝好官方 telegram plugin (見下方安裝步驟).
+
 ## Requirements
 
 必要:
@@ -168,7 +183,7 @@
 | [docs/skill-runtime.md](docs/skill-runtime.md) | 特權技能的執行環境規格: 掛載路徑, 環境變數, 工具箱, Python 套件 (uv), 工作目錄, 網路, 主機存取, 對外 port, 核准, exit code 與輸出 |
 | [docs/secrets.md](docs/secrets.md) | 對話專屬密鑰 (10b), 原始事件與密鑰保護 (10e) |
 | [docs/classifier.md](docs/classifier.md) | 工具呼叫分類器 (第一階段, 只記錄) |
-| [docs/managed-channel.md](docs/managed-channel.md) | 專屬設定目錄與 managed channel: worker 在 bwrap 裡用 router 自己的設定目錄, daemon 與 plugin, 降級, daemon 的看管, 對話紀錄的遷移 |
+| [docs/managed-channel.md](docs/managed-channel.md) | 專屬設定目錄與 managed channel: worker 在 bwrap 裡用 router 自己的設定目錄, daemon 與 plugin, 降級, daemon 的看管, 對話紀錄的遷移, 共用 session 名冊, `managed agents` 與 `attach` |
 | [docs/operations.md](docs/operations.md) | 部署, 設定嚮導, linger, 資料夾信任, config.json 設定欄位, 自架 Bot API server, 私訊與群組的存取, 升級, 表情回應, 安裝位置, 新 bot 初次設定與審核群組, bot 設定提醒, router 重啟, 輪詢與重試, 健康檢查端點, 工具呼叫紀錄, CLI, 時間, 報表腳本 |
 | [docs/testing.md](docs/testing.md) | 執行測試, 測試分區 (std, 依改動跑), 測試檔對照, 各階段驗收對照表 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本變更紀錄 |

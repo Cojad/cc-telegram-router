@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [2.32.2] - 2026-10-18
+
+### Added
+
+- `cc-telegram-router [--config <路徑>] managed agents [...]` 與 `managed attach <job id | 對話 key | chat_id> [--bot <名稱>] [...]`: 在 router 的環境執行 `claude agents` 與 `claude attach` (managed 模式經 bwrap 並帶 router 的設定目錄, legacy 直接執行 claude), 參數原樣轉送, attach 直接接上終端機 (TTY 與 Ctrl 鍵交給 claude); attach 的對話 key 或 chat_id 由 router 換成那個對話目前 session 的 job id, 沒有 session 或 worker 睡著時說明怎麼做. `managed` 或 `managed help` 列出 `migrate`, `agents`, `attach`. 只在主機終端機, 不加到 Telegram 的 `/router`.
+- 設定欄位 `managed`: `{ "shareSessions": true }` (預設開) 控制共用 session 名冊的 bind; `false` 時 worker 登記在 router 自己的設定目錄. 寫錯當作開並 log 一行. 啟動公告與 `cli doctor` 的「channel 模式」寫出名冊是否共用.
+- README 新增「bwrap 版 (managed 模式) 的差異」: 自己的 plugin, 專屬設定目錄與常駐 daemon, 資料位置, 名冊開關, 終端機看 worker 的方式, 睡著的 worker, sec-default 與唯讀 `/etc`, static bwrap 與降級, 官方沒保證的風險, 退回 legacy. docs/managed-channel.md 與 operations 同步, 並寫明 worker 本來就不載入使用者層的 settings.
+- 測試: managed.test (20 項) 加名冊開關, attach 的對象換算, agents 與 attach 的指令組成; e2e-managed (6 項) 從終端機跑 `managed agents` 與 `managed attach <對話 key>`, 關閉共用時沒有 bind.
+
 ## [2.32.1] - 2026-10-18
 
 ### Changed

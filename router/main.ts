@@ -65,7 +65,7 @@ import { requestGrant, decideGrant, sendGranted, type GrantDeps } from './grants
 import { postNotice, noticePlace, requestOriginNoter, type ApprovalDeps } from './approvals'
 import { createPluginGuard, scheduleDaily } from './pluginguard'
 import { resolveChannel, describeMode, launcherRunner, shellLine, pluginSettings, claudeJsonOf } from './claudecmd'
-import { prepareMounts, initConfigDir, createDaemonKeeper, migrated, migrateTranscripts, describeMigration, syncBack, migrateCli } from './managed'
+import { prepareMounts, initConfigDir, createDaemonKeeper, migrated, migrateTranscripts, describeMigration, syncBack, migrateCli, agentsCli, attachCli, MANAGED_USAGE } from './managed'
 import { createPkgGate, claudeReviewer } from './pkgreview'
 import { createClassifier, openClassifyStore, apiJudge, claudeJudge, classifierReport, classifierShow, DEFAULT_CLASSIFIER, API_PROVIDERS } from './classifier'
 import { escHtml, htmlToText } from './setup'
@@ -168,22 +168,45 @@ if (importAt > 0) {
 // `cc-telegram-router [--config x] managed migrate [--dry-run] [--user-config <dir>] [--force]`: copy the
 // conversations' transcripts into the router's own config folder (docs/managed-channel.md 「對話紀錄的遷移」);
 // the router does it by itself at its first managed start, this is for a planned switch and rehearsals.
+// `cc-telegram-router [--config x] managed agents|attach ...`: claude agents and claude attach in the router's
+// environment (bwrap and its config folder in managed mode), so the owner's terminal needs no CLAUDE_CONFIG_DIR;
+// attach also takes a conversation key or chat_id. `managed` alone or `managed help`: the list.
 const managedAt = process.argv.indexOf('managed')
-if (managedAt > 0 && process.argv[managedAt + 1] === 'migrate') {
-  const { managedPaths } = await import('./claudecmd')
+if (managedAt > 0) {
+  const sub = process.argv[managedAt + 1], rest = process.argv.slice(managedAt + 2)
   const { Database } = await import('bun:sqlite')
-  process.exit(await migrateCli(process.argv.slice(managedAt + 2), {
-    cfg, paths: managedPaths(cfg.stateDir),
-    convs: () => {
-      const d = new Database(join(cfg.stateDir, 'router.db'), { readonly: true })
-      try { return d.query('SELECT * FROM conversations').all() as Conversation[] } finally { d.close() }
-    },
-    lock: () => acquireLock(configPath + '.lock'),
-    removeJob: async id => {
-      await bunRunner([cfg.claudeBin, 'stop', id], cfg.home)
-      return (await bunRunner([cfg.claudeBin, 'rm', id], cfg.home)).code === 0
-    },
-  }))
+  const convs = () => {
+    if (!existsSync(join(cfg.stateDir, 'router.db'))) return [] as Conversation[]
+    const d = new Database(join(cfg.stateDir, 'router.db'), { readonly: true })
+    try { return d.query('SELECT * FROM conversations').all() as Conversation[] } finally { d.close() }
+  }
+  if (sub === 'migrate') {
+    const { managedPaths } = await import('./claudecmd')
+    process.exit(await migrateCli(rest, {
+      cfg, paths: managedPaths(cfg.stateDir), convs,
+      lock: () => acquireLock(configPath + '.lock'),
+      removeJob: async id => {
+        await bunRunner([cfg.claudeBin, 'stop', id], cfg.home)
+        return (await bunRunner([cfg.claudeBin, 'rm', id], cfg.home)).code === 0
+      },
+    }))
+  }
+  if (sub === 'agents' || sub === 'attach') {
+    const l = resolveChannel(cfg, { prepare: prepareMounts }).launcher
+    const deps = {
+      launcher: l, convs,
+      runTty: async (argv: string[], env: Record<string, string | undefined>) => {
+        // the terminal belongs to claude now: Ctrl-C and the like go to it, not to us
+        for (const s of ['SIGINT', 'SIGQUIT', 'SIGTSTP'] as const) process.on(s, () => {})
+        const p = Bun.spawn(argv, { cwd: existsSync(cfg.home) ? cfg.home : undefined, env, stdio: ['inherit', 'inherit', 'inherit'] })
+        return await p.exited
+      },
+      agents: async () => { try { return JSON.parse((await launcherRunner(l)([cfg.claudeBin, 'agents', '--json', '--all'], cfg.home)).stdout) } catch { return [] } },
+    }
+    process.exit(sub === 'agents' ? await agentsCli(rest, deps) : await attachCli(rest, deps))
+  }
+  console.error(MANAGED_USAGE)
+  process.exit(sub === undefined || sub === 'help' ? 0 : 2)
 }
 
 // `cc-telegram-router [--config x] register`: write the locator file the
@@ -210,7 +233,7 @@ mkdirSync(cfg.home, { recursive: true })
 const channel = resolveChannel(cfg, { prepare: prepareMounts })
 const launcher = channel.launcher
 const managedMode = launcher.mode === 'managed'
-log(`channel mode: ${describeMode(channel.decision)}`)
+log(`channel mode: ${describeMode(channel.decision, channel.shareSessions)}`)
 /** Every claude the router runs goes through this (the launcher: bwrap and the config folder in managed mode). */
 const claudeRun = launcherRunner(launcher)
 
@@ -1883,7 +1906,7 @@ setInterval(pruneSkillEnvs, 86_400_000).unref()
 let startupChecked = false
 async function startupChecks(): Promise<void> {
   // every start is announced: the version, and the health endpoint with how far it reaches (router/health.ts)
-  const hello = startNotice(pkg.version, cfg.health, !!health, describeMode(channel.decision))
+  const hello = startNotice(pkg.version, cfg.health, !!health, describeMode(channel.decision, channel.shareSessions))
   log(`start notice: ${hello.split('\n').join(' / ')}`)
   await noticeEveryBot(hello).catch(e => log(`start notice: ${e}`))
   const notes: string[] = []

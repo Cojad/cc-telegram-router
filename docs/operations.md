@@ -110,11 +110,12 @@ managed 模式 (預設) 的 worker 用 router 自己的設定目錄: router 每�
 | `receiveReact` | 對話沒有自己設定時收哪些表情回應: `all`, `botself_only`, `disable`; 沒寫是 `botself_only`. 見[表情回應 (reaction)](#表情回應-reaction). |
 | `reactFlushMs` | 表情回應等多少毫秒沒有新訊息就單獨交給 worker; 沒寫是 60000, 測試才縮短. 見[表情回應 (reaction)](#表情回應-reaction). |
 | `channelMode` | worker 怎麼取得 Telegram channel: `"auto"` (沒寫就是它) 在 bwrap 能用時走 managed 模式 (router 自己的設定目錄, daemon 與 plugin), 不能用時降級成 legacy; `"legacy"` 一律用官方 plugin 的快取與使用者自己的設定目錄 (退回原本的做法). 寫錯視同 auto. 見[專屬設定目錄與 managed channel](managed-channel.md). |
+| `managed` | managed 模式的選項: `{ "shareSessions": true }`. `shareSessions` 沒寫是開, worker 跟使用者的 Claude Code session 共用 session 名冊 (ListAgents 互相看得到, 能用名稱傳訊); `false` 時 worker 登記在 router 自己的設定目錄. 寫錯當作開. 見[共用 session 名冊](managed-channel.md#共用-session-名冊). |
 | `health` | 給外部監控 (例如 Gatus) 的 HTTP 健康檢查端點 (選配, 預設關閉): `{ "listen": "127.0.0.1:8787", "token": ..., "staleAfterS": 90 }`; 不是本機位址也照開, log 與啟動公告會警告; 寫錯或 port 被佔用只關閉它. 見[健康檢查端點](#健康檢查端點). |
 | `backlogSweepFirstMs` | 只給測試用, 一般使用者不用設. router 啟動後多少毫秒第一次檢查佇列裡還沒送達的訊息 (先讓已經在跑的 worker 重新連上); 沒寫是 15000. |
 | `vaultTickMs` | 只給測試用, 一般使用者不用設. 多久檢查一次到期要刪的密鑰訊息 (刪除時間本身不變, 例如群組指令仍是 10 秒後刪); 沒寫是 10000. |
 
-選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `sandboxExtraRo`, `sandboxTimezone`, `receiveReact`, `health`, `channelMode`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
+選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `sandboxExtraRo`, `sandboxTimezone`, `receiveReact`, `health`, `channelMode`, `managed`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
 
 ## 官方 plugin 的自動更新與快取檢查
 
@@ -406,6 +407,8 @@ cc-telegram-router cli skill refresh web-instagram
 ```
 
 一般子指令等 router 回答最多 2 分鐘, `skill run` 與 `skill refresh` 最多 1 小時, `session send` 是 `--wait` 再加 30 秒 (見下一節).
+
+不經 router 的終端機指令 (router 沒在跑也能用): `cc-telegram-router [--config <config.json>] managed <子指令>`. `managed agents [...]` 與 `managed attach <job id | 對話 key | chat_id> [--bot <名稱>] [...]` 在 router 的環境執行 `claude agents` 與 `claude attach` (managed 模式經 bwrap 並帶 router 的設定目錄, 參數原樣轉送, attach 直接接上終端機), 不用自己帶 `CLAUDE_CONFIG_DIR`; `managed migrate` 見[升級](#升級); `managed help` 列出這些. 見 [managed-channel](managed-channel.md#從終端機看-worker-managed-agents-與-attach).
 
 ## 從外部送訊息給 worker
 

@@ -6,6 +6,9 @@
 // failures, one notice per cause), the transcripts' migration (copied, never
 // over a file, dry run, trust, the user's daemon's jobs) and the copy back,
 // `managed migrate`, the toolbox's host tools and the marketplace check.
+// config managed.shareSessions (the registry bind on or off), and `managed
+// agents|attach` (the launcher's command, arguments as they are, a conversation
+// key or chat_id turned into its job id).
 // End to end through the real router: e2e-managed.test.ts.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
@@ -15,12 +18,12 @@ import { join } from 'path'
 import { createHash } from 'crypto'
 import type { Conversation } from '../db'
 import { bwrapArgs, CHANNELS, claudeJsonOf, decideMode, describeMode, launcherRunner, makeLauncher, managedPaths, managedSettings, MARKETPLACE, pluginSettings, resolveChannel, shellLine } from '../claudecmd'
-import { checkNamespaces, createDaemonKeeper, describeMigration, initConfigDir, migrateCli, migrated, migrateTranscripts, prepareMounts, syncBack, writeManagedSettings } from '../managed'
+import { checkNamespaces, createDaemonKeeper, describeMigration, initConfigDir, migrateCli, migrated, migrateTranscripts, prepareMounts, syncBack, writeManagedSettings, resolveAttachTarget, agentsCli, attachCli, MANAGED_USAGE } from '../managed'
 import { createSupervisor } from '../supervisor'
 import { HOST_TOOLS, hostDir, hostTool, installTools, installed, binDir, type Tool } from '../toolbox'
 import { checkMarketplace, writeFingerprint, MARKETPLACE_FINGERPRINT_FILE } from '../pluginguard'
 import { writeSessionSettings } from '../settings'
-import { parseChannelMode } from '../config'
+import { parseChannelMode, parseManaged } from '../config'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'cctr-managed-')) })
@@ -429,4 +432,74 @@ test('listAgents: only the daemon\'s jobs; the user\'s interactive sessions the 
   ])
   const sup = createSupervisor({ cfg: { claudeBin: 'claude', home: dir } as any, db: {} as any, run: async () => ({ code: 0, stdout: out, stderr: '' }), isConnected: () => false, waitConnected: async () => false, settingsPath: () => '' })
   expect((await sup.listAgents()).map(a => a.id)).toEqual(['aaaa1111'])
+})
+
+test('config managed.shareSessions: on by default; false turns the registry bind off; anything wrong is on with a warning', () => {
+  const w: string[] = []
+  expect(parseManaged(undefined, w)).toEqual({ shareSessions: true })
+  expect(parseManaged({}, w)).toEqual({ shareSessions: true })
+  expect(parseManaged({ shareSessions: false }, w)).toEqual({ shareSessions: false })
+  expect(parseManaged({ shareSessions: 'no' }, w)).toEqual({ shareSessions: true })
+  expect(parseManaged(true, w)).toEqual({ shareSessions: true })
+  expect(w).toEqual(['managed.shareSessions 要是 true 或 false, 收到 "no"; 用預設 (開)', 'managed 要是物件 (例如 { "shareSessions": true }), 收到 true; 用預設 (shareSessions 開)'])
+  const p = { managedDir: '/s/managed', userSessions: '/h/.claude/sessions', sessionsDir: '/s/claude-config/sessions' }
+  expect(bwrapArgs(p, false)).toEqual(bwrapArgs(p).slice(0, -3))
+  expect(bwrapArgs(p, false)).not.toContain('/h/.claude/sessions')
+  const paths = managedPaths('/s', {}, '/h')
+  expect(makeLauncher({ mode: 'managed', claudeBin: 'claude', paths, bwrap: '/b', shareSessions: false }).argv(['agents'])).toEqual(['/b', ...bwrapArgs(paths, false), '--', 'claude', 'agents'])
+  // off: the probe mounts no registry and nothing is made for it; said in the mode line
+  const stateDir = join(dir, 'state')
+  putBwrap(join(stateDir, 'toolbox'))
+  let probed: string[] = []
+  const ch = resolveChannel({ stateDir, claudeBin: 'claude', managed: { shareSessions: false } }, { platform: 'linux', env: {}, home: join(dir, 'home'), prepare: prepareMounts, probe: a => { probed = a; return { ok: true, out: '' } } })
+  expect(ch.shareSessions).toBe(false)
+  expect(probed).not.toContain(join(dir, 'home', '.claude', 'sessions'))
+  expect(existsSync(join(dir, 'home', '.claude', 'sessions'))).toBe(false)
+  expect(existsSync(join(stateDir, 'claude-config', 'sessions'))).toBe(false)
+  expect(describeMode(ch.decision, false)).toContain('session 名冊不共用 (managed.shareSessions 關閉)')
+  expect(describeMode(ch.decision, true)).toContain('session 名冊與使用者共用')
+})
+
+test('managed attach target: a conversation key or chat_id becomes its current session\'s job id; several bots need --bot; no session or no job is said; anything else goes as it is', () => {
+  const convs = [conv('dm-1', '/h/bot1/dm-1', 's1'), { ...conv('dm-9', '/h/bot2/dm-9', 's9'), chat_id: '1', bot: 'two' }, conv('dm-2', '/h/bot1/dm-2', null), conv('dm-3', '/h/bot1/dm-3', 's3')]
+  const agents = [{ id: 'aaaa1111', sessionId: 's1' }, { id: 'bbbb2222', sessionId: 's9' }, { sessionId: 's3', name: 'interactive one' }]
+  expect(resolveAttachTarget('dm-1', undefined, convs, agents)).toEqual({ id: 'aaaa1111' })
+  expect(resolveAttachTarget('1', undefined, convs, agents)).toEqual({ error: 'chat_id 1 在好幾隻 bot 都有對話 (cc, two), 加 --bot <名稱>' })
+  expect(resolveAttachTarget('1', 'two', convs, agents)).toEqual({ id: 'bbbb2222' })
+  expect(resolveAttachTarget('dm-2', undefined, convs, agents)).toEqual({ error: '對話 dm-2 還沒有 session (還沒叫醒過)' })
+  expect(resolveAttachTarget('dm-3', undefined, convs, agents)).toEqual({ error: '對話 dm-3 目前沒有 job (worker 睡著或被移除): 先用 cc-telegram-router cli session send 叫醒它' })
+  expect(resolveAttachTarget('cccc3333', undefined, convs, agents)).toEqual({ id: 'cccc3333' })
+  expect(resolveAttachTarget('x', 'two', convs, agents)).toEqual({ error: 'bot two 沒有對話 x' })
+})
+
+test('managed agents|attach: the launcher\'s command with the arguments as they are and its environment, on the terminal; attach resolves a conversation, asks claude agents only then', async () => {
+  const paths = managedPaths(join(dir, 's'), {}, dir)
+  const m = makeLauncher({ mode: 'managed', claudeBin: 'claude', paths, bwrap: '/b' })
+  const runs: Array<{ argv: string[]; cfg?: string }> = []
+  let asked = 0
+  const deps = (l = m) => ({
+    launcher: l, convs: () => [conv('dm-1', '/h/dm-1', 's1')],
+    runTty: async (argv: string[], env: Record<string, string | undefined>) => { runs.push({ argv, cfg: env.CLAUDE_CONFIG_DIR }); return 7 },
+    agents: async () => { asked++; return [{ id: 'aaaa1111', sessionId: 's1' }] },
+    print: (s: string) => { runs.push({ argv: ['PRINT', s] }) },
+  })
+  expect(await agentsCli(['--json', '--all'], deps())).toBe(7)
+  expect(runs.at(-1)).toEqual({ argv: ['/b', ...bwrapArgs(paths), '--', 'claude', 'agents', '--json', '--all'], cfg: paths.configDir })
+  expect(await attachCli(['dm-1', '--some-flag'], deps())).toBe(7)
+  expect(runs.at(-1)!.argv.slice(-3)).toEqual(['attach', 'aaaa1111', '--some-flag'])
+  expect(asked).toBe(1)
+  expect(await attachCli(['--bot', 'cc', 'dm-1'], deps())).toBe(7)
+  expect(runs.at(-1)!.argv.slice(-2)).toEqual(['attach', 'aaaa1111'])
+  expect(await attachCli(['ab12cd34'], deps())).toBe(7)
+  expect(runs.at(-1)!.argv.slice(-2)).toEqual(['attach', 'ab12cd34'])
+  expect(asked).toBe(2) // a job id needs no lookup
+  expect(await attachCli(['--help'], deps())).toBe(7)
+  expect(runs.at(-1)!.argv.slice(-2)).toEqual(['attach', '--help'])
+  expect(await attachCli(['--bot'], deps())).toBe(2)
+  expect(runs.at(-1)).toEqual({ argv: ['PRINT', MANAGED_USAGE] })
+  // legacy: claude as it is, no config folder of the router's
+  const l = makeLauncher({ mode: 'legacy', claudeBin: '/opt/claude', paths })
+  expect(await agentsCli([], deps(l))).toBe(7)
+  expect(runs.at(-1)).toEqual({ argv: ['/opt/claude', 'agents'], cfg: process.env.CLAUDE_CONFIG_DIR })
+  for (const t of ['migrate', 'agents', 'attach', 'help']) expect(MANAGED_USAGE).toContain(`  ${t}`)
 })

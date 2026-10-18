@@ -16,6 +16,8 @@
 //     marketplace in its settings, and gets the message
 //   - a daemon outside the namespace: stopped, started again in it, the owner told
 //   - cli doctor through the router: the mode, bwrap, the daemon
+//   - managed agents and attach from the terminal through bwrap (attach takes a
+//     conversation key); config managed.shareSessions false: no registry bind
 //   - degraded: a bwrap that cannot make the namespace puts a second router in
 //     legacy mode, the reason in its start notice
 // Module level: managed.test.ts.
@@ -224,6 +226,37 @@ test('cli doctor through the router: the mode, bwrap and the daemon\'s check', a
   expect(out).toContain(`✅ home ${dir} 已被 Claude Code 信任 (它自己)`)
   expect(out).not.toContain('不是由 router 帶起')
 }, 30000)
+
+test('managed agents and attach from the terminal: through bwrap with the router\'s config folder; attach takes the conversation key; with shareSessions off no registry bind; managed alone lists the subcommands', async () => {
+  const cli = async (args: string[], cfgFile = join(state, 'config.json')) => {
+    const p = Bun.spawn(['bun', join(import.meta.dir, '..', 'main.ts'), '--config', cfgFile, ...args], { env: ENV, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+    const [out, err] = [await new Response(p.stdout).text(), await new Response(p.stderr).text()]
+    return { code: await p.exited, out, err }
+  }
+  const before = envCalls().length
+  const a = await cli(['managed', 'agents', '--json', '--all'])
+  expect(a.code).toBe(0)
+  expect(JSON.parse(a.out).some((j: any) => j.name === 'tg-dm-666')).toBe(true)
+  const call = envCalls().slice(before).find(c => c.args[0] === 'agents')!
+  expect(call).toMatchObject({ args: ['agents', '--json', '--all'], config: configDir, secure: userCfg, managed: true })
+  const job = jobs().find(j => j.cwd === folder && j.pid)!
+  const t = await cli(['managed', 'attach', 'dm-666'])
+  expect(t.code).toBe(0)
+  expect(envCalls().slice(before).find(c => c.args[0] === 'attach')).toMatchObject({ args: ['attach', job.id], config: configDir, managed: true })
+  expect(lines(BWLOG).at(-1)).toContain(`--bind ${join(userCfg, 'sessions')} ${join(configDir, 'sessions')} -- `)
+  // config managed.shareSessions false: the same router state without the registry bind
+  const off = join(dir, 'config-noshare.json')
+  writeFileSync(off, JSON.stringify({ ...JSON.parse(readFileSync(join(state, 'config.json'), 'utf8')), managed: { shareSessions: false } }))
+  const n = lines(BWLOG).length
+  expect((await cli(['managed', 'agents'], off)).code).toBe(0)
+  const newer = lines(BWLOG).slice(n)
+  expect(newer.length).toBeGreaterThan(0)
+  for (const l of newer) expect(l).not.toContain('sessions')
+  const u = await cli(['managed'])
+  expect(u.code).toBe(0)
+  expect(u.err).toContain('用法: cc-telegram-router [--config <路徑>] managed <子指令>')
+  expect((await cli(['managed', 'nope'])).code).toBe(2)
+}, 60000)
 
 test('degraded: a bwrap that cannot make the namespace puts the router in legacy mode, the reason in its start notice', async () => {
   const state2 = join(dir, 'state2')

@@ -111,8 +111,21 @@ export type Config = {
    *  inside bwrap with the router's own config folder and plugin when it can, else legacy;
    *  legacy always uses the official plugin's cache in the user's config folder. */
   channelMode?: 'auto' | 'legacy'
+  /** Managed mode's options (docs/managed-channel.md): shareSessions (default true) binds the user's
+   *  session registry over the router's, so ListAgents and SendMessage by name reach both ways. */
+  managed?: { shareSessions: boolean }
   /** Optional settings that were wrong and so turned off (logged at start): the router still runs. */
   warnings?: string[]
+}
+
+/** config managed: { "shareSessions": true|false }; missing is on, anything wrong is on with a warning. */
+export function parseManaged(v: unknown, warnings: string[]): { shareSessions: boolean } {
+  if (v === undefined || v === null) return { shareSessions: true }
+  if (typeof v !== 'object' || Array.isArray(v)) { warnings.push(`managed 要是物件 (例如 { "shareSessions": true }), 收到 ${JSON.stringify(v)}; 用預設 (shareSessions 開)`); return { shareSessions: true } }
+  const s = (v as Record<string, unknown>).shareSessions
+  if (s === undefined || typeof s === 'boolean') return { shareSessions: s ?? true }
+  warnings.push(`managed.shareSessions 要是 true 或 false, 收到 ${JSON.stringify(s)}; 用預設 (開)`)
+  return { shareSessions: true }
 }
 
 /** config channelMode: "auto" (or missing) or "legacy"; anything else is auto with a warning. */
@@ -258,6 +271,7 @@ export function loadConfig(path: string): Config {
     backlogSweepFirstMs: typeof raw.backlogSweepFirstMs === 'number' && raw.backlogSweepFirstMs > 0 ? raw.backlogSweepFirstMs : undefined,
     vaultTickMs: typeof raw.vaultTickMs === 'number' && raw.vaultTickMs > 0 ? raw.vaultTickMs : undefined,
     channelMode: parseChannelMode(raw.channelMode, warnings),
+    managed: parseManaged(raw.managed, warnings),
     warnings,
   }
 }
