@@ -80,9 +80,15 @@ test('at start a DM\'s stored role is aligned to its user\'s role, logged; its s
     { key: `group-${GROUP.slice(1)}`, role: 'power', ctx_v: 1 },
   ])
   ro.close()
+  // The start rewrites each conversation's settings, then its context file, in
+  // key order (dm-owner, dm-member, group), after the log lines: wait for each
+  // file rather than read ahead of the loop (until retries a missing or
+  // half-written file).
   const settings = (k: string) => JSON.parse(readFileSync(join(state, 'sessions', `${k}.json`), 'utf8'))
   await until(() => settings(`dm-${OWNER}`).permissions.defaultMode === 'bypassPermissions')
-  expect(settings(`dm-${MEMBER}`).permissions.allow).not.toContain('Bash') // guest's template, not power's: no shell
+  const member = await until(() => settings(`dm-${MEMBER}`)) // not there before the loop writes it
+  expect(member.permissions.allow).not.toContain('Bash') // guest's template, not power's: no shell
   const ctx = (k: string) => JSON.parse(readFileSync(join(dir, 'bot123', k, '.chat', 'context.json'), 'utf8'))
+  await until(() => ctx(`group-${GROUP.slice(1)}`).role === 'power') // the loop's last file; before it, the one ensureConversation wrote (user)
   expect([ctx(`dm-${OWNER}`).role, ctx(`dm-${MEMBER}`).role, ctx(`group-${GROUP.slice(1)}`).role]).toEqual(['owner', 'guest', 'power'])
 })

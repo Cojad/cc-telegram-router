@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.33.1] - 2026-10-18
+
+### Fixed
+
+- 測試: e2e-dmrole 不再偶爾失敗. router 啟動時先印 `dm role` log, 再依 key 順序 (dm-owner, dm-member, group) 逐一重寫每個對話的 settings 與 chat context; 測試原本只等 owner 的 settings, 就直接讀 member 的 settings 與 group 的 context, 在負載下 (全套平行) 會讀到還沒寫的檔 (ENOENT), 寫到一半的檔 (JSON 解析失敗), 或 group 還是 ensureConversation 寫的舊角色 (`user`). 現在三個都用檔案裡的 `until` 等到就緒再檢查, 檢查內容不變. 不改 router 程式碼.
+
 ## [2.33.0] - 2026-10-18
 
 ### Changed
