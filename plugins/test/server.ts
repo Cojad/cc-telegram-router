@@ -8,7 +8,7 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from
 import { join } from 'path'
 const BASE = join(process.cwd(), '.channel-probe')
 mkdirSync(join(BASE, 'inbox'), { recursive: true })
-const VERSION = '0.0.1'
+const VERSION = '0.0.2'
 const log = (m: string) => appendFileSync(join(BASE, 'server.log'), `${new Date().toISOString()} pid=${process.pid} v${VERSION} ${m}\n`)
 const send = (o: unknown) => process.stdout.write(JSON.stringify(o) + '\n')
 log(`start root=${process.env.CLAUDE_PLUGIN_ROOT ?? ''}`)
