@@ -19,7 +19,7 @@ export interface ClientOpts {
   hello: Extract<PluginToRouter, { t: 'hello' }>
   onMessage: (m: RouterToPlugin) => void
   callTimeoutMs?: number
-  /** Tools that may take longer than callTimeoutMs (run_skill: a skill action up to 15 minutes, a refresh, a retry). */
+  /** Tools that may take longer than callTimeoutMs (run_skill: a skill action up to 15 minutes, a refresh, a retry; skill_try: up to 10 minutes, a refresh, a retry). */
   toolTimeoutMs?: Record<string, number>
   maxBackoffMs?: number
 }
@@ -33,7 +33,7 @@ export function connectRouter(opts: ClientOpts) {
   let backoff = 500
   const pending = new Map<number, (r: ToolResult) => void>()
   const timeout = opts.callTimeoutMs ?? 120_000
-  const toolTimeout = opts.toolTimeoutMs ?? { run_skill: 2_100_000, event_raw: 180_000 }
+  const toolTimeout = opts.toolTimeoutMs ?? { run_skill: 2_100_000, skill_try: 1_500_000, event_raw: 180_000 }
 
   function flush(): void {
     if (!sock || !out) return

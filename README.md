@@ -17,7 +17,7 @@
 | 權限 | Claude Code 的權限詢問轉到允許清單的私訊 (Allow / Deny) | 依對話角色的 settings 與 router 檢查每個工具呼叫; 先擋再問的提權, 三選一審核按鈕, 撤銷, 執行授權紀錄 |
 | 管理介面 | 終端機的 `/telegram:access`, `/telegram:configure` | Telegram 裡的 `/router` 指令, 終端機 CLI, `cc /指令` 代打 Claude Code 的 slash command |
 | 訊息紀錄 | 沒有歷史與搜尋 | 每個 update 與送出的 payload 都在 `router.db`; `lookup_message`, 回覆引用自動補全 |
-| 工具 | reply, react, edit_message, download_attachment | 另有 send_sticker, lookup_message, get_chat_context, bot_api, http_api, install_skill, skill_check, run_skill, request_elevation, request_send_grant, event_raw, secret_from_handle, save_bot_profile |
+| 工具 | reply, react, edit_message, download_attachment | 另有 send_sticker, lookup_message, get_chat_context, bot_api, http_api, install_skill, skill_check, skill_try, run_skill, request_elevation, request_send_grant, event_raw, secret_from_handle, save_bot_profile |
 | 憑證與密鑰 | bot token 存在 `.env` | 跨 bot 憑證與 HTTP API key 由 router 代呼叫 (worker 看不到值); 對話專屬密鑰 (AES-256-GCM) |
 | 密鑰保護 | 沒有 | 每個 update 與文字附件都掃描密鑰, 存遮蔽版, 原文加密, 提醒並 5 分鐘後刪除原訊息 |
 | 技能 | 沒有 | 三層技能範圍與 `install_skill`; 特權技能 (bwrap 沙箱, 雜湊核准, 每日更新憑證, 每隻 bot 一份的附加式資料庫) |
@@ -55,7 +55,7 @@
 | 項目 | 用途 |
 |---|---|
 | tmux | `cc /指令` 代打 (router 用自己的 tmux server 開 `claude attach`) |
-| curl | 除錯時手動查詢 Bot API 與 HTTP API; 特權技能的腳本呼叫 API 常用它 (`/telegram:bot-skill` 的範例). 本 repo 的程式與腳本不用它 |
+| curl | 除錯時手動查詢 Bot API 與 HTTP API; 特權技能的 shell 腳本呼叫 API 常用它. 本 repo 的程式與腳本不用它 |
 | jq | 處理 JSON (例如 Bot API 的回應); 也在 user 角色的唯讀指令白名單裡, worker 可以直接用. 本 repo 的程式與腳本不用它 |
 | matplotlib (python3 套件) | `cc /context` 的圖; 沒有時 `/context` 退為純文字 (每個類別一段文字進度條, 從上一個類別的結尾接著畫到 100%, 附安裝建議). 安裝: `python3 -m pip install --user matplotlib` 或 `sudo apt-get install python3-matplotlib` |
 | node, pip, npm 等 | power 與 admin 對話的 worker 自己要用的執行環境 (python3 已在必要) |
@@ -66,6 +66,7 @@
 |---|---|
 | 特權技能需要的工具 (例如 yt-dlp, deno) | 由技能自己決定; 沙箱看得到 `~/.local/bin`, `~/.local/lib`, `~/.deno/bin` |
 | OpenRouter 或其他分類器的 API key | 工具呼叫分類器 (預設關閉) |
+| slirp4netns (1.0 以上), nftables (`nft`), util-linux 的 `nsenter` | `skill_try` 試跑的網路隔離 (連得到外網, 連不到主機本機與內網), 也要能建 unprivileged user namespace (bwrap 本來就要). 缺少時 skill_try 拒絕執行, 其他功能不受影響. 安裝: `sudo apt-get install slirp4netns nftables` |
 
 不需要: sqlite3 CLI (router 用 `bun:sqlite`).
 

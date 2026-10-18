@@ -207,6 +207,22 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'skill_try',
+    description: 'Try one action of a skill draft in your folder (its privileged.json) without approval: power and up only (user conversations wait for a later phase). It runs the way run_skill would, but every credential is fake (http URLs and bot APIs point at a fake service inside the sandbox that answers and logs each call), databases start empty (or from store_seed, a folder in your folder; session keeps them between tries), the network reaches the internet but nothing on the host or private networks, and output lands in <your folder>/skill-try/<time>-<action>/. role tries a lower role. At most 20 tries per hour. See /telegram:bot-skill.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'The skill folder, as for skill_check (e.g. skills/signup)' },
+        action: { type: 'string' },
+        args: { type: 'object', description: 'Action arguments, as run_skill takes them' },
+        role: { type: 'string', description: 'Run as this role (your own or lower) to see what it may do' },
+        session: { type: 'string', description: 'A name (lowercase letters, digits, -) to keep the trial databases and credential folders for the next tries' },
+        store_seed: { type: 'string', description: 'A folder in your folder whose subfolders are databases (by name) to start from' },
+      },
+      required: ['path', 'action'],
+    },
+  },
+  {
     name: 'install_skill',
     description: 'Install a skill you wrote in <your folder>/skills/<name>/ (you cannot write under .claude yourself): scope "conversation" puts it in this conversation\'s .claude/skills (power and up), "bot" makes every conversation of this bot get it, "all" every bot (owner/admin). A role too low is refused like any other block (elevation). Skills must not contain tokens. See /telegram:bot-skill.',
     inputSchema: {

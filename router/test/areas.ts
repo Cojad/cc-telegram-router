@@ -22,13 +22,13 @@ export const AREAS: Area[] = [
   },
   {
     name: 'skills', title: '憑證與特權技能',
-    tests: ['phase3-cred.test.ts', 'phase3-privskill.test.ts', 'skillstore.test.ts', 'skillcli.test.ts', 'skillcheck.test.ts', 'cred-http.test.ts', 'cred-flows.test.ts', 'e2e-creds.test.ts'],
-    paths: ['router/credentials.ts', 'router/skills.ts', 'router/privskill.ts', 'router/skillstore.ts', 'router/skillrefresh.ts', 'router/skillrun.ts', 'router/skillcli.ts', 'router/skillcheck.ts', 'router/rawvault.ts', 'plugin/skills/bot-skill/**'],
+    tests: ['phase3-cred.test.ts', 'phase3-privskill.test.ts', 'skillstore.test.ts', 'skillcli.test.ts', 'skillcheck.test.ts', 'skilltry.test.ts', 'cred-http.test.ts', 'cred-flows.test.ts', 'e2e-creds.test.ts'],
+    paths: ['router/credentials.ts', 'router/skills.ts', 'router/privskill.ts', 'router/skillstore.ts', 'router/skillrefresh.ts', 'router/skillrun.ts', 'router/skillcli.ts', 'router/skillcheck.ts', 'router/skilltry.ts', 'router/skilltry-fake.ts', 'router/sandboxnet.ts', 'router/rawvault.ts', 'plugin/skills/bot-skill/**'],
   },
   {
     name: 'sandbox', title: '沙箱與安裝位置',
-    tests: ['portability.test.ts'],
-    paths: ['shared/locate.ts', 'deploy/**', 'router/settings.ts', 'router/privskill.ts', 'router/cli.ts', 'plugin/server.ts', 'templates/roles/**'],
+    tests: ['portability.test.ts', 'skilltry.test.ts'],
+    paths: ['shared/locate.ts', 'deploy/**', 'router/settings.ts', 'router/privskill.ts', 'router/sandboxnet.ts', 'router/cli.ts', 'plugin/server.ts', 'templates/roles/**'],
   },
   {
     name: 'secrets', title: '密鑰保護',

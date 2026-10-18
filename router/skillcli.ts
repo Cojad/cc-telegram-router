@@ -85,8 +85,9 @@ export function folderRefusal(p: string, what: string, g: Guard): string | null 
   return null
 }
 
-type Snap = Map<string, { hash: string; size: number; lines?: number }>
-function snap(root: string): Snap {
+export type Snap = Map<string, { hash: string; size: number; lines?: number }>
+/** Every file under root: hash, size, .jsonl line count (a trial's database before and after a run). */
+export function snap(root: string): Snap {
   const out: Snap = new Map()
   const walk = (d: string) => {
     for (const e of readdirSync(d).sort()) {
@@ -103,7 +104,7 @@ function snap(root: string): Snap {
 }
 
 /** What changed in a trial copy of a bot's databases during one run, one line per file. */
-function diff(before: Snap, after: Snap): string[] {
+export function diff(before: Snap, after: Snap): string[] {
   const out: string[] = []
   for (const [rel, a] of after) {
     const b = before.get(rel)

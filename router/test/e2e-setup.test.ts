@@ -4,8 +4,8 @@
 //   claim code -> owner; persona interview (<bootstrap>, save_bot_profile)
 //   -> <home>/bot<id>/CLAUDE.md, read by every conversation of the bot;
 //   approvals group checks and topics; skip button. Also install_skill and
-//   skill_check through the router (docs/credentials-and-skills.md 技能範圍,
-//   檢查技能草稿).
+//   skill_check and skill_try through the router (docs/credentials-and-skills.md
+//   技能範圍, 檢查技能草稿, 試跑技能草稿).
 
 import { test, expect, afterAll } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from 'fs'
@@ -353,7 +353,7 @@ test('install_skill end to end: from <folder>/skills into the conversation\'s ow
   owner.close(); user.close()
 }, 30000)
 
-test('skill_check end to end: a user conversation checks its draft (nothing installed, nothing run); guest is refused (docs/credentials-and-skills.md 「檢查技能草稿」)', async () => {
+test('skill_check end to end: a user conversation checks its draft (nothing installed, nothing run), skill_try refuses it; guest is refused (docs/credentials-and-skills.md 「檢查技能草稿」)', async () => {
   const user = connectRouter({ socketPath: join(state, 'router.sock'), hello: { t: 'hello', project_dir: join(dir, 'bot123', 'dm-666'), pid: 53 }, onMessage(m) { if (m.t === 'deliver') user.send({ t: 'ack', qid: m.qid }) } })
   await until(() => user.state().kind === 'ready')
   const skill = join(dir, 'bot123', 'dm-666', 'skills', 'notes')
@@ -367,6 +367,11 @@ test('skill_check end to end: a user conversation checks its draft (nothing inst
   expect(r.content[0]!.text).toContain('add: bash scripts/n.sh {text}; 角色 owner, admin, power, user; 資料庫 notes (append)')
   expect(r.content[0]!.text).toContain('下一步: user 角色現在還不能安裝技能')
   expect((await user.call('skill_check', { path: '../dm-555' })).content[0]!.text).toContain('不在這個對話的資料夾裡')
+  // skill_try: power and up only, a user conversation waits for phase 2 (docs/credentials-and-skills.md 「試跑技能草稿」)
+  const t = await user.call('skill_try', { path: 'skills/notes', action: 'add', args: { text: 'x' } })
+  expect(t.isError).toBe(true)
+  expect(t.content[0]!.text).toStartWith('skill try: refused\nskill_try 只開放 power 以上的對話 (這個對話是 user)')
+  expect(existsSync(join(dir, 'bot123', 'dm-666', 'skill-try'))).toBe(false)
   dm(OWNER, '/router role 666 guest')
   await until(() => q("SELECT role FROM conversations WHERE key = 'dm-666'")[0]?.role === 'guest')
   const g = await user.call('skill_check', { path: 'skills/notes' })

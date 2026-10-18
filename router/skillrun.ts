@@ -108,7 +108,14 @@ export async function runSkill(deps: SkillRunDeps, conv: Conversation, role: str
   if (argWhy) return { ok: false, text: `${argWhy}. 需要的話告訴對方, 並用 request_elevation 申請提權` }
   const used = o.runAs ? 0 : db.skillRunsSince(conv.key, new Date(Date.now() - 3_600_000).toISOString())
   if (used >= RUNS_PER_HOUR) { db.addSkillRun(conv.key, skill, actionName, 'refused'); return { ok: false, text: `這個對話一小時內已經用了 ${used} 次特權技能, 上限 ${RUNS_PER_HOUR} 次, 請稍後再試` } }
+  return runPrepared(deps, conv, o.runAs ?? conv.key, skill, actionName, dir, manifest, action, args)
+}
 
+/** An action already found and allowed (approval, role, arguments' roles, the hourly limit): its
+ *  credentials checked, its databases locked and staged, run, scrubbed, recorded under runAs.
+ *  run_skill and the terminal come here through runSkill; skill_try (router/skilltry.ts) directly,
+ *  with a draft's folder and fake credentials. */
+export async function runPrepared(deps: SkillRunDeps, conv: Conversation, runAs: string, skill: string, actionName: string, dir: string, manifest: Manifest, action: Action, args: Record<string, unknown>): Promise<{ ok: boolean; text: string }> {
   for (const h of [...httpCreds(deps, action), ...(action.refresh && manifest.actions[action.refresh] ? httpCreds(deps, manifest.actions[action.refresh]!) : [])]) {
     if (h.cred?.kind !== 'http' || !h.cred.baseUrl) return { ok: false, text: `技能 ${skill} 需要的 API 憑證 ${h.name} 不存在或不是 http 憑證, 請 owner 檢查` }
   }
@@ -116,7 +123,6 @@ export async function runSkill(deps: SkillRunDeps, conv: Conversation, role: str
   if (botWhy) return { ok: false, text: `技能 ${skill} ${botWhy}, 請 owner 檢查` }
   if (action.store && Object.keys(action.store).length && !deps.storeRoot) return { ok: false, text: `技能 ${skill} 要用資料庫, 但 router 沒有設定資料庫位置` }
   const stores = deps.storeRoot ? storesOf(action, deps.storeRoot, basename(deps.botDir(conv.bot))) : []
-  const runAs = o.runAs ?? conv.key
   if (!stores.length) return run(deps, conv, runAs, skill, actionName, dir, manifest, action, args, [])
   return withStoreLocks(stores.map(s => s.dir), async () => {
     const work = workDir(deps.storeRoot!)

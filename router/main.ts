@@ -35,6 +35,8 @@ import { fingerprint, noteStart, STALE_NOTE } from './freshness'
 import { createAuthz } from './authz'
 import { runSkill, skillDirs, describeActions, type SkillRunDeps } from './skillrun'
 import { checkSkill } from './skillcheck'
+import { trySkill, type SkillTryDeps } from './skilltry'
+import { interfaceAddrs, cloudPublicAddrs } from './sandboxnet'
 import { scheduleRefresh, type RefreshDeps } from './skillrefresh'
 import { terminalRun, terminalRefresh } from './skillcli'
 import { createPoller, type PollEvent } from './poller'
@@ -409,6 +411,11 @@ const ipc = createIpc({
       const r = checkSkill(conv.folder, String(args.path ?? ''), role, { cred: n => cfg.credentials[n] })
       return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
     }
+    if (tool === 'skill_try') {
+      if (!conv) return { content: [{ type: 'text', text: 'terminal: 用 cc-telegram-router cli skill run --trial' }], isError: true }
+      const r = await callConv.run(conv.key, () => trySkill(tryDeps, conv, role, args))
+      return { content: [{ type: 'text', text: r.text }], isError: !r.ok }
+    }
     if (tool === 'install_skill') {
       if (!conv) return { content: [{ type: 'text', text: 'terminal: 直接把技能放進對應的 .claude/skills' }], isError: true }
       const scope = skillScope(args.scope)
@@ -669,6 +676,14 @@ const skillDeps: SkillRunDeps = {
   },
   notifyOwner: (c, text) => void postNotice(approvalDeps, c.bot, text),
   log,
+}
+/** skill_try (router/skilltry.ts): a draft's action with fake credentials, in its own network (router/sandboxnet.ts). */
+const tryDeps: SkillTryDeps = {
+  ...skillDeps, stateDir: cfg.stateDir,
+  cred: n => cfg.credentials[n],
+  hostAddrs: async () => [...interfaceAddrs(), ...await cloudPublicAddrs()],
+  bunExe: process.execPath,
+  fakeScript: join(import.meta.dir, 'skilltry-fake.ts'),
 }
 /** The daily refresh (router/skillrefresh.ts) and the terminal's skill refresh. */
 const refreshDeps: RefreshDeps = {

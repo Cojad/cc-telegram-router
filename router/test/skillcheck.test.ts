@@ -147,11 +147,13 @@ test('skill_check reports each mistake with how to fix it; approve\'s own refusa
   draft('bad', {
     'SKILL.md': MD('bad'),
     'scripts/x.sh': `#!/bin/bash\ntouch ${marker}\n`,
+    'top.sh': 'echo top\n',
     'privileged.json': { actions: {
       a: { run: ['bash', 'scripts/x.sh', '--url={url}', '{name}', '{cred:COOKIES}', 'scripts/missing.sh'], args: { url: { pattern: 'https://.*' }, name: { pattern: '([a-z' }, extra: { pattern: 'x' }, free: {} }, role: ['user'], auth_failure: 'reason=(', timeout: -1 },
       b: { run: ['python3', 'scripts/x.py', '{q?}'], args: { q: { flag: '--q' } }, refresh: 'nope', mounts: ['/srv'] },
       c: { run: 'bash scripts/x.sh' },
       d: { run: ['venv/bin/python3', '-B', 'scripts/x.sh'], refresh: 'b', auth_failure: 'x', roles: ['users'] },
+      e: { run: ['bash', 'top.sh'] },
     } },
   })
   const r = checkSkill(folder, 'skills/bad', 'power', { cred })
@@ -178,6 +180,7 @@ test('skill_check reports each mistake with how to fix it; approve\'s own refusa
     '動作 d: venv/bin/python3 在 venv 裡: install_skill 不複製 venv',
     '動作 d: refresh 指的動作 b 不是 internal',
     '動作 d: roles 裡的 users 不是角色',
+    '動作 e: top.sh 不含 /, 會原樣傳入 (工作目錄是對話資料夾, 找不到技能裡的這個檔); 寫成 ./top.sh 或放進 scripts/ 再寫 scripts/top.sh',
   ]) expect(r.text).toContain(`- ${s}`)
   expect(r.text).not.toContain('核准時')
   expect(r.text).not.toContain('下一步')
@@ -239,8 +242,10 @@ test('skill_check reads only inside the conversation folder, and never through a
 test('skill_check: the next step says what each role can do with a privileged skill', () => {
   writeExample(join(folder, 'skills', 'signup'))
   const next = (role: string) => checkSkill(folder, 'signup', role, { cred }).text.split('\n').find(l => l.startsWith('下一步: '))!
-  expect(next('owner')).toContain('用 install_skill (name signup, scope bot 或 all) 安裝 (特權動作只在這隻 bot 或全部 bot 範圍有效), 再請 owner 或 admin 在 Telegram 打 /router skill approve signup 核准')
+  expect(next('owner')).toContain('下一步: 先用 skill_try 試跑每個動作 (假憑證, 試跑資料庫, 不用核准); 然後用 install_skill (name signup, scope bot 或 all) 安裝 (特權動作只在這隻 bot 或全部 bot 範圍有效), 再請 owner 或 admin 在 Telegram 打 /router skill approve signup 核准')
   expect(next('admin')).toBe(next('owner'))
+  expect(next('power')).toContain('下一步: 先用 skill_try 試跑每個動作')
+  expect(next('user')).not.toContain('skill_try')
   expect(next('power')).toContain('這兩個範圍只有 owner 與 admin 能裝 (install_skill scope bot 會走提權); 請 owner 或 admin 安裝')
   expect(next('user')).toContain('user 角色現在還不能安裝技能: 草稿留在 skills/signup/, 請 owner 或 admin 安裝 並核准')
 })
@@ -254,7 +259,7 @@ test('skill_check is a tool every worker sees; the guide teaches it and the run 
   for (const s of [
     '`skill_check` (path: `skills/<名稱>`)', '**工作目錄是對話資料夾**', '**整串比對**', '`{名稱?}`', '`{cred:環境變數}`', '**技能資料夾在沙箱裡唯讀**', '`-B`', 'PYTHONDONTWRITEBYTECODE',
     '`HOME` 是沙箱私有的 `/tmp`', '`$<ENV>_URL`', '`$<ENV>_HEADER`', '`$<ENV>_API`', '**exit code 不是 0 就算失敗**', '**輸出會掃描憑證**', '**每個對話每小時最多 10 次**', '**之後改了任何檔案都自動暫停**',
-    '以換行結尾, 不能有空行, 不能刪改舊行', '單檔上限 5 MB', '20 MB', '不接受符號連結', '**不要從對話資料夾載入程式或套件**', '### 各角色能做到哪裡', '| user | 可以 | 可以 | 現在還不能', '| guest | 不行 (不能寫檔) |', '### 範例: 活動報名清單',
+    '以換行結尾, 不能有空行, 不能刪改舊行', '單檔上限 5 MB', '20 MB', '不接受符號連結', '**不要從對話資料夾載入程式或套件**', '### 各角色能做到哪裡', '現在還不能 (被擋時走提權; 開放 user 自己安裝要等之後的階段)', '| guest | 不行 (不能寫檔) |', '### 範例: 活動報名清單',
   ]) expect(GUIDE).toContain(s)
   // a control experiment asks workers for a shared-bookmarks skill: the guide must not hold that answer
   expect(GUIDE).not.toMatch(/書籤|網址收藏|bookmark/i)

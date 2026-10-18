@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+## [2.17.0] - 2026-10-18
+
+### Added
+
+- worker 用的 `skill_try` 工具 (power 以上; user 與 guest 一律拒絕, 要等之後的白名單沙箱): 不用核准就跑一次對話資料夾裡技能草稿的動作, 走 run_skill 的同一段 (`runPrepared`), 但憑證全是假的 (http 與 Bot API 指到沙箱裡 127.0.0.1 的假服務, 回傳列出它收到的請求), 資料庫從空的開始 (或 `store_seed`, `session` 讓接連幾次共用), 工作目錄是 `skill-try/<時間>-<動作>/`, internal 動作沒有 mounts 與 env, timeout 最多 600 秒, 每小時 20 次 (`skill_runs` 記 `try:<對話 key>`, 不算 run_skill 的 10 次). 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#試跑技能草稿).
+- 試跑的網路隔離 (`router/sandboxnet.ts`, 之後可給所有特權動作共用): bwrap 獨立網路空間 + slirp4netns (`--disable-host-loopback`) + nft, 連得到外網, 連不到主機本機 (127.0.0.0/8), 內網 (10/8, 172.16/12, 192.168/16, 100.64/10), 169.254/16 (含雲端 metadata), IPv6 本機與內網位址, 主機自己的位址; DNS 走 slirp 的 10.0.2.3. 主機上的 unix socket 也連不到: `/run` 蓋上空的 tmpfs, seccomp 讓建立 AF_UNIX socket 失敗 (並擋 io_uring), 所以 docker.sock 與其他 session 的 socket 都碰不到. 缺工具或設定失敗時拒絕試跑. 已核准的特權動作還沒有這些隔離, 列為已知限制, 留到第 2 階段. README 的 Requirements 加上 slirp4netns, nftables, nsenter. 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#試跑的網路).
+
+### Changed
+
+- `/telegram:bot-skill` 加上「試跑 (skill_try)」一節, 角色表加上 skill_try 欄, 檢查清單加上試跑. `skill_check` 的下一步對 power 以上提到 skill_try, 並提醒 run 裡不含 `/` 的腳本檔名 (例如 `x.sh`) 不會換成技能裡的檔.
+
 ## [2.16.0] - 2026-10-18
 
 ### Changed

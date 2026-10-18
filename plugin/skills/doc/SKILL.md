@@ -55,7 +55,7 @@ worker 要送訊息到別的對話會被擋, 它可以用 request_send_grant 申
 
 owner 與 admin 的對話可以直接以這隻 bot 自己的身分呼叫任何 Bot API (例如刪除訊息, 置頂, 查群組資訊): `bot_api` 的 credential 填 `self`, 不用另外登記. getUpdates, setWebhook, deleteWebhook, logOut, close 會讓 router 收不到訊息, 不開放; 其他角色不能用.
 
-做技能, 或技能需要 token / 要操作另一隻 bot 時, 先讀 `/telegram:bot-skill`, 寫好後用 `skill_check` 檢查 (guest 以外都能用). 重點: token 與 API key 不寫進技能, 由使用者照下一節登記, worker 用 `bot_api` (bot token) 或 `http_api` (API key) 工具使用; 技能寫在對話資料夾的 `skills/<名稱>/` (`.claude` 底下只有 owner 的對話寫得進去), 再用 `install_skill` 安裝: power 以上裝到這個對話自己 (scope `conversation`), owner 與 admin 可以裝成整隻 bot 或全部 bot 共用; 角色不夠時走提權.
+做技能, 或技能需要 token / 要操作另一隻 bot 時, 先讀 `/telegram:bot-skill`, 寫好後用 `skill_check` 檢查 (guest 以外都能用), power 以上再用 `skill_try` 試跑 (假憑證, 試跑資料庫, 不用核准). 重點: token 與 API key 不寫進技能, 由使用者照下一節登記, worker 用 `bot_api` (bot token) 或 `http_api` (API key) 工具使用; 技能寫在對話資料夾的 `skills/<名稱>/` (`.claude` 底下只有 owner 的對話寫得進去), 再用 `install_skill` 安裝: power 以上裝到這個對話自己 (scope `conversation`), owner 與 admin 可以裝成整隻 bot 或全部 bot 共用; 角色不夠時走提權.
 
 ## 登記 API key 與 bot token (教使用者怎麼打)
 

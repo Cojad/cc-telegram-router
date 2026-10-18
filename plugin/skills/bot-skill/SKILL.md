@@ -1,6 +1,6 @@
 ---
 name: bot-skill
-description: 建立或修改技能 (skill) 的 SOP: 技能放在哪個範圍 (單一對話, 這隻 bot, 全部 bot), 各角色能寫, 裝, 核准到哪裡, 技能需要 token 或要操作另一隻 bot (跨 bot 技能) 時怎麼處理, 特權動作 (privileged.json) 的執行細節與完整範例, 用 skill_check 檢查草稿. 使用者要你「做一個技能」「把這個存成 skill」, 或技能需要任何 token 時, 先讀這份再動手.
+description: 建立或修改技能 (skill) 的 SOP: 技能放在哪個範圍 (單一對話, 這隻 bot, 全部 bot), 各角色能寫, 裝, 核准到哪裡, 技能需要 token 或要操作另一隻 bot (跨 bot 技能) 時怎麼處理, 特權動作 (privileged.json) 的執行細節與完整範例, 用 skill_check 檢查草稿, 用 skill_try 試跑 (power 以上). 使用者要你「做一個技能」「把這個存成 skill」, 或技能需要任何 token 時, 先讀這份再動手.
 ---
 
 # 建立技能的 SOP
@@ -75,7 +75,7 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 ### 流程
 
 1. 在 `skills/<名稱>/` 寫 SKILL.md, privileged.json, 腳本.
-2. `skill_check` 檢查到 `skill check: ok`, 把它回報的「核准時會列出」給使用者看.
+2. `skill_check` 檢查到 `skill check: ok`, 把它回報的「核准時會列出」給使用者看. power 以上的對話再用 `skill_try` 試跑每個動作 (見[試跑](#試跑-skill_try)).
 3. 特權動作只在**這隻 bot 或全部 bot 範圍**有效 (只裝在對話範圍的技能, 對話自己改得到, 不給特權): 由 owner 或 admin 的對話 `install_skill` (scope `bot` 或 `all`).
 4. owner 或 admin 在 Telegram 打 `/router skill approve <名稱>` 核准. 核准記下檔案雜湊 (不含 venv, node_modules, `__pycache__`, `.git`), **之後改了任何檔案都自動暫停**, 要重新核准; 所以改好, 裝好之後再請他核准.
 5. 動作用到的憑證要先登記 (見上面「技能需要 token 時」); 憑證本身的 roles 與 methods 不套用在特權動作上, 由核准與動作的 `roles` 把關.
@@ -126,16 +126,31 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 - full 模式: 可以新增, 修改, 刪除; **只准用在 roles 只有 owner 與 admin 的動作** (沒寫 roles 也不行), 否則 privileged.json 讀取失敗, 核准會拒絕.
 - 兩種模式: 不接受符號連結, 裝置檔, fifo; 寫入的單檔上限 5 MB (append 的 `.jsonl` 算新加的部分), 一次執行所有資料庫加起來 20 MB; 寫入的內容含有這個動作的憑證內容也不接受.
 
+### 試跑 (skill_try)
+
+power 以上的對話用 `skill_try` (path, action, args, 選填 role, session, store_seed) 不用核准就跑一次草稿的動作. 跑法跟正式執行一樣 (參數比對, 沙箱, 工作目錄, 資料庫寫回檢查, 輸出掃描), 差別:
+
+- **憑證全是假的**: `$<ENV>_URL` 與 `$<ENV>_API` 指到沙箱裡 127.0.0.1 上的假服務 (Bot API 一律回 `{"ok":true,"result":true}`, http API 一律回 `{"fake":true}`), key 與 token 是隨機的假值, `$<ENV>_HEADER` 的標頭名稱與前綴照真的憑證; creds 資料夾是空的. 所以腳本要能處理回應裡沒有想要的欄位 (範例的「查不到活動名稱」). 回傳會列出假服務收到的每個請求 (方法, 路徑, 大小與開頭).
+- **資料庫從空的開始**, 不會複製這隻 bot 的正式資料庫. `store_seed` 給你資料夾裡的一個資料夾 (每個子資料夾是一個資料庫, 名稱同 privileged.json, 只能有一般檔案) 當初始內容; `session` 給一個名字 (小寫英數與 `-`), 試跑資料庫與 creds 資料夾就留給下一次 (最後一次使用後 24 小時清掉), 例如先 join 兩次再 list, cancel. 回傳列出這次資料庫的變動 (新增, 修改含 `.jsonl` 行數, 刪除); 寫回檢查不過時說明原因.
+- 工作目錄是你資料夾裡的 `skill-try/<時間>-<動作>/`, 輸出檔在那裡.
+- **試跑的網路: 連得到外網, 連不到主機本機與內網** (127.0.0.0/8, 10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16 含雲端 metadata, IPv6 的本機與內網位址, 主機自己的位址); DNS 照常可用. 沙箱裡自己的 127.0.0.1 是假服務, 不是主機. **也不能建立 unix socket** (`/run` 是空的, 建立 AF_UNIX socket 一律失敗; `socketpair` 照常), 所以腳本不要依賴 docker, dbus 這類本機服務.
+- `role` 扮演等於或低於自己的角色, 看 `roles` 與 `args.roles` 擋不擋; 試跑不送提權申請.
+- internal 動作也能試 (例如憑證更新腳本), 但沒有 mounts 與 env; timeout 最多 600 秒.
+- 每個對話每小時 20 次, 不算進 `run_skill` 的 10 次.
+- 第一行是 `skill try: ok`, `failed` (跑了, 但 exit 不是 0 或資料庫寫回被拒) 或 `refused` (沒有跑, 附原因).
+
+試跑通過不等於正式能跑: 真的憑證要先登記 (試跑會提醒 router 裡不存在的), 要裝到 bot 範圍並核准, venv 要在安裝位置建好.
+
 ### 各角色能做到哪裡
 
-| 角色 | 寫草稿 (`skills/<名稱>/`) | `skill_check` | `install_skill` | 核准 (`/router skill approve`) |
-|---|---|---|---|---|
-| owner, admin | 可以 | 可以 | 對話, 這隻 bot, 全部 bot 範圍 | 可以 (在 Telegram 打指令, 不是工具) |
-| power | 可以 | 可以 | 只有對話範圍; bot 與 all 範圍會被擋並走提權 | 不行 |
-| user | 可以 | 可以 | 現在還不能 (被擋時走提權; 開放 user 自己安裝要等之後的階段) | 不行 |
-| guest | 不行 (不能寫檔) | 不行 | 不行 | 不行 |
+| 角色 | 寫草稿 (`skills/<名稱>/`) | `skill_check` | `skill_try` | `install_skill` | 核准 (`/router skill approve`) |
+|---|---|---|---|---|---|
+| owner, admin | 可以 | 可以 | 可以 | 對話, 這隻 bot, 全部 bot 範圍 | 可以 (在 Telegram 打指令, 不是工具) |
+| power | 可以 | 可以 | 可以 | 只有對話範圍; bot 與 all 範圍會被擋並走提權 | 不行 |
+| user | 可以 | 可以 | 不行 (試跑的程式還沒核准, 要等之後的白名單沙箱) | 現在還不能 (被擋時走提權; 開放 user 自己安裝要等之後的階段) | 不行 |
+| guest | 不行 (不能寫檔) | 不行 | 不行 | 不行 | 不行 |
 
-所以 user 與 power 對話寫特權技能的終點是: 草稿寫好, `skill_check` 通過, 把結果 (特別是「核准時會列出」那段) 告訴使用者, 請 owner 或 admin 安裝到 bot 範圍並核准. 不要自己宣稱已經可以用.
+所以 user 與 power 對話寫特權技能的終點是: 草稿寫好, `skill_check` 通過 (power 再加 `skill_try` 試跑過), 把結果 (特別是「核准時會列出」那段) 告訴使用者, 請 owner 或 admin 安裝到 bot 範圍並核准. 不要自己宣稱已經可以用.
 
 ### 範例: 活動報名清單
 
@@ -285,4 +300,5 @@ else:
 - [ ] 需要的憑證已登記, 方法只開放必要的
 - [ ] 範圍與使用者確認過
 - [ ] `skill_check` 第一行是 `skill check: ok`
+- [ ] power 以上: 每個動作都用 `skill_try` 試跑過 (失敗與被擋的情況也試)
 - [ ] 一般技能實際跑過一次; 特權動作已安裝到 bot 或全部 bot 範圍並核准後, 用 `run_skill` 跑過一次
