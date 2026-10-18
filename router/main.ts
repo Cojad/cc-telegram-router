@@ -17,7 +17,7 @@ import { basename, dirname, join } from 'path'
 import { defaultConfigPath, loadConfig, hiddenPaths, botApiRoot, credApiRoot, OFFICIAL_API_ROOT, type BotConfig } from './config'
 import { fetchBotFile } from './telegram/files'
 import { isSetup, runSetupCli } from './wizard'
-import { createWakeTracker, wakeCause, latestPluginLog, pluginFailure, readProjects, trustOf, trustFix, apiAdvice, modelWindowNotes, type ApiFailure } from './diagnose'
+import { UNIT_NAME, createWakeTracker, wakeCause, latestPluginLog, pluginFailure, readProjects, trustOf, trustFix, apiAdvice, modelWindowNotes, type ApiFailure } from './diagnose'
 import { doctorReport, offlineDoctor, daemonInputs } from './doctor'
 import pkg from '../package.json'
 import { locatorPath, syncLocator, writeLocator } from '../shared/locate'
@@ -25,7 +25,7 @@ import { acquireLock } from './lock'
 import { openRouterDb, type Conversation, type ConvSecret } from './db'
 import { ensureConversation, ensureBotDir, botDir, convFolder, migrateConversation, findByFolder, projectStore } from './conversations'
 import { writeSessionSettings, renderSettings, applyOverrides } from './settings'
-import { createSupervisor, bunRunner } from './supervisor'
+import { createSupervisor, bunRunner, isRunning } from './supervisor'
 import { jobsDir, readJob, listJobs, strayJobs, readProcs, daemonReport, reportNotices } from './jobs'
 import { createIpc, type Peer } from './ipc'
 import { makeAssertAllowedChat, makeAssertSendable } from './guard'
@@ -54,6 +54,7 @@ import { runFakeService } from './skilltry-fake'
 import { scheduleRefresh, type RefreshDeps } from './skillrefresh'
 import { terminalRun, terminalRefresh } from './skillcli'
 import { createPoller, type PollEvent } from './poller'
+import { startHealthServer, healthReport, countWorkers, scrubPrivate, startNotice, stopNotice, stopSource, systemdJob, type JobRunner, type WakeFailure } from './health'
 import { ALLOWED_UPDATES, createReactionBuffer, flushOnStop, reactor, reactionLabel, wanted, type ReactMode } from './reactions'
 import { sendWithRetry, htmlOrPlain } from './sendretry'
 import { pollNoticeText, describePoll, noticeVia } from './pollnotice'
@@ -685,6 +686,8 @@ const CLAUDE_JSON = join(homedir(), '.claude.json')
 const wakes = createWakeTracker()
 /** The last trouble of each conversation (memory only), for /router status. */
 const lastTrouble = new Map<string, { at: number; text: string }>()
+/** The last wake that failed, any conversation, for the health endpoint: by bot name, the cause without who it was about (router/health.ts). */
+let lastWakeFailure: WakeFailure | null = null
 const convTitle = (c: Conversation) => `${c.key}${c.title ? ` (${c.title})` : ''}`
 
 /** A worker that did not wake: why (claude --bg's words, the plugin's own log, folder trust), when to try again. */
@@ -696,6 +699,7 @@ function wakeFailed(c: Conversation, spawnOut?: string): void {
   const w = wakeCause({ spawnOut, pluginLog, home: cfg.home, folder: c.folder, logFile, trust: projects ? trustOf(projects, c.folder, homedir()) : null })
   const r = wakes.fail(c.key, w.cause)
   lastTrouble.set(c.key, { at: Date.now(), text: w.cause })
+  lastWakeFailure = { at: Date.now(), bot: c.bot, failures: r.failures, cause: scrubPrivate(w.cause, [c.folder, c.key, c.chat_id, c.title, ...[...bots.values()].map(h => h.info?.username)]) }
   log(`${c.key}: wake failed (${r.failures} in a row): ${w.cause}; next try ${gmt8(new Date(r.retryAt))}`)
   if (r.notify) void postNotice(approvalDeps, c.bot, [
     `⚠️ ${convTitle(c)} 的 worker 叫不醒, 訊息還在佇列裡.`,
@@ -1354,10 +1358,10 @@ const commandDeps: CommandDeps = {
     return m ? m.status === 'administrator' || m.status === 'creator' : null
   },
   recentMessages: (bot, chatId, n) => store.forBot(bot).recent(chatId, n),
-  restartRouter() {
+  restartRouter(by) {
     // Under systemd (Restart=always) exiting is enough; otherwise start a
     // detached copy of ourselves once the lock is released.
-    setTimeout(() => void shutdown('/restart', !process.env.INVOCATION_ID), 500)
+    setTimeout(() => void shutdown('/restart', !process.env.INVOCATION_ID, { restart: true, by }), 500)
   },
 }
 
@@ -1690,6 +1694,31 @@ for (const c of db.listConversations()) {
   if (moved) { settingsFor(moved); ctxFile(moved); log(`moved ${c.key}: ${c.folder} -> ${moved.folder}`) }
 }
 
+// The health endpoint for outside monitors (router/health.ts, docs/operations.md 「健康檢查端點」): optional, loopback only.
+// Which workers the daemon runs comes from claude agents, asked at most every 30 seconds.
+let daemonRunning: { at: number; keys: Set<string> | null } = { at: 0, keys: null }
+let daemonAsking: Promise<Set<string> | null> | null = null
+function runningKeys(): Promise<Set<string> | null> {
+  if (Date.now() - daemonRunning.at < 30_000) return Promise.resolve(daemonRunning.keys)
+  // requests at the same time share one claude agents
+  return daemonAsking ??= (async () => {
+    const agents = await Promise.race([supervisor.listAgents().catch(() => null), Bun.sleep(5_000).then(() => null)])
+    const bySession = new Map(db.listConversations().filter(c => c.session_id).map(c => [c.session_id!, c.key]))
+    const keys = agents ? new Set(agents.filter(a => a.sessionId && isRunning(a) && bySession.has(a.sessionId)).map(a => bySession.get(a.sessionId!)!)) : null
+    daemonRunning = { at: Date.now(), keys }
+    return keys
+  })().finally(() => { daemonAsking = null })
+}
+const health = cfg.health ? startHealthServer(cfg.health, async () => {
+  const now = Date.now()
+  return healthReport({
+    now, version: pkg.version, startedAt: startedAt.getTime(), staleAfterS: cfg.health!.staleAfterS,
+    bots: [...bots.values()].map(h => ({ name: h.cfg.name, state: h.poller.state().kind, lastOk: h.poller.lastOk(), since: h.poller.createdAt() })),
+    workers: countWorkers(db.listConversations().map(c => c.key), { isConnected: ipc.isConnected, heldUntil: wakes.until, running: await runningKeys(), now }),
+    lastWakeFailure,
+  })
+}, log) : null
+
 for (const bc of cfg.bots) startBot(bc)
 // through that bot to the owner's DM; when it cannot reach the owner (never started by them), through the others
 for (const r of setupResets) {
@@ -1786,6 +1815,10 @@ setInterval(pruneSkillEnvs, 86_400_000).unref()
 // bun for the workers' telegram plugin on the router's own PATH (the unit's), home trusted by Claude Code, the model against autoCompactWindow
 let startupChecked = false
 async function startupChecks(): Promise<void> {
+  // every start is announced: the version, and the health endpoint with how far it reaches (router/health.ts)
+  const hello = startNotice(pkg.version, cfg.health, !!health)
+  log(`start notice: ${hello.split('\n').join(' / ')}`)
+  await noticeEveryBot(hello).catch(e => log(`start notice: ${e}`))
   const notes: string[] = []
   if (!Bun.which('bun')) notes.push(`⚠️ router 的 PATH 找不到 bun: worker 的 telegram plugin 要用 bun 執行, 每個 worker 都會叫不醒 (plugin did not connect).\n修法: deploy/install.sh unit (把 bun 的資料夾加進 unit 的 PATH), 再 systemctl --user restart cc-telegram-router.\n目前的 PATH: ${process.env.PATH ?? '(空)'}`)
   const projects = readProjects(CLAUDE_JSON)
@@ -1808,10 +1841,29 @@ if (cfg.pluginCheckAt) {
   log(`plugin guard: daily at ${cfg.pluginCheckAt} GMT+8, next ${gmt8(new Date(sched.next()))}`)
 }
 
-async function shutdown(sig: string, respawn = false) {
+
+/** systemctl for systemdJob: killed when its time is up. */
+const jobRunner: JobRunner = async (args, signal) => {
+  const p = Bun.spawn(args, { stdout: 'pipe', stderr: 'ignore', stdin: 'ignore' })
+  signal.addEventListener('abort', () => p.kill(9), { once: true })
+  const stdout = await new Response(p.stdout).text()
+  return { code: await p.exited, stdout }
+}
+/** How long the stop notice may hold up a stop. */
+const STOP_NOTICE_MS = 5_000
+async function shutdown(sig: string, respawn = false, o: { restart?: boolean; by?: string } = {}) {
   if (stopping) return
   stopping = true
   log(`shutdown (${sig})`)
+  health?.stop()
+  // the stop notice, with who asked, before the bots stop; never longer than STOP_NOTICE_MS.
+  // A SIGTERM under systemd: its job for the unit tells a restart from a stop (2 seconds at most).
+  const systemd = !!process.env.INVOCATION_ID
+  const job = !o.by && sig === 'SIGTERM' && systemd ? await systemdJob(UNIT_NAME, jobRunner) : null
+  const bye = stopNotice(pkg.version, !!o.restart || job === 'restart', stopSource({ by: o.by, signal: sig, systemd, job }))
+  log(`stop notice: ${bye}`)
+  const told = await Promise.race([noticeEveryBot(bye).then(() => true, e => { log(`stop notice: ${e}`); return false }), Bun.sleep(STOP_NOTICE_MS).then(() => false)])
+  if (!told) log(`stop notice: not confirmed within ${STOP_NOTICE_MS / 1000}s, stopping anyway`)
   await Promise.allSettled([...bots.values()].map(h => h.stop()))
   // no more updates: reactions still kept go to their workers while the socket is up
   await flushOnStop(reactions.drain(), { handOver: handOverReactions, acked: (key, qid) => !db.undelivered(key).some(r => r.qid === qid), log }).catch(e => log(`reactions at stop: ${e}`))

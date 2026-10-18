@@ -10,6 +10,7 @@ import { settlePairing } from './pairing'
 import type { ApprovalDeps } from './approvals'
 import type { MessageRecord } from './telegram/store'
 import { gmt8, maskTokens } from './context'
+import { describeHealth } from './health'
 import { describeCreds, placementText, defaultHeadersText, parseHttpScope, parseDefaultHeader, refuseDefaultHeader, setHeader, BOT_TOKEN_FULL, httpExample, credSummary, STAGE_TTL_MS, type HttpScope, type CredStaging } from './credentials'
 import { SECRET_RE, runSecretCommand, describeSecrets, describeHandles } from './secrets'
 import { addedSetupText, escHtml } from './setup'
@@ -135,7 +136,8 @@ export interface CommandDeps {
   /** A bot's messages in a chat (each bot keeps its own: router/telegram/store.ts). */
   recentMessages(bot: string, chatId: string, n: number): MessageRecord[]
   writeConfig(mutate: (raw: Record<string, unknown>) => void): void
-  restartRouter(): void
+  /** by: who asked, for the stop notice (cli, telegram: <name>). */
+  restartRouter(by: string): void
   startedAt: Date
 }
 
@@ -826,6 +828,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
           `home: ${cfg.home}`,
           `stateDir: ${cfg.stateDir}`,
           `socket: ${cfg.socket}`,
+          `health: ${describeHealth(cfg.health)}`,
           `config: ${cfg.path}`,
         ]
         return done(lines.join('\n'), { private: true })
@@ -1113,7 +1116,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
     }
 
     case 'restart':
-      return done('router 重啟中', { after: () => deps.restartRouter() })
+      return done('router 重啟中', { after: () => deps.restartRouter(input.terminal ? 'cli' : `telegram: ${input.senderName}`) })
 
     default:
       return done(`不認得的指令: ${sub}\n${HELP}`)

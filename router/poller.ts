@@ -73,9 +73,12 @@ export function createPoller<Me, U extends { update_id: number }>(deps: PollerDe
   let state: PollState = { kind: 'starting' }
   let offset = 0
   let failing: { since: number; attempt: number; told: boolean } | null = null
+  const createdAt = now()
+  let lastOk: number | null = null
 
   const ok = () => {
     if (!running) return
+    lastOk = now()
     if (failing?.told) deps.notify({ kind: 'recovered', since: failing.since, at: now() })
     if (failing) deps.log(`working again (down since ${iso8(failing.since, ' ')})`)
     failing = null
@@ -148,6 +151,10 @@ export function createPoller<Me, U extends { update_id: number }>(deps: PollerDe
     start,
     state: () => state,
     offset: () => offset,
+    /** When a Bot API call last worked (deleteWebhook at start, then every getUpdates), null before; for the health endpoint (router/health.ts). */
+    lastOk: () => lastOk,
+    /** When this poller was made: a bot that never worked counts from here. */
+    createdAt: () => createdAt,
     /** Stop polling; resolves with the next offset to confirm (getUpdates offset, limit 1). */
     stop(): number {
       running = false

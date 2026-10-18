@@ -10,6 +10,7 @@ import { outermost } from './settings'
 import { zoneOk } from './sandboxfs'
 import { parseClassifier, type ClassifierConfig } from './classifier'
 import { parseReactMode, type ReactMode } from './reactions'
+import { parseHealth, type HealthConfig } from './health'
 
 export type BotConfig = {
   name: string
@@ -96,6 +97,8 @@ export type Config = {
   receiveReact: ReactMode
   /** How long reactions wait for more before going to the worker alone (default 60000); only tests shorten it. */
   reactFlushMs?: number
+  /** The health endpoint for outside monitors (router/health.ts): loopback only; off when missing or wrong. */
+  health?: HealthConfig
   /** Optional settings that were wrong and so turned off (logged at start): the router still runs. */
   warnings?: string[]
 }
@@ -231,6 +234,7 @@ export function loadConfig(path: string): Config {
     sandboxTimezone: parseTimezone(raw.sandboxTimezone, warnings),
     receiveReact: parseReactMode(raw.receiveReact, warnings),
     reactFlushMs: typeof raw.reactFlushMs === 'number' && raw.reactFlushMs > 0 ? raw.reactFlushMs : undefined,
+    health: parseHealth(raw.health, warnings),
     warnings,
   }
 }

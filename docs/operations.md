@@ -107,8 +107,9 @@ router 以 `claude --bg` 在每個對話資料夾 (`<home>` 底下) 啟動 worke
 | `sandboxExtraRo` | 特權技能的沙箱額外唯讀看得到的絕對路徑 (沙箱是白名單, 預設只有 `/usr` 與少數 `/etc` 檔), 結尾是 `/bin` 的放進 PATH; 沒寫是沒有, 寫錯的項目略過. 見[執行環境規格](skill-runtime.md#掛載路徑). |
 | `receiveReact` | 對話沒有自己設定時收哪些表情回應: `all`, `botself_only`, `disable`; 沒寫是 `botself_only`. 見[表情回應 (reaction)](#表情回應-reaction). |
 | `reactFlushMs` | 表情回應等多少毫秒沒有新訊息就單獨交給 worker; 沒寫是 60000, 測試才縮短. 見[表情回應 (reaction)](#表情回應-reaction). |
+| `health` | 給外部監控 (例如 Gatus) 的 HTTP 健康檢查端點 (選配, 預設關閉): `{ "listen": "127.0.0.1:8787", "token": ..., "staleAfterS": 90 }`; 不是本機位址也照開, log 與啟動公告會警告; 寫錯或 port 被佔用只關閉它. 見[健康檢查端點](#健康檢查端點). |
 
-選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `sandboxExtraRo`, `sandboxTimezone`, `receiveReact`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
+選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `sandboxExtraRo`, `sandboxTimezone`, `receiveReact`, `health`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
 
 ## 官方 plugin 的自動更新與快取檢查
 
@@ -243,6 +244,8 @@ router 可以裝在任何位置, 程式不假設固定路徑:
 
 ## router 重啟
 
+- **啟動與關機公告** (`router/health.ts` 的 startNotice, stopNotice): 每次啟動, 第一隻 bot 取得 getMe 後, 跟其他啟動檢查一樣發到每隻 bot 的「🔔 重要通知」(沒有審核群組時 owner 私訊), 同一個地方只發一次. 啟動公告一定有 `🟢 cc-telegram-router <版本> 啟動`; 有開[健康檢查端點](#健康檢查端點)時加一行 `health point (http://<listen 位址>/healthz) 啟動`, 位址對外開放時加 `⚠️ health point 對外開放, 請注意防範`, 在私有網段時加一行提醒, 未設 token 時加 `⚠️ health point 未設 token, ...`; 設了但沒聽起來 (例如 port 被佔用) 時寫沒有啟動. 關機或重啟時, 停下 bot 之前先發 `🔴 cc-telegram-router <版本> 重啟 (來源: ...)` 或 `... 關機 (來源: ...)`: 來源是 `cli` (`cc-telegram-router cli restart`), `telegram: <顯示名稱或 @username>` (Telegram 裡的 `/restart`), 在 systemd 下收到 SIGTERM 時, router 用 `systemctl --user list-jobs --no-legend` 查自己 unit (`cc-telegram-router.service`) 的 job 類型 (最多等 2 秒): `restart` (`systemctl --user restart`) 寫 `重啟 (來源: systemd)`, `stop` (`systemctl --user stop`) 寫 `關機 (來源: systemd)`, 查不到 (指令失敗或逾時) 寫 `關機 (來源: systemd (SIGTERM))`; 不在 systemd 下收到訊號寫 `訊號 SIGTERM` (或 SIGINT). 寫「重啟」時, 之後新的 router 再發一則啟動公告. 關機公告最多等 5 秒, 送不出去也照常停止 (log 寫 `stop notice: not confirmed within 5s`).
+
 router 重啟 (`systemctl restart`, `/router restart`, 部署) 時 worker 不跟著重啟, 但有一段空窗. 2026-10-17 實測 (3 個 worker 在線): 收到 SIGTERM 後約 0.69 秒 worker 斷線, 0.85 秒新 router 起來, 1.19 秒所有 worker 的 plugin 都重新連上.
 
 - **router 程序連不上** (約 0 到 0.85 秒): worker 的 PreToolUse 與 SubagentStart hook 照時間表重試 (第 0, 3, 8, 15, 30, 45 秒), 一般重啟在第 3 秒那次就拿到 router 的正常判斷, 那個工具呼叫因此慢約 3 秒. 其他進度事件只送一次, 空窗裡的那幾則進度會漏掉. 45 秒內都連不上 (router 起不來) 才落回「放行, 但不准跳出 sandbox」, 而且每個工具呼叫都要等滿 45 秒; 從第一次連不到起超過 3 分鐘仍沒有任何一次連上時改成每個請求只試一次就落回 (斷路), router 回來後第一次連上就恢復. 斷路的狀態檔在 `$XDG_RUNTIME_DIR/cc-telegram-router/` (沒有時 `~/.cache/cc-telegram-router/`), 刪掉就回到正常的重試.
@@ -263,6 +266,80 @@ router 重啟 (`systemctl restart`, `/router restart`, 部署) 時 worker 不跟
 
 - 輪詢由 router 自己做 (`poller.ts`, 不用 grammY 的 bot.start), 啟動 (getMe) 與之後收訊都套用同一套規則: 網路錯誤與 Telegram 5xx 以 5 秒, 10 秒, 30 秒, 1 分, 2 分, 5 分逐步拉長, 之後每 5 分鐘一直重試 (429 照 retry_after); 斷線超過 2 分鐘才通知 owner 一次, 恢復時再通知一次. 409 衝突 (別的程式在用這個 token 收訊息) 每 60 秒重試並立刻通知. 401 (token 失效) 不再重試, 立刻通知 owner 用 `/router bot rotate`. 通知經其他還正常的 bot 送到它的重要通知話題或 owner 私訊; 409 與恢復通知也可以由那隻 bot 自己送 (409 只停收訊, 送訊息仍正常, 所以只有一隻 bot 時也收得到); 沒有 bot 送得出去, 或沒有 owner 與審核群組時只記 log. `/router status` 每隻 bot 後面標狀態: 收訊中, 重試中 (從幾點開始, 原因), token 失效.
 - `/router` 指令的回覆遇到網路錯誤, Telegram 5xx 或 429 (照 retry_after) 時, 第一次送出後 1 分鐘內最多再試 3 次 (間隔 2 秒, 5 秒, 15 秒; `sendretry.ts`), 其他 4xx 不重試, 最後還是失敗就在 router log 記一行.
+
+## 健康檢查端點
+
+給 Gatus 這類外部監控工具的 HTTP 端點 (`router/health.ts`), 選配, config.json 沒有 `health` 就不開. 改了要重啟 router 才生效.
+
+```json
+"health": { "listen": "127.0.0.1:8787", "token": "<自己產生的一串亂數>", "staleAfterS": 90 }
+```
+
+- `listen`: `<位址>:<port>`, 例如 `127.0.0.1:<port>`, `[::1]:<port>` 或 `localhost:<port>` (IPv6 位址加方括號), port 1 到 65535. 建議只聽本機位址, 寫 `127.0.0.1`: `localhost` 可能只聽在 `::1`, 用 127.0.0.1 連的監控就連不到. 不是本機位址也照開, 但依位址分三級警告 (log 一行 `health: ⚠️ ...`, 並寫進啟動公告):
+  - 本機 (loopback): 127.0.0.0/8, `::1`, `localhost`. 只有這台機器連得到, 不警告.
+  - 私有網段: 10/8, 172.16/12, 192.168/16, 100.64/10 (CGNAT), 169.254/16 (link-local), IPv6 的 fc00::/7 與 fe80::/10. 警告同一個網段的其他機器連得到.
+  - 對外開放 (public): 其他位址, 包含 `0.0.0.0` 與 `::` (所有網卡) 以及主機名稱 (不查 DNS, 一律當對外). 警告「health point 對外開放, 請注意防範」.
+  
+  `listen` 格式錯 (沒有 port, 不是 IP 位址或主機名稱) 時不開端點, log 一行 `config.json: health ...`; port 被佔用時 log 一行 `health: cannot listen on ...` 不開端點 (啟動公告寫沒有啟動). 兩種情況 router 都照常運作.
+- `token` (選填): 有設時要帶 `Authorization: Bearer <token>`, 沒帶或不對回 401, 比對是 constant-time. token 不會出現在 log, 錯誤訊息, 公告或 `/router config show` (只顯示「要 token, 已設定」). 沒設時 log, `/router config show` 與啟動公告都提示「未設 token」.
+- `staleAfterS` (選填): 一隻 bot 最近一次 getUpdates 成功超過幾秒就算異常; 沒寫是 **90**, 寫錯 (不是 1 以上的數字) 用 90 並 log 一行. 90 是 router long polling timeout (30 秒) 的三倍: 閒置的 bot 每 30 秒至少成功一次, 一次失敗加上前幾次重試 (5 秒, 10 秒, 30 秒, 見「輪詢與重試」) 也還在門檻內. 設得比 30 小, 沒有訊息時也會誤報 503.
+
+`GET /healthz` (也接受 `HEAD`, 只回狀態碼與標頭) 回 JSON. 其他路徑回 404, 其他方法回 405.
+
+- **200**: 每隻 bot 最近一次 getUpdates 成功都在 `staleAfterS` 內. 還沒成功過的 bot (剛啟動) 從它開始輪詢起算.
+- **503**: 任一隻 bot 超過門檻, 例如 Telegram 連不上, token 失效 (401), 或請求卡住沒有回應 (這時 `state` 仍是 `ok`, 但 `lastOkAgoS` 一直變大).
+
+```json
+{
+  "status": "ok",
+  "version": "2.30.0",
+  "now": "2026-10-18T15:15:53.616+08:00",
+  "startedAt": "2026-10-18T15:15:52.922+08:00",
+  "uptimeS": 1,
+  "staleAfterS": 90,
+  "bots": {
+    "cc": { "ok": true, "state": "ok", "lastOkAt": "2026-10-18T15:15:53.598+08:00", "lastOkAgoS": 0 }
+  },
+  "workers": { "total": 1, "standby": 0, "asleep": 1, "backoff": 1, "pluginDisconnected": 0 },
+  "lastWakeFailure": { "at": "2026-10-18T15:15:53.518+08:00", "agoS": 0, "bot": "cc", "failures": 1, "cause": "claude --bg 失敗: Error: cannot start the session in <隱藏>" }
+}
+```
+
+- `status`: `ok` (200) 或 `down` (503). 時間一律 GMT+8 ISO 字串.
+- `bots`: 以 config.json 的 bot 名稱為鍵. `ok` 是否在門檻內; `state` 是輪詢狀態 (`starting`, `ok`, `retrying`, `unauthorized`, `stopped`); `lastOkAt` 與 `lastOkAgoS` 是最近一次成功的時間與距今秒數, 還沒成功過時是 `null`, 另有 `waitingS` (從開始輪詢起算).
+- `workers`: 對話數, 定義同 `/router status`: `standby` 是 plugin 連著的 (🛜待命中), `asleep` 是沒連著的 (💤已休眠), 兩者相加是 `total`; `asleep` 裡面, `backoff` 是連續叫不醒, 下次叫醒還在等待間隔的 (見「cli doctor 與 worker 狀態」), `pluginDisconnected` 是 daemon 有在跑但 plugin 沒連上的 (由 `claude agents` 得知, 最多每 30 秒問一次, 問不到時是 `null`).
+- `lastWakeFailure`: 最近一次叫不醒 (任何對話) 的時間, bot 名稱, 連續失敗次數與原因 (2.27.0 的診斷), 沒有時是 `null`. 只存在記憶體, 重啟後清空.
+- 不含任何隱私: 沒有 token, chat 名稱, chat_id, 使用者 id 或 username, 對話 key (含 chat id) 與訊息內容. 叫不醒的原因裡, 那個對話的資料夾, key, chat id, 標題與 bot 的 username 換成 `<隱藏>`, 6 位數以上的數字換成 `<id>`, token 換成 `<token>`. 要知道是哪個對話, 看 router 的 log 或 `/router status`.
+
+Gatus 設定範例 (`config.yaml`; token 用環境變數帶入, 不寫死在檔案裡):
+
+```yaml
+endpoints:
+  - name: cc-telegram-router
+    url: "http://127.0.0.1:8787/healthz"
+    interval: 60s
+    headers:
+      Authorization: "Bearer ${CCTR_HEALTH_TOKEN}"
+    conditions:
+      - "[STATUS] == 200"
+      - "[BODY].status == ok"
+      - "[BODY].bots.cc.ok == true"
+```
+
+Gatus 跑在 docker 裡時, 容器的 127.0.0.1 是容器自己, 連不到 router; 端點又只聽本機位址, 所以要用 host network (Linux 的 Docker Engine), 讓容器跟主機共用網路:
+
+```yaml
+services:
+  gatus:
+    image: twinproduction/gatus:latest
+    network_mode: host
+    environment:
+      CCTR_HEALTH_TOKEN: ${CCTR_HEALTH_TOKEN}
+    volumes:
+      - ./config:/config
+```
+
+測試: `router/test/health.test.ts` (模組), `router/test/e2e-health.test.ts` (真的 router + 假 Bot API).
 
 ## 工具呼叫紀錄
 

@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+## [2.30.0] - 2026-10-18
+
+### Added
+
+- 健康檢查端點 (`router/health.ts`): config.json 的 `health` (`{ "listen": "127.0.0.1:8787", "token": ..., "staleAfterS": 90 }`, 選配, 預設關閉) 開一個給 Gatus 這類外部監控的 `GET /healthz` (也接受 HEAD, 其他路徑 404, 其他方法 405). 建議聽 127.0.0.1; 不是本機位址也照開, 依本機, 私有網段, 對外開放 (含 0.0.0.0 與 ::) 在 log 與啟動公告警告; 格式錯或 port 被佔用時不開並 log 一行, router 照常運作. 有 `token` 時要 `Authorization: Bearer <token>`, 否則 401, constant-time 比對, token 不進 log, 公告與 `/router config show`; 沒設時三處都提示「未設 token」. 每隻 bot 最近一次 getUpdates 成功都在 `staleAfterS` (預設 90 秒, long polling timeout 30 秒的三倍) 內回 200, 任一隻超過回 503. JSON 內容: 版本, uptime, 每隻 bot (用設定裡的名稱) 的輪詢狀態, 最近成功時間 (GMT+8) 與距今秒數, 對話的待命, 休眠, 退避中與 plugin 沒連上數量, 最近一次叫不醒的原因 (2.27.0 的診斷, 遮掉對話資料夾, key, chat id, 標題與長數字); 不含 token, chat, 使用者, 對話 key 與訊息. 見 [docs/operations.md](docs/operations.md#健康檢查端點), 附 Gatus 設定範例 (含 token 標頭與 docker 的 host network); README 加一行指過去, `/router config show` 多一行 `health:`.
+- 啟動與關機公告: 每次啟動發「🔔 重要通知」`🟢 cc-telegram-router <版本> 啟動`, 有健康檢查端點時附網址, 對外開放與未設 token 的警告; 關機或重啟前發 `🔴 ... 重啟` 或 `關機`, 附來源 (`cli`, `telegram: <名稱>`, `systemd`, `systemd (SIGTERM)`, `訊號 SIGTERM`), 最多等 5 秒不卡住關機. 在 systemd 下收到 SIGTERM 時查自己 unit 在 `systemctl --user list-jobs` 的 job 類型 (最多 2 秒): restart 寫「重啟 (來源: systemd)」, stop 寫「關機 (來源: systemd)」, 查不到維持「關機 (來源: systemd (SIGTERM))」. unit 名稱改成 `router/diagnose.ts` 的 `UNIT_NAME` 常數. 見 [docs/operations.md](docs/operations.md#router-重啟).
+- 測試: 新增 `router/test/health.test.ts` (設定解析, token, 門檻, 隱私, 位址分級, 公告內容與來源, 文件對照), `e2e-health.test.ts` (真的 router + 假 Bot API: 401 與 200, 叫不醒的原因, getUpdates 卡住超過門檻 503 再恢復 200, 不設 token, 0.0.0.0 照開並警告, 啟動公告, Telegram `/restart`, `cli restart` 與 SIGTERM 的關機公告, 公告送不出去時 5 秒後照常停止); docs/testing.md 加「健康檢查端點驗收對照」.
+
 ## [2.29.0] - 2026-10-18
 
 ### Added

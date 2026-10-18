@@ -45,6 +45,7 @@
 - **自架 Bot API server**: 每隻 bot 可以各自設 `apiRoot` 走自架的 telegram-bot-api; `--local` 模式的附件由 router 從磁碟讀, 上傳上限 2000 MB.
 - **設定嚮導**: `deploy/install.sh setup` 建立或修改 config.json 與 access.json, 每隻 bot 選官方或自架的 Bot API 並當場驗證 token; token 以 `*` 顯示, 重跑就是修改模式, Enter 保留原值.
 - **時間一律 GMT+8**: log, 通知, 報表與 worker 收到的訊息時間都是 GMT+8.
+- **健康檢查端點**: 選配的 `GET /healthz` (建議只聽本機位址, 可要 bearer token) 給 Gatus 這類監控工具, 每隻 bot 的輪詢超過門檻就回 503; router 每次啟動與關機都發重要通知 (含 health 網址與對外開放的警告). 設定與 Gatus 範例見 [部署與維運: 健康檢查端點](docs/operations.md#健康檢查端點).
 
 ## Requirements
 
@@ -165,7 +166,7 @@
 | [docs/skill-runtime.md](docs/skill-runtime.md) | 特權技能的執行環境規格: 掛載路徑, 環境變數, 工具箱, Python 套件 (uv), 工作目錄, 網路, 主機存取, 對外 port, 核准, exit code 與輸出 |
 | [docs/secrets.md](docs/secrets.md) | 對話專屬密鑰 (10b), 原始事件與密鑰保護 (10e) |
 | [docs/classifier.md](docs/classifier.md) | 工具呼叫分類器 (第一階段, 只記錄) |
-| [docs/operations.md](docs/operations.md) | 部署, 設定嚮導, linger, 資料夾信任, config.json 設定欄位, 自架 Bot API server, 私訊與群組的存取, 升級, 表情回應, 安裝位置, 新 bot 初次設定與審核群組, bot 設定提醒, router 重啟, 輪詢與重試, 工具呼叫紀錄, CLI, 時間, 報表腳本 |
+| [docs/operations.md](docs/operations.md) | 部署, 設定嚮導, linger, 資料夾信任, config.json 設定欄位, 自架 Bot API server, 私訊與群組的存取, 升級, 表情回應, 安裝位置, 新 bot 初次設定與審核群組, bot 設定提醒, router 重啟, 輪詢與重試, 健康檢查端點, 工具呼叫紀錄, CLI, 時間, 報表腳本 |
 | [docs/testing.md](docs/testing.md) | 執行測試, 測試分區 (std, 依改動跑), 測試檔對照, 各階段驗收對照表 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本變更紀錄 |
 | `/telegram:doc` (`plugin/skills/doc/SKILL.md`) | worker 端的使用說明 |

@@ -234,7 +234,9 @@ export function modelWindowNotes(model: string, compact: number | string): strin
 // --- bun and claude on the systemd unit's PATH ------------------------------------
 
 /** The systemd unit deploy/install.sh unit writes. */
-export const unitFile = (userHome: string) => join(userHome, '.config', 'systemd', 'user', 'cc-telegram-router.service')
+/** The router's systemd user unit (deploy/cc-telegram-router.service). */
+export const UNIT_NAME = 'cc-telegram-router.service'
+export const unitFile = (userHome: string) => join(userHome, '.config', 'systemd', 'user', UNIT_NAME)
 /** The unit's PATH before install.sh adds bun's and claude's folders (deploy/cc-telegram-router.service). */
 export const unitBasePath = (userHome: string) => [join(userHome, '.local', 'bin'), join(userHome, 'bin'), '/usr/local/bin', '/usr/bin', '/bin']
 
