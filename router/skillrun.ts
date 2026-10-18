@@ -14,10 +14,28 @@ import { loadManifest, hashSkill, buildArgv, sandboxArgv, secretsIn, scrubOutput
 import { runIsolated, netMissing, OUT_PORTS, SLIRP_HOST, type IsolatedRun, type NetRun } from './sandboxnet'
 import { binDir, missingTools } from './toolbox'
 import { lockFiles, ensureEnv } from './skillenv'
+import { limitsOf, limitMode, limitPrefix, endNote, raisedLimits, DEFAULT_LIMITS, type LimitMode } from './sandboxlimits'
 import type { Credential } from './config'
 import { storesOf, withStoreLocks, stage, check, commit, workDir, RUN_MAX, type Plan, type StoreUse } from './skillstore'
 
-export type RunResult = { code: number; out: string }
+/** note: why the run ended, when a limit ended it (router/sandboxlimits.ts endNote). */
+export type RunResult = { code: number; out: string; note?: string }
+
+/** Router-private paths in text going back (8a, 柯姊 2026-10-18): each whole path under one of them becomes <router 私有路徑>. */
+export function maskPaths(text: string, paths: string[] = []): string {
+  for (const p of [...paths].filter(Boolean).sort((a, b) => b.length - a.length)) {
+    const esc = p.replace(/\/+$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    text = text.replace(new RegExp(`${esc}(?=[/\\s'"\`:,;)\\]]|$)[^\\s'"\`,;)\\]]*`, 'g'), '<router 私有路徑>')
+  }
+  return text
+}
+
+/** A whole run's output for the owner or the terminal (8c): up to max characters, the start and the end when longer. */
+export function summary(text: string, max = 3500): string {
+  if (text.length <= max) return text
+  const half = Math.floor((max - 20) / 2)
+  return `${text.slice(0, half)}\n...(中間略過 ${text.length - 2 * half} 字)...\n${text.slice(-half)}`
+}
 
 export interface SkillRunDeps {
   db: RouterDb
@@ -49,6 +67,14 @@ export interface SkillRunDeps {
   pythonPreference?: string
   /** skill_try: drafts' environments are kept apart (try-<key>). */
   envPrefix?: string
+  /** The sandbox's time zone (config sandboxTimezone, default Asia/Taipei). */
+  timezone?: string
+  /** How runs are limited (router/sandboxlimits.ts limitMode; replaced in tests). */
+  limitMode?(): LimitMode
+  /** Router-private folders (its stateDir): masked in what goes back (maskPaths). */
+  privatePaths?: string[]
+  /** skill_try: unapproved drafts run with the default limits, whatever they declare. */
+  defaultLimits?: boolean
   botDir(bot: string): string
   /** An http API credential by name (router config), for actions that declare http. */
   httpCred?(name: string): Credential | undefined
@@ -92,7 +118,7 @@ async function pyEnvOf(deps: Omit<SkillRunDeps, 'notifyOwner'>, dir: string): Pr
   if (!f) return {}
   if ('error' in f) return { error: `技能的 Python 套件設定有誤: ${f.error}` }
   if (!deps.toolbox || !deps.envRoot) return { error: '這個 router 沒有設定工具箱與 Python 環境的位置' }
-  const r = await ensureEnv({ toolbox: deps.toolbox, envRoot: deps.envRoot, etcDir: deps.etcDir, runRoot: deps.runRoot, hostAddrs: deps.hostAddrs, isolated: deps.isolated, pythonPreference: deps.pythonPreference, log: deps.log }, f, deps.envPrefix ?? '')
+  const r = await ensureEnv({ toolbox: deps.toolbox, envRoot: deps.envRoot, etcDir: deps.etcDir, runRoot: deps.runRoot, hostAddrs: deps.hostAddrs, isolated: deps.isolated, pythonPreference: deps.pythonPreference, limitMode: deps.limitMode, log: deps.log }, f, deps.envPrefix ?? '')
   if (!r.ok) return { error: `技能的 Python 環境建不起來, 沒有執行: ${r.why}` }
   return { env: { env: r.dir, python: join(deps.toolbox, 'python') } }
 }
@@ -146,12 +172,16 @@ export async function runAction(deps: Omit<SkillRunDeps, 'notifyOwner'>, dir: st
   const hostPorts = [...new Set([...(host?.ports ?? []), ...bots.flatMap(b => b.api.port ? [b.api.port] : [])])]
   const hostEnv = { ...(host?.env ?? {}), ...(hostPorts.length ? { CCTR_HOST: SLIRP_HOST } : {}) }
   const toolsBin = deps.toolbox && existsSync(binDir(deps.toolbox)) ? binDir(deps.toolbox) : undefined
-  const sb = sandboxArgv({ argv, skillDir: dir, convFolder: folder, etcDir: deps.etcDir, toolsBin, pyEnv: py.env, creds: credEnv(deps, a), credsWritable: !!a.internal, stores, hidden: [...deps.hidden, deps.userHome], extraRo: [...deps.extraRo, ...mounts], env: { ...hostEnv, ...httpEnv, ...botEnv } })
+  const sb = sandboxArgv({ argv, skillDir: dir, convFolder: folder, etcDir: deps.etcDir, toolsBin, pyEnv: py.env, timezone: deps.timezone, creds: credEnv(deps, a), credsWritable: !!a.internal, stores, hidden: [...deps.hidden, deps.userHome], extraRo: [...deps.extraRo, ...mounts], env: { ...hostEnv, ...httpEnv, ...botEnv } })
   mkdirSync(deps.runRoot, { recursive: true, mode: 0o700 })
   const work = mkdtempSync(join(deps.runRoot, 'run-'))
   try {
-    const r = await (deps.isolated ?? runIsolated)({ argv: sb.argv, env: sb.env, timeoutMs: (a.timeout ?? 600) * 1000, workDir: join(work, 'net'), hostAddrs: await deps.hostAddrs(), hostPorts, outPorts: outPortsOf(a), allowUnix: !!mounts.length })
-    return 'error' in r ? { code: -1, out: `${NET_FAILED}${r.error}` } : r
+    const limits = deps.defaultLimits ? { ...DEFAULT_LIMITS, timeout: Math.min(a.timeout ?? DEFAULT_LIMITS.timeout, DEFAULT_LIMITS.timeout) } : limitsOf(a)
+    const mode = (deps.limitMode ?? limitMode)()
+    const r = await (deps.isolated ?? runIsolated)({ argv: sb.argv, env: sb.env, timeoutMs: limits.timeout * 1000, workDir: join(work, 'net'), hostAddrs: await deps.hostAddrs(), hostPorts, outPorts: outPortsOf(a), allowUnix: !!mounts.length, prefix: limitPrefix(mode, limits), outputMax: limits.output_kb * 1024 })
+    if ('error' in r) return { code: -1, out: `${NET_FAILED}${r.error}` }
+    const note = endNote(r.code, limits, r, mode)
+    return { code: r.code, out: r.out, ...(note ? { note } : {}) }
   } finally { rmSync(work, { recursive: true, force: true }) }
 }
 /** What a run's text starts with when its network could not be set up (nothing ran). */
@@ -206,6 +236,8 @@ async function run(deps: SkillRunDeps, conv: Conversation, runAs: string, skill:
   // the main action gets a fresh copy of its databases on every attempt; the refresh none
   const once = (a: Action, a_args: Record<string, unknown>) => runAction(deps, dir, a, a_args, conv.folder, a === action && stores.length ? stage(stores, work) : {})
 
+  // nothing that holds a credential goes back to the conversation
+  const creds = Object.values({ ...credEnv(deps, action), ...(action.refresh && manifest.actions[action.refresh] ? credEnv(deps, manifest.actions[action.refresh]!) : {}) })
   const start = Date.now()
   let r = await once(action, args)
   const notes: string[] = []
@@ -218,11 +250,9 @@ async function run(deps: SkillRunDeps, conv: Conversation, runAs: string, skill:
       r = await once(action, args)
     } else {
       notes.push('(憑證被拒, 自動更新失敗, 已通知 owner)')
-      deps.notifyOwner(conv, `⚠️ 技能 ${skill} 的憑證被拒, 自動更新也失敗 (${conv.key} 使用時):\n${rr.out.split('\n').slice(-3).join('\n')}`)
+      deps.notifyOwner(conv, `⚠️ 技能 ${skill} 的憑證被拒, 自動更新也失敗 (${conv.key} 使用時), exit ${rr.code}${rr.note ? ` (${rr.note})` : ''}:\n${summary(maskPaths(redact(rr.out, [...secretsIn(creds), ...tokensOf(deps, action)]).text, deps.privatePaths))}`)
     }
   }
-  // nothing that holds a credential goes back to the conversation
-  const creds = Object.values({ ...credEnv(deps, action), ...(action.refresh && manifest.actions[action.refresh] ? credEnv(deps, manifest.actions[action.refresh]!) : {}) })
   const secrets = [...secretsIn(creds), ...tokensOf(deps, action)]
   const removed = scrubOutputs(conv.folder, start - 1000, secrets)
   const red = redact(r.out, secrets)
@@ -230,10 +260,13 @@ async function run(deps: SkillRunDeps, conv: Conversation, runAs: string, skill:
     deps.notifyOwner(conv, `⚠️ 技能 ${skill} 的 ${actionName} 在 ${conv.key} 的輸出含有憑證內容, 已${removed.length ? `刪除 ${removed.join(', ')}` : ''}${red.hit ? ' 並遮蔽回傳文字' : ''}. 請檢查這支技能.`)
     notes.push('(輸出含有憑證內容, 已刪除或遮蔽, 已通知 owner)')
   }
-  let ok = r.code === 0
+  if (r.note) notes.push(`(${r.note})`)
+  // an exit code the action declares a normal stop (stop_exits): not a failure, but not a success to write back either
+  const stopped = r.code > 0 ? action.stop_exits?.[String(r.code)] : undefined
+  let ok = r.code === 0 || !!stopped
   if (stores.length) {
     const names = stores.map(s => s.name).join(', ')
-    if (!ok) notes.push(`(動作沒有成功結束, 資料庫 ${names} 未寫回)`)
+    if (r.code !== 0) notes.push(stopped ? `(正常停止, 資料庫 ${names} 未寫回)` : `(動作沒有成功結束, 資料庫 ${names} 未寫回)`)
     else {
       const why = writeBack(stores, work, secrets)
       if (why) {
@@ -243,9 +276,9 @@ async function run(deps: SkillRunDeps, conv: Conversation, runAs: string, skill:
       }
     }
   }
-  db.addSkillRun(runAs, skill, actionName, ok ? 'ok' : 'failed')
-  const tail = red.text.split('\n').slice(-60).join('\n').slice(-6000)
-  return { ok, text: [`exit ${r.code}`, ...notes, tail].join('\n') }
+  db.addSkillRun(runAs, skill, actionName, stopped && ok ? 'stopped' : ok ? 'ok' : 'failed')
+  const tail = maskPaths(red.text, deps.privatePaths).split('\n').slice(-60).join('\n').slice(-6000)
+  return { ok, text: [`exit ${r.code}${stopped && ok ? ` (正常停止: ${stopped})` : ''}`, ...notes, tail].join('\n') }
 }
 
 /** Remove a run's work folder, even after the script took its own permissions away. */
@@ -297,5 +330,5 @@ function hostLine(a: Action): string {
 export function describeActions(dir: string): string {
   const m = loadManifest(dir)
   if (!m) return '(沒有 privileged.json)'
-  return Object.entries(m.actions).map(([n, a]) => `${n}${a.internal ? ' (只由 router 執行)' : ''}: ${a.run.join(' ')}; 角色 ${(a.roles ?? ['owner', 'admin', 'power', 'user']).join(', ')}${a.creds ? `; 憑證 ${Object.values(a.creds).join(', ')}` : ''}${a.http ? `; API 憑證 ${Object.values(a.http).join(', ')}` : ''}${a.bots ? `; bot 憑證 ${Object.values(a.bots).join(', ')}` : ''}${a.store ? `; 資料庫 ${Object.values(a.store).map(d => { const s = storeOf(d); return `${s.name} (${s.mode})` }).join(', ')}` : ''}${Object.entries(a.args ?? {}).filter(([, s]) => s.roles).map(([n, s]) => `; 參數 ${n} 限 ${s.roles!.join(', ')}`).join('')}${a.tools?.length ? `; 工具 ${a.tools.join(', ')}` : ''}${a.outbound_ports?.length ? `; ⚠️ 額外的對外 port ${a.outbound_ports.join(', ')} (只有 owner 能核准)` : ''}${hostLine(a)}`).join('\n')
+  return Object.entries(m.actions).map(([n, a]) => `${n}${a.internal ? ' (只由 router 執行)' : ''}: ${a.run.join(' ')}; 角色 ${(a.roles ?? ['owner', 'admin', 'power', 'user']).join(', ')}${a.creds ? `; 憑證 ${Object.values(a.creds).join(', ')}` : ''}${a.http ? `; API 憑證 ${Object.values(a.http).join(', ')}` : ''}${a.bots ? `; bot 憑證 ${Object.values(a.bots).join(', ')}` : ''}${a.store ? `; 資料庫 ${Object.values(a.store).map(d => { const s = storeOf(d); return `${s.name} (${s.mode})` }).join(', ')}` : ''}${Object.entries(a.args ?? {}).filter(([, s]) => s.roles).map(([n, s]) => `; 參數 ${n} 限 ${s.roles!.join(', ')}`).join('')}${a.tools?.length ? `; 工具 ${a.tools.join(', ')}` : ''}${raisedLimits(a).length ? `; ⚠️ 放寬資源上限 ${raisedLimits(a).join(', ')} (只有 owner 能核准)` : ''}${a.stop_exits ? `; 正常停止 ${Object.entries(a.stop_exits).map(([c, w]) => `exit ${c} (${w})`).join(', ')}` : ''}${a.outbound_ports?.length ? `; ⚠️ 額外的對外 port ${a.outbound_ports.join(', ')} (只有 owner 能核准)` : ''}${hostLine(a)}`).join('\n')
 }

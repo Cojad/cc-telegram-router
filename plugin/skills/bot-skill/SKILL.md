@@ -98,7 +98,9 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 | `http` | `{環境變數: http 憑證名稱}`: 腳本拿到 `$<ENV>_URL` (base URL, 結尾沒有 `/`) 與 `$<ENV>_HEADER` (整行授權標頭, 例如 `Authorization: Bearer ...`) |
 | `bots` | `{環境變數: telegram-bot 憑證名稱}`: 腳本拿到 `$<ENV>_API` (`https://api.telegram.org/bot<token>` 這種網址; router 用自架的 Bot API 時可能是 `http://10.0.2.2:<埠>/bot<token>`, 照用即可), 例如 `$NOTIFY_BOT_API/sendMessage` |
 | `store` | `{環境變數: 資料庫名稱}` 或 `{環境變數: {"name": ..., "mode": "full"}}`: 這隻 bot 共用的資料庫, 腳本在 `$環境變數` 拿到工作副本的路徑 (規則見下) |
-| `timeout` | 秒, 沒寫是 600; 超過就被終止 |
+| `timeout` | 秒, 沒寫是 600, 最多 3600; 超過就被終止. 超過 600 算放寬, 只有 owner 能核准 |
+| `limits` | 放寬資源上限: `memory_mb` (預設 1024, 最多 8192), `tasks` (程序與執行緒數, 預設 256, 最多 1024), `file_mb` (單檔大小, 預設 512, 最多 8192), `output_kb` (stdout 加 stderr, 預設 2048, 最多 16384). 高於預設只有 owner 能核准; 試跑一律用預設 |
+| `stop_exits` | `{"exit code": "說明"}`: 這些結束碼是正常停止, 不算失敗 (例如 `{"4": "影片太長, 沒有下載"}`); 1 到 125 |
 | `internal` | `true`: 對話不能呼叫, 只由 router 執行 (憑證更新) |
 | `auth_failure`, `refresh` | 輸出比對到 `auth_failure` (正規表示式, 不分大小寫) 時, router 執行 `refresh` 指的 internal 動作一次 (只有它能寫憑證資料夾) 再重試; router 每天固定時間 (預設 05:00 GMT+8) 與啟動時發現超過 24 小時沒成功更新, 也會主動執行它, 所以它要能在憑證還有效時重複執行 |
 | `tools` | 需要的工具箱工具: `ffmpeg` (含 ffprobe), `deno`, `uv`; router 安裝時下載的固定版本, 在 `PATH` 最前面. 宣告了但工具箱沒裝時拒絕執行並說明. 系統的 `/usr/bin` 工具不用宣告 |
@@ -118,7 +120,8 @@ router 自己處理那則訊息 (你不會收到它, 只會在 router_log 看到
 - **Python 套件用 uv**: 技能資料夾放 `pyproject.toml` (`dependencies` 寫死版本) 與 `uv.lock` (用 `uv lock` 產生, 兩個檔一起放; GitHub 這類 git 來源寫在 `[tool.uv.sources]`, lock 會鎖在 commit). router 核准時建好環境並唯讀掛在 `/cctr/env`, `run` 寫 `"python3"` 就是環境裡的 Python (不要寫 `venv/bin/python3`). PyPI 套件由模型判斷風險, git 等自訂來源一律人工審核. 不要自己在技能資料夾建 venv (`install_skill` 不複製, 雜湊也不含).
 - 參數是呼叫者給的輸入, 一律當資料: 不要拿去 `eval` 或組 shell 指令. 參數是檔名時, pattern 擋掉 `..` (例如 `(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}`), 腳本再確認它在工作目錄裡.
 - 授權標頭與 bot 網址不要放在命令列 (別的程序看得到), 也不要印出來或寫進檔案: Python 直接放進請求; shell 先寫進 `/tmp` 的檔再 `curl -H @檔案`. 印錯誤時只印錯誤種類, 不要印整個請求或網址.
-- **exit code 不是 0 就算失敗** (資料庫也不寫回). 對話收到 `exit <碼>` 開頭, 加上輸出 (stdout 與 stderr) 的最後 60 行.
+- **exit code 不是 0 就算失敗** (資料庫也不寫回), 除非宣告在 `stop_exits` (回傳 `exit <碼> (正常停止: 說明)`, 資料庫一樣不寫回). 對話收到 `exit <碼>` 開頭, router 的註記 (例如超過哪個資源上限), 加上輸出 (stdout 與 stderr) 的最後 60 行. router 自己資料夾的路徑會被換成 `<router 私有路徑>`.
+- 時鐘是台灣時間 (`TZ=Asia/Taipei`), `date` 不用自己換算.
 - **輸出會掃描憑證**: 回傳文字裡出現的憑證內容 (cookie 值, http key, bot token) 遮蔽成 `<已遮蔽>`; 這次執行在對話資料夾寫出的文字檔含有憑證內容, 或檔名像 cookie 檔, 就刪除; 兩種都會通知 owner.
 - **每個對話每小時最多 10 次** (`run_skill`, 不分技能).
 - **網路: 外網只開 port 80, 443, 53, 22** (tcp 與 udp; 要別的 port 宣告 `outbound_ports`, owner 核准), **連不到主機本機與內網** (127.0.0.0/8, 10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16 含雲端 metadata, IPv6 的本機與內網位址, 主機自己的位址); DNS 照常可用. 沙箱裡的 127.0.0.1 是沙箱自己. **不能建立 unix socket** (`/run` 不存在, 建立 AF_UNIX socket 一律失敗; `socketpair` 照常), 所以腳本不要依賴 docker, dbus 這類本機服務. router 自己執行的 internal 動作外網不限 port, 主機只連得到 `host.ports` 宣告的.

@@ -39,6 +39,7 @@
 | `VIRTUAL_ENV` | 有 Python 環境時: `/cctr/env` |
 | `HOME`, `TMPDIR` | `/tmp` |
 | `LANG` | `C.UTF-8` |
+| `TZ` | config `sandboxTimezone`, 預設 `Asia/Taipei` (`/etc/localtime` 也指到同一個時區; 見[時區](#時區)) |
 | `<creds 的環境變數>` | `/cctr/creds/<環境變數>` |
 | `<store 的環境變數>` | `/cctr/store/<環境變數>` |
 | `<http 的環境變數>_URL`, `_HEADER` | http 憑證的 base URL (結尾沒有 `/`) 與整行授權標頭 |
@@ -72,6 +73,26 @@ router 安裝時 (`deploy/install.sh router` 執行 `cc-telegram-router toolbox 
 - **何時建**: `/router skill approve` (建好才記核准, 見[核准](#核准)); 執行時環境不見了 (stateDir 清過, 換了 uv 版本) 用同一份 lock 自動重建一次, 不重新審核, 建不起來就回 `exit -1` 與 `技能的 Python 環境建不起來, 沒有執行: ...`; `skill_try` 試跑草稿時另外建 (`skill-env/try-<key>`, 不跟已核准的技能共用). 沒有任何已核准技能用到, 而且 30 天沒用的環境, router 啟動兩分鐘後與之後每天清掉.
 - **套件審核**: `uv.lock` 的每個套件 (含間接依賴, 專案本身除外) 分兩類: registry 是 `https://pypi.org/simple` 的交給套件審核的同一個模型與同一份 7 天快取 ([套件安裝審核](permissions.md#套件安裝審核)) 判斷風險; git, URL, 本機路徑與其他 index 是自訂來源, 一律人工審核. git 來源沒有鎖在完整 commit 的 lock 一律拒絕.
 - `skill_try` 只建全部是 PyPI 而且都判定 low 的環境; 有自訂來源或其他風險的草稿拒絕試跑並列出原因, 等核准時由人看.
+
+## 資源上限
+
+每個動作都有上限 (`router/sandboxlimits.ts`); 動作可以在 privileged.json 放寬到最高值, **有放寬的技能只有 owner 能核准** (核准畫面以 `⚠️ 放寬資源上限 ...` 列出, admin 被拒):
+
+| 項目 | 欄位 | 預設 | 最高 | 超過時 |
+|---|---|---|---|---|
+| 時間 | `timeout` (秒) | 600 | 3600 | router 終止, 註記 `超過時間上限 <秒> 秒, 被終止` |
+| 記憶體 | `limits.memory_mb` | 1024 | 8192 | 核心終止 (SIGKILL), 註記 `被 SIGKILL 結束, 可能超過記憶體上限 <MB> MB`; `/tmp` 是 tmpfs, 放在那裡的檔案也算記憶體 |
+| 程序與執行緒數 | `limits.tasks` | 256 | 1024 | 再開程序或執行緒失敗 (例如 Python 的 `can't start new thread`, shell 的 fork 失敗), 由程式自己處理 |
+| 單檔大小 | `limits.file_mb` | 512 | 8192 | 寫入的程序收到 SIGXFSZ, 註記 `寫入的單檔超過上限 <MB> MB (SIGXFSZ)` |
+| 輸出 (stdout 加 stderr) | `limits.output_kb` | 2048 | 16384 | router 終止, 註記 `輸出超過上限 <KB> KB, 被終止`, 保留上限以內的部分 |
+
+例如 `"timeout": 900, "limits": { "memory_mb": 3072, "file_mb": 4096 }`. 比預設低的值不算放寬. 試跑 (`skill_try`) 一律用預設值 (時間最多 600 秒), 宣告的放寬不給.
+
+做法: 主機的使用者有 cgroup 委派 (systemd 的 user manager, `user@<uid>.service` 有 memory 與 pids controller) 時, bwrap 外面包一層 `systemd-run --user --scope` (`MemoryMax`, `MemorySwapMax=0`, `TasksMax`; 只有 systemd-run 拿得到 `XDG_RUNTIME_DIR`, 沙箱裡沒有), 再一層 `prlimit --fsize --core=0`. 沒有委派的主機**降級但照常執行**: 只用 `prlimit` (`--data` 當記憶體的近似值, `--cpu`, `--fsize`), 沒有程序數上限 (RLIMIT_NPROC 算的是整個使用者的程序, 會連帶卡到 router 與 worker), `/tmp` 不受限; router 啟動時 log 寫一行, `/router status` 最後也寫明 (`資源上限: cgroup ...` 或 `資源上限: 降級為 prlimit ...`). 連 `prlimit` 都沒有時只剩時間與輸出上限. 建 Python 環境的沙箱另有自己的上限 (15 分鐘, 4096 MB, 512 個, 單檔 2048 MB).
+
+## 時區
+
+沙箱裡的時鐘預設是 `Asia/Taipei` (GMT+8): `TZ` 環境變數與 `/etc/localtime` (指到 `/usr/share/zoneinfo/<時區>`). config `sandboxTimezone` 可以改成 `/usr/share/zoneinfo` 裡的其他名稱; 不是合法名稱時 router 照常啟動, log 寫一行警告並用 `Asia/Taipei`.
 
 ## 工作目錄
 
@@ -118,9 +139,9 @@ router 安裝時 (`deploy/install.sh router` 執行 `cc-telegram-router toolbox 
 
 ## 核准
 
-`/router skill approve <技能>` (`router/skillapprove.ts`) 列出每個動作的內容 (`describeActions`). 有 `host` 或 `outbound_ports` 的技能**只有 owner 能核准**: admin 下指令會被拒, 回覆寫明原因 (哪個動作宣告了什麼) 並列出動作清單.
+`/router skill approve <技能>` (`router/skillapprove.ts`) 列出每個動作的內容 (`describeActions`). 有 `host`, `outbound_ports` 或放寬[資源上限](#資源上限)的技能**只有 owner 能核准**: admin 下指令會被拒, 回覆寫明原因 (哪個動作宣告了什麼) 並列出動作清單.
 
-沒有要再看一眼的東西時一步核准 (跟以前一樣). 有的話先回**確認畫面**: 每一項以 ⚠️ 開頭 (主機存取, 額外的對外 port, 不是 low 或沒有審核結果的 PyPI 套件, 每個自訂來源的套件), 接著是動作清單與 uv.lock 的全部套件 (含模型的判斷), 最後一行 `確認核准: /router skill approve <技能> <確認碼>`. 確認碼是技能雜湊的前 8 碼, 畫面之後檔案被改過, 或打錯, 就回 `確認碼 ... 不符` 要重看畫面. 自訂來源與有風險的套件 owner 或 admin 都能確認, 主機存取與額外的對外 port 只有 owner.
+沒有要再看一眼的東西時一步核准 (跟以前一樣). 有的話先回**確認畫面**: 每一項以 ⚠️ 開頭 (主機存取, 額外的對外 port, 放寬的資源上限, 不是 low 或沒有審核結果的 PyPI 套件, 每個自訂來源的套件), 接著是動作清單與 uv.lock 的全部套件 (含模型的判斷), 最後一行 `確認核准: /router skill approve <技能> <確認碼>`. 確認碼是技能雜湊的前 8 碼, 畫面之後檔案被改過, 或打錯, 就回 `確認碼 ... 不符` 要重看畫面. 自訂來源與有風險的套件 owner 或 admin 都能確認, 主機存取, 額外的對外 port 與放寬的資源上限只有 owner.
 
 有 `pyproject.toml` 與 `uv.lock` 的技能, 確認後 router 先回 `核准中: 正在建技能 <技能> 的 Python 環境 ...`, 建好才記下核准, 再發一則結果 (`已核准技能 ...`; 或 `沒有核准: Python 環境建不起來: ...`, `建環境的時候檔案被改過了`); 在 owner 的終端機 (`cli`) 下的指令會等到結果一起回. 結果出來前技能還不能用.
 
@@ -128,15 +149,19 @@ router 安裝時 (`deploy/install.sh router` 執行 `cc-telegram-router toolbox 
 
 ## exit code 與輸出
 
-- exit 0 是成功, 其他是失敗 (資料庫不寫回). `exit -1` 是 router 沒有執行 (參數, 憑證, 網路隔離等原因, 後面接說明).
-- 對話收到 `exit <碼>` 開頭, 加上 router 的註記 (憑證更新, 遮蔽, 資料庫寫回), 再加輸出 (stdout 與 stderr) 的最後 60 行 (最多 6000 字).
+- exit 0 是成功, 其他是失敗 (資料庫不寫回). `exit -1` 是 router 沒有執行 (參數, 憑證, 網路隔離, 缺工具, Python 環境等原因, 後面接說明). 137 (SIGKILL) 與 153 (SIGXFSZ) 這類訊號結束是 128 加訊號編號, router 依[資源上限](#資源上限)加註原因.
+- **正常停止** `stop_exits`: 動作可以宣告哪些 exit code 不是失敗, 例如 `"stop_exits": { "4": "影片超過長度上限, 沒有下載" }` (1 到 125, 每個要有說明). 結束碼是其中之一時, 回傳 `exit 4 (正常停止: 影片超過長度上限, 沒有下載)`, 算成功回給對話, `skill_runs` 記 `stopped` (不是 `failed`); 資料庫照樣只有 exit 0 才寫回 (註記 `(正常停止, 資料庫 ... 未寫回)`). 憑證更新 (refresh) 的動作也適用.
+- 對話收到 `exit <碼>` 開頭, 加上 router 的註記 (正常停止, 上限, 憑證更新, 遮蔽, 資料庫寫回), 再加輸出 (stdout 與 stderr) 的最後 60 行 (最多 6000 字).
+- **router 的私有路徑遮掉**: 回傳文字裡出現 router stateDir 底下的路徑 (憑證資料夾, 資料庫工作副本, 工具箱, Python 環境等), 整個路徑換成 `<router 私有路徑>`. 沙箱裡的腳本本來就只看到 `/cctr/...` 路徑, 這是第二道防線.
+- **憑證更新的回傳附完整摘要**: 每日與終端機的 refresh, 以及憑證被拒後自動更新失敗通知 owner 時, 附上整段輸出 (遮蔽憑證與私有路徑; 超過 3500 字時留頭尾, 中間註明略過多少字), 不再只有最後 3 行.
 - 輸出會掃描憑證: 回傳文字裡出現的憑證內容 (cookie 值, http key, bot token) 遮蔽成 `<已遮蔽>`; 這次執行在對話資料夾寫出的文字檔含有憑證內容, 或檔名像 cookie 檔, 就刪除; 兩種都會通知 owner.
 
 ## 驗證
 
 - `router/test/whitelist.test.ts` (10 項, 1 項要 `LIVE=1`; 真的 bwrap, slirp4netns, nft, 經 `run_skill` 與 refresh 的同一條路): [掛載路徑](#掛載路徑) (看不到與看得到的路徑, `/cctr/creds`, 工作目錄, 環境變數不含 stateDir 的路徑, passwd), [網路](#網路) (對話呼叫的動作只開 80, 443, 53, 22; 主機, 主機位址, metadata, 內網連不到; 不能建 unix socket), [對外 port](#對外-port-outbound_ports), 主機本機的 Bot API (有 `bots` 的動作經 10.0.2.2 只連得到那個 port, 沒有 `bots` 的連不到), [主機存取 host](#主機存取-host) (宣告的主機 port 經 `$CCTR_HOST` 連得到, 沒宣告的連不到, 外網不限 port, 只看得到宣告的 socket), privileged.json 的檢查與舊寫法, [核准](#核准) (只有 owner), `skill_check` 的提醒, nft 規則順序與 seccomp 程式; `LIVE=1` 實際連外網.
-- `router/test/toolbox.test.ts` (6 項, 1 項要 `LIVE=1`): [工具箱](#工具箱)的安裝 (gz, zip, tgz, 只取指定的檔, sha256 不符只影響那個工具, 同版本保留, 檔案不見重裝, 不支援的 CPU, 網址鎖像), `toolbox status` 與指令用法, 真正的工具表 (x64 與 arm64, 固定 tag 的 GitHub release, sha256), `install.sh` 只警告; 沙箱裡 `/cctr/tools/bin` 排在 PATH 最前面, 缺工具時拒絕並說明, `tools` 只能寫工具箱的名稱; `LIVE=1` 下載真的工具並在沙箱裡執行.
+- `router/test/toolbox.test.ts` (6 項, 1 項要 `LIVE=1`): [工具箱](#工具箱)的安裝 (gz, zip, tgz, 只取指定的檔, sha256 不符只影響那個工具, 同版本保留, 檔案不見重裝, 不支援的 CPU, 網址鏡像), `toolbox status` 與指令用法, 真正的工具表 (x64 與 arm64, 固定 tag 的 GitHub release, sha256), `install.sh` 只警告; 沙箱裡 `/cctr/tools/bin` 排在 PATH 最前面, 缺工具時拒絕並說明, `tools` 只能寫工具箱的名稱; `LIVE=1` 下載真的工具並在沙箱裡執行.
 - `router/test/skillenv.test.ts` (7 項, 3 項要 uv, 1 項另外要 `LIVE=1`; uv 用 `CCTR_TEST_UV` 指定或在 PATH 上, 沒有就跳過): [Python 套件 (uv)](#python-套件-uv)的 lock 解析 (PyPI 與自訂來源, git 的 commit, 兩個檔要一起), 用主機上的假套件 index 在沙箱裡建環境 (`/cctr/env` 排在 PATH 最前面, 第二次不再下載, 同一份 lock 共用, lock 與 pyproject 不符時建置失敗且不留東西, 改 uv.lock 技能暫停), [核准](#核准) (一步核准, 確認畫面與確認碼, 錯的確認碼, 先建好再核准, 建不起來不核准, 主機存取只限 owner, 套件清單與模型判斷, 沒有審核時 PyPI 也要人看), 指令把確認碼帶進去且 Telegram 另外收到結果, 終端機等結果, `skill_try` 拒絕自訂來源與不是 low 的套件; `LIVE=1` 用真的 PyPI 與 uv 自己的 Python 建環境.
+- `router/test/limits.test.ts` (9 項): [資源上限](#資源上限)的預設, 最高值與只有 owner 能核准, cgroup 與降級的做法, 實際執行 (cgroup 委派的主機: 記憶體, 程序數, 單檔大小, 輸出, 時間各自終止並註明; 降級: prlimit 仍限記憶體與單檔大小), `stop_exits`, 私有路徑遮掉, [時區](#時區)與 `sandboxTimezone`, refresh 的完整摘要與 owner 通知, `/router status` 的沙箱與工具箱.
 - `router/test/skilltry.test.ts`: 網路的擋下與 unix socket (經試跑的同一個模組), 試跑的 port 與主機存取.
 - `router/test/portability.test.ts`: bwrap 的白名單參數, 隱藏清單只在掛進來的路徑裡蓋上, config `sandboxExtraRo`.
 - `router/test/e2e-compiled.test.ts`: 編譯版 router 照 systemd unit 啟動, 已核准技能的 `run_skill` 在白名單與獨立網路裡執行, 有 `bots` 的動作連得到主機本機的 Bot API; `toolbox status` 與 `toolbox install` 不需要 config.json (下載失敗結束碼 1), run_skill 用到 stateDir 的工具箱, 缺工具時拒絕; `LIVE=1` 而且有 uv 時從真的 PyPI lock 建環境並執行.

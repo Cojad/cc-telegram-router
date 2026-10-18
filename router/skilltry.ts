@@ -108,6 +108,7 @@ function forTrial(n: string, a: Action, notes: string[]): Action {
   const t = { ...a }
   if (a.host || a.mounts?.length || (a.env && Object.keys(a.env).length)) { delete t.host; delete t.mounts; delete t.env; notes.push(`動作 ${n} 的主機存取 (host: ports, mounts, env) 在試跑時一律不給 (正式執行時 owner 核准的 internal 動作才有)`) }
   if ((a.timeout ?? 600) > TRY_MAX_TIMEOUT) { t.timeout = TRY_MAX_TIMEOUT; notes.push(`動作 ${n} 的 timeout 在試跑時最多 ${TRY_MAX_TIMEOUT} 秒`) }
+  if (a.limits && Object.keys(a.limits).length) notes.push(`動作 ${n} 放寬的資源上限 (limits) 在試跑時不給, 照預設 (正式執行時要 owner 核准)`)
   return t
 }
 
@@ -197,6 +198,8 @@ export async function trySkill(deps: SkillTryDeps, conv: Conversation, role: str
     notifyOwner: (_c, text) => notices.push(text),
     // a draft's Python environment: built like an approved skill's, kept apart from theirs
     envPrefix: 'try-',
+    // not approved: the default resource limits, whatever it declares
+    defaultLimits: true,
     // the fake service starts first inside the sandbox, then runs the action; an internal action's
     // trial still gets only the ports every other action gets (80, 443, 53, 22 and outbound_ports)
     isolated: o => (deps.isolated ?? runIsolated)({ ...o, workDir: join(io, `net-${++attempt}`), wrap: [...deps.fake.cmd, log, '--'], extraRo: [...(o.extraRo ?? []), ...deps.fake.ro], extraRw: [...(o.extraRw ?? []), io], outPorts: o.outPorts ?? OUT_PORTS }),

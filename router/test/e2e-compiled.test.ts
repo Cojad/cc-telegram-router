@@ -177,7 +177,10 @@ PY
   const r = await plugin.call('run_skill', { skill: 'probe', action: 'go' })
   const text = r.content[0]!.text
   expect(text, text).toStartWith('exit 0')
-  for (const f of [process.env.HOME!, state, join(dir, 'bot123', 'other.txt'), '/home', '/run']) expect(text).toContain(`GONE ${f}\n`)
+  for (const f of [process.env.HOME!, join(dir, 'bot123', 'other.txt'), '/home', '/run']) expect(text).toContain(`GONE ${f}\n`)
+  // the state dir is gone, and its path masked in what comes back (docs/skill-runtime.md 「exit code 與輸出」)
+  expect(text).toContain('GONE <router 私有路徑>\n')
+  expect(text).not.toContain(state)
   expect(text).toContain(`127.0.0.1 ${api.port} refused`)
   expect(text).toContain(`10.0.2.2 ${api.port} refused`)
   expect(text).toContain('203.0.113.7 443 timeout')

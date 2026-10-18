@@ -7,6 +7,7 @@ import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import { dirname, isAbsolute, join, resolve } from 'path'
 import { outermost } from './settings'
+import { zoneOk } from './sandboxfs'
 import { parseClassifier, type ClassifierConfig } from './classifier'
 import { parseReactMode, type ReactMode } from './reactions'
 
@@ -88,6 +89,8 @@ export type Config = {
    *  besides /usr and a few /etc files nothing of the host is there); their bin folders go on
    *  PATH. Default none. */
   sandboxExtraRo?: string[]
+  /** The privileged sandboxes' time zone (TZ and /etc/localtime): a name under /usr/share/zoneinfo, default Asia/Taipei. */
+  sandboxTimezone?: string
   /** Which message reactions reach workers when the conversation has no
    *  /router chat react of its own (router/reactions.ts); default botself_only. */
   receiveReact: ReactMode
@@ -132,6 +135,14 @@ export function parseDenyRead(v: unknown, warnings: string[], field = 'sandboxDe
     else out.push(resolve(p))
   }
   return out
+}
+
+/** config sandboxTimezone: a zone the sandbox has (/usr/share/zoneinfo); missing or wrong = Asia/Taipei (a wrong one warns). */
+export function parseTimezone(v: unknown, warnings: string[]): string {
+  if (v === undefined || v === null || v === '') return 'Asia/Taipei'
+  if (typeof v === 'string' && zoneOk(v)) return v
+  warnings.push(`sandboxTimezone 要是 /usr/share/zoneinfo 裡的時區名稱 (例如 Asia/Taipei), 收到 ${JSON.stringify(v)}; 用 Asia/Taipei`)
+  return 'Asia/Taipei'
 }
 
 /** config sandboxExtraRo: absolute paths, not "/"; a wrong entry is left out with a warning. */
@@ -217,6 +228,7 @@ export function loadConfig(path: string): Config {
     classifier: parseClassifier(raw.classifier),
     sandboxDenyRead: parseDenyRead(raw.sandboxDenyRead, warnings),
     sandboxExtraRo: parseExtraRo(raw.sandboxExtraRo, warnings),
+    sandboxTimezone: parseTimezone(raw.sandboxTimezone, warnings),
     receiveReact: parseReactMode(raw.receiveReact, warnings),
     reactFlushMs: typeof raw.reactFlushMs === 'number' && raw.reactFlushMs > 0 ? raw.reactFlushMs : undefined,
     warnings,

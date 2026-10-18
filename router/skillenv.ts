@@ -14,7 +14,7 @@
 //     (1) only uv runs: it installs the Python the project asks for (the only
 //     time /cctr/python is writable). (2) `uv sync --locked`: packages, whose
 //     builds run code, with /cctr/python read-only, a cache of its own (thrown
-//     away), the target at /cctr/env, the same path as when the skill runs, so
+//     away), the target at /cctr/env, both held to BUILD_LIMITS, the same path as when the skill runs, so
 //     the environment's scripts and links hold. A build that fails leaves nothing.
 //   - when: /router skill approve (the approval is recorded only once it is
 //     built), at a run whose environment is gone (rebuilt from the same lock,
@@ -31,12 +31,15 @@ import { join } from 'path'
 import { systemArgs } from './sandboxfs'
 import { runIsolated, type IsolatedRun, type NetRun } from './sandboxnet'
 import { binDir, installed } from './toolbox'
+import { limitMode, limitPrefix, type Limits, type LimitMode } from './sandboxlimits'
 
 export const PYPI = 'https://pypi.org/simple'
 export const ENV_V = '/cctr/env'
 export const PYTHON_V = '/cctr/python'
 const TOOLS_V = '/cctr/tools/bin'
 const BUILD_TIMEOUT_MS = 15 * 60_000
+/** A build's resource limits (router/sandboxlimits.ts): roomier than a run's, a build compiles. */
+export const BUILD_LIMITS: Limits = { timeout: BUILD_TIMEOUT_MS / 1000, memory_mb: 4096, tasks: 512, file_mb: 2048, output_kb: 16384 }
 const KEEP_MS = 30 * 86_400_000
 
 export type LockFiles = { pyproject: string; lock: string; pythonVersion: string | null }
@@ -89,6 +92,8 @@ export interface EnvDeps {
   isolated?(o: IsolatedRun): Promise<NetRun>
   /** uv's --python-preference; only-managed (uv's own Python) but in tests */
   pythonPreference?: string
+  /** How builds are limited (router/sandboxlimits.ts; replaced in tests). */
+  limitMode?(): LimitMode
   log?(msg: string): void
 }
 
@@ -124,7 +129,7 @@ async function step(deps: EnvDeps, work: string, name: string, args: string[], b
   for (const [src, dst, ro] of binds) b.push(ro ? '--ro-bind' : '--bind', src, dst)
   b.push('--chdir', '/cctr/project', '--', join(TOOLS_V, 'uv'), ...args)
   return (deps.isolated ?? runIsolated)({
-    argv: b, timeoutMs: BUILD_TIMEOUT_MS, workDir: join(work, `net-${name}`), hostAddrs: await deps.hostAddrs(),
+    argv: b, timeoutMs: BUILD_TIMEOUT_MS, prefix: limitPrefix((deps.limitMode ?? limitMode)(), BUILD_LIMITS), outputMax: BUILD_LIMITS.output_kb * 1024, workDir: join(work, `net-${name}`), hostAddrs: await deps.hostAddrs(),
     env: { PATH: `${TOOLS_V}:/usr/bin:/bin`, HOME: '/tmp', TMPDIR: '/tmp', LANG: 'C.UTF-8', UV_LINK_MODE: 'copy', UV_PYTHON_INSTALL_DIR: PYTHON_V, UV_PYTHON_PREFERENCE: deps.pythonPreference ?? 'only-managed', ...env },
   })
 }

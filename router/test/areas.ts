@@ -22,13 +22,13 @@ export const AREAS: Area[] = [
   },
   {
     name: 'skills', title: '憑證與特權技能',
-    tests: ['phase3-cred.test.ts', 'phase3-privskill.test.ts', 'skillstore.test.ts', 'skillcli.test.ts', 'skillcheck.test.ts', 'skilltry.test.ts', 'whitelist.test.ts', 'toolbox.test.ts', 'skillenv.test.ts', 'e2e-compiled.test.ts', 'cred-http.test.ts', 'cred-flows.test.ts', 'e2e-creds.test.ts'],
-    paths: ['router/credentials.ts', 'router/skills.ts', 'router/privskill.ts', 'router/skillstore.ts', 'router/skillrefresh.ts', 'router/skillrun.ts', 'router/skillcli.ts', 'router/skillcheck.ts', 'router/skilltry.ts', 'router/skilltry-fake.ts', 'router/sandboxnet.ts', 'router/sandboxfs.ts', 'router/toolbox.ts', 'router/skillenv.ts', 'router/skillapprove.ts', 'router/selfpath.ts', 'router/rawvault.ts', 'plugin/skills/bot-skill/**'],
+    tests: ['phase3-cred.test.ts', 'phase3-privskill.test.ts', 'skillstore.test.ts', 'skillcli.test.ts', 'skillcheck.test.ts', 'skilltry.test.ts', 'whitelist.test.ts', 'toolbox.test.ts', 'skillenv.test.ts', 'limits.test.ts', 'e2e-compiled.test.ts', 'cred-http.test.ts', 'cred-flows.test.ts', 'e2e-creds.test.ts'],
+    paths: ['router/credentials.ts', 'router/skills.ts', 'router/privskill.ts', 'router/skillstore.ts', 'router/skillrefresh.ts', 'router/skillrun.ts', 'router/skillcli.ts', 'router/skillcheck.ts', 'router/skilltry.ts', 'router/skilltry-fake.ts', 'router/sandboxnet.ts', 'router/sandboxfs.ts', 'router/toolbox.ts', 'router/skillenv.ts', 'router/skillapprove.ts', 'router/sandboxlimits.ts', 'router/selfpath.ts', 'router/rawvault.ts', 'plugin/skills/bot-skill/**'],
   },
   {
     name: 'sandbox', title: '沙箱與安裝位置',
-    tests: ['portability.test.ts', 'skilltry.test.ts', 'whitelist.test.ts', 'e2e-compiled.test.ts', 'pluginguard.test.ts', 'wizard.test.ts', 'e2e-wizard.test.ts', 'preflight.test.ts'],
-    paths: ['shared/locate.ts', 'deploy/**', 'router/pluginguard.ts', 'router/wizard.ts', 'templates/base-settings.json', 'router/settings.ts', 'router/privskill.ts', 'router/sandboxnet.ts', 'router/sandboxfs.ts', 'router/selfpath.ts', 'router/cli.ts', 'plugin/server.ts', 'templates/roles/**'],
+    tests: ['portability.test.ts', 'skilltry.test.ts', 'whitelist.test.ts', 'limits.test.ts', 'e2e-compiled.test.ts', 'pluginguard.test.ts', 'wizard.test.ts', 'e2e-wizard.test.ts', 'preflight.test.ts'],
+    paths: ['shared/locate.ts', 'deploy/**', 'router/pluginguard.ts', 'router/wizard.ts', 'templates/base-settings.json', 'router/settings.ts', 'router/privskill.ts', 'router/sandboxnet.ts', 'router/sandboxfs.ts', 'router/sandboxlimits.ts', 'router/selfpath.ts', 'router/cli.ts', 'plugin/server.ts', 'templates/roles/**'],
   },
   {
     name: 'secrets', title: '密鑰保護',

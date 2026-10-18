@@ -101,11 +101,12 @@ router 以 `claude --bg` 在每個對話資料夾 (`<home>` 底下) 啟動 worke
 | `pluginCheckAt` | 每天檢查官方 plugin 快取的時間, GMT+8 `"HH:MM"`, `"off"` 關閉; 沒寫是 `"09:07"`, 寫錯只關閉每日檢查 (worker 打招呼時的檢查照舊). 見[官方 plugin 的自動更新與快取檢查](#官方-plugin-的自動更新與快取檢查). |
 | `classifier` | 工具呼叫分類器 (選配, 預設關閉, 第一階段只記錄); 格式錯只關閉它. 見[工具呼叫分類器](classifier.md). |
 | `sandboxDenyRead` | 所有沙箱 (角色範本與特權動作) 額外隱藏的絕對路徑, 例如同一台機器上其他專案; 沒寫是沒有, 寫錯的項目略過. 見[安裝位置](#安裝位置). |
+| `sandboxTimezone` | 特權技能沙箱的時區 (`TZ` 與 `/etc/localtime`), `/usr/share/zoneinfo` 裡的名稱; 沒寫或寫錯是 `Asia/Taipei`. 見[執行環境規格](skill-runtime.md#時區). |
 | `sandboxExtraRo` | 特權技能的沙箱額外唯讀看得到的絕對路徑 (沙箱是白名單, 預設只有 `/usr` 與少數 `/etc` 檔), 結尾是 `/bin` 的放進 PATH; 沒寫是沒有, 寫錯的項目略過. 見[執行環境規格](skill-runtime.md#掛載路徑). |
 | `receiveReact` | 對話沒有自己設定時收哪些表情回應: `all`, `botself_only`, `disable`; 沒寫是 `botself_only`. 見[表情回應 (reaction)](#表情回應-reaction). |
 | `reactFlushMs` | 表情回應等多少毫秒沒有新訊息就單獨交給 worker; 沒寫是 60000, 測試才縮短. 見[表情回應 (reaction)](#表情回應-reaction). |
 
-選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `sandboxExtraRo`, `receiveReact`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
+選配欄位 (`skillRefreshAt`, `pluginCheckAt`, `classifier`, `sandboxDenyRead`, `sandboxExtraRo`, `sandboxTimezone`, `receiveReact`, `apiRoot`, bots 的 `apiRoot` 與 `localFilesDir`) 寫錯時 router 照常啟動, 該功能關閉或用預設值, 啟動時 log 寫一行 `config.json: ...`.
 
 ## 官方 plugin 的自動更新與快取檢查
 

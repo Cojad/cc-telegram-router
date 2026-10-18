@@ -38,6 +38,7 @@ import { existsSync, readdirSync, readFileSync, statSync, lstatSync, rmSync } fr
 import { join, relative, isAbsolute } from 'path'
 import { systemArgs } from './sandboxfs'
 import { TOOL_NAMES } from './toolbox'
+import { limitsError, raisedLimits } from './sandboxlimits'
 
 export type ArgSpec = {
   pattern?: string
@@ -62,6 +63,10 @@ export type Action = {
   refresh?: string
   /** Internal actions only, owner approval: what of the host it reaches (HostDecl). */
   host?: HostDecl
+  /** Raised resource limits (router/sandboxlimits.ts: memory_mb, tasks, file_mb, output_kb); above the defaults only owner approves. */
+  limits?: Partial<Record<'memory_mb' | 'tasks' | 'file_mb' | 'output_kb', number>>
+  /** Exit codes that are a normal stop, not a failure, with what they mean (e.g. {"4": "影片太長"}). */
+  stop_exits?: Record<string, string>
   /** Toolbox tools the action needs (router/toolbox.ts: ffmpeg, deno, uv): refused, saying which, when one is missing. */
   tools?: string[]
   /** Not internal, owner approval: internet ports besides 80, 443, 53, 22 (tcp and udp). */
@@ -118,6 +123,7 @@ export function hostOf(a: Action): HostDecl | null {
 export function ownerOnly(m: Manifest): string[] {
   return Object.entries(m.actions).flatMap(([n, a]) => [
     ...(hostOf(a) ? [`動作 ${n} 宣告了主機存取 (host)`] : []),
+    ...(raisedLimits(a).length ? [`動作 ${n} 放寬了資源上限 (${raisedLimits(a).join(', ')})`] : []),
     ...(a.outbound_ports?.length ? [`動作 ${n} 宣告了額外的對外 port (outbound_ports ${a.outbound_ports.join(', ')})`] : []),
   ])
 }
@@ -158,6 +164,16 @@ export function storeOf(d: StoreDecl): { name: string; mode: 'append' | 'full' }
 /** What loadManifest refuses in one action's store and bots (thrown, shown by /router skill approve). */
 function checkAction(n: string, a: Action) {
   checkHost(n, a)
+  const lim = limitsError(n, a)
+  if (lim) throw new Error(lim)
+  if (a.stop_exits !== undefined) {
+    const se = a.stop_exits as unknown
+    if (!se || typeof se !== 'object' || Array.isArray(se)) throw new Error(`動作 ${n} 的 stop_exits 要是 {"exit code": "說明"}, 例如 {"4": "影片太長, 沒有下載"}`)
+    for (const [k, v] of Object.entries(se)) {
+      if (!/^([1-9]\d?|1[01]\d|12[0-5])$/.test(k)) throw new Error(`動作 ${n} 的 stop_exits 的 ${k} 不行: 要是 1 到 125 的 exit code (0 本來就是成功, 126 以上是 shell 與訊號用的)`)
+      if (typeof v !== 'string' || !v.trim()) throw new Error(`動作 ${n} 的 stop_exits.${k} 要寫說明`)
+    }
+  }
   if (a.tools !== undefined) {
     if (!Array.isArray(a.tools) || a.tools.some(t => typeof t !== 'string')) throw new Error(`動作 ${n} 的 tools 要是工具名稱陣列, 例如 ["ffmpeg", "deno"]`)
     const bad = a.tools.filter(t => !TOOL_NAMES.includes(t))

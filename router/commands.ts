@@ -113,6 +113,8 @@ export interface CommandDeps {
     group(bot: string, chatId: string): Promise<string>
   }
   sendTo(bot: string, chatId: string, text: string): Promise<void>
+  /** /router status's last lines: how privileged sandboxes are limited, the toolbox (router/sandboxlimits.ts, router/toolbox.ts). */
+  sandboxStatus?(): string
   /** Whether the bot is an administrator of a group (getChatMember); null when Telegram could not say. Groups send reactions to admins only. */
   botIsAdmin?(bot: string, chatId: string): Promise<boolean | null>
   /** Plan 10e: the plaintext of a masked event into a 600 file (terminal only); returns what to print. */
@@ -467,7 +469,7 @@ export async function runCommand(input: CommandInput, deps: CommandDeps): Promis
         isConnected: deps.sessions.isConnected,
         label: c => c.type === 'dm' ? dmLabel(db, c.chat_id) : (c.title ?? c.chat_id),
         backlog: c => db.undelivered(c.key).length,
-      }))
+      }) + (deps.sandboxStatus ? `\n\n特權技能的沙箱:\n${deps.sandboxStatus()}` : ''))
     }
 
     case 'id': {

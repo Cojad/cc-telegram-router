@@ -22,7 +22,7 @@ export type SkillCheckDeps = {
 
 const ROLES = ['owner', 'admin', 'power', 'user', 'guest']
 const DEFAULT_ROLES = ['owner', 'admin', 'power', 'user']
-const KNOWN = new Set(['run', 'args', 'roles', 'creds', 'timeout', 'internal', 'auth_failure', 'refresh', 'host', 'outbound_ports', 'mounts', 'env', 'http', 'bots', 'store'])
+const KNOWN = new Set(['run', 'args', 'roles', 'creds', 'timeout', 'internal', 'auth_failure', 'refresh', 'host', 'outbound_ports', 'tools', 'limits', 'stop_exits', 'mounts', 'env', 'http', 'bots', 'store'])
 const LIKELY: Record<string, string> = { role: 'roles', arg: 'args', cred: 'creds', command: 'run', cmd: 'run', argv: 'run', stores: 'store', bot: 'bots', mount: 'mounts', authFailure: 'auth_failure', 'auth-failure': 'auth_failure', ports: 'outbound_ports (或 host.ports)', outbound: 'outbound_ports', outboundPorts: 'outbound_ports', hosts: 'host' }
 const SKIP_DIR = new Set(['venv', '.venv', 'node_modules', '__pycache__'])
 const MAX_FILES = 2000

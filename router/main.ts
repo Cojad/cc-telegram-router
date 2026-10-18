@@ -43,7 +43,8 @@ import { checkSkill } from './skillcheck'
 import { trySkill, type SkillTryDeps } from './skilltry'
 import { interfaceAddrs, cloudPublicAddrs } from './sandboxnet'
 import { writeSandboxEtc } from './sandboxfs'
-import { toolboxCli, toolboxDir } from './toolbox'
+import { toolboxCli, toolboxDir, describeToolbox } from './toolbox'
+import { limitMode, primeLimitMode, describeLimitMode } from './sandboxlimits'
 import { relaunchArgs, ownArgs, fakeService, FAKE_SUBCOMMAND } from './selfpath'
 import { runFakeService } from './skilltry-fake'
 import { scheduleRefresh, type RefreshDeps } from './skillrefresh'
@@ -731,6 +732,9 @@ const skillDeps: SkillRunDeps = {
   storeRoot: join(cfg.stateDir, 'skill-store'),
   // the shared toolbox (deploy/install.sh router) and the skills' Python environments (router/skillenv.ts)
   toolbox: toolboxDir(cfg.stateDir),
+  // 8a, 8b (柯姊 2026-10-18): router paths masked in what goes back; the sandbox's clock in GMT+8 unless configured
+  privatePaths: [cfg.stateDir],
+  timezone: cfg.sandboxTimezone,
   envRoot: join(cfg.stateDir, 'skill-env'),
   notifyOwner: (c, text) => void postNotice(approvalDeps, c.bot, text),
   log,
@@ -1229,6 +1233,7 @@ const commandDeps: CommandDeps = {
   classifier: { report: (days, qv) => classifierReport(classifyStore, days, new Date(), classifierCfg().enabled, qv), show: id => classifierShow(classifyStore, id) },
   overridesRemoved: (c, uid) => authz.syncRemoved(c, uid),
   effectiveSettings: c => applyOverrides(renderSettings(TEMPLATES, c.role, settingsVars(c)), overridesOf(c)),
+  sandboxStatus: () => `${describeLimitMode(limitMode())}\n工具箱:\n${describeToolbox(toolboxDir(cfg.stateDir))}`,
   async sendTo(botName, chatId, text) {
     await bots.get(botName)?.bot.api.sendMessage(chatId, text)
   },
@@ -1653,6 +1658,8 @@ setInterval(() => void rotate(), 60_000).unref()
 // After a router restart, give already-running workers a moment to
 // reconnect before deciding they need waking.
 setTimeout(sweepBacklog, 15_000).unref()
+// how privileged sandboxes are limited on this host (a degraded host is said once, here and in /router status)
+void primeLimitMode().then(m => log(`skill sandbox: ${describeLimitMode(m)}`))
 // Python environments no approved skill uses and unused for 30 days (router/skillenv.ts): at start, then daily.
 const pruneSkillEnvs = () => {
   try {

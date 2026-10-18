@@ -6,6 +6,21 @@
 
 ## [Unreleased]
 
+## [2.24.0] - 2026-10-18
+
+### Added
+
+- 特權沙箱的資源上限 (`router/sandboxlimits.ts`): 時間 600 秒 (最多 3600), 記憶體 1024 MB (最多 8192), 程序與執行緒數 256 (最多 1024), 單檔 512 MB (最多 8192), 輸出 2048 KB (最多 16384). privileged.json 的 `timeout` 與新的 `limits` 可以放寬, 有放寬的技能只有 owner 能核准 (核准畫面以 ⚠️ 列出). 做法: 有 cgroup 委派時 bwrap 外面包 `systemd-run --user --scope` (MemoryMax, TasksMax) 與 `prlimit --fsize`; 沒有委派的主機降級成只用 prlimit 照常執行, 啟動 log 與 `/router status` 寫明. 被上限終止時回傳註明是哪個上限. 試跑一律用預設上限; 建 Python 環境的沙箱有自己較寬的上限.
+- privileged.json 的 `stop_exits` (例如 `{"4": "影片超過長度上限, 沒有下載"}`): 宣告的 exit code 是正常停止, 回傳 `exit 4 (正常停止: ...)`, 不算失敗, `skill_runs` 記 `stopped`, 資料庫照樣不寫回.
+- config `sandboxTimezone`: 特權沙箱的時區 (`TZ` 與 `/etc/localtime`), 預設 `Asia/Taipei`, 寫錯只警告並用預設.
+- `/router status` 最後列出特權沙箱的資源上限做法與工具箱的版本.
+
+### Changed
+
+- 回傳給對話的文字裡, router stateDir 底下的路徑整段換成 `<router 私有路徑>`.
+- 每日與終端機的憑證更新, 以及憑證被拒後更新失敗的 owner 通知, 附整段輸出的摘要 (遮蔽憑證與私有路徑, 太長留頭尾), 不再只有最後 3 行.
+- [docs/skill-runtime.md](docs/skill-runtime.md) 補上「資源上限」「時區」與 exit code, 正常停止, 遮蔽, 更新摘要; `/telegram:bot-skill` 加上 `limits`, `stop_exits` 與時區. `skill_check` 認得 `tools`, `limits`, `stop_exits` 欄位 (2.23.0 漏了 `tools`, 會誤報不認得). 新測試 `router/test/limits.test.ts` (9 項).
+
 ## [2.23.0] - 2026-10-18
 
 ### Added

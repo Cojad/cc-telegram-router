@@ -159,16 +159,36 @@ function ownerUserns(netFd: number): number {
   return libc ? libc.ioctl(netFd, NS_GET_USERNS) : -1
 }
 
-export type NetRun = { code: number; out: string } | { error: string }
+/** timedOut, outputOver: the router killed the run (its time, or more output than outputMax). */
+export type NetRun = { code: number; out: string; timedOut?: boolean; outputOver?: boolean } | { error: string }
 
-export type IsolatedRun = { argv: string[]; env: Record<string, string>; timeoutMs: number; workDir: string; hostAddrs: string[]; wrap?: string[]; extraRo?: string[]; extraRw?: string[]; allowUnix?: boolean } & NetPolicy
+/** stdout and stderr read as they come, at most max bytes kept in all; past it, over() once (the run is killed). */
+function readCapped(streams: ReadableStream<Uint8Array>[], max: number, over: () => void): Promise<string[]> {
+  let total = 0, tripped = false
+  return Promise.all(streams.map(async st => {
+    const parts: Uint8Array[] = []
+    for await (const c of st as unknown as AsyncIterable<Uint8Array>) {
+      const room = max - total
+      if (room > 0) parts.push(room >= c.length ? c : c.subarray(0, room))
+      total += c.length
+      if (total > max && !tripped) { tripped = true; over() }
+    }
+    return Buffer.concat(parts).toString('utf8')
+  }))
+}
+
+export type IsolatedRun = { argv: string[]; env: Record<string, string>; timeoutMs: number; workDir: string; hostAddrs: string[]; wrap?: string[]; extraRo?: string[]; extraRw?: string[]; allowUnix?: boolean
+  /** Words before bwrap (router/sandboxlimits.ts limitPrefix: systemd-run, prlimit). */
+  prefix?: string[]
+  /** stdout and stderr together, at most this many bytes (default 16 MB): past it the run is killed. */
+  outputMax?: number } & NetPolicy
 
 /** Run a bwrap argv (router/privskill.ts sandboxArgv, a whitelisted file system: options, then "--",
  *  then the command) in its own network namespace as above. workDir: a router-private folder for this
  *  run (resolv.conf, rules, fds). wrap: words put before the command (e.g. a fake service that then
  *  runs it); extraRo, extraRw: more paths the command sees (read-only, writable). hostPorts, outPorts:
  *  NetPolicy (slirp maps SLIRP_HOST to the host's loopback only when there are host ports). allowUnix:
- *  unixBlockFilter's. */
+ *  unixBlockFilter's. prefix, outputMax: the run's limits (router/sandboxlimits.ts). */
 export async function runIsolated(o: IsolatedRun): Promise<NetRun> {
   const missing = netMissing()
   if (missing) return { error: `這台主機缺少網路隔離需要的工具: ${missing}` }
@@ -189,9 +209,10 @@ export async function runIsolated(o: IsolatedRun): Promise<NetRun> {
   const infoFd = openSync(info, 'w'), blockFd = openSync(fifo, 'r+'), readyFd = openSync(ready, 'w'), bpfFd = openSync(bpf, 'r')
   let slirp: ReturnType<typeof Bun.spawn> | null = null
   let netFd = -1, userFd = -1
-  const p = Bun.spawn(argv, { env: o.env, stdio: ['ignore', 'pipe', 'pipe', infoFd, blockFd, bpfFd] })
-  const kill = setTimeout(() => p.kill(9), o.timeoutMs)
-  const output = Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
+  const p = Bun.spawn([...(o.prefix ?? []), ...argv], { env: o.env, stdio: ['ignore', 'pipe', 'pipe', infoFd, blockFd, bpfFd] })
+  let timedOut = false, outputOver = false
+  const kill = setTimeout(() => { timedOut = true; p.kill(9) }, o.timeoutMs)
+  const output = readCapped([p.stdout as ReadableStream<Uint8Array>, p.stderr as ReadableStream<Uint8Array>], o.outputMax ?? 16 * 1024 * 1024, () => { outputOver = true; p.kill(9) })
   const fail = async (why: string): Promise<NetRun> => { p.kill(9); await p.exited; return { error: why } }
   /** The sandbox ended before its network was set up (bwrap refused an option, a path it mounts is missing): its own words. */
   const ended = async (): Promise<NetRun | null> => {
@@ -216,7 +237,8 @@ export async function runIsolated(o: IsolatedRun): Promise<NetRun> {
     if (!readFileSync(ready, 'utf8')) return await fail(`接不上外網 (slirp4netns): ${(await new Response(slirp.stderr as ReadableStream).text()).trim().slice(-300)}`)
     writeFileSync(fifo, 'go')
     const [out, err] = await output
-    return { code: await p.exited, out: `${out}${err}`.trim() }
+    const code = await p.exited
+    return { code, out: `${out}${err}`.trim(), ...(timedOut ? { timedOut } : {}), ...(outputOver ? { outputOver } : {}) }
   } finally {
     clearTimeout(kill)
     slirp?.kill()

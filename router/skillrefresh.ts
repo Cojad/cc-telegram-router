@@ -15,7 +15,7 @@
 import { mkdirSync } from 'fs'
 import { join } from 'path'
 import { loadManifest, hashSkill, secretsIn, redact } from './privskill'
-import { runAction, credEnv, type SkillRunDeps } from './skillrun'
+import { runAction, credEnv, maskPaths, summary, type SkillRunDeps } from './skillrun'
 
 export const REFRESH_CONV = 'router:refresh'
 const GMT8 = 8 * 3_600_000
@@ -37,7 +37,7 @@ export interface RefreshDeps extends Omit<SkillRunDeps, 'notifyOwner'> {
   notify(bot: string, text: string): void
 }
 
-/** tail: the run's last lines, credentials masked (for the terminal's skill refresh). */
+/** tail: the run's whole output (start and end when long), credentials and router paths masked. */
 export type RefreshResult = { skill: string; action: string; status: 'ok' | 'failed' | 'skipped'; tail?: string }
 
 /** Every approved skill's refresh actions (only those skills `only` accepts),
@@ -62,11 +62,14 @@ export async function refreshAll(deps: RefreshDeps, only?: (skill: string) => bo
     for (const n of names) {
       const a = manifest.actions[n]!
       const r = await runAction(deps, dir, a, {}, folder).catch(e => ({ code: -1, out: String(e) }))
-      const status = r.code === 0 ? 'ok' : 'failed'
+      const stopped = r.code > 0 && !!a.stop_exits?.[String(r.code)]
+      const status = r.code === 0 || stopped ? 'ok' : 'failed'
       deps.db.addSkillRun(conv, skill, n, status)
       // what comes back never carries a credential
       const secrets = [...secretsIn(Object.values(credEnv(deps, a))), ...Object.values(a.http ?? {}).map(c => deps.httpCred?.(c)?.token ?? '').filter(t => t.length >= 16)]
-      const tail = redact(r.out.split('\n').slice(-3).join('\n'), secrets).text
+      // the whole output (8c), credentials and router paths masked, its start and end when long
+      const note = [...(r.note ? [`(${r.note})`] : []), ...(stopped ? [`(正常停止: ${a.stop_exits![String(r.code)]})`] : [])]
+      const tail = [...note, summary(maskPaths(redact(r.out, secrets).text, deps.privatePaths))].join('\n')
       out.push({ skill, action: n, status, tail })
       if (r.code === 0) { deps.log?.(`skill ${skill}: daily refresh ${n} ok`); continue }
       deps.log?.(`skill ${skill}: daily refresh ${n} failed (exit ${r.code})`)
