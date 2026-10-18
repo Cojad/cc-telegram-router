@@ -11,7 +11,9 @@
 // --out and --trial-store may not lie in the state dir, the databases, a bot
 // or conversation folder. skill refresh runs refreshAll for one skill in the
 // daily queue (another approved skill with a refresh action does not run),
-// recorded as terminal:refresh (not a daily refresh), failures masked. /router skill run|refresh only from the owner's terminal. Keep in
+// recorded as terminal:refresh (not a daily refresh), failures masked.
+// /router skill run|refresh only from the owner's terminal: from Telegram
+// (owner's DM or a group, admin's DM or a group) refused, nothing runs. Keep in
 // sync with that section and docs/operations.md 「終端機 CLI」.
 
 import { test, expect, beforeEach, afterEach } from 'bun:test'
@@ -274,4 +276,26 @@ test('/router skill run|refresh: only the owner\'s terminal; the conversation fo
   expect((await run('/router skill run dm-404 sticker list --out /tmp/o', true))!.reply).toStartWith('找不到對話 dm-404')
   expect((await run('/router skill refresh sticker', true))!.reply).toBe('skill refresh: ok')
   expect(calls.at(-1)).toBe('sticker')
+})
+
+test('/router skill run|refresh from Telegram: owner in a group, admin in a DM and in a group are all refused and nothing runs', async () => {
+  const OWNER = '111', ADMIN = '222'
+  db.insertConversation({ ...conv, created_at: new Date().toISOString() })
+  db.setUserRole(ADMIN, 'admin')
+  const calls: string[] = []
+  const cfg = { path: join(dir, 'state', 'config.json'), bots: [{ name: 'cc', token: '1:x' }], home: join(dir, 'home'), stateDir: join(dir, 'state'), socket: join(dir, 's'), owners: [OWNER], model: 'm', autoCompactWindow: 750000, claudeBin: 'claude' } as Config
+  const cdeps = { cfg, db, skills: { list: () => '', approve: () => '', revoke: () => '', run: async (c: Conversation) => { calls.push(`run ${c.key}`); return 'skill run: ok' }, refresh: async (s: string) => { calls.push(`refresh ${s}`); return 'skill refresh: ok' } } } as unknown as CommandDeps
+  const places = [
+    { who: 'owner in a group', senderId: OWNER, chatId: '-100', chatType: 'supergroup' },
+    { who: 'admin in a DM', senderId: ADMIN, chatId: ADMIN, chatType: 'private' },
+    { who: 'admin in a group', senderId: ADMIN, chatId: '-100', chatType: 'supergroup' },
+  ]
+  for (const p of places) {
+    const run = (text: string) => runCommand({ bot: 'cc', text, senderId: p.senderId, senderName: 'n', chatId: p.chatId, chatType: p.chatType }, cdeps)
+    expect([p.who, (await run('/router skill run group-100 sticker list --out /tmp/o --role user'))!.reply]).toEqual([p.who, '⛔ /router skill run 只在 owner 的終端機執行 (cc-telegram-router cli skill run ...)'])
+    expect([p.who, (await run('/router skill refresh sticker'))!.reply]).toEqual([p.who, '⛔ /router skill refresh 只在 owner 的終端機執行 (cc-telegram-router cli skill refresh ...)'])
+  }
+  expect(calls).toEqual([])
+  expect(db.skillRunsSince('terminal:group-100', '2000-01-01')).toBe(0)
+  expect(db.lastSkillRunAt('terminal:refresh', 'sticker', 'ok')).toBeNull()
 })

@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.13.1] - 2026-10-18
+
+### Changed
+
+- 測試補上 `/router skill run` 與 `refresh` 從 Telegram 一律被拒: owner 在群組, admin 在私訊與群組下都拒絕, 而且完全沒有執行 (沒有 skill_runs 紀錄). 見 [docs/credentials-and-skills.md](docs/credentials-and-skills.md#驗證).
+
 ## [2.13.0] - 2026-10-18
 
 ### Added
