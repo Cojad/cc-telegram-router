@@ -69,7 +69,7 @@ let folder = ''
 }
 const job = (id: string, j: Record<string, unknown>) => { mkdirSync(join(jobs, id), { recursive: true }); writeFileSync(join(jobs, id, 'state.json'), JSON.stringify(j)) }
 const settings = join(state, 'sessions', 'dm-666.json')
-const oldFlags = ['--allow-dangerously-skip-permissions', '--name', 'tg-dm-666', '--setting-sources', 'project,local', '--settings', settings, '--channels', 'plugin:telegram@claude-plugins-official', '--model', 'claude-old']
+const oldFlags = ['--allow-dangerously-skip-permissions', '--name', 'tg-dm-666', '--setting-sources', 'project,local', '--settings', settings, '--channels', 'plugin:telegram@claude-plugins-official', '--model', 'claude-old', '--permission-mode', 'dontAsk']
 job('aaaa1111', { name: 'tg-dm-666', sessionId: 'sess-1', cwd: folder, state: 'done', respawnFlags: oldFlags })
 job('old00001', { name: 'tg-dm-666', sessionId: 'sess-0', cwd: folder, state: 'blocked', respawnFlags: oldFlags })
 job('old00002', { name: 'tg-dm-666', sessionId: 'sess-00', cwd: folder, state: 'done', respawnFlags: oldFlags })
@@ -120,7 +120,7 @@ test('a wake of a job saved with another model: claude rm, then resume with the 
   expect(after.indexOf('rm aaaa1111')).toBeGreaterThanOrEqual(0)
   expect(after.indexOf('rm aaaa1111')).toBeLessThan(after.indexOf(resume))
   expect(resume).toStartWith('--bg --resume sess-1 --allow-dangerously-skip-permissions --name tg-dm-666 --model claude-new ')
-  expect(resume).toContain(`--settings ${settings} --channels plugin:telegram@claude-plugins-official`)
+  expect(resume).toContain(`--settings ${settings} --channels plugin:telegram@claude-plugins-official --permission-mode dontAsk`)
   expect(stderr).toContain('dm-666: job aaaa1111 was started with other flags (--model claude-old → claude-new); removing it to resume with the new ones')
   const rec = await until(() => q("SELECT worker_flags FROM conversations WHERE key = 'dm-666'")[0].worker_flags)
   expect(JSON.parse(rec)).toContain('claude-new')

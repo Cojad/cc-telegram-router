@@ -4,6 +4,7 @@
 // status can say idle/working while the plugin is still starting or already
 // shutting down, so the socket is the source of truth.
 
+import { readFileSync } from 'fs'
 import type { Config } from './config'
 import type { Conversation, RouterDb } from './db'
 import { sameFlags, flagDiff, recordedFlags } from './jobs'
@@ -55,8 +56,10 @@ export function isRunning(a: AgentEntry): boolean {
 /** userSettings (managed mode): the user layer is the router's claude-config, whose settings.json
  *  carries skipDangerousModePermissionPrompt (router/managed.ts); Claude Code 2.1.314 and later
  *  ignore bypassPermissions in a resumed background session without it. Legacy mode's user layer
- *  is the owner's own ~/.claude and stays out. */
-export function workerArgs(cfg: Config, c: Conversation, settings: string, channel = CHANNEL, userSettings = false): string[] {
+ *  is the owner's own ~/.claude and stays out. mode (the settings' defaultMode, permissionModeOf):
+ *  given as --permission-mode, since a resumed background session keeps the mode it last had
+ *  (one switched at runtime is saved in the job's flags too) and not the settings' defaultMode. */
+export function workerArgs(cfg: Config, c: Conversation, settings: string, channel = CHANNEL, userSettings = false, mode?: string): string[] {
   return [
     '--allow-dangerously-skip-permissions',
     '--name', `tg-${c.key}`,
@@ -64,7 +67,16 @@ export function workerArgs(cfg: Config, c: Conversation, settings: string, chann
     '--setting-sources', userSettings ? 'user,project,local' : 'project,local',
     '--settings', settings,
     '--channels', channel,
+    ...(mode ? ['--permission-mode', mode] : []),
   ]
+}
+
+/** permissions.defaultMode of a worker's settings file (router/settings.ts writes it); undefined when unreadable. */
+export function permissionModeOf(settings: string): string | undefined {
+  try {
+    const m = JSON.parse(readFileSync(settings, 'utf8'))?.permissions?.defaultMode
+    return typeof m === 'string' && m ? m : undefined
+  } catch { return undefined }
 }
 
 /** First prompt of a new worker. A background session that never had a
@@ -96,7 +108,7 @@ export function createSupervisor(deps: SupervisorDeps) {
   /** Started, or why not (what claude said). */
   async function start(c: Conversation, agents: AgentEntry[]): Promise<{ failed: boolean; out: string }> {
     const settings = settingsPath(c)
-    const wanted = workerArgs(cfg, c, settings, deps.channel, deps.userSettings)
+    const wanted = workerArgs(cfg, c, settings, deps.channel, deps.userSettings, permissionModeOf(settings))
     if (c.session_id) {
       // While the daemon still has the job, resume without flags: it keeps
       // the options it was created with (--settings path included, so

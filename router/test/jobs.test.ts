@@ -18,7 +18,7 @@ import { Database } from 'bun:sqlite'
 import type { Config } from '../config'
 import { openRouterDb, type RouterDb } from '../db'
 import { ensureConversation } from '../conversations'
-import { createSupervisor, workerArgs, type Runner, type AgentEntry } from '../supervisor'
+import { createSupervisor, workerArgs, permissionModeOf, type Runner, type AgentEntry } from '../supervisor'
 import { jobsDir, readJob, listJobs, sameFlags, flagDiff, recordedFlags, strayJobs, readProcs, daemonReport, reportNotices, type Proc } from '../jobs'
 
 let dir: string, cfg: Config, db: RouterDb, jobs: string
@@ -78,7 +78,7 @@ test('flags: equal whatever their order (the daemon keeps its own); the differen
 
 // --- the wake ---------------------------------------------------------------
 
-function supervisor(agents: () => AgentEntry[], opts: { rmFails?: boolean; jobFlags?: (id: string) => string[] | null; userSettings?: boolean } = {}) {
+function supervisor(agents: () => AgentEntry[], opts: { rmFails?: boolean; jobFlags?: (id: string) => string[] | null; userSettings?: boolean; settings?: string } = {}) {
   const runs: string[][] = []
   let connected = false
   const run: Runner = async args => {
@@ -93,7 +93,7 @@ function supervisor(agents: () => AgentEntry[], opts: { rmFails?: boolean; jobFl
     cfg, db, run, log: m => logs.push(m),
     isConnected: () => connected,
     async waitConnected() { return connected },
-    settingsPath: () => SETTINGS,
+    settingsPath: () => opts.settings ?? SETTINGS,
     jobFlags: opts.jobFlags ?? (id => readJob(jobs, id)?.respawnFlags ?? null),
     ...(opts.userSettings ? { userSettings: true } : {}),
   })
@@ -128,6 +128,30 @@ test('managed mode: workers get --setting-sources user,project,local, legacy pro
   const wanted = workerArgs(cfg, db.getConversation(c.key)!, SETTINGS, undefined, true)
   expect(runs.filter(a => a[1] !== 'agents')).toEqual([['claude', 'rm', 'aaaa1111'], ['claude', '--bg', '--resume', 'sess-1', ...wanted]])
   expect(logs).toContain('dm-666: job aaaa1111 was started with other flags (--setting-sources project,local → user,project,local); removing it to resume with the new ones')
+})
+
+// docs/operations.md 「背景 session 的 job 與 daemon」 (2.33.3): a resumed background session keeps
+// the permission mode it last had, and a mode switched at runtime is saved in the job's flags, so
+// every start gives the settings' defaultMode as --permission-mode; a job saved with another mode
+// (or none, from 2.33.2) is replaced on the next wake
+test('the settings\' defaultMode is given as --permission-mode; a job saved with a mode switched at runtime (auto) is removed and resumed with bypassPermissions; no flag when the settings cannot be read', async () => {
+  const settings = join(dir, 'dm-666.json')
+  writeFileSync(settings, JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } }))
+  expect(permissionModeOf(settings)).toBe('bypassPermissions')
+  expect(permissionModeOf(join(dir, 'none.json'))).toBeUndefined()
+  writeFileSync(join(dir, 'bad.json'), '{oops')
+  expect(permissionModeOf(join(dir, 'bad.json'))).toBeUndefined()
+  const c = ensureConversation(cfg, db, 'main', '666', 'private', () => {})
+  expect(workerArgs(cfg, c, SETTINGS)).not.toContain('--permission-mode')
+  db.setSession(c.key, 'sess-1')
+  const base = workerArgs(cfg, c, settings)
+  job('aaaa1111', { name: 'tg-dm-666', sessionId: 'sess-1', cwd: c.folder, state: 'done', respawnFlags: [...base, '--permission-mode', 'auto'] })
+  const { sup, runs, logs } = supervisor(() => [{ id: 'aaaa1111', sessionId: 'sess-1', name: 'tg-dm-666', cwd: c.folder, state: 'done' }], { settings })
+  await sup.ensureAwake(db.getConversation(c.key)!)
+  const wanted = [...base, '--permission-mode', 'bypassPermissions']
+  expect(runs.filter(a => a[1] !== 'agents')).toEqual([['claude', 'rm', 'aaaa1111'], ['claude', '--bg', '--resume', 'sess-1', ...wanted]])
+  expect(logs).toContain('dm-666: job aaaa1111 was started with other flags (--permission-mode auto → bypassPermissions); removing it to resume with the new ones')
+  expect(recordedFlags(db.getConversation(c.key)!)).toEqual(wanted)
 })
 
 test('a running job with other flags is stopped first; the same flags resume without any', async () => {

@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.33.3] - 2026-10-31
+
+### Fixed
+
+- worker 每次啟動都帶 `--permission-mode <該對話 settings 的 defaultMode>` (owner 是 `bypassPermissions`, 其他角色 `dontAsk`). 背景 session 被叫醒時沿用它上次的權限模式, 不看 settings 的 `defaultMode`; 執行中切換模式也會被 daemon 寫進 job 的 `respawnFlags`. 2.33.2 上線後, 一個 owner 對話的 worker 因為 job 存著 `--permission-mode auto`, 換了旗標醒來仍是 auto, 不是設定的 bypass (已在 2.1.316 實測: 不帶旗標接續沿用 auto, 帶 `--permission-mode bypassPermissions` 就是 bypass, 執行中 shift+tab 切到 auto 後 `respawnFlags` 變成 `--permission-mode auto`). 現在這種 job 在下一次叫醒時照「叫醒時比對旗標」換掉. 2.33.2 存下的 job 沒有這個旗標, 下一次叫醒時都會換一次. 讀不到 settings 時不帶. 模式取自 `permissionModeOf` (`router/supervisor.ts`).
+- 測試: jobs 加一項, 驗證 settings 的 `defaultMode` 變成 `--permission-mode`, 存著 `--permission-mode auto` 的 job 被 rm 後帶 `bypassPermissions` resume 並記下, 讀不到或壞掉的 settings 不帶旗標. docs/operations.md 「背景 session 的 job 與 daemon」與 docs/testing.md 跟著改.
+
 ## [2.33.2] - 2026-10-31
 
 ### Fixed
