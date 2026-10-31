@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.33.2] - 2026-10-31
+
+### Fixed
+
+- managed 模式的 worker 改帶 `--setting-sources user,project,local` (原本 `project,local`). Claude Code 2.1.314 起, 背景 session 接續 (resume) 時只從使用者層讀 `skipDangerousModePermissionPrompt`; router 不載入使用者層, bypass 就被忽略, worker 以 default 模式醒來, 每個工具都停在權限確認畫面, 畫面提示 `Bypass permissions was requested at launch and ignored`. 2026-10-31 Claude Code 自動升到 2.1.314 後, 一個 bypass 對話的 worker 就這樣卡了約 5 小時. managed 模式的使用者層是 router 自己的 `<stateDir>/claude-config`, 它的 `settings.json` 本來就由 router 寫入這一項, 所以加上 `user` 不會帶進主機使用者 `~/.claude` 的設定或 `CLAUDE.md`. 注意: 放在 `<stateDir>/claude-config/CLAUDE.md` 的內容從此會進所有 worker (含 guest), router 不放這個檔. legacy 模式的使用者層是主人自己的 `~/.claude`, 照舊不載入. 已存著舊旗標的 job 在下次叫醒時照「叫醒時比對旗標」換掉, 不用手動處理; 要立刻套用就 `session rotate all`.
+- 測試: jobs 加一項, 驗證 managed 模式的啟動旗標, legacy 不變, 以及存著 `project,local` 的 job 被 rm 後帶新旗標 resume (log 寫出差異). managed 的「使用者層 CLAUDE.md」那項改成 managed 模式載入 `<stateDir>/claude-config/CLAUDE.md`, 兩種模式都不載入 `~/.claude/CLAUDE.md`, legacy 照舊用加上 `user` 的旗標確認探測有效. docs/session-and-memory.md, docs/managed-channel.md 與 docs/testing.md 跟著改.
+
 ## [2.33.1] - 2026-10-18
 
 ### Fixed

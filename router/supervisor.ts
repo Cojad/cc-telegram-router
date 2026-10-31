@@ -37,6 +37,8 @@ export interface SupervisorDeps {
   jobFlags?: (jobId: string) => string[] | null
   /** --channels for workers (router/claudecmd.ts CHANNELS: the router's own plugin in managed mode); default CHANNEL. */
   channel?: string
+  /** Managed mode: workers also load the user layer, the router's own claude-config (workerArgs). */
+  userSettings?: boolean
   /** Before each wake: managed mode makes sure the daemon is the router's, inside bwrap (router/managed.ts). */
   beforeWake?: () => Promise<unknown>
 }
@@ -50,12 +52,16 @@ export function isRunning(a: AgentEntry): boolean {
   return a.pid != null && a.status != null
 }
 
-export function workerArgs(cfg: Config, c: Conversation, settings: string, channel = CHANNEL): string[] {
+/** userSettings (managed mode): the user layer is the router's claude-config, whose settings.json
+ *  carries skipDangerousModePermissionPrompt (router/managed.ts); Claude Code 2.1.314 and later
+ *  ignore bypassPermissions in a resumed background session without it. Legacy mode's user layer
+ *  is the owner's own ~/.claude and stays out. */
+export function workerArgs(cfg: Config, c: Conversation, settings: string, channel = CHANNEL, userSettings = false): string[] {
   return [
     '--allow-dangerously-skip-permissions',
     '--name', `tg-${c.key}`,
     '--model', c.model ?? cfg.model,
-    '--setting-sources', 'project,local',
+    '--setting-sources', userSettings ? 'user,project,local' : 'project,local',
     '--settings', settings,
     '--channels', channel,
   ]
@@ -90,7 +96,7 @@ export function createSupervisor(deps: SupervisorDeps) {
   /** Started, or why not (what claude said). */
   async function start(c: Conversation, agents: AgentEntry[]): Promise<{ failed: boolean; out: string }> {
     const settings = settingsPath(c)
-    const wanted = workerArgs(cfg, c, settings, deps.channel)
+    const wanted = workerArgs(cfg, c, settings, deps.channel, deps.userSettings)
     if (c.session_id) {
       // While the daemon still has the job, resume without flags: it keeps
       // the options it was created with (--settings path included, so

@@ -78,7 +78,7 @@ test('flags: equal whatever their order (the daemon keeps its own); the differen
 
 // --- the wake ---------------------------------------------------------------
 
-function supervisor(agents: () => AgentEntry[], opts: { rmFails?: boolean; jobFlags?: (id: string) => string[] | null } = {}) {
+function supervisor(agents: () => AgentEntry[], opts: { rmFails?: boolean; jobFlags?: (id: string) => string[] | null; userSettings?: boolean } = {}) {
   const runs: string[][] = []
   let connected = false
   const run: Runner = async args => {
@@ -95,6 +95,7 @@ function supervisor(agents: () => AgentEntry[], opts: { rmFails?: boolean; jobFl
     async waitConnected() { return connected },
     settingsPath: () => SETTINGS,
     jobFlags: opts.jobFlags ?? (id => readJob(jobs, id)?.respawnFlags ?? null),
+    ...(opts.userSettings ? { userSettings: true } : {}),
   })
   return { sup, runs, logs, reset: () => { connected = false; runs.length = 0 } }
 }
@@ -110,6 +111,23 @@ test('a job saved with another model is removed and the session resumed with the
   expect(runs.filter(a => a[1] !== 'agents')).toEqual([['claude', 'rm', 'aaaa1111'], ['claude', '--bg', '--resume', 'sess-1', ...wanted]])
   expect(logs).toContain('dm-666: job aaaa1111 was started with other flags (--model claude-old → claude-new); removing it to resume with the new ones')
   expect(recordedFlags(db.getConversation(c.key)!)).toEqual(wanted)
+})
+
+// docs/session-and-memory.md 「各層一覽」 (2.33.2): managed mode adds the user layer (the router's
+// claude-config, whose settings.json accepts the bypass warning), legacy keeps it out; a job saved
+// before (project,local) is replaced on the next wake like any other flag change
+test('managed mode: workers get --setting-sources user,project,local, legacy project,local; a job saved with project,local is removed and resumed with user added', async () => {
+  const c = ensureConversation(cfg, db, 'main', '666', 'private', () => {})
+  expect(workerArgs(cfg, c, SETTINGS)).toContain('project,local')
+  expect(workerArgs(cfg, c, SETTINGS, undefined, true)).toContain('user,project,local')
+  expect(workerArgs(cfg, c, SETTINGS, undefined, true)).not.toContain('project,local')
+  db.setSession(c.key, 'sess-1')
+  job('aaaa1111', { name: 'tg-dm-666', sessionId: 'sess-1', cwd: c.folder, state: 'done', respawnFlags: flagsWith('claude-new') })
+  const { sup, runs, logs } = supervisor(() => [{ id: 'aaaa1111', sessionId: 'sess-1', name: 'tg-dm-666', cwd: c.folder, state: 'done' }], { userSettings: true })
+  await sup.ensureAwake(db.getConversation(c.key)!)
+  const wanted = workerArgs(cfg, db.getConversation(c.key)!, SETTINGS, undefined, true)
+  expect(runs.filter(a => a[1] !== 'agents')).toEqual([['claude', 'rm', 'aaaa1111'], ['claude', '--bg', '--resume', 'sess-1', ...wanted]])
+  expect(logs).toContain('dm-666: job aaaa1111 was started with other flags (--setting-sources project,local → user,project,local); removing it to resume with the new ones')
 })
 
 test('a running job with other flags is stopped first; the same flags resume without any', async () => {

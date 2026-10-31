@@ -515,13 +515,14 @@ test('the workers\' auto memory lives in the conversation folder (base-settings 
   expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain('worker 的自動記憶在對話資料夾的 `memory/`, 不用搬')
 })
 
-// docs/session-and-memory.md 「自動繼承上層的 CLAUDE.md」 and 「各層一覽」 (2.32.5): a worker,
-// guest included, gets the folder chain's CLAUDE.md but not the user layer's, in either mode,
-// because of workerArgs' --setting-sources. The real claude reports what it loaded with /context,
+// docs/session-and-memory.md 「自動繼承上層的 CLAUDE.md」 and 「各層一覽」 (2.32.5, 2.33.2): a worker,
+// guest included, gets the folder chain's CLAUDE.md but never the owner's ~/.claude one, in either
+// mode, because of workerArgs' --setting-sources; managed mode loads the router's own claude-config
+// as its user layer (2.33.2, the bypass warning in its settings.json). The real claude reports what it loaded with /context,
 // a local command (no model call, no cost), with HOME and every config folder in this test's temp
 // folder. Skipped when no claude is installed (CLAUDE_BIN picks another one, like role-live).
 const CLAUDE_FOR_CONTEXT = process.env.CLAUDE_BIN ?? Bun.which('claude')
-test.skipIf(!CLAUDE_FOR_CONTEXT)('the user layer\'s CLAUDE.md is not loaded: a guest worker started with workerArgs\' --setting-sources gets <home>, the bot\'s and its conversation\'s CLAUDE.md, never the user layer\'s (~/.claude in legacy, <stateDir>/claude-config in managed); with user added it would be; the docs say so', async () => {
+test.skipIf(!CLAUDE_FOR_CONTEXT)('the user layer\'s CLAUDE.md is not loaded: a guest worker started with workerArgs\' --setting-sources gets <home>, the bot\'s and its conversation\'s CLAUDE.md, never ~/.claude\'s; legacy loads no user layer (with user added it would), managed loads <stateDir>/claude-config\'s; the docs say so', async () => {
   const fakeHome = join(dir, 'userhome')
   const home = join(dir, 'cc')
   const folder = join(home, 'bot1', 'dm-1')
@@ -535,9 +536,9 @@ test.skipIf(!CLAUDE_FOR_CONTEXT)('the user layer\'s CLAUDE.md is not loaded: a g
   writeFileSync(settings, JSON.stringify(s))
   const c = { ...conv('dm-1', folder, null), bot: 'bot1', role: 'guest' } as Conversation
   for (const mode of ['legacy', 'managed'] as const) {
-    const args = workerArgs({ model: 'claude-opus-5-5' } as Config, c, settings, CHANNELS[mode])
+    const args = workerArgs({ model: 'claude-opus-5-5' } as Config, c, settings, CHANNELS[mode], mode === 'managed')
     const at = args.indexOf('--setting-sources')
-    expect(args[at + 1]).toBe('project,local')
+    expect(args[at + 1]).toBe(mode === 'managed' ? 'user,project,local' : 'project,local')
     // the worker's flags as they are, but no channel: the plugin is not installed here
     const ch = args.indexOf('--channels')
     const worker = args.filter((_, i) => i !== ch && i !== ch + 1)
@@ -554,17 +555,21 @@ test.skipIf(!CLAUDE_FOR_CONTEXT)('the user layer\'s CLAUDE.md is not loaded: a g
     }
     const files = await loaded(worker)
     for (const p of [layers.global, layers.bot, layers.conversation]) expect(files).toContain(p)
-    for (const p of [layers.user, layers.managedUser]) expect(files).not.toContain(p)
-    // the probe can see a user layer: the same flags with user added load this mode's one
-    const withUser = worker.slice()
-    withUser[at + 1] = 'user,project,local'
-    expect(await loaded(withUser)).toContain(userLayer)
+    expect(files).not.toContain(layers.user)
+    if (mode === 'managed') expect(files).toContain(userLayer)
+    else {
+      expect(files).not.toContain(layers.managedUser)
+      // the probe can see a user layer: the same flags with user added load this mode's one
+      const withUser = worker.slice()
+      withUser[at + 1] = 'user,project,local'
+      expect(await loaded(withUser)).toContain(userLayer)
+    }
   }
   const root = join(import.meta.dir, '..', '..')
   const doc = readFileSync(join(root, 'docs', 'session-and-memory.md'), 'utf8')
-  for (const t of ['分身一律帶 `--setting-sources project,local` 啟動 (沒有 `user`), 所以所有角色 (含 owner) 的分身都不載入它', '`<stateDir>/claude-config/CLAUDE.md`, 同樣不載入', '| 使用者層 | `~/.claude/CLAUDE.md` (managed 模式是 `<stateDir>/claude-config/CLAUDE.md`) | 否 (所有角色, 含 owner) |', '`router/test/managed.test.ts`「the user layer\'s CLAUDE.md is not loaded: …」']) expect(doc).toContain(t)
+  for (const t of ['兩種模式, 所有角色 (含 owner) 的分身都不載入它', 'legacy 模式的分身帶 `--setting-sources project,local` 啟動 (沒有 `user`)', 'managed 模式的分身帶 `--setting-sources user,project,local`, 但它的使用者層是 router 自己的 `<stateDir>/claude-config`', '| 使用者層 | `~/.claude/CLAUDE.md`; managed 模式另有 `<stateDir>/claude-config/CLAUDE.md` | `~/.claude` 的: 否 (兩種模式, 所有角色, 含 owner); `<stateDir>/claude-config` 的: managed 模式是 (所有角色), router 不放這個檔 |', '`router/test/managed.test.ts`「the user layer\'s CLAUDE.md is not loaded: …」']) expect(doc).toContain(t)
   expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain('你使用者層的 `settings.json` 與 `~/.claude/CLAUDE.md` 本來就不載入')
   const mc = readFileSync(join(root, 'docs', 'managed-channel.md'), 'utf8')
-  for (const t of ['不帶使用者層 `CLAUDE.md`', '使用者層 `CLAUDE.md` 本來就不載入; managed 模式的使用者層位置是 `<stateDir>/claude-config/CLAUDE.md`']) expect(mc).toContain(t)
+  for (const t of ['不帶 `~/.claude` 的使用者層 `CLAUDE.md`', 'legacy 模式的 worker 帶 `--setting-sources project,local`, 使用者層 `CLAUDE.md` 本來就不載入', 'managed 模式的 worker 帶 `--setting-sources user,project,local`, 使用者層位置是 `<stateDir>/claude-config/CLAUDE.md`']) expect(mc).toContain(t)
   expect(mc).not.toContain('仍讀 `~/.claude/CLAUDE.md`')
 }, 60_000)

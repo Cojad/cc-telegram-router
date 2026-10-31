@@ -8,7 +8,7 @@
 
 ### 自動繼承上層的 CLAUDE.md
 
-Claude Code 啟動時, 從工作目錄一路往上到根目錄, 每一層資料夾的 `CLAUDE.md` 都會讀進 context. 分身的工作目錄是對話資料夾, 所以它自動繼承這條鏈上的每一份. 使用者層的 `CLAUDE.md` 不在其中: 分身一律帶 `--setting-sources project,local` 啟動 (沒有 `user`), 所以所有角色 (含 owner) 的分身都不載入它; managed 模式的使用者層位置也不是 `~/.claude/CLAUDE.md`, 而是 `<stateDir>/claude-config/CLAUDE.md`, 同樣不載入. 要給所有分身的規則寫在 `<home>/CLAUDE.md`.
+Claude Code 啟動時, 從工作目錄一路往上到根目錄, 每一層資料夾的 `CLAUDE.md` 都會讀進 context. 分身的工作目錄是對話資料夾, 所以它自動繼承這條鏈上的每一份. 主機使用者自己的 `~/.claude/CLAUDE.md` 不在其中, 兩種模式, 所有角色 (含 owner) 的分身都不載入它. legacy 模式的分身帶 `--setting-sources project,local` 啟動 (沒有 `user`), 不載入任何使用者層. managed 模式的分身帶 `--setting-sources user,project,local`, 但它的使用者層是 router 自己的 `<stateDir>/claude-config`, 不是 `~/.claude`. router 只在那裡的 `settings.json` 放 `skipDangerousModePermissionPrompt` (Claude Code 2.1.314 起背景 session 接續時要從使用者層讀到它, bypass 才生效), 不放 `CLAUDE.md`. 有人放了 `<stateDir>/claude-config/CLAUDE.md` 的話, 所有分身 (含 guest) 都會載入, 所以不要放. 要給所有分身的規則寫在 `<home>/CLAUDE.md`.
 
 ```
 /CLAUDE.md, /x/CLAUDE.md ...            <home> 的上層, 有的話也會讀到 (router 不使用)
@@ -24,7 +24,7 @@ Claude Code 啟動時, 從工作目錄一路往上到根目錄, 每一層資料�
 
 | 層級 | 路徑 | 自動載入 | 誰能改 | 用途 |
 |---|---|---|---|---|
-| 使用者層 | `~/.claude/CLAUDE.md` (managed 模式是 `<stateDir>/claude-config/CLAUDE.md`) | 否 (所有角色, 含 owner) | 主機上的人 | 這台機器使用者自己的 Claude Code 用; 分身不載入, 要給所有分身的規則寫在 `<home>/CLAUDE.md` |
+| 使用者層 | `~/.claude/CLAUDE.md`; managed 模式另有 `<stateDir>/claude-config/CLAUDE.md` | `~/.claude` 的: 否 (兩種模式, 所有角色, 含 owner); `<stateDir>/claude-config` 的: managed 模式是 (所有角色), router 不放這個檔 | 主機上的人 | 這台機器使用者自己的 Claude Code 用; 要給所有分身的規則寫在 `<home>/CLAUDE.md` |
 | 全域 | `<home>/CLAUDE.md` | 是 | owner | 所有 bot, 所有對話的共用規則. 分三層, 定義下層能不能覆寫 |
 | bot 層 | `<home>/bot<id>/CLAUDE.md` | 是 | owner, admin | 這隻 bot 的人設 (初次設定訪談產生) |
 | bot 層記憶 | `<home>/bot<id>/memory/` | 否 | owner, admin (power, user, guest 唯讀) | 這隻 bot 所有對話共用的記憶. 在 bot 層 `CLAUDE.md` 用一般文字寫「需要時讀 memory/xxx.md」, 分身需要時用 Read 讀 |
@@ -54,7 +54,7 @@ bot 層記憶不分對話, guest 也讀得到; 只該給特定對話 (例如 own
 
 「自動載入」不經過權限檢查: 讀不到某個檔的角色, 「各層一覽」標為自動載入的 `CLAUDE.md` 與 `MEMORY.md` 照樣會在 session 開始時載入 (使用者層不在其中). 權限只管分身用工具 (Read, Edit, Write, Bash) 主動讀寫. 對話層的 `.chat/` 是 router 的狀態, 所有角色都不能改. admin 的定位幾乎等同 owner (只差不能把自己升為 owner), 所以能改 bot 層的 `CLAUDE.md` 與 `memory/`; 改動會套用到這隻 bot 的所有對話.
 
-分身一律帶 `--setting-sources project,local` 啟動, 使用者層的 `~/.claude/settings.json` (個人 hooks, plugin, 環境變數, 權限) 不載入; 分身的設定全部來自 router 產生的 `<stateDir>/sessions/<對話>.json`.
+主機使用者的 `~/.claude/settings.json` (個人 hooks, plugin, 環境變數, 權限) 兩種模式都不載入: legacy 模式帶 `--setting-sources project,local`; managed 模式帶 `user,project,local`, 但使用者層是 router 的 `<stateDir>/claude-config/settings.json`, 裡面只有 router 寫的 `skipDangerousModePermissionPrompt` (見[設定目錄的初始化](managed-channel.md#設定目錄的初始化)). 分身其餘的設定全部來自 router 產生的 `<stateDir>/sessions/<對話>.json`.
 
 ## session
 
@@ -133,8 +133,8 @@ OpenClaw 的 workspace 用一組固定檔名放人設, 規則與記憶. 轉到 c
 | 讀寫權限, 用真的 Claude Code 執行 (`LIVE=1`) | `router/test/role-live.test.ts`「guest: writes its own CLAUDE.md and memory/ …」「admin: writes the bot's CLAUDE.md with Write and Bash …」「bot memory: … Write there works for admin only」「bot memory: … admin writes it (sandbox allowWrite)」 |
 | 本文件的讀寫權限表與角色範本一致 | `router/test/phase3.test.ts`「docs/session-and-memory.md: …」 |
 | 對話層記憶在對話資料夾 (`autoMemoryDirectory`), 兩種模式讀同一份 | `router/test/managed.test.ts`「the workers' auto memory lives in the conversation folder …」 |
-| 分身一律帶 `--setting-sources project,local` | `router/test/jobs.test.ts` (啟動旗標), `router/test/e2e-jobs.test.ts` |
-| 自動繼承上層的 `CLAUDE.md`, 各層一覽: 使用者層不載入 (兩種模式, 所有角色), 對話資料夾往上的各層會載入 | `router/test/managed.test.ts`「the user layer's CLAUDE.md is not loaded: …」(用真的 claude 跑 `/context`, 不呼叫模型, 隔離的 HOME 與設定目錄; 沒裝 claude 時略過) |
+| 分身帶 `--setting-sources project,local` (legacy) 或 `user,project,local` (managed); 舊旗標存下的 job 在下次叫醒時換掉 | `router/test/jobs.test.ts` (啟動旗標,「managed mode: workers get --setting-sources user,project,local …」), `router/test/e2e-jobs.test.ts` |
+| 自動繼承上層的 `CLAUDE.md`, 各層一覽: `~/.claude` 的使用者層不載入 (兩種模式, 所有角色), managed 模式載入 `<stateDir>/claude-config` 的, 對話資料夾往上的各層會載入 | `router/test/managed.test.ts`「the user layer's CLAUDE.md is not loaded: …」(用真的 claude 跑 `/context`, 不呼叫模型, 隔離的 HOME 與設定目錄; 沒裝 claude 時略過) |
 | session 接續與旗標比對 | `router/test/jobs.test.ts`, `router/test/e2e-jobs.test.ts`, `router/test/e2e-wake.test.ts` |
 | session 存在哪裡, 共用名冊 | `router/test/managed.test.ts`「launcher: …」「bwrap options: …」「config managed.shareSessions: …」; `router/test/e2e-managed.test.ts`「a message: …」 |
 | 從終端機看 session | `router/test/managed.test.ts`「managed attach target: …」「managed agents\|attach: …」; `router/test/e2e-managed.test.ts`「managed agents and attach from the terminal: …」 |

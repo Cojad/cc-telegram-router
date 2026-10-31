@@ -734,6 +734,7 @@ if (managedMode) {
 const supervisor = createSupervisor({
   cfg, db, log, run: claudeRun,
   channel: launcher.channel,
+  userSettings: launcher.mode === 'managed',
   ...(daemonKeeper ? { beforeWake: () => daemonKeeper.ensure() } : {}),
   isConnected: ipc.isConnected,
   waitConnected: ipc.waitConnected,
