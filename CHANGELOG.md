@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [2.33.4] - 2026-10-31
+
+### Fixed
+
+- 離線的 `cctr doctor` 在 worker 的沙箱裡不再誤報. 它會自己試跑一次 bwrap 判斷 channel 模式; worker 本身就在 router 的 bwrap 裡, 再開一層會失敗 (`Can't make overlay mount`), 結果把 managed 報成「降級成 legacy」, 也誤報 daemon 不是 router 帶起的. 2026-10-31 一台主機上的 worker 自己跑 `cctr doctor` 就回報了這兩個假警告, 主機上的 `cctr cli doctor` 則是 managed 正常. 現在離線 doctor 先看 `/proc/self/uid_map`: 只有一行而且只映射一個 uid (bwrap 的對應) 時, 不做檢查, 只印一行說明, 要改用 `cctr cli doctor` (Telegram 的 `/router doctor`), 它經由執行中的 router 回報實際狀態. 容器的對應 (一段範圍) 與主機的對應照常檢查. 判斷是 `router/doctor.ts` 的 `inOneUidNamespace`.
+- 測試: diagnose 加一項, 驗證 bwrap 的一個 uid 對應會拿到說明 (不讀 config), 主機, 容器範圍, 兩行與讀不到的對應不算. docs/operations.md 「cli doctor 與 worker 狀態」與 docs/testing.md 跟著改.
+
 ## [2.33.3] - 2026-10-31
 
 ### Fixed

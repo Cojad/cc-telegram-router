@@ -19,7 +19,7 @@ import { checkNamespaces, prepareMounts, type NsCheck } from './managed'
 import { readLocator, locatorPath } from '../shared/locate'
 import { blockedWhy, daemonReport, jobsDir, listJobs, readProcs, reportNotices, strayJobs, TURN_END_NOTE, type JobState, type Proc } from './jobs'
 import { dirname as dirOf } from 'path'
-import { realpathSync } from 'fs'
+import { realpathSync, readFileSync } from 'fs'
 
 export interface DoctorDeps {
   cfg: { home: string; stateDir: string; socket: string; model: string; autoCompactWindow: number; claudeBin: string; bots: Array<{ name: string; apiRoot?: string }>; apiRoot?: string }
@@ -141,7 +141,22 @@ export function doctorReport(d: DoctorDeps): string {
 /** Without the router (cctr doctor, the end of the setup
  *  wizard): conversations read from router.db read-only, the daemon's jobs
  *  from claude agents. */
-export async function offlineDoctor(configPath: string, version?: string): Promise<string> {
+/** A one-uid user namespace (uid_map is a single line mapping one id, the way bwrap maps the
+ *  router's user), e.g. inside a worker's sandbox. A container's map (a range, or the host's
+ *  0 0 4294967295) does not count. */
+export function inOneUidNamespace(uidMap = '/proc/self/uid_map'): boolean {
+  try {
+    const lines = readFileSync(uidMap, 'utf8').trim().split('\n').filter(Boolean)
+    return lines.length === 1 && lines[0]!.trim().split(/\s+/)[2] === '1'
+  } catch { return false }
+}
+
+/** offlineDoctor's whole answer in a one-uid namespace: its own bwrap probe would nest one
+ *  sandbox in another and fail, so the channel mode would read as degraded. */
+export const IN_SANDBOX_NOTE = '⚠️ 這個 doctor 在 bwrap 這類只映射一個 uid 的 user namespace 裡執行 (例如 worker 的沙箱), 不做檢查: 它要自己試跑 bwrap 判斷 channel 模式, 在沙箱裡會再開一層沙箱而失敗, 把 managed 誤報成降級成 legacy, daemon 是誰帶起的也看不準. 請改用 cctr cli doctor (Telegram 裡是 /router doctor), 它經由執行中的 router 回報 router 實際的狀態.'
+
+export async function offlineDoctor(configPath: string, version?: string, uidMap?: string): Promise<string> {
+  if (inOneUidNamespace(uidMap)) return IN_SANDBOX_NOTE
   const cfg = loadConfig(configPath)
   let conversations: Conversation[] | undefined
   const dbFile = join(cfg.stateDir, 'router.db')

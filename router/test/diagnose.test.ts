@@ -8,7 +8,7 @@
 // owner told once per cause, recovery told, restart releases); the
 // supervisor holding back and not waiting for a plugin when claude --bg
 // refused (alongside its job flag check, router/jobs.ts); StopFailure's API errors with their fixes; the model against
-// autoCompactWindow; the doctor report (every check, no token); /router
+// autoCompactWindow; the doctor report (every check, no token); the offline doctor inside a worker's sandbox; /router
 // status with each worker's trouble and /router doctor. Every ~/.claude.json
 // here is a temporary file. End to end: e2e-diagnose.test.ts.
 
@@ -17,7 +17,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { apiAdvice, backoffMs, createWakeTracker, grantTrust, latestPluginLog, modelWindow, modelWindowNotes, pluginFailure, pluginLogDir, projectSlug, readProjects, trustFix, trustOf, wakeCause } from '../diagnose'
-import { doctorReport } from '../doctor'
+import { doctorReport, inOneUidNamespace, offlineDoctor, IN_SANDBOX_NOTE } from '../doctor'
 import { createSupervisor, type RunResult } from '../supervisor'
 import { writeFingerprint } from '../pluginguard'
 import { writeLocator, locatorPath } from '../../shared/locate'
@@ -344,4 +344,25 @@ test('blocked: a prompt on the window or an API error warns with what it needs; 
   const calm = doctorReport({ cfg: { home, stateDir: join(dir, 'blocked-state'), socket: join(dir, 'blocked.sock'), model: 'claude-opus-5-5', autoCompactWindow: 750_000, claudeBin: 'claude', bots: [] }, userHome: join(dir, 'nobody'), which: () => null, conversations: convs, agents: [agents[2]!], jobs })
   expect(calm).not.toContain('卡住')
   expect(calm).toContain('ℹ️ 上一輪結尾在等人回應 (Claude Code 的判讀, 不影響收訊): tg-dm-3')
+})
+
+// docs/operations.md 「cli doctor 與 worker 狀態」 (2.33.4): the offline cctr doctor inside a worker's
+// sandbox (bwrap maps the one uid) would probe bwrap inside bwrap and report managed as degraded,
+// so it checks nothing there and points to cli doctor; a container's map or the host's does not count
+test('offline doctor in a one-uid namespace (a worker\'s bwrap) says to use cli doctor instead and checks nothing; the host\'s map, a container\'s range or an unreadable map run it as before', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'cctr-uidmap-'))
+  const map = (name: string, text: string) => { const f = join(d, name); writeFileSync(f, text); return f }
+  const sandbox = map('bwrap', '      1002       1002          1\n')
+  expect(inOneUidNamespace(sandbox)).toBe(true)
+  expect(inOneUidNamespace(map('host', '         0          0 4294967295\n'))).toBe(false)
+  expect(inOneUidNamespace(map('lxc', '         0     100000      65536\n'))).toBe(false)
+  expect(inOneUidNamespace(map('two', '0 1002 1\n1 100000 65536\n'))).toBe(false)
+  expect(inOneUidNamespace(join(d, 'none'))).toBe(false)
+  // the config path does not exist: the note comes before anything is read
+  expect(await offlineDoctor(join(d, 'no', 'config.json'), '9.9.9', sandbox)).toBe(IN_SANDBOX_NOTE)
+  expect(IN_SANDBOX_NOTE).toContain('cctr cli doctor')
+  const doc = readFileSync(join(import.meta.dir, '..', '..', 'docs', 'operations.md'), 'utf8')
+  expect(doc).toContain('`cctr doctor` (不經 router 的離線版')
+  expect(doc).toContain('只映射一個 uid 的 user namespace')
+  rmSync(d, { recursive: true, force: true })
 })
