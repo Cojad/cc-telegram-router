@@ -163,6 +163,8 @@
 
 ## How to upgrade
 
+還在用 v1 (1.x, 單一 session 的 plugin) 的話, 改看下方「從 v1 升級」.
+
 1. 取得新版 (`git pull`), 看 [CHANGELOG](CHANGELOG.md) 有沒有要另外做的事.
 2. `deploy/install.sh router` 與 `deploy/install.sh plugin` (unit 有改時再加 `deploy/install.sh unit`).
 3. `systemctl --user stop cc-telegram-router`, 備份 `<home>/.router/router.db*` (WAL 模式, 連同 `-wal`, `-shm`) 與 `config.json`.
@@ -174,6 +176,28 @@
 要改設定 (例如換 token, 換成自架的 Bot API server, 加 owner) 用 `deploy/install.sh setup` 的修改模式, 再重啟 router.
 
 細節與退版見 [部署與維運: 升級](docs/operations.md#升級).
+
+## 從 v1 升級
+
+v1 是 1.x 時期的單一 session plugin: 用 `deploy/switch.sh fork` 把本 repo 的模組蓋進官方 plugin 快取, 狀態在 `~/.claude/channels/telegram/` (`.env` 的 token, `access.json`, `messages.db`), 用 `claude --channels plugin:telegram@claude-plugins-official` 開互動 session. 升級由 `deploy/upgrade-v1.sh` 做, 交給一個全新的 Claude Code 執行:
+
+1. 取得 v2: 在原本的 clone 裡 `git pull` (失敗或分岔時另外 `git clone` 一份新的). v2 的需求 (bun 1.4.3 以上等) 見上方 Requirements.
+2. 關掉 v1 的 Telegram session (在那個 session 輸入 `/exit`). 它還開著時會跟 router 搶同一個 token 的訊息 (409 衝突), 而且 v1 遇到 409 會不停地立刻重試; 腳本偵測到它還在跑就會停下等你關.
+3. 在終端機開一個不帶 `--channels` 的普通 `claude` (在 repo 目錄裡), 請它讀 README 的「從 v1 升級」並照做. 不要在 v1 的 session 裡做: 腳本一開始就偵測執行者是不是 v1 session, 是的話什麼都不做就停下 (結束碼 3).
+4. 那個 Claude 照這個流程執行:
+   - 先跑 `deploy/upgrade-v1.sh --dry-run`. 它什麼都不寫, 不裝, 不啟動, 不動 v1, 只印報告: (a) 從 v1 帶入的值與來源 (token 只寫「有, bot id」), (b) 用預設值的項目, (c) 要問使用者的問題 (owner 的 uid, 家目錄, bot 名稱, 要不要沿用 v1 的存取設定, linger), 每題寫明用哪個參數回答, (d) 要先處理的問題 (錯誤與修法, 或要人操作的事). 結尾是「還剩幾題沒答」與補上答案後重跑的完整指令.
+   - 照報告問使用者, 把答案加成參數再跑 dry run, 直到沒有未答的題目; 通過時它印出正式執行的指令 (同樣的參數, 去掉 `--dry-run`).
+   - 執行那個指令. 正式執行先做同樣的檢查, 還有沒答的題目就照報告停下, 不做任何寫入; 通過才依序: 編譯 router 與工具箱, 用 v1 的 token 寫 config.json, 沿用 (或不沿用) access.json, 寫位置檔, 部署 plugin, 安裝 unit, 匯入 v1 的訊息紀錄 (`cctr import-v1`), 啟動 router, 跑 `cctr cli doctor`. 中斷了就重跑同一個指令, 做過的步驟會跳過.
+5. 要人做的事腳本會停下來說明: 決定 owner (或 `--claim` 啟動後私訊 bot `/start <認領碼>` 認領), 開 linger (`sudo loginctl enable-linger <使用者>`, 不需要就 `--skip-linger`), 關掉還在跑的 v1.
+
+結束碼 (dry run 與正式執行相同):
+
+- 0: dry run 全部通過, 可以正式執行; 正式執行時是升級完成.
+- 3: 還有題目沒答, 或要人操作 (關掉 v1 session, 開 linger, 認領 owner). 正式執行在寫入前停下.
+- 1: 有要先修的錯誤 (例如找不到 bun, token 被 Telegram 拒絕), 報告寫了原因與修法.
+- 2: 參數錯誤.
+
+升級後: 以後不要再用 `--channels plugin:telegram@claude-plugins-official` 開 session (官方快取裡已是 v2 的 plugin, 它不收訊息, 只服務 router 的 worker); 每個 Telegram 對話是新的背景 session, 不接續 v1 那個 session 的對話; v1 的檔案都留著不刪 (`.env` 裡仍是明文 token, 確認 v2 正常後可自行清理). 參數, 各項資料的去向與手動升級的做法見 [部署與維運: 從 v1 升級](docs/operations.md#從-v1-升級).
 
 ## 文件索引
 
@@ -187,7 +211,7 @@
 | [docs/secrets.md](docs/secrets.md) | 對話專屬密鑰 (10b), 原始事件與密鑰保護 (10e) |
 | [docs/classifier.md](docs/classifier.md) | 工具呼叫分類器 (第一階段, 只記錄) |
 | [docs/managed-channel.md](docs/managed-channel.md) | 專屬設定目錄與 managed channel: worker 在 bwrap 裡用 router 自己的設定目錄, daemon 與 plugin, 降級, daemon 的看管, 對話紀錄的遷移, 共用 session 名冊, `managed agents` 與 `attach` |
-| [docs/operations.md](docs/operations.md) | 部署, 設定嚮導, linger, 資料夾信任, config.json 設定欄位, 自架 Bot API server, 私訊與群組的存取, 升級, 表情回應, 安裝位置, 新 bot 初次設定與審核群組, bot 設定提醒, router 重啟, 輪詢與重試, 健康檢查端點, 工具呼叫紀錄, CLI, 時間, 報表腳本 |
+| [docs/operations.md](docs/operations.md) | 部署, 設定嚮導, linger, 資料夾信任, config.json 設定欄位, 自架 Bot API server, 私訊與群組的存取, 升級, 從 v1 升級, 表情回應, 安裝位置, 新 bot 初次設定與審核群組, bot 設定提醒, router 重啟, 輪詢與重試, 健康檢查端點, 工具呼叫紀錄, CLI, 時間, 報表腳本 |
 | [docs/testing.md](docs/testing.md) | 執行測試, 測試分區 (std, 依改動跑), 測試檔對照, 各階段驗收對照表 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本變更紀錄 |
 | `/telegram:doc` (`plugin/skills/doc/SKILL.md`) | worker 端的使用說明 |

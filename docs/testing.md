@@ -59,7 +59,7 @@ repo 根目錄的 `bunfig.toml` 設了 `[test] root = "router/test"`, 所以在 
 | `perm` | 權限與提權 | phase3, risky, autoelev, dmrole, toolhistory, e2e-autoelev, e2e-dmrole, e2e-ownagents, e2e-toolhistory, role-live, retry, e2e-retry, elevpersist, e2e-elevpersist | `router/` 的 permcheck, elevation, approvals, authz, grants, guard, settings, toolhistory, context, conversations; `shared/tools.ts`, `shared/prompttags.ts`; `templates/**` |
 | `pkg` | 套件安裝審核 | phase3-pkg, skillenv | `router/` 的 packages, pkgreview, skillapprove, approvals, authz |
 | `skills` | 憑證與特權技能 | phase3-cred, phase3-privskill, skillstore, skillcli, skillcheck, skilltry, whitelist, toolbox, skillenv, limits, e2e-compiled, cred-http, cred-flows, e2e-creds | `router/` 的 credentials, skills, privskill, skillstore, skillrefresh, skillrun, skillcli, skillcheck, skilltry, skilltry-fake, sandboxnet, sandboxfs, toolbox, skillenv, skillapprove, sandboxlimits, selfpath, rawvault; `plugin/skills/bot-skill/**` |
-| `sandbox` | 沙箱與安裝位置 | portability, skilltry, whitelist, limits, e2e-compiled, pluginguard, wizard, e2e-wizard, preflight, diagnose, e2e-diagnose | `shared/locate.ts`, `deploy/**`, `templates/base-settings.json`, `hooks/hook.ts`, `router/` 的 pluginguard, wizard, diagnose, doctor, supervisor, settings, privskill, sandboxnet, sandboxfs, sandboxlimits, selfpath, cli; `plugin/server.ts`, `templates/roles/**` |
+| `sandbox` | 沙箱與安裝位置 | portability, skilltry, whitelist, limits, e2e-compiled, pluginguard, wizard, e2e-wizard, preflight, diagnose, e2e-diagnose, upgradev1 | `shared/locate.ts`, `deploy/**`, `router/importv1.ts`, `templates/base-settings.json`, `hooks/hook.ts`, `router/` 的 pluginguard, wizard, diagnose, doctor, supervisor, settings, privskill, sandboxnet, sandboxfs, sandboxlimits, selfpath, cli; `plugin/server.ts`, `templates/roles/**` |
 | `secrets` | 密鑰保護 | secrets, e2e-secrets, rawvault, e2e-rawvault | `router/` 的 secrets, rawvault, detect, rotate, credentials, setup; `shared/tools.ts` |
 | `telegram` | Telegram 收發與訊息紀錄 | format, inbound, outbound, reply-files, policy, rich, store, poller, phase4, channel, e2e-channel, local-bot-api, e2e-localapi, owners-access, pairing, e2e-pairing, health, e2e-health | `router/telegram/**`, `router/` 的 pairing, config, poller, health, pollnotice, sendretry, importv1, setup; `plugin/skills/doc/**`, `plugin/skills/format/**`, `templates/CLAUDE.md.example`, `shared/tools.ts` |
 | `reactions` | 表情回應 | reactions, e2e-reactions | `router/reactions.ts`, `router/telegram/transport.ts`, `router/telegram/inbound.ts` |
@@ -205,8 +205,9 @@ worker 數預設 4, 等於這台開發機的核心數. 在 4 核機器上開 8 �
 | `router/test/e2e-classifier.test.ts` | 真的 router + 假 Bot API, 假 OpenRouter Decisions router (四個模型), 假 claude: hook 立刻放行後五家都記錄, 外送內容 (含觸發的訊息) 沒有已登記的值, 資料夾與 chat id; 擋下的, owner 對話與 hook 裡的 telegram 工具不送; user 對話的 reply 在 router 端判斷 (Telegram 類), owner 的不判斷; 終端機 `cli classifier` |
 | `router/test/phase3-pkg.test.ts` | 規劃 07 套件安裝審核: 指令解析, manifest, 審核快取, 送審與核准, 慢審核, 審核模型的呼叫方式, hook |
 | `router/test/e2e-setup.test.ts` | 真的 router + 假 Bot API, 從沒有 owner 開始: 認領碼, 人設訪談與 bot CLAUDE.md, 審核群組的檢查與話題, 略過; 憑證 (cred-import, bot_api, http_api); API key 沒帶 --http 時 `/router cred add` 與 `cred-import` 都不呼叫 getMe, `--header x-api-key` 與 `--query` 的實際請求, worker 自帶標頭轉送與認證標頭被擋; install_skill 從對話資料夾安裝與 user 對話被擋; skill_check (user 對話檢查草稿, 不在資料夾裡的路徑被拒, guest 被拒); skill_try (user 對話試跑草稿成功, 2.25.0 起; guest 被拒) |
-| `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`, 歸給哪隻 bot), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
-| `router/test/poller.test.ts` | [輪詢與重試](operations.md#輪詢與重試)的輪詢: 重試間隔, 2 分鐘才通知與恢復通知, 409, 401, 429, 啟動時的 getMe, status 與通知文字 (e2e 另測 token 失效時經其他 bot 通知與 /router status); 指令回覆重試 (e2e 另測 502 後重送) |
+| `router/test/phase4.test.ts` | 規劃 10 Phase 4: v1 訊息紀錄匯入 (`import-v1`, 歸給哪隻 bot, 還在 `-wal` 裡的也匯入; [從 v1 升級](operations.md#從-v1-升級): router 跑過後才匯入仍排在原有紀錄之前, 分頁拿得到, v1 的檔案旁不留 `-wal` 與 `-shm`), 三層 CLAUDE.md 範例, /telegram:doc 與 /telegram:format |
+| `router/test/upgradev1.test.ts` | [從 v1 升級](operations.md#從-v1-升級) (`deploy/upgrade-v1.sh`, 暫存家目錄, 假的 systemctl, loginctl, claude, 本機假 Bot API, 假的程序樹): dry run 不寫入 (家目錄逐檔相同, messages.db 的暫存複本刪掉), 報告的 (a) 帶入值 (token 只有 bot id), (b) 預設, (c) 五題與回答的參數, 還剩幾題與重跑指令, 結束碼 3; 全部答完結束碼 0 並印正式指令, linger 已開不問; 正式執行還有題目沒答就停在寫入前; 執行者是 v1 session (祖先帶 `--channels plugin:telegram@claude-plugins-official`) 在任何檢查前停下 (結束碼 3), 在 router 家目錄裡的 legacy worker 不算; 還在跑的 v1 (`--channels` session, bot.pid 的 bun) 列為要人操作; token 被拒 (401) 與沒有 bun 是錯誤附修法 (結束碼 1), 參數錯誤結束碼 2; 腳本開頭與 README 寫的結束碼 |
+| `router/test/poller.test.ts` | [輪詢與重試](operations.md#輪詢與重試)的輪詢: 重試間隔, 2 分鐘才通知與恢復通知, 409 (通知與 log 寫明可能是舊的 v1 session 還開著, log 只寫一次), 401, 429, 啟動時的 getMe, status 與通知文字 (e2e 另測 token 失效時經其他 bot 通知與 /router status); 指令回覆重試 (e2e 另測 502 後重送) |
 | `router/test/store.test.ts`, `router/test/inbound.test.ts` | [訊息紀錄](architecture.md#訊息紀錄): 每隻 bot 各自一份 (私訊撞號, 同群組同一則), 舊紀錄分配 bot 一次 (對話, events, outbound, 時間, legacy), legacy 列用時間重新判斷一次, 重複丟掉時寫 log, 引用不跨 bot |
 | `router/test/policy.test.ts` | [運作方式](architecture.md#運作方式)的 gate: mention 判斷 (中文觸發詞不用 `\b` 的回歸測試, ASCII 的 `\b` 邊界, rich_message 裡的觸發詞, 回覆 bot 算 mention), 私訊的允許清單與配對碼 (同一個配對碼最多回兩次), 群組的設定, 成員清單與 requireMention |
 | `router/test/outbound.test.ts` | [訊息紀錄](architecture.md#訊息紀錄)的送出端: reply 與 send_sticker 以 Telegram 回傳的 id 記錄 (含 reply_to), edit_message 取代原本那筆, `lookup_message` 查單筆, 查無資料, 列最近訊息 (新的在前), 時間是 GMT+8; 不在允許清單的 chat 與 send_sticker 參數錯誤時拒絕 |
@@ -219,7 +220,7 @@ worker 數預設 4, 等於這台開發機的核心數. 在 4 核機器上開 8 �
 | `router/test/preflight.test.ts` | [部署](operations.md#部署)的前置檢查 (`deploy/preflight.ts`) 與 unit 的 PATH: 版本比較, bun 對 package.json 的 engines, claude 比測試版本舊只警告, 找不到就停, README 寫的版本一致; bun.lock 套件位置, node_modules 不存在或版本不同算過期, `bun install --frozen-lockfile` 補齊 (repo 複本, 從 bun 的快取), 安裝失敗就停; install.sh: PATH 沒有 bun 時每個子指令都停並說明, 沒有 node_modules 的複本先自動安裝再跑, 沒有 claude 就停; install.sh unit 把 bun 與 claude 的資料夾加在 unit 的 PATH 前面, 重跑會更新 (HOME 是暫存資料夾, systemctl 是只記錄參數的假程式) |
 | `router/test/pairing.test.ts` | [私訊配對](permissions.md#私訊配對): 申請送到哪裡 (配對申請話題, 話題還沒建時的重要通知, 沒有群組時 owner 私訊), 申請的內容 (名稱, @username, uid, 配對碼, 到期時間 GMT+8, 第一則訊息當不可信資料: 一行, 去掉控制與方向字元, 最多 200 字) 與按鈕; 只有 owner 與 admin 能按, 同意 (加入 allowFrom, 問候, 改寫訊息, 紀錄) 與拒絕; 按鈕與指令先到先贏, 後到的回已處理, 同時按兩下只結算一次; 這版之前發的配對碼照舊能用指令處理; 過期掃描, 掃描前就失效的配對碼, 手動刪掉的配對碼; `pairing_requests`, router_log (`router:pairing`) 與 journal; 上一版結構且有資料的 router.db 開啟後加上新表與新欄位, 資料保留 |
 | `router/test/e2e-pairing.test.ts` | 同上, 真的 router + 假 Bot API, 用上一版的 router.db (五個話題的審核群組, 沒有新表與新欄位) 啟動: 啟動時補建「🤝 配對申請」話題, 陌生人第一次私訊拿到配對碼, 申請與按鈕貼在話題裡, 再傳只提醒不重貼; 一般使用者按被拒, admin 同意 (allowFrom, 問候, 訊息改寫, pairing_requests, router_log, journal), 之後的指令回已處理; 指令先拒絕, 之後的按鈕回已處理 |
-| `router/test/diagnose.test.ts` | [cli doctor 與 worker 狀態](operations.md#cli-doctor-與-worker-狀態)與[疑難排解](operations.md#疑難排解) (模組): 離線 `cctr doctor` 在只映射一個 uid 的 namespace 裡只印改用 cli doctor 的說明 (主機, 容器範圍, 讀不到的對應照常); 資料夾信任 (自己, 上層, git repo 的根, 使用者家目錄一律不算, 只讀信任旗標) 與代寫 (先備份, 只改那個鍵, 保留權限, 讀回, 被其他程序蓋掉, 檔案不存在或壞掉不動); plugin log (Claude Code 的資料夾名稱, 最新檔與時間下限, 原因, 工具錯誤與雜訊不算, token 遮蔽); 叫不醒的原因與修法; 重試間隔 1, 2, 5, 10, 30 分鐘, 同一原因只通知一次, 恢復, restart 解除; supervisor 在 claude --bg 拒絕時立刻算失敗, 間隔內不再叫醒, restart 照叫, 跟 job 旗標比對並存 (舊旗標的 job 先 stop 與 rm, 帶新旗標的 resume 被拒算失敗, 不記旗標); StopFailure 各種錯誤的原因與修法; 模型與 autoCompactWindow; doctor 全部通過與全部出錯 (殘留 job 與 daemon 狀態用 `router/jobs.ts` 判斷, 沒連上的 worker, 沒有 token); `blocked` 分兩種: 畫面停著提示 (`waitingFor`) 或 API, 登入, 額度錯誤 (job 的 `needs`) 才警告並寫出原因, 只是收尾在等人回應只列提示 (doctor 與 /router status); /router status 列出每個 worker 的問題 (每個 ~/.claude.json 都是暫存檔) |
+| `router/test/diagnose.test.ts` | [cli doctor 與 worker 狀態](operations.md#cli-doctor-與-worker-狀態)與[疑難排解](operations.md#疑難排解) (模組): router 沒在跑時 `cctr cli` 的中文說明 (systemctl 與 journalctl, cli doctor 另指向 `cctr doctor`, 結束碼 1); 離線 `cctr doctor` 在只映射一個 uid 的 namespace 裡只印改用 cli doctor 的說明 (主機, 容器範圍, 讀不到的對應照常); 資料夾信任 (自己, 上層, git repo 的根, 使用者家目錄一律不算, 只讀信任旗標) 與代寫 (先備份, 只改那個鍵, 保留權限, 讀回, 被其他程序蓋掉, 檔案不存在或壞掉不動); plugin log (Claude Code 的資料夾名稱, 最新檔與時間下限, 原因, 工具錯誤與雜訊不算, token 遮蔽); 叫不醒的原因與修法; 重試間隔 1, 2, 5, 10, 30 分鐘, 同一原因只通知一次, 恢復, restart 解除; supervisor 在 claude --bg 拒絕時立刻算失敗, 間隔內不再叫醒, restart 照叫, 跟 job 旗標比對並存 (舊旗標的 job 先 stop 與 rm, 帶新旗標的 resume 被拒算失敗, 不記旗標); StopFailure 各種錯誤的原因與修法; 模型與 autoCompactWindow; doctor 全部通過與全部出錯 (殘留 job 與 daemon 狀態用 `router/jobs.ts` 判斷, 沒連上的 worker, 沒有 token); `blocked` 分兩種: 畫面停著提示 (`waitingFor`) 或 API, 登入, 額度錯誤 (job 的 `needs`) 才警告並寫出原因, 只是收尾在等人回應只列提示 (doctor 與 /router status); /router status 列出每個 worker 的問題 (每個 ~/.claude.json 都是暫存檔) |
 | `router/test/health.test.ts` | [健康檢查端點](operations.md#健康檢查端點)與 [router 重啟](operations.md#router-重啟)的啟動與關機公告 (模組): config `health` 預設關閉, 非本機位址照開, 格式錯誤關閉並警告 (不回顯 token), 本機, 私有網段, 對外開放的分級與警告, 啟動公告與關機公告 (來源 cli, telegram, systemd, 訊號), systemd 下以 list-jobs 的 job 類型分辨重啟與停止 (假的 systemctl, 逾時), staleAfterS 預設 90 與寫錯用預設, port 被佔用降級不丟例外; bearer token (401, 正確, constant-time 比對, `/router config show` 不顯示); 路徑 404, 方法 405, HEAD; 200/503 的門檻 (含邊界, 還沒輪詢成功的 bot, 沒有 bot); 回應欄位與 GMT+8 時間; 對話數的定義; 含 id 的假資料驗證輸出沒有隱私; poller 的 lastOk; 文件的預設門檻, 欄位與 Gatus 範例 |
 | `router/test/e2e-health.test.ts` | 同上, 真的 router (從原始碼, 暫存 HOME) + 假 Bot API + 叫不醒的假 claude: 帶 token 時沒帶或錯的 401, 對的 200 (HEAD 也是), 其他路徑 404; 叫不醒的原因與 backoff 計數, 資料夾等隱私已遮蔽; 假 Bot API 的 getUpdates 卡住超過門檻 503, 恢復後 200; 不設 token 時不帶標頭 200; 0.0.0.0 照開, 對外開放的警告; 啟動公告 (網址, 未設 token, 對外開放); Telegram `/restart` (telegram: @name), `cli restart` (cli), systemd 下的 SIGTERM 的關機公告, sendMessage 卡住時 5 秒後照常停止 |
 | `router/test/e2e-diagnose.test.ts` | 同上, 真的 router (從原始碼, 暫存 HOME, PATH 沒有 bun) + 假 Bot API + 回 Workspace not trusted 的假 claude: 啟動時通知 bun 不在 PATH, home 沒被信任, 模型要 1M 額度; 叫不醒時通知原因與修法一次, 間隔內的下一則訊息不再啟動 claude 也不再通知; StopFailure (Usage credits required for 1M context) 通知 owner 原因與修法, 對話裡回暫時無法回應, 短時間內不重複, /router status 顯示原因, token 不外流; /router doctor |
@@ -497,7 +498,7 @@ worker 數預設 4, 等於這台開發機的核心數. 在 4 核機器上開 8 �
 |---|---|
 | CLAUDE.md 三層改寫 (FORCED / GENERAL / Default suggestions), 人設放在 bot 資料夾 | phase4「three-tier CLAUDE.md example…」, e2e-setup「persona interview…」 |
 | telegram:format skill, /telegram:doc 涵蓋新功能 | phase4「plugin skills…」 |
-| 匯入 v1 的 messages.db, 可重複執行不重複匯入, 歸給第一隻 bot 或 --bot | phase4「import-v1…」 |
+| 匯入 v1 的 messages.db, 可重複執行不重複匯入, 歸給第一隻 bot 或 --bot | phase4「import-v1: copies…」 |
 | 訊息紀錄每隻 bot 各一份: 私訊撞號與同群組同一則都送進各自的對話, lookup 與引用不跨 bot, 舊紀錄分配一次, 重複丟掉有 log | store「two bots, same chat and message id…」「old rows get their bot once…」; inbound「two bots, one store…」; e2e「two bots in the same group…」 |
 | 舊對話資料夾與對話紀錄搬進 bot 資料夾, 之後從新位置 resume | phase3「bot folders…」 |
 | 一週內沒有掉訊息, 回錯對話或權限誤放 | 上線觀察: router.db 的 queue (未 ack), outbound 錯誤, elev_log |
@@ -541,6 +542,24 @@ worker 數預設 4, 等於這台開發機的核心數. 在 4 核機器上開 8 �
 | 不含 token, chat 名稱, chat_id, 使用者 id 或 username, 對話 key, 訊息內容; bot 用設定裡的名稱 | health「nothing private…」; e2e-health 每一條的 noPrivate |
 | 其他路徑 404, 只接受 GET 與 HEAD | health「requests: …」; e2e-health「with a token…」 |
 | 文件附 Gatus 範例 (`[STATUS]`, `[BODY]`, token 標頭, docker 的 host network), README 指過去 | health「docs/operations.md 「健康檢查端點」 says what the code does…」; readme「every relative link in README and operations.md…」 |
+
+## 從 v1 升級驗收對照
+
+對應 [部署與維運: 從 v1 升級](operations.md#從-v1-升級) 與 README「從 v1 升級」.
+
+| 驗收項目 | 測試 |
+|---|---|
+| dry run 不寫入, 不裝, 不啟動, 不動 v1 (家目錄逐檔相同, 暫存複本刪掉, 沒有 systemctl enable 或 start) | upgradev1「dry run with nothing answered…」「dry run with every question answered…」「errors to fix…」 |
+| 報告: (a) 從 v1 帶入的值與來源 (token 只寫有與 bot id, 不印值), (b) 預設值, (c) 問題與回答的參數, 還剩幾題沒答與重跑的完整指令 | upgradev1「dry run with nothing answered…」 |
+| 全部答完: 結束碼 0, 印正式執行的指令; 正式執行還有題目沒答就停在寫入前 (結束碼 3) | upgradev1「dry run with every question answered…」 |
+| 執行者是 v1 session: dry run 與正式執行都在任何檢查前停下 (結束碼 3); legacy worker 不算 | upgradev1「run by the v1 session itself…」 |
+| 其他還在跑的 v1 列為要人操作 (結束碼 3) | upgradev1「v1 still running elsewhere…」 |
+| 錯誤附修法 (結束碼 1), 參數錯誤 (結束碼 2), 腳本開頭與 README 的結束碼說明 | upgradev1「errors to fix…」「the exit codes…」 |
+| import-v1 在 router 跑過後匯入仍排在之前; 讀 v1 檔案不留 `-wal` 與 `-shm`, `-wal` 裡的也匯入 | phase4「import-v1 after the router has run…」「import-v1: copies…」 |
+| install.sh 沒帶起嚮導時, 重跑 setup 的提示帶 `CC_ROUTER_STATE` | portability「install.sh setup: …」 |
+| router 沒在跑時 `cctr cli` 的中文說明 | diagnose「cli without a router…」 |
+| 409 的通知與 log 寫明可能是舊的 v1 session 還開著 | poller「409 conflict: …」「status lines and notice texts…」 |
+| 正式執行的完整流程 (編譯, config.json, access.json, plugin, unit, 匯入, 啟動) 與重跑時跳過做過的步驟 | 手動驗證 (沙盒家目錄, 假的 systemctl 啟動 router, 本機假 Bot API): 完整升級結束碼 0, 重跑時做過的步驟都跳過 |
 
 ## managed channel 驗收對照
 

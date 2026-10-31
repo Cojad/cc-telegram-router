@@ -18,6 +18,9 @@ import { iso8 } from '../shared/time'
 export const BACKOFF_S = [5, 10, 30, 60, 120, 300]
 export const DOWN_NOTICE_MS = 120_000
 export const CONFLICT_RETRY_MS = 60_000
+/** For a 409: the usual cause after an upgrade from v1 (docs/operations.md 「從 v1 升級」). The v1
+ *  plugin retries a 409 at once, without end, so the router only gets the token now and then. */
+export const V1_CONFLICT_HINT = '從 v1 升級的話, 最常見是舊的 v1 session (以 claude --channels plugin:telegram@claude-plugins-official 開的) 還開著, 它遇到 409 會不停地立刻重試: 在那個 session 輸入 /exit 關掉它.'
 
 export type PollState =
   | { kind: 'starting' }
@@ -103,7 +106,7 @@ export function createPoller<Me, U extends { update_id: number }>(deps: PollerDe
     let wait: number
     if (c.kind === 'conflict') {
       wait = CONFLICT_RETRY_MS
-      if (!failing.told) { failing.told = true; deps.notify({ kind: 'conflict', since: failing.since }) }
+      if (!failing.told) { failing.told = true; deps.log(`${what}: 409 conflict. ${V1_CONFLICT_HINT}`); deps.notify({ kind: 'conflict', since: failing.since }) }
     } else if (c.kind === 'rate' && c.retryAfterS != null) wait = c.retryAfterS * 1000
     else wait = BACKOFF_S[Math.min(failing.attempt - 1, BACKOFF_S.length - 1)]! * 1000
     deps.log(`${what} failed (${c.reason}), retry in ${wait / 1000}s`)

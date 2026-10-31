@@ -419,6 +419,10 @@ test('install.sh setup: runs the router\'s wizard on the state dir\'s config.jso
   expect(sh).toContain('setup) install_setup ;;')
   expect(sh).toContain('"$STATE/cctr" --config "$STATE/config.json" setup\n  "$STATE/cctr" register')
   expect(sh).toContain('if [ ! -f "$STATE/config.json" ] && [ -t 0 ] && [ -t 1 ]; then')
+  // no config.json yet means no locator yet: both hints to run setup name the state dir (2.33.5)
+  expect(sh).toContain('之後可以用 CC_ROUTER_STATE=$STATE $0 setup 再跑')
+  expect(sh).toContain('在終端機執行 CC_ROUTER_STATE=$STATE $0 setup 用嚮導建立')
+  expect(sh).not.toMatch(/\$\(basename "\$0"\) setup/)
   // no router built in that state dir yet: says how
   const state = join(dir, 'setup-state')
   const p = Bun.spawn(['bash', join(REPO, 'deploy', 'install.sh'), 'setup'], { env: envAt({ CC_ROUTER_STATE: state }), stdout: 'pipe', stderr: 'pipe' })

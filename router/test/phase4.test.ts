@@ -1,24 +1,31 @@
-// Phase 4 (plan 10 Phase 4 搬遷與收尾): importing the v1 message log.
+// Phase 4 (plan 10 Phase 4 搬遷與收尾): importing the v1 message log, and its
+// order and file handling (docs/operations.md 「從 v1 升級」).
 // Keep in sync with docs/testing.md Phase 4 驗收對照.
 
 import { test, expect } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Database } from 'bun:sqlite'
 import { openStore } from '../telegram/store'
+import { importV1Messages } from '../importv1'
 
 test('import-v1: copies the v1 messages into router.db, skips ones already there, and is safe to run twice', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cctr4-'))
+  let keep: Database | null = null
   try {
     const v1 = join(dir, 'messages.db'), routerDb = join(dir, 'router.db')
     openStore(v1).close()
+    // held open through the import: s.close() is then not the last connection, nothing checkpoints,
+    // and the rows stay in v1's -wal (as with a v1 plugin still running, or one that never checkpointed)
+    keep = new Database(v1)
     const s = new Database(v1)
     const ins = s.prepare('INSERT INTO messages (chat_id, message_id, direction, ts, user_id, content, delivered) VALUES (?, ?, ?, ?, ?, ?, ?)')
     ins.run('137438526', '1', 'in', '2026-09-15T01:18:17.000Z', '137438526', 'v1 hello', 1)
     ins.run('137438526', '2', 'out', '2026-09-15T01:18:20.000Z', null, 'v1 reply', 1)
     ins.run('-100555', '9', 'in', '2026-09-16T00:00:00.000Z', '42', 'dropped', 0)
     s.close()
+    expect(statSync(v1 + '-wal').size).toBeGreaterThan(0) // the rows are still in v1's -wal: the import reads it too
     const store = openStore(routerDb)
     store.close()
     const r = new Database(routerDb)
@@ -46,8 +53,43 @@ test('import-v1: copies the v1 messages into router.db, skips ones already there
       { chat_id: '137438526', message_id: '2', direction: 'out', content: 'already here', delivered: 1 },
       { chat_id: '-100555', message_id: '9', direction: 'in', content: 'dropped', delivered: 0 },
     ])
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+  } finally { keep?.close(); rmSync(dir, { recursive: true, force: true }) }
 }, 30000)
+
+// docs/operations.md 「從 v1 升級」 (2.33.5): imported after the router has been recording, the v1 rows
+// still read as the older ones; v1's file is read without leaving -wal or -shm next to it.
+test('import-v1 after the router has run: the v1 rows sort before the router\'s own, paging reaches them, and v1\'s file gets no -wal or -shm', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cctr4-'))
+  try {
+    const v1 = join(dir, 'messages.db'), routerDb = join(dir, 'router.db')
+    openStore(v1).close()
+    const s = new Database(v1)
+    const ins = s.prepare('INSERT INTO messages (chat_id, message_id, direction, ts, user_id, content, delivered) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    ins.run('111111111', '1', 'in', '2026-09-15T01:00:00.000Z', '111111111', 'v1 first', 1)
+    ins.run('111111111', '2', 'out', '2026-09-15T01:00:05.000Z', null, 'v1 second', 1)
+    ins.run('111111111', '3', 'in', '2026-09-15T01:00:09.000Z', '111111111', 'v1 third', 1)
+    ins.finalize()
+    s.exec('PRAGMA wal_checkpoint(TRUNCATE)') // everything in the main file: the empty -wal and -shm can go
+    s.close(true)
+    for (const x of ['-wal', '-shm']) rmSync(v1 + x, { force: true })
+    const store = openStore(routerDb)
+    store.forBot('cc').record({ chat_id: '111111111', message_id: '50', direction: 'in', ts: '2026-10-31T01:00:00.000Z', user_id: '111111111', content: 'v2 first', delivered: true })
+    store.forBot('cc').record({ chat_id: '111111111', message_id: '51', direction: 'out', ts: '2026-10-31T01:00:03.000Z', content: 'v2 second', delivered: true })
+    store.close()
+    expect(importV1Messages(routerDb, v1, 'cc')).toEqual({ imported: 3, skipped: 0 })
+    expect(existsSync(v1 + '-wal') || existsSync(v1 + '-shm')).toBe(false)
+    const again = openStore(routerDb)
+    const cc = again.forBot('cc')
+    const ids = (rows: Array<{ message_id: string }>) => rows.map(r => r.message_id)
+    expect(ids(cc.recent('111111111', 10))).toEqual(['51', '50', '3', '2', '1'])
+    expect(ids(cc.recent('111111111', 2))).toEqual(['51', '50'])
+    expect(ids(cc.recent('111111111', 10, '50'))).toEqual(['3', '2', '1'])
+    cc.record({ chat_id: '111111111', message_id: '52', direction: 'in', ts: '2026-10-31T01:01:00.000Z', user_id: '111111111', content: 'v2 third', delivered: true })
+    expect(ids(cc.recent('111111111', 1))).toEqual(['52'])
+    again.close()
+    expect(importV1Messages(routerDb, v1, 'cc')).toEqual({ imported: 0, skipped: 3 })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
 
 test('three-tier CLAUDE.md example: FORCED / GENERAL / Default suggestions, with the permission, elevation, package and format rules', async () => {
   const md = await Bun.file(join(import.meta.dir, '..', '..', 'templates', 'CLAUDE.md.example')).text()

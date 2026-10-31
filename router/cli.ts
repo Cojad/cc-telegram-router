@@ -21,6 +21,12 @@ const processIo: CliIo = {
   stdinIsTTY: () => !!process.stdin.isTTY,
 }
 
+/** cli without a router to talk to: what to look at instead (cli doctor: the offline cctr doctor). */
+export function unreachable(socketPath: string, e: unknown, word?: string): string {
+  const offline = word === 'doctor' ? '不經 router 的檢查改用 cctr doctor (只看檔案與指令). ' : ''
+  return `router 沒在跑 (連不到 ${socketPath}: ${e}). ${offline}看 router 的狀態: systemctl --user status cc-telegram-router, 最近的 log: journalctl --user -u cc-telegram-router -n 50; 啟動: systemctl --user start cc-telegram-router\n`
+}
+
 export async function runCli(socketPath: string, words: string[], io: CliIo = processIo): Promise<number> {
   // session send: the text goes as it is (newlines and spaces kept), beside the command line
   const send = words[0] === 'session' && words[1] === 'send'
@@ -40,7 +46,7 @@ export async function runCli(socketPath: string, words: string[], io: CliIo = pr
   }
   return new Promise(resolve => {
     let buf = ''
-    const timer = setTimeout(() => { io.err('router did not answer\n'); resolve(1) }, waitMs)
+    const timer = setTimeout(() => { io.err(`router 沒有回應 (等了 ${Math.round(waitMs / 1000)} 秒): 看 journalctl --user -u cc-telegram-router -n 50\n`); resolve(1) }, waitMs)
     Bun.connect({
       unix: socketPath,
       socket: {
@@ -64,7 +70,7 @@ export async function runCli(socketPath: string, words: string[], io: CliIo = pr
       },
     }).catch(e => {
       clearTimeout(timer)
-      io.err(send ? `router 沒在跑 (連不到 ${socketPath}: ${e}), 訊息沒有送出\n` : `cannot reach router at ${socketPath}: ${e}\n`)
+      io.err(send ? `router 沒在跑 (連不到 ${socketPath}: ${e}), 訊息沒有送出\n` : unreachable(socketPath, e, words[0]))
       resolve(1)
     })
   })

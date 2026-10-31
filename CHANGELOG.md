@@ -6,6 +6,22 @@
 
 ## [Unreleased]
 
+## [2.33.5] - 2026-10-31
+
+### Added
+
+- `deploy/upgrade-v1.sh`: 從 v1 (單一 session plugin) 升級到 router, 交給一個全新, 不帶 `--channels` 的 Claude Code 執行 (README「從 v1 升級」). 先 `--dry-run`: 不寫入, 不裝, 不啟動, 不動 v1, 報告從 v1 帶入的值 (token 只寫有與 bot id), 預設值, 要問使用者的問題 (owner, 家目錄, bot 名稱, 要不要沿用 access.json, linger) 與回答的參數, 要先處理的錯誤與修法, 結尾是還剩幾題沒答與重跑的完整指令; 全部答完印正式執行的指令. 正式執行先做同樣的檢查, 有題目沒答就停在寫入前; 通過後用 v1 的 token 寫 config.json, 沿用 access.json (清掉待配對的碼; `--no-access` 不沿用), 部署, 匯入訊息紀錄, 啟動並跑 cli doctor, 重跑會跳過做過的步驟. 執行者本身是 v1 session (祖先程序帶 `--channels plugin:telegram@claude-plugins-official`) 時一開始就停下, 其他還在跑的 v1 列為要人操作. 結束碼: 0 dry run 通過或升級完成, 1 要先修的錯誤, 2 參數錯誤, 3 還有題目沒答或要人操作. 起因: 2026-10-31 在沙盒重現 v1 使用者照 README 升級, README 沒有任何 v1 指引, 嚮導不讀 v1 的 token 與存取設定 (允許清單與群組會變回配對預設), import-v1 沒寫在文件裡.
+- 409 衝突的通知與 log 加一句: 從 v1 升級時最常見是舊的 v1 session 還開著, 要在那個 session `/exit`. v1 的 poller 遇到 409 會用 0 秒間隔無限重試 (沙盒實測 20 秒 13370 次), router 每 60 秒才搶到一次.
+- README「從 v1 升級」與 docs/operations.md「從 v1 升級」 (參數, 報告, 偵測規則, 正式執行的步驟, v1 資料的去向, 手動升級的做法).
+
+### Fixed
+
+- `cctr import-v1` 在 router 跑過之後才匯入時, v1 的舊訊息 id 比較大, lookup_message 的最近訊息與 `/router log` 把它們當成最新的幾則. 現在匯入的紀錄取比 router.db 最小 id 還小的 id (可以是負數), 排在原有紀錄之前.
+- `cctr import-v1` 讀 v1 的 messages.db 改讀暫存複本 (含 `-wal`): 直接開檔 (即使唯讀) 會在 v1 的資料夾留下 `-wal` 與 `-shm`. 註解原本說比對時看 direction, 實際只看對話與 message id (跟 router.db 的唯一索引一致), 改正註解.
+- `deploy/install.sh router` 沒帶起設定嚮導 (不在終端機, 或按 Ctrl-C 取消) 時, 提示的重跑指令沒帶 `CC_ROUTER_STATE`, 照做會因為還沒有位置檔而失敗 (「沒有指定安裝位置」). 兩處提示都改成 `CC_ROUTER_STATE=<狀態目錄> <install.sh 路徑> setup`.
+- router 沒在跑時 `cctr cli doctor` 等子指令只印英文的 `cannot reach router`. 改成中文, 寫明去看 `systemctl --user status` 與 `journalctl`, cli doctor 另外指向離線的 `cctr doctor`; 沒回應時的訊息也改中文.
+- 測試: upgradev1 (新檔, 6 項: dry run 不寫入與報告, 全部答完與正式執行停在寫入前, v1 session 早停與 legacy worker 不算, 還在跑的 v1, 錯誤與參數錯誤的結束碼, 腳本開頭與 README 的結束碼); phase4 加一項 (router 跑過後匯入的順序, 分頁, v1 旁不留檔) 並確認 `-wal` 裡的紀錄也匯入; poller 的 409 驗證通知與 log 的提示; diagnose 加一項 (沒有 router 時的中文說明); portability 驗證 install.sh 的提示. docs/testing.md 加「從 v1 升級驗收對照」, 測試檔對照與 sandbox 區跟著改.
+
 ## [2.33.4] - 2026-10-31
 
 ### Fixed

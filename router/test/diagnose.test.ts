@@ -9,7 +9,7 @@
 // supervisor holding back and not waiting for a plugin when claude --bg
 // refused (alongside its job flag check, router/jobs.ts); StopFailure's API errors with their fixes; the model against
 // autoCompactWindow; the doctor report (every check, no token); the offline doctor inside a worker's sandbox; /router
-// status with each worker's trouble and /router doctor. Every ~/.claude.json
+// status with each worker's trouble and /router doctor; cctr cli without a router (Chinese, where to look). Every ~/.claude.json
 // here is a temporary file. End to end: e2e-diagnose.test.ts.
 
 import { afterAll, expect, test } from 'bun:test'
@@ -23,6 +23,7 @@ import { writeFingerprint } from '../pluginguard'
 import { writeLocator, locatorPath } from '../../shared/locate'
 import { renderStatus } from '../commands'
 import { blockedWhy, listJobs, workerStateNote, TURN_END_NOTE } from '../jobs'
+import { runCli, unreachable } from '../cli'
 import type { Conversation } from '../db'
 
 const dir = mkdtempSync(join(tmpdir(), 'cctr-diagnose-'))
@@ -365,4 +366,24 @@ test('offline doctor in a one-uid namespace (a worker\'s bwrap) says to use cli 
   expect(doc).toContain('`cctr doctor` (不經 router 的離線版')
   expect(doc).toContain('只映射一個 uid 的 user namespace')
   rmSync(d, { recursive: true, force: true })
+})
+
+// docs/operations.md 「cli doctor 與 worker 狀態」 (2.33.5): cctr cli without a running router says so in
+// Chinese and where to look; cli doctor points at the offline cctr doctor.
+test('cli without a router: Chinese message with systemctl and journalctl, and cctr doctor for cli doctor; exit 1', async () => {
+  const run = async (words: string[]) => {
+    let err = ''
+    const code = await runCli(join(dir, 'no-router.sock'), words, { out: () => {}, err: s => { err += s }, stdin: async () => '', stdinIsTTY: () => true })
+    return { code, err }
+  }
+  const doc = await run(['doctor'])
+  expect(doc.code).toBe(1)
+  expect(doc.err).toStartWith(`router 沒在跑 (連不到 ${join(dir, 'no-router.sock')}`)
+  for (const t of ['不經 router 的檢查改用 cctr doctor', 'systemctl --user status cc-telegram-router', 'journalctl --user -u cc-telegram-router -n 50', 'systemctl --user start cc-telegram-router']) expect(doc.err).toContain(t)
+  expect(doc.err).not.toContain('cannot reach')
+  const st = await run(['status'])
+  expect(st.code).toBe(1)
+  expect(st.err).toContain('systemctl --user status cc-telegram-router')
+  expect(st.err).not.toContain('cctr doctor')
+  expect(unreachable('/s', 'x', 'doctor')).toContain('cctr doctor')
 })

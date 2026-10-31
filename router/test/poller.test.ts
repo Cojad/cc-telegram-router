@@ -3,13 +3,14 @@
 // then every 5 minutes; the owner is told once after 2 minutes down and once
 // on recovery; 409 retries every 60 seconds and tells at once; 401 stops and
 // tells at once; 429 waits retry_after; the start (getMe) follows the same
-// rules; /router status lines and notice texts (router/pollnotice.ts).
+// rules; /router status lines and notice texts (router/pollnotice.ts); a 409's
+// notice and log name a v1 session left open (docs/operations.md 「從 v1 升級」).
 // Command replies (router/sendretry.ts): network errors, 5xx and 429 are
 // tried again at most 3 times within a minute, other 4xx not.
 // Keep in sync with docs/operations.md 「輪詢與重試」.
 
 import { test, expect } from 'bun:test'
-import { createPoller, classify, type PollEvent } from '../poller'
+import { createPoller, classify, V1_CONFLICT_HINT, type PollEvent } from '../poller'
 import { pollNoticeText, describePoll, noticeVia } from '../pollnotice'
 import { sendWithRetry, htmlOrPlain, isHtmlRefused } from '../sendretry'
 
@@ -73,6 +74,10 @@ test('409 conflict: retry every 60 seconds, the owner told at once (once), and w
   expect(h.sleeps).toEqual([60, 60, 60])
   expect(h.events.map(e => e.kind)).toEqual(['conflict', 'recovered'])
   expect(h.events[0]!.at).toBe(T0 + 1000) // right at the first 409
+  // the log names the usual cause after an upgrade from v1, once (docs/operations.md 「從 v1 升級」)
+  expect(h.logs.filter(l => l.includes(V1_CONFLICT_HINT))).toHaveLength(1)
+  expect(V1_CONFLICT_HINT).toContain('claude --channels plugin:telegram@claude-plugins-official')
+  expect(V1_CONFLICT_HINT).toContain('/exit')
 })
 
 test('401: no more retries, the owner told at once; status says the token no longer works', async () => {
@@ -110,6 +115,7 @@ test('status lines and notice texts (GMT+8)', () => {
   expect(classify(net()).kind).toBe('network')
   expect(pollNoticeText('cc', 'cc_bot', { kind: 'down', since: T0, reason: '連不上 Telegram (fetch failed)' })).toBe('⚠️ bot cc (@cc_bot) 收不到訊息超過 2 分鐘 (從 08:00 開始): 連不上 Telegram (fetch failed). router 會持續重試 (間隔逐步拉長到每 5 分鐘), 恢復時會再通知.')
   expect(pollNoticeText('cc', null, { kind: 'conflict', since: T0 })).toStartWith('⚠️ bot cc 的 token 被另一個程式拿去收訊息 (409 衝突, 從 08:00 開始)')
+  expect(pollNoticeText('cc', null, { kind: 'conflict', since: T0 })).toEndWith(` 換掉 token. ${V1_CONFLICT_HINT}`)
   expect(pollNoticeText('cc', 'cc_bot', { kind: 'unauthorized', reason: '401 Unauthorized' })).toBe('⛔ bot cc (@cc_bot) 的 token 失效 (401 Unauthorized): router 已停止這隻 bot 收訊息, 不再重試. 請到 @BotFather 取得新 token, 在私訊用 /router bot rotate cc <新 token>.')
   expect(pollNoticeText('cc', 'cc_bot', { kind: 'recovered', since: T0, at: T0 + 7 * 60_000 })).toBe('✅ bot cc (@cc_bot) 恢復收訊 (從 08:00 中斷到 08:07, 約 7 分鐘).')
 })

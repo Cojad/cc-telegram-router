@@ -34,7 +34,7 @@ systemctl --user enable --now cc-telegram-router
 
 ### 設定嚮導
 
-`deploy/install.sh setup` 執行 `<home>/.router/cctr --config <home>/.router/config.json setup`, 再 `register` 寫入位置檔; `deploy/install.sh router` 編譯完發現還沒有 config.json 而且在終端機裡時也會自己帶起它 (程式在 `router/wizard.ts`, 測試 `router/test/wizard.test.ts`, `e2e-wizard.test.ts`, `e2e-compiled.test.ts`). 只能在終端機執行: stdin 或 stdout 不是終端機時拒絕 (結束碼 2), 改照下方範例與「設定欄位」手寫 config.json.
+`deploy/install.sh setup` 執行 `<home>/.router/cctr --config <home>/.router/config.json setup`, 再 `register` 寫入位置檔; `deploy/install.sh router` 編譯完發現還沒有 config.json 而且在終端機裡時也會自己帶起它 (程式在 `router/wizard.ts`, 測試 `router/test/wizard.test.ts`, `e2e-wizard.test.ts`, `e2e-compiled.test.ts`). 只能在終端機執行: stdin 或 stdout 不是終端機時拒絕 (結束碼 2), 改照下方範例與「設定欄位」手寫 config.json. 第一次安裝時還沒有位置檔, 這時 `deploy/install.sh setup` 只能從 `CC_ROUTER_STATE` 知道狀態目錄: `deploy/install.sh router` 沒帶起嚮導 (不在終端機, 或按 Ctrl-C 取消) 時, 提示的重跑指令會帶上它 (`CC_ROUTER_STATE=<home>/.router deploy/install.sh setup`).
 
 - 新建 (沒有 config.json): 問 `home` (預設 config.json 所在資料夾的上一層; 必須是絕對路徑, 不能是使用者的家目錄, 因為在家目錄接受的資料夾信任不會存下來), `owners` (可以不填, 用認領碼), `model`, `claudeBin` (預設 PATH 找到的 claude), 再設定 bot; `stateDir` 寫成 config.json 所在的資料夾.
 - 每隻 bot: 名稱 (英數, `-`, `_`), token, Bot API. token 輸入時每個字元 (含一次貼上的每個字元) 顯示一個 `*`; Backspace (含 Ctrl-H) 刪最後一個並擦掉一個 `*`, Ctrl-U 清空, Enter 結束, Ctrl-C 取消整個嚮導; 方向鍵等控制序列與 bracketed paste 的標記忽略. 畫面上與錯誤訊息裡都不會出現 token. Bot API 選官方或自架的本機 server; 自架再問網址 (預設 `http://127.0.0.1:8081`) 與 `localFilesDir` (server 的 `--dir`, 可不填), 寫進那隻 bot 的 `apiRoot` 與 `localFilesDir` (選官方而全域 `apiRoot` 是自架時, 那隻 bot 寫 `"apiRoot": "https://api.telegram.org"`). 然後用那隻 bot 的 server 呼叫 getMe: 成功顯示 `@username (id)`, 失敗時可以重打 token, 重選 server, 或放棄 (不寫入).
@@ -183,6 +183,7 @@ bot 可以改走自架的 [telegram-bot-api](https://github.com/tdlib/telegram-b
 ## cli doctor 與 worker 狀態
 
 - `cctr cli doctor` (Telegram 裡是 `/router doctor`, owner 與 admin, 回在私訊) 經由執行中的 router 一次檢查, 每項一行 (✅ 正常, ⚠️ 要注意, ❌ 會出問題), 不含任何 token, 可以直接貼給別人: bun 與 `claudeBin` 在 systemd unit 的 PATH 下找不找得到 (還沒安裝 unit 時看預設清單); channel 模式 (managed, 或 legacy 與降級原因; config 設 legacy 是 ✅, 降級是 ⚠️), managed 模式時 bwrap 的路徑與設定目錄; telegram plugin 跟 `deploy/install.sh plugin` 部署時相同 (managed 模式看 router 的商店, legacy 看官方 plugin 是否裝在這個使用者); 位置檔 (`~/.config/cc-telegram-router/router.json`) 是否指向這個 router; home 是否被 Claude Code 信任 (另列自己是 git repo, 不吃 home 信任的對話資料夾); 預設與各對話的模型和 autoCompactWindow 是否一致; 不是對話目前 session 的殘留 job (判斷與 router 的 job 清理相同, `router/jobs.ts`; router 自己每 10 分鐘清掉, doctor 只列出); Claude Code 說 `blocked` 的 worker 分兩種 (見下一點); claude daemon 是否由 router 帶起, 有沒有沒有 daemon 在管的暖機 spare (同「背景 session 的 job 與 daemon」的唯讀檢查; managed 模式改成 router 的 daemon 與它的 worker 是否都看得到 managed settings); 在跑但 plugin 沒連上的 worker. 信任與殘留 job 在 managed 模式看 router 自己的設定目錄. router 沒在執行時用 `cctr [--config <路徑>] doctor` (少了連線那一項); 設定嚮導結尾也會跑一次. 程式在 `router/doctor.ts`, `router/diagnose.ts`, 測試 `router/test/diagnose.test.ts`, `e2e-diagnose.test.ts`.
+- router 沒在跑時, `cctr cli <子指令>` 印「router 沒在跑 (連不到 <socket>: <原因>)」, 再寫去哪裡看: `systemctl --user status cc-telegram-router`, `journalctl --user -u cc-telegram-router -n 50`, 啟動用 `systemctl --user start cc-telegram-router`; `cli doctor` 另外說不經 router 的檢查改用 `cctr doctor`. 結束碼 1. router 在指定時間內沒回應時印「router 沒有回應 (等了 N 秒)」.
 - `cctr doctor` (不經 router 的離線版, 設定嚮導結尾也會跑) 自己判斷 channel 模式 (試跑一次 bwrap) 再做同樣的檢查. 在只映射一個 uid 的 user namespace 裡執行時 (`/proc/self/uid_map` 只有一行, 長度 1, 也就是 worker 的 bwrap 沙箱裡), 它不做檢查, 只印一行說明, 要改用 `cctr cli doctor`: 在沙箱裡試跑 bwrap 會再開一層沙箱而失敗 (例如 `Can't make overlay mount`), 把 managed 誤報成降級成 legacy, daemon 是誰帶起的也看不準. 容器的對應 (一段範圍, 或主機的 `0 0 4294967295`) 不算, 照常檢查. 判斷在 `router/doctor.ts` 的 `inOneUidNamespace`.
 - worker 的 `blocked` (`claude agents --json` 的 state) 有三種來源, doctor 與 `/router status` 分開處理 (`router/jobs.ts` 的 `blockedWhy`): worker 的畫面停著提示或對話框 (`claude agents --json` 帶 `waitingFor`, 例如 `permission prompt`), 或 API, 登入, 額度錯誤讓這一輪停下 (job 的 `state.json` 的 `needs`, 例如 `rate limited — wait and retry`, `login required — run /login`), 這兩種才算卡住, doctor 列成「⚠️ 這些 worker 卡住 (blocked): tg-dm-1 (rate limited — wait and retry)」並寫出原因; 其他的 `blocked` 是 Claude Code 每輪結束時判讀收尾文字, 認為最後在問人或等人核准 (例如「等 /router skill approve bookmarks」), worker 沒有卡住, 下一則訊息照常送進去, doctor 只列一行不帶警告的「ℹ️ 上一輪結尾在等人回應 (Claude Code 的判讀, 不影響收訊): tg-dm-3」. `claude agents --json` 本身不帶 `needs`, 所以從 job 的 `state.json` 讀.
 - `/router status` 在每個對話後面多列: worker 在 daemon 裡的狀態 (不是 done, idle, working 時才列; 卡住時是 `⚠️ worker 卡住: <原因>`, 只是收尾在等人回應時是 `上一輪結尾在等人回應 (Claude Code 的判讀, 不影響收訊)`, 其他狀態例如 `worker failed`), worker 在跑但 plugin 沒連上, 以及 24 小時內最後一次的問題與時間 (GMT+8), 例如 `⚠️ 13:05 資料夾沒有被信任 (Workspace not trusted)`. 這些只存在 router 的記憶體, 重啟後清空.
@@ -217,6 +218,48 @@ bot 可以改走自架的 [telegram-bot-api](https://github.com/tdlib/telegram-b
 要改設定 (換 token, 換成自架的 Bot API server, 加 owner 等): `deploy/install.sh setup` 的修改模式 (見上方「設定嚮導」), 再重啟 router.
 
 退版: 切回舊版重跑步驟 2 再重啟. 新版只新增資料表與欄位, 舊版通常能直接用同一份 router.db; 要完全回到升級前, 停 router 後把備份的 `router.db*` 與 config.json 複製回去再啟動.
+
+## 從 v1 升級
+
+v1 (1.x) 是官方 telegram plugin 的 fork, 單一 session: `deploy/switch.sh fork` 把模組蓋進官方 plugin 快取 (`~/.claude/plugins/cache/claude-plugins-official/telegram/0.0.7`, 原本的檔案存在 `~/.claude/channels/telegram-versions/`), 狀態在 `~/.claude/channels/telegram/` (或當時的 `TELEGRAM_STATE_DIR`). 升級用 `deploy/upgrade-v1.sh`, 由一個全新, 不帶 `--channels` 的 Claude Code session 照 README「從 v1 升級」執行: 先 `--dry-run`, 照報告問使用者, 把答案加成參數再跑, 直到沒有未答的題目, 再去掉 `--dry-run` 正式執行.
+
+參數 (答案只用參數給, 不另設答案檔: 重跑的指令就是完整的答案, 照抄就能重現, 也不必為了回答先寫一個檔):
+
+| 參數 | 意思 | 預設 |
+|---|---|---|
+| `--dry-run` | 只檢查與印報告 | 正式執行 |
+| `--owner <uid>` / `--claim` | owner 的 uid; 或不指定, router 啟動後私訊 bot `/start <認領碼>` 認領 | 必答 |
+| `--home <dir>` | router 的家目錄, 狀態目錄是 `<home>/.router` | `~/cc` (要寫出來確認) |
+| `--bot-name <名稱>` | v2 裡這隻 bot 的名稱 | `cc` (要寫出來確認) |
+| `--keep-access` / `--no-access` | 沿用 v1 的 access.json (清掉待配對的碼) / 從預設的配對模式開始 | 建議沿用 (要寫出來確認) |
+| `--skip-linger` | linger 沒開也繼續 | linger 沒開時必答 (或先開 linger) |
+| `--api-root <url>` | 自架的 Bot API server | 官方 `https://api.telegram.org` |
+| `--v1-state <dir>` | v1 的狀態目錄 | `$TELEGRAM_STATE_DIR`, 否則 `~/.claude/channels/telegram` |
+
+報告分四段: (a) 從 v1 帶入或已確定的值與來源 (token 只寫「有, bot id 與 getMe 的 @username」, 絕不印值; access.json 的私訊模式, 允許人數, 群組數, 待配對數; messages.db 的筆數, 對話數與時間範圍 (GMT+8); inbox 的檔案數), (b) 用預設值的項目與預設值, (c) 要問使用者的問題與回答的參數, (d) 要先處理的問題: 錯誤 (找不到 bun 或 claude, bun 太舊, systemctl --user 不能用, token 格式不對或被 Telegram 拒絕 (401), 狀態檔讀不了, 家目錄已有別隻 bot 的 config.json) 各附修法, 以及要人操作的事 (還在跑的 v1). 接著列正式執行會做與會跳過的步驟, 最後是「還剩幾題沒答, 幾項錯誤要修, 幾項要人操作」與補上答案後重跑的完整指令 (`<uid>` 這類要換成答案, 建議值要先跟使用者確認). 全部通過時改印正式執行的指令.
+
+dry run 不寫入任何東西 (不建目錄, 不裝, 不啟動, 不呼叫 systemctl 的 enable 或 start); 讀 messages.db 時複製它與 `-wal` 到暫存資料夾 (`$TMPDIR`) 再開, 讀完刪掉, 因為直接開 v1 的檔案 (即使唯讀) 會在旁邊留下 `-wal` 與 `-shm`. 唯一的對外動作是用 Bot API 的 getMe 驗證 token.
+
+偵測執行者是不是 v1 session (dry run 與正式執行都在任何檢查之前): 往上找祖先程序, 有一個的參數是 `--channels plugin:telegram@claude-plugins-official` 而且工作目錄不在 router 的家目錄裡 (legacy 模式 router 的 worker 也帶這個參數, 但在家目錄裡), 就停下 (結束碼 3), 什麼都不做: 在 v1 session 裡跑到部署 plugin 那一步會換掉它自己的 plugin 快取. 其他還在跑的 v1 列在 (d), 也是結束碼 3: `bot.pid` 指向的活著的 bun 程序, 參數帶 `--channels plugin:telegram@claude-plugins-official` 而工作目錄不在家目錄裡的程序, 以及在官方 plugin 快取裡跑 `bun server.ts` 的程序.
+
+正式執行的步驟 (每一步印「第幾步, 在做什麼」與成功, 跳過或失敗; 失敗時印原因, 相關路徑與修法, 結束碼 1, 已完成的步驟保留): bun install --frozen-lockfile; `deploy/install.sh router` (同一個 commit 裝過就跳過, 記在 `<home>/.router/.v1-upgrade/`); 寫 config.json (v1 的 token, owner, bot 名稱, claudeBin, 權限 600; 已存在就沿用); 寫 access.json (已存在就不動); `cctr register`; `deploy/install.sh plugin` 與 `unit`; 從範例建立 `<home>/CLAUDE.md`; `cctr import-v1` (只做一次); `systemctl --user enable --now`, 等 socket, 跑 `cctr cli doctor` (有 ❌ 就停). 沒有 owner (`--claim`) 時最後印認領碼的找法, 結束碼 3, 認領後重跑確認.
+
+v1 的資料去向:
+
+| v1 | v2 |
+|---|---|
+| `.env` 的 `TELEGRAM_BOT_TOKEN` | config.json 第一隻 bot 的 token; 原檔留著 (仍是明文) |
+| `access.json` | 沿用時複製到 `<home>/.router/access.json` (格式相同, 允許清單, 群組, `mentionPatterns`, `ackReaction`, `replyToMode`, `textChunkLimit`, `chunkMode` 照舊生效), 待配對的碼不沿用; owner 加進允許清單 |
+| `messages.db` | `cctr import-v1` 匯入 router.db, 歸給這隻 bot; 原檔不動 |
+| `inbox/` 的照片 | 不搬; 同一隻 bot 的 file_id 仍可用 `download_attachment` 重新下載 |
+| v1 session 的對話紀錄與記憶 (`~/.claude/projects/`) | 不接續: 每個 Telegram 對話是新的背景 session |
+| 官方 plugin 快取裡的 v1 模組 | `deploy/install.sh plugin` 第一次部署時備份到 `~/.claude/channels/telegram-versions/v1-cache`, 再換成 v2 |
+
+`cctr import-v1` 讓匯入的紀錄排在 router.db 原有的所有紀錄之前 (取比最小 id 還小的 id, 可以是負數), 所以 router 跑過一陣子才匯入, lookup_message 的最近訊息與 `/router log` 也不會把 v1 的舊訊息當成最新的. 它讀的是 v1 檔案的暫存複本 (含 `-wal`, 最新的訊息可能還在裡面), 不在 v1 的資料夾留下任何檔案.
+
+手動升級 (不用腳本): 照 README 的安裝步驟, 設定嚮導的 token 填 v1 `.env` 裡那個; 要沿用存取設定就在第一次跑嚮導之前把 v1 的 `access.json` 複製到 `<home>/.router/` (嚮導看到已有的 access.json 只會把 owner 加進去); 啟動前關掉 v1 session, 再 `<home>/.router/cctr import-v1 ~/.claude/channels/telegram/messages.db`.
+
+v1 session 沒關時, router 收訊會一直 409 衝突: router 的通知與 log 會寫可能是舊的 v1 session 還開著 (見「輪詢與重試」).
 
 ## 表情回應 (reaction)
 
@@ -277,7 +320,7 @@ router 重啟 (`systemctl restart`, `/router restart`, 部署) 時 worker 不跟
 
 ## 輪詢與重試
 
-- 輪詢由 router 自己做 (`poller.ts`, 不用 grammY 的 bot.start), 啟動 (getMe) 與之後收訊都套用同一套規則: 網路錯誤與 Telegram 5xx 以 5 秒, 10 秒, 30 秒, 1 分, 2 分, 5 分逐步拉長, 之後每 5 分鐘一直重試 (429 照 retry_after); 斷線超過 2 分鐘才通知 owner 一次, 恢復時再通知一次. 409 衝突 (別的程式在用這個 token 收訊息) 每 60 秒重試並立刻通知. 401 (token 失效) 不再重試, 立刻通知 owner 用 `/router bot rotate`. 通知經其他還正常的 bot 送到它的重要通知話題或 owner 私訊; 409 與恢復通知也可以由那隻 bot 自己送 (409 只停收訊, 送訊息仍正常, 所以只有一隻 bot 時也收得到); 沒有 bot 送得出去, 或沒有 owner 與審核群組時只記 log. `/router status` 每隻 bot 後面標狀態: 收訊中, 重試中 (從幾點開始, 原因), token 失效.
+- 輪詢由 router 自己做 (`poller.ts`, 不用 grammY 的 bot.start), 啟動 (getMe) 與之後收訊都套用同一套規則: 網路錯誤與 Telegram 5xx 以 5 秒, 10 秒, 30 秒, 1 分, 2 分, 5 分逐步拉長, 之後每 5 分鐘一直重試 (429 照 retry_after); 斷線超過 2 分鐘才通知 owner 一次, 恢復時再通知一次. 409 衝突 (別的程式在用這個 token 收訊息) 每 60 秒重試並立刻通知; 通知與 log 另外寫明從 v1 升級時最常見的原因: 舊的 v1 session (以 `claude --channels plugin:telegram@claude-plugins-official` 開的) 還開著, 它遇到 409 會不停地立刻重試, 要在那個 session `/exit` (見「從 v1 升級」). 401 (token 失效) 不再重試, 立刻通知 owner 用 `/router bot rotate`. 通知經其他還正常的 bot 送到它的重要通知話題或 owner 私訊; 409 與恢復通知也可以由那隻 bot 自己送 (409 只停收訊, 送訊息仍正常, 所以只有一隻 bot 時也收得到); 沒有 bot 送得出去, 或沒有 owner 與審核群組時只記 log. `/router status` 每隻 bot 後面標狀態: 收訊中, 重試中 (從幾點開始, 原因), token 失效.
 - `/router` 指令的回覆遇到網路錯誤, Telegram 5xx 或 429 (照 retry_after) 時, 第一次送出後 1 分鐘內最多再試 3 次 (間隔 2 秒, 5 秒, 15 秒; `sendretry.ts`), 其他 4xx 不重試, 最後還是失敗就在 router log 記一行.
 
 ## 健康檢查端點

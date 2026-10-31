@@ -86,13 +86,14 @@ install_router() {
     echo "警告: 工具箱有工具沒有裝好 (見上面), 需要它的特權技能會拒絕執行; 之後可以再跑 $STATE/cctr toolbox install --state $STATE" >&2
   fi
   if [ ! -f "$STATE/config.json" ] && [ -t 0 ] && [ -t 1 ]; then
-    echo "還沒有 $STATE/config.json: 開始設定嚮導 (Ctrl-C 取消, 之後可以用 $(basename "$0") setup 再跑)"
+    echo "還沒有 $STATE/config.json: 開始設定嚮導 (Ctrl-C 取消, 之後可以用 CC_ROUTER_STATE=$STATE $0 setup 再跑)"
     "$STATE/cctr" --config "$STATE/config.json" setup || true
   fi
   if [ -f "$STATE/config.json" ]; then
     "$STATE/cctr" register
   else
-    echo "還沒有 $STATE/config.json: 在終端機執行 $(basename "$0") setup 用嚮導建立 (或照 docs/operations.md 手寫後執行 $STATE/cctr register)"
+    # no config.json yet, so no locator either: setup finds the state dir only through CC_ROUTER_STATE
+    echo "還沒有 $STATE/config.json: 在終端機執行 CC_ROUTER_STATE=$STATE $0 setup 用嚮導建立 (或照 docs/operations.md 手寫後執行 $STATE/cctr register)"
   fi
 }
 
